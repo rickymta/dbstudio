@@ -1,3 +1,27 @@
 {
-  "readOnly": "Chỉ đọc"
+  "readOnly": "Chỉ đọc",
+  "destructive": {
+    "title": "Xác nhận câu lệnh phá huỷ",
+    "description": "Kết nối này là môi trường production. Các câu lệnh dưới đây có thể làm mất dữ liệu và không hoàn tác được.",
+    "statements": "Câu lệnh phá huỷ",
+    "typePrompt": "Gõ {{text}} để xác nhận",
+    "confirm": "Vẫn chạy",
+    "cancel": "Huỷ",
+    "reason": {
+      "drop": "Xoá một đối tượng",
+      "truncate": "Xoá sạch dữ liệu bảng",
+      "deleteWithoutWhere": "DELETE không có WHERE: xoá mọi dòng",
+      "updateWithoutWhere": "UPDATE không có WHERE: sửa mọi dòng",
+      "alterDrop": "Xoá cột hoặc ràng buộc",
+      "flushDb": "Xoá mọi khoá của database",
+      "flushAll": "Xoá mọi khoá của mọi database",
+      "deleteByPattern": "Xoá khoá theo mẫu",
+      "dropCollection": "Xoá collection",
+      "dropDatabase": "Xoá database",
+      "deleteManyAll": "deleteMany với bộ lọc rỗng: xoá mọi document",
+      "updateManyAll": "updateMany với bộ lọc rỗng: sửa mọi document",
+      "restore": "Khôi phục đè lên dữ liệu hiện có",
+      "importReplace": "Nhập dữ liệu thay thế dữ liệu hiện có"
+    }
+  }
 }

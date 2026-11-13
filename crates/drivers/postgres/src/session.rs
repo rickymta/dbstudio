@@ -30,7 +30,7 @@ struct Registration {
 
 /// A live PostgreSQL server session (several pooled connections behind one object).
 pub struct PostgresSession {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
     running: Mutex<HashMap<Uuid, Registration>>,
     /// Cached unique-key columns per table, used as ORDER BY tie-breakers (value expires).
     keys: Mutex<KeyCache>,

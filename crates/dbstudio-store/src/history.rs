@@ -254,6 +254,20 @@ impl Store {
         rows.map(|r| r.map_err(db_err)?).collect()
     }
 
+    /// Entries still `running` belong to a process that is gone (a crash, a kill): record them
+    /// as failed with an explanation. Call once at start-up, before anything new is recorded.
+    pub fn history_mark_interrupted(&self) -> Result<u64> {
+        let n = self
+            .lock()
+            .execute(
+                "UPDATE query_history SET status = 'error', error_message = 'interrupted: the \
+                 application stopped before the statement finished' WHERE status = 'running'",
+                [],
+            )
+            .map_err(db_err)?;
+        Ok(n as u64)
+    }
+
     /// Delete one entry.
     pub fn history_delete(&self, id: i64) -> Result<()> {
         let n = self
@@ -380,6 +394,28 @@ mod tests {
         s.history_delete(e2.id).unwrap();
         assert!(matches!(s.history_delete(e2.id), Err(Error::NotFound(_))));
         assert_eq!(s.history_clear(None).unwrap(), 1);
+    }
+
+    #[test]
+    fn running_entries_left_by_a_dead_process_become_errors() {
+        let s = Store::open_in_memory().unwrap();
+        let a = conn(&s, "a");
+        let done = s.history_append(&new_entry(a, "select 1")).unwrap();
+        s.history_finish(done.id, "ok", Some(1), Some(1), Some(1), None)
+            .unwrap();
+        let stale = s.history_append(&new_entry(a, "select 2")).unwrap();
+        assert_eq!(s.history_mark_interrupted().unwrap(), 1);
+        let list = s.history_list(&query(Some(a))).unwrap();
+        let find = |id| list.iter().find(|e| e.id == id).unwrap();
+        assert_eq!(find(stale.id).status, "error");
+        assert!(
+            find(stale.id)
+                .error_message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("interrupted"))
+        );
+        assert_eq!(find(done.id).status, "ok");
+        assert_eq!(s.history_mark_interrupted().unwrap(), 0);
     }
 
     #[test]

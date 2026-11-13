@@ -295,7 +295,9 @@ pub struct Stmt {
 }
 
 /// Split a script at top-level semicolons, dropping statements that contain nothing but
-/// whitespace and comments.
+/// whitespace and comments. Superseded by `dbstudio_sql::split` in production code; kept as
+/// the reference of the differential test.
+#[cfg(test)]
 pub fn split_statements(sql: &str) -> Vec<Stmt> {
     let masked = mask(sql);
     let mut out = Vec::new();
@@ -324,6 +326,7 @@ pub fn split_statements(sql: &str) -> Vec<Stmt> {
 
 /// True while `stmt` (masked text up to a `;`) is a `CREATE FUNCTION/PROCEDURE ... BEGIN ATOMIC`
 /// body that has not reached its closing `END` yet (PostgreSQL 14+).
+#[cfg(test)]
 fn open_atomic_body(stmt: &str) -> bool {
     let w = words(stmt);
     let mut it = w.iter().map(String::as_str);
@@ -393,6 +396,14 @@ pub fn is_dml(stmt: &str) -> bool {
 /// Effect of a successfully executed statement on the "inside an explicit transaction" flag.
 pub fn txn_effect(stmt: &str, in_txn: bool) -> bool {
     let w = words(stmt);
+    // `COMMIT AND CHAIN` / `ROLLBACK AND CHAIN` start the next transaction right away.
+    if matches!(
+        w.first().map(String::as_str),
+        Some("COMMIT" | "END" | "ROLLBACK" | "ABORT")
+    ) && w.windows(2).any(|p| p[0] == "AND" && p[1] == "CHAIN")
+    {
+        return true;
+    }
     let first = w.first().map(String::as_str);
     let second = w.get(1).map(String::as_str);
     match (first, second) {

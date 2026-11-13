@@ -119,7 +119,8 @@ async fn query_execute_runs_the_guard_then_streams_the_driver() {
     .unwrap();
     assert_eq!(kinds(&events), ["start", "columns", "rows", "end"]);
     assert_eq!(result.summary.statements, 1);
-    assert!(result.state.is_none() && result.history_id.is_none());
+    // The query is recorded in the history of the (saved) connection.
+    assert!(result.state.is_none() && result.history_id.is_some());
     assert_eq!(f.probe.executed.lock().unwrap().as_slice(), ["select 1"]);
     // The result serializes the way the frontend expects.
     let json = serde_json::to_value(&result).unwrap();
@@ -157,17 +158,20 @@ async fn query_execute_passes_driver_errors_and_receiver_stops() {
             ..
         }
     ));
-    // Parameters are bound by the real binder before the driver runs.
+    // Parameters no longer answer `unsupported`: the binder runs before the driver.
     let mut with_params = exec_request("select :a");
     with_params.params = vec![dbstudio_core::ParamValue {
         name: ":a".into(),
         value: dbstudio_core::ParamInput::Null,
     }];
-    let before = f.probe.executed.lock().unwrap().len();
     editor::execute_impl(&f.state, id, with_params, |_| true)
         .await
         .unwrap();
-    assert_eq!(f.probe.executed.lock().unwrap().len(), before + 1);
+    // (The mock session speaks the opaque dialect, which has no parameters.)
+    assert_eq!(
+        f.probe.executed.lock().unwrap().last().map(String::as_str),
+        Some("select :a")
+    );
     // A receiver that is gone stops the driver.
     let err = editor::execute_impl(&f.state, id, exec_request("select 1"), |_| false)
         .await
@@ -268,18 +272,6 @@ async fn stub_commands_answer_unsupported() {
             )
             .await
             .unwrap_err(),
-        ),
-        (
-            "saved_queries_list",
-            crate::commands::history::saved_queries_list_impl(&f.state)
-                .await
-                .unwrap_err(),
-        ),
-        (
-            "editor_tabs_get",
-            crate::commands::history::editor_tabs_get_impl(&f.state)
-                .await
-                .unwrap_err(),
         ),
         (
             "erd_layouts_list",
