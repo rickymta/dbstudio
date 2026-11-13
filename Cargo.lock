@@ -1695,7 +1695,6 @@ dependencies = [
  "dbstudio-sql",
  "futures-util",
  "quick-xml 0.42.0",
- "regex",
  "serde_json",
  "tiberius",
  "tokio",
