@@ -217,18 +217,7 @@ async fn lease_commands_are_unsupported_until_a_driver_opens_leases() {
 async fn stub_commands_answer_unsupported() {
     let f = fixture();
     let id = open(&f, profile(false, None)).await;
-    let spec = json!({
-        "connectionId": Uuid::nil(), "source": {"kind": "query", "text": "select 1"},
-        "content": "data", "format": {"kind": "csv"},
-        "destination": {"path": "/tmp/x.csv"}
-    });
     let results: Vec<(&str, Error)> = vec![
-        (
-            "export_start",
-            export::start_impl(&f.state, serde_json::from_value(spec).unwrap())
-                .await
-                .unwrap_err(),
-        ),
         (
             "keys_delete_pattern",
             keyvalue::keys_delete_pattern_impl(&f.state, id, ObjectPath::root(), "a*".into(), None)
@@ -268,10 +257,6 @@ async fn stub_commands_answer_unsupported() {
             )
             .await
             .unwrap_err(),
-        ),
-        (
-            "export_presets_list",
-            export::presets_list_impl(&f.state, None).await.unwrap_err(),
         ),
     ];
     for (name, err) in results {
@@ -569,14 +554,11 @@ async fn path_taking_commands_require_a_grant() {
         .grants
         .grant(&file, crate::grants::Purpose::Read)
         .unwrap();
-    // Granted: the (scaffold) engines answer.
-    assert_eq!(
-        export::import_preview_impl(&f.state, preview())
-            .await
-            .unwrap_err()
-            .kind(),
-        "unsupported"
-    );
+    // Granted: the import engine previews the file; the backup engine is still a scaffold.
+    let preview = export::import_preview_impl(&f.state, preview())
+        .await
+        .unwrap();
+    assert_eq!(preview.statements_preview.len(), 1);
     assert_eq!(
         backup::inspect_impl(&f.state, path, None)
             .await

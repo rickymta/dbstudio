@@ -1,1 +1,156 @@
-{}
+{
+  "title": "Xuất dữ liệu",
+  "loading": "Đang tải…",
+  "started": "Đã bắt đầu xuất",
+  "back": "Quay lại",
+  "next": "Tiếp",
+  "start": "Bắt đầu xuất",
+  "step": {
+    "source": "Bước {{n}}/{{total}} — xuất gì",
+    "format": "Bước {{n}}/{{total}} — định dạng và tuỳ chọn",
+    "destination": "Bước {{n}}/{{total}} — nơi lưu"
+  },
+  "source": {
+    "query": "Truy vấn",
+    "queryHint": "Đúng một câu SELECT. Việc xuất chỉ đọc dữ liệu.",
+    "objects": "Đối tượng",
+    "allDatabase": "Mọi bảng của cơ sở dữ liệu",
+    "allSchema": "Mọi bảng của schema",
+    "chooseTables": "Chọn bảng",
+    "queryName": "truy_van"
+  },
+  "content": {
+    "label": "Nội dung",
+    "both": "Cấu trúc và dữ liệu",
+    "data": "Chỉ dữ liệu",
+    "schema": "Chỉ cấu trúc"
+  },
+  "format": {
+    "label": "Định dạng",
+    "csv": "CSV",
+    "xlsx": "Excel (XLSX)",
+    "json": "JSON",
+    "sql": "Tập lệnh SQL"
+  },
+  "csv": {
+    "delimiter": "Dấu phân cách",
+    "quote": "Dấu trích dẫn",
+    "nullText": "Chữ thay cho NULL",
+    "lineEnding": "Kết thúc dòng",
+    "bom": "Dấu BOM UTF-8 (cho Excel)",
+    "header": "Dòng tiêu đề",
+    "quoteAll": "Trích dẫn mọi trường",
+    "excelSafe": "Chống công thức Excel (thêm ' trước =, +, -, @)"
+  },
+  "json": {
+    "layout": "Bố cục",
+    "array": "Một mảng",
+    "ndjson": "Mỗi dòng một tài liệu (NDJSON)",
+    "pretty": "Thụt lề"
+  },
+  "xlsx": {
+    "header": "Dòng tiêu đề",
+    "freeze": "Cố định dòng tiêu đề",
+    "dictionary": "Trang từ điển dữ liệu",
+    "splitHint": "Bảng quá 1.048.575 dòng sẽ tiếp tục sang trang tính mới."
+  },
+  "sql": {
+    "batch": "Số dòng mỗi INSERT",
+    "columnNames": "Ghi tên cột trong INSERT",
+    "transaction": "Bọc dữ liệu trong giao dịch",
+    "disableFk": "Tắt kiểm tra khoá ngoại khi nạp",
+    "qualify": "Ghi tên kèm schema",
+    "drop": "Thêm lệnh DROP"
+  },
+  "binary": {
+    "label": "Giá trị nhị phân"
+  },
+  "destination": {
+    "file": "Tệp",
+    "none": "Chưa chọn tệp",
+    "browse": "Chọn…",
+    "hint": "Nhiều tệp được nén vào một .zip. Lần xuất này tạo tệp .{{ext}}."
+  },
+  "file": {
+    "zip": "Tệp nén ZIP",
+    "sql": "Tập lệnh SQL",
+    "csv": "CSV",
+    "xlsx": "Sổ làm việc Excel",
+    "json": "JSON"
+  },
+  "preset": {
+    "title": "Cấu hình đã lưu",
+    "apply": "Áp dụng cấu hình",
+    "delete": "Xoá cấu hình",
+    "name": "Tên cấu hình",
+    "save": "Lưu cấu hình",
+    "saved": "Đã lưu cấu hình"
+  },
+  "import": {
+    "title": "Nhập dữ liệu",
+    "started": "Đã bắt đầu nhập",
+    "start": "Bắt đầu nhập",
+    "file": "Tệp",
+    "noFile": "Chưa chọn tệp",
+    "fileTypes": "Tệp dữ liệu",
+    "kind": "Loại tệp",
+    "kinds": {
+      "csv": "CSV / văn bản",
+      "xlsx": "Excel (XLSX)",
+      "json": "JSON",
+      "sql": "Tập lệnh SQL"
+    },
+    "header": "Dòng đầu là tiêu đề",
+    "sheet": "Trang tính",
+    "continueOnError": "Tiếp tục khi một câu lệnh lỗi",
+    "previewInfo": "{{columns}} cột, khoảng {{rows}} dòng",
+    "target": "Nhập vào",
+    "targetMode": {
+      "existing": "Bảng có sẵn",
+      "new": "Bảng mới"
+    },
+    "table": "Bảng",
+    "chooseTable": "Chọn bảng",
+    "newName": "Tên bảng mới",
+    "fileColumn": "Cột trong tệp",
+    "tableColumn": "Cột của bảng",
+    "transform": "Biến đổi",
+    "transforms": {
+      "none": "Không",
+      "trim": "Cắt khoảng trắng",
+      "emptyAsNull": "Rỗng thành NULL",
+      "trimEmptyAsNull": "Cắt khoảng trắng, rỗng thành NULL"
+    },
+    "skip": "— bỏ qua —",
+    "mapTo": "Cột cho {{column}}",
+    "transformOf": "Biến đổi của {{column}}",
+    "columnName": "Tên cột",
+    "columnType": "Kiểu",
+    "pk": "Khoá",
+    "onConflict": "Khi trùng khoá",
+    "conflict": {
+      "error": "Dừng và báo lỗi",
+      "skip": "Bỏ qua dòng",
+      "update": "Cập nhật dòng"
+    },
+    "mode": "Giao dịch",
+    "modes": {
+      "batches": "Commit từng lô",
+      "single": "Một giao dịch (hoặc tất cả hoặc không gì)"
+    },
+    "batchRows": "Số dòng mỗi lô",
+    "maxErrors": "Số lỗi chấp nhận",
+    "maxErrorsHint": "0 là dừng ở dòng lỗi đầu tiên; thông báo nêu số dòng.",
+    "step": {
+      "file": "Chọn tệp",
+      "target": "Chọn bảng",
+      "mapping": "Ánh xạ cột"
+    },
+    "confirm": {
+      "title": "Lần nhập này cần xác nhận",
+      "overwrite": "Các dòng hiện có sẽ bị ghi đè.",
+      "type": "Gõ {{text}} để xác nhận",
+      "go": "Xác nhận và nhập"
+    }
+  }
+}

@@ -1,1 +1,41 @@
-{}
+{
+  "title": "Tác vụ nền",
+  "description": "Xuất, nhập và các tác vụ dài khác của phiên này.",
+  "empty": {
+    "title": "Chưa có tác vụ",
+    "description": "Các lần xuất, nhập bạn bắt đầu sẽ hiện ở đây."
+  },
+  "clearFinished": "Xoá tác vụ đã xong",
+  "cancel": "Huỷ",
+  "progress": "Tiến độ",
+  "status": {
+    "queued": "Đang chờ",
+    "running": "Đang chạy",
+    "succeeded": "Xong",
+    "failed": "Lỗi",
+    "cancelled": "Đã huỷ"
+  },
+  "phase": {
+    "schema": "Cấu trúc",
+    "data": "Dữ liệu",
+    "import": "Đang nhập",
+    "script": "Đang chạy tập lệnh",
+    "finish": "Hoàn tất",
+    "compress": "Đang nén",
+    "encrypt": "Đang mã hoá",
+    "verify": "Đang kiểm tra",
+    "restore": "Đang khôi phục"
+  },
+  "indicator": {
+    "idle": "Tác vụ nền",
+    "running": "{{count}} đang chạy",
+    "failed": "{{count}} lỗi"
+  },
+  "result": {
+    "rows": "{{count}} dòng",
+    "inserted": "đã thêm {{count}} dòng",
+    "skipped": "bỏ qua {{count}}",
+    "errorLine": "Dòng {{line}}",
+    "moreErrors": "và {{count}} lỗi nữa"
+  }
+}

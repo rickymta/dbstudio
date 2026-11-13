@@ -1,1 +1,156 @@
-{}
+{
+  "title": "Export data",
+  "loading": "Loading…",
+  "started": "Export started",
+  "back": "Back",
+  "next": "Next",
+  "start": "Start export",
+  "step": {
+    "source": "Step {{n}} of {{total}} — what to export",
+    "format": "Step {{n}} of {{total}} — format and options",
+    "destination": "Step {{n}} of {{total}} — destination"
+  },
+  "source": {
+    "query": "Query",
+    "queryHint": "Exactly one SELECT statement. The export only reads data.",
+    "objects": "Objects",
+    "allDatabase": "Every table of the database",
+    "allSchema": "Every table of the schema",
+    "chooseTables": "Choose tables",
+    "queryName": "query"
+  },
+  "content": {
+    "label": "Content",
+    "both": "Structure and data",
+    "data": "Data only",
+    "schema": "Structure only"
+  },
+  "format": {
+    "label": "Format",
+    "csv": "CSV",
+    "xlsx": "Excel (XLSX)",
+    "json": "JSON",
+    "sql": "SQL script"
+  },
+  "csv": {
+    "delimiter": "Delimiter",
+    "quote": "Quote",
+    "nullText": "Text for NULL",
+    "lineEnding": "Line ending",
+    "bom": "UTF-8 byte order mark (Excel)",
+    "header": "Header row",
+    "quoteAll": "Quote every field",
+    "excelSafe": "Protect against Excel formulas (prefix =, +, -, @ with ')"
+  },
+  "json": {
+    "layout": "Layout",
+    "array": "One array",
+    "ndjson": "One document per line (NDJSON)",
+    "pretty": "Indented"
+  },
+  "xlsx": {
+    "header": "Header row",
+    "freeze": "Freeze the header",
+    "dictionary": "Data dictionary sheet",
+    "splitHint": "A table with more than 1,048,575 rows continues on a new sheet."
+  },
+  "sql": {
+    "batch": "Rows per INSERT",
+    "columnNames": "Column names in INSERT",
+    "transaction": "Wrap the data in a transaction",
+    "disableFk": "Disable foreign key checks while loading",
+    "qualify": "Qualify names with the schema",
+    "drop": "Add DROP statements"
+  },
+  "binary": {
+    "label": "Binary values"
+  },
+  "destination": {
+    "file": "File",
+    "none": "No file chosen",
+    "browse": "Browse…",
+    "hint": "Several files are packed into a .zip. This export produces a .{{ext}} file."
+  },
+  "file": {
+    "zip": "ZIP archive",
+    "sql": "SQL script",
+    "csv": "CSV",
+    "xlsx": "Excel workbook",
+    "json": "JSON"
+  },
+  "preset": {
+    "title": "Presets",
+    "apply": "Apply a preset",
+    "delete": "Delete the preset",
+    "name": "Preset name",
+    "save": "Save preset",
+    "saved": "Preset saved"
+  },
+  "import": {
+    "title": "Import data",
+    "started": "Import started",
+    "start": "Start import",
+    "file": "File",
+    "noFile": "No file chosen",
+    "fileTypes": "Data files",
+    "kind": "File type",
+    "kinds": {
+      "csv": "CSV / text",
+      "xlsx": "Excel (XLSX)",
+      "json": "JSON",
+      "sql": "SQL script"
+    },
+    "header": "First row is a header",
+    "sheet": "Sheet",
+    "continueOnError": "Keep going after a failing statement",
+    "previewInfo": "{{columns}} columns, about {{rows}} rows",
+    "target": "Import into",
+    "targetMode": {
+      "existing": "An existing table",
+      "new": "A new table"
+    },
+    "table": "Table",
+    "chooseTable": "Choose a table",
+    "newName": "Name of the new table",
+    "fileColumn": "File column",
+    "tableColumn": "Table column",
+    "transform": "Transform",
+    "transforms": {
+      "none": "None",
+      "trim": "Trim",
+      "emptyAsNull": "Empty as NULL",
+      "trimEmptyAsNull": "Trim, empty as NULL"
+    },
+    "skip": "— skip —",
+    "mapTo": "Column for {{column}}",
+    "transformOf": "Transform of {{column}}",
+    "columnName": "Column name",
+    "columnType": "Type",
+    "pk": "Key",
+    "onConflict": "When the key exists",
+    "conflict": {
+      "error": "Stop with an error",
+      "skip": "Skip the row",
+      "update": "Update the row"
+    },
+    "mode": "Transactions",
+    "modes": {
+      "batches": "Commit every batch",
+      "single": "One transaction (all or nothing)"
+    },
+    "batchRows": "Rows per batch",
+    "maxErrors": "Tolerated errors",
+    "maxErrorsHint": "0 stops at the first failing row; the message names its line.",
+    "step": {
+      "file": "Choose the file",
+      "target": "Choose the table",
+      "mapping": "Map the columns"
+    },
+    "confirm": {
+      "title": "This import needs a confirmation",
+      "overwrite": "Existing rows will be overwritten.",
+      "type": "Type {{text}} to confirm",
+      "go": "Confirm and import"
+    }
+  }
+}

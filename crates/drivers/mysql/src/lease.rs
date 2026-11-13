@@ -64,10 +64,12 @@ pub(crate) async fn open(session: &MySqlSession, opts: LeaseOptions) -> Result<B
             .await
             .map_err(map_query_error)?;
     }
+    // `DATABASE()` is NULL when the connection has no default database.
     let database: Option<String> = conn
-        .query_first("SELECT DATABASE()")
+        .query_first::<Option<String>, _>("SELECT DATABASE()")
         .await
-        .map_err(map_query_error)?;
+        .map_err(map_query_error)?
+        .flatten();
     let conn_id = conn.id();
     let backend = MyBackend {
         killer: Arc::new(Killer {
@@ -1265,6 +1267,38 @@ impl LeaseBackend for MyBackend {
     async fn discard_result(&mut self) -> Result<()> {
         self.drop_pending().await;
         Ok(())
+    }
+
+    async fn table_select(&mut self, req: &dbstudio_core::TableStreamRequest) -> Result<String> {
+        self.drop_pending().await;
+        let nb = matches!(
+            self.dialect,
+            ScriptDialect::MySql {
+                backslash_escapes: false,
+                ..
+            }
+        );
+        crate::stream::table_select_on(self.conn()?, nb, req).await
+    }
+
+    async fn bulk_insert(
+        &mut self,
+        req: dbstudio_core::BulkInsertRequest,
+    ) -> Result<dbstudio_core::BulkInsertResult> {
+        self.drop_pending().await;
+        self.enforce_read_only().await?;
+        let nb = matches!(
+            self.dialect,
+            ScriptDialect::MySql {
+                backslash_escapes: false,
+                ..
+            }
+        );
+        let r = crate::bulk::bulk_on_conn(self.conn()?, nb, &req).await;
+        if r.is_ok() && !self.auto_commit {
+            self.in_tx = true;
+        }
+        r
     }
 
     async fn tx(&mut self, op: TxControl, opts: TxOptions) -> Result<()> {
