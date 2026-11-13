@@ -41,6 +41,11 @@ pub async fn run_export_tuned(
     if matches!(spec.source, ExportSource::Keys { .. }) {
         return Err(Error::Unsupported("export_keys".into()));
     }
+    // Refuse a query that is not a single read-only statement before anything reaches the
+    // server (no snapshot transaction, no catalog lookups).
+    if let ExportSource::Query { text, .. } = &spec.source {
+        check_query_is_read_only(ctx.dialect, text)?;
+    }
     let mut warnings = Vec::new();
 
     let work = plan(&ctx, &spec, &mut warnings).await?;
