@@ -143,12 +143,5 @@
       "nodeCount": "Operators",
       "warnings": "Warnings"
     }
-  },
-  "production": {
-    "title": "Run this statement with ANALYZE on production?",
-    "description": "ANALYZE executes the statement (inside a transaction that is rolled back). This connection is marked as production.",
-    "type": "Type {{text}} to confirm",
-    "run": "Run with ANALYZE",
-    "cancel": "Cancel"
   }
 }

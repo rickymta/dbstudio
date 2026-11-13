@@ -137,10 +137,6 @@
     "pattern": "Pattern",
     "hint": "Glob syntax: * any text, ? one character, [ab] a set. Matches the full key name.",
     "start": "Delete matching keys",
-    "confirmPrompt": "This connection requires confirmation to delete keys matching \"{{pattern}}\".",
-    "typeToConfirm": "Type to confirm:",
-    "confirmInput": "Confirmation text",
-    "confirm": "Confirm deletion",
     "running": "Deleted {{done}} of {{total}} keys...",
     "cancelJob": "Cancel job",
     "status": {

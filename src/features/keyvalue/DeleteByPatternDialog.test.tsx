@@ -1,6 +1,7 @@
 import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
 import { ipc } from '@/lib/ipc';
 import { childPath } from '@/lib/objectPath';
 import { redisDb } from '@/lib/mock/catalogRedis';
@@ -37,13 +38,16 @@ afterEach(() => {
 
 function mount(node: ObjectNode, onDone = vi.fn()) {
   renderWithProviders(
-    <DeleteByPatternDialog
-      open
-      sessionId={sessionId}
-      node={node}
-      onOpenChange={() => undefined}
-      onDone={onDone}
-    />,
+    <>
+      <DeleteByPatternDialog
+        open
+        sessionId={sessionId}
+        node={node}
+        onOpenChange={() => undefined}
+        onDone={onDone}
+      />
+      <ConfirmDestructiveHost />
+    </>,
   );
   return onDone;
 }
@@ -77,13 +81,25 @@ describe('DeleteByPatternDialog', () => {
     mount(db);
     const spy = vi.spyOn(ipc, 'keysDeletePattern');
     await user.click(screen.getByRole('button', { name: 'Delete matching keys' }));
-    const confirm = await screen.findByRole('button', { name: 'Confirm deletion' }, WAIT);
+    const confirm = await screen.findByRole('button', { name: 'Run anyway' }, WAIT);
     expect(spy).not.toHaveBeenCalled();
     expect(confirm).toBeDisabled();
-    await user.type(screen.getByLabelText('Confirmation text'), 'db0');
+    await user.type(screen.getByRole('textbox', { name: /^Type .* to confirm$/ }), 'db0');
     await user.click(confirm);
     expect(await screen.findByText(/Done\. Keys deleted/, undefined, WAIT)).toBeInTheDocument();
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('declining the whole-database confirmation deletes nothing', async () => {
+    const user = userEvent.setup();
+    mount(db);
+    const spy = vi.spyOn(ipc, 'keysDeletePattern');
+    await user.click(screen.getByRole('button', { name: 'Delete matching keys' }));
+    await screen.findByRole('button', { name: 'Run anyway' }, WAIT);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Run anyway' })).toBeNull());
+    expect(spy).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Delete matching keys' })).toBeEnabled();
   });
 
   it('walks through the typed confirmation required on protected connections', async () => {
@@ -92,12 +108,12 @@ describe('DeleteByPatternDialog', () => {
     mount(prefixNode('jobs:'));
     const spy = vi.spyOn(ipc, 'keysDeletePattern');
     await user.click(screen.getByRole('button', { name: 'Delete matching keys' }));
-    const confirm = await screen.findByRole('button', { name: 'Confirm deletion' }, WAIT);
+    const confirm = await screen.findByRole('button', { name: 'Run anyway' }, WAIT);
     expect(confirm).toBeDisabled();
-    expect(screen.getByText('DEL jobs:*')).toBeInTheDocument();
-    await user.type(screen.getByLabelText('Confirmation text'), 'DEL jobs');
+    expect(screen.getByText('Type DEL jobs:* to confirm')).toBeInTheDocument();
+    await user.type(screen.getByRole('textbox', { name: /^Type .* to confirm$/ }), 'DEL jobs');
     expect(confirm).toBeDisabled();
-    await user.type(screen.getByLabelText('Confirmation text'), ':*');
+    await user.type(screen.getByRole('textbox', { name: /^Type .* to confirm$/ }), ':*');
     await user.click(confirm);
     expect(await screen.findByText(/Done\. Keys deleted/, undefined, WAIT)).toBeInTheDocument();
     expect(spy).toHaveBeenCalledTimes(2);

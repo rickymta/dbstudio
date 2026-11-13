@@ -71,7 +71,6 @@ export function seedPlan(
     parseError: null,
     status: 'ready',
     error: null,
-    confirmation: null,
     selectedId: null,
     runId: 1,
     ...patch,

@@ -1,5 +1,7 @@
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { ConnectionsSidebar } from '@/features/connections/ConnectionsSidebar';
+import { EditorHost } from '@/features/editor/EditorHost';
+import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
 import { TabBar } from '@/features/tabs/TabBar';
 import { useTabsStore } from '@/stores/tabs';
 import { Toaster } from '@/components/ui/Toast';
@@ -38,6 +40,9 @@ export function App() {
       </div>
       <StatusBar />
       <Toaster />
+      {/* App-wide hosts, mounted once: editor shortcuts/dialogs and the destructive confirmation. */}
+      <EditorHost />
+      <ConfirmDestructiveHost />
     </div>
   );
 }

@@ -143,12 +143,5 @@
       "nodeCount": "Số toán tử",
       "warnings": "Cảnh báo"
     }
-  },
-  "production": {
-    "title": "Chạy câu lệnh này với ANALYZE trên production?",
-    "description": "ANALYZE thực thi câu lệnh (trong một giao dịch rồi hoàn tác). Kết nối này được đánh dấu là production.",
-    "type": "Gõ {{text}} để xác nhận",
-    "run": "Chạy với ANALYZE",
-    "cancel": "Huỷ"
   }
 }

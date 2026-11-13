@@ -9,6 +9,7 @@ import { planTabId, useTabsStore, WELCOME_TAB } from '@/stores/tabs';
 import { polyfillLayoutApis } from '../data/testUtils';
 import { initialCollapsed } from './graphModel';
 import { layoutPlan } from './elkLayout';
+import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
 import { PlanTab } from './PlanTab';
 import { cancelPlan, runPlan, usePlanStore } from './planStore';
 import { isWriteStatement, statementWrites } from './planModel';
@@ -117,6 +118,7 @@ describe('production confirmation', () => {
     render(
       <Providers>
         <PlanTab planId={id} sessionId="s1" connectionId="c1" />
+        <ConfirmDestructiveHost />
       </Providers>,
     );
     vi.spyOn(ipc, 'scriptAnalyze').mockResolvedValue({
@@ -127,9 +129,8 @@ describe('production confirmation', () => {
     });
     void runPlan(id, { analyze: true });
     const dialog = await screen.findByRole('dialog');
-    expect(usePlanStore.getState().entries[id]!.confirmation).toEqual(confirmation);
     expect(within(dialog).getByText('UPDATE t SET a = 1')).toBeInTheDocument();
-    const run = within(dialog).getByRole('button', { name: 'Run with ANALYZE' });
+    const run = within(dialog).getByRole('button', { name: 'Run anyway' });
     expect(run).toBeDisabled();
     await user.type(within(dialog).getByRole('textbox'), 'sho');
     expect(run).toBeDisabled();
@@ -139,7 +140,29 @@ describe('production confirmation', () => {
     expect(explain.mock.calls[1]![4]).toEqual({ token: 'tok', typed: 'shop' });
     expect(explain.mock.calls[1]![2].analyze).toBe(true);
     await waitFor(() => expect(usePlanStore.getState().entries[id]!.status).toBe('ready'));
-    expect(usePlanStore.getState().entries[id]!.confirmation).toBeNull();
+  });
+});
+
+describe('production confirmation declined', () => {
+  it('keeps the previous plan and does not repeat the call', async () => {
+    const explain = vi
+      .spyOn(ipc, 'planExplain')
+      .mockRejectedValue({ kind: 'confirmationRequired', message: 'confirm', confirmation });
+    const id = seedPlan();
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ConfirmDestructiveHost />
+      </Providers>,
+    );
+    const run = runPlan(id, { analyze: true });
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await run;
+    expect(explain).toHaveBeenCalledTimes(1);
+    const e = usePlanStore.getState().entries[id]!;
+    expect(e.status).toBe('ready');
+    expect(e.tree).not.toBeNull();
   });
 });
 

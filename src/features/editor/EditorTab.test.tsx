@@ -9,6 +9,7 @@ import { ipc } from '@/lib/ipc';
 import { mockSetSqlFileToOpen } from '@/lib/mock/history';
 import { mockBreakLease } from '@/lib/mock/leases';
 import { editorTabId, useTabsStore } from '@/stores/tabs';
+import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
 import { EditorHost } from './EditorHost';
 import { resetRestoreOnce } from './persist';
 import { EditorTab } from './EditorTab';
@@ -32,6 +33,7 @@ async function mountEditor(text = 'SELECT * FROM users', connectionId?: string) 
     <Providers>
       <EditorTab {...tab.payload} />
       <EditorHost />
+      <ConfirmDestructiveHost />
     </Providers>,
   );
   await screen.findByTestId('sql-editor', undefined, { timeout: 5000 });

@@ -1,14 +1,12 @@
-// App-level pieces of the editor feature, mounted once (the status bar renders it): the tab
+// App-level pieces of the editor feature, mounted once (by `App`): the tab
 // restore and persistence, `lease://state` events, global shortcuts, and the dialogs that must
-// work whichever tab is active (close with open transaction, destructive confirmation,
-// shortcut cheat-sheet). The tab registry only renders the active tab, so none of this can
+// work whichever tab is active (close with open transaction, shortcut cheat-sheet). The tab registry only renders the active tab, so none of this can
 // live inside `EditorTab`.
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent } from '@/components/ui/Dialog';
-import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
 import { ipc } from '@/lib/ipc';
 import type { LeaseStateEvent } from '@/lib/types';
 import { useTabsStore } from '@/stores/tabs';
@@ -136,7 +134,6 @@ export function EditorHost() {
   return (
     <>
       <CloseTransactionDialog />
-      <ConfirmDestructiveHost />
       <ShortcutsDialog />
     </>
   );

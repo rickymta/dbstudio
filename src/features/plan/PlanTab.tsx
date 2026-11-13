@@ -12,7 +12,6 @@ import { ipc, toIpcError } from '@/lib/ipc';
 import type { PlanTabPayload } from '@/stores/tabs';
 import { openPlanFile } from './open';
 import { PlanCompare } from './PlanCompare';
-import { PlanConfirmDialog } from './PlanConfirmDialog';
 import { PlanDetails } from './PlanDetails';
 import { PlanGraph } from './PlanGraph';
 import {
@@ -202,7 +201,7 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
     body = (
       <div className="flex flex-1 items-center justify-center">
         <EmptyState
-          title={entry.confirmation ? t('production.title') : t('status.failed')}
+          title={t('status.failed')}
           description={entry.error ? explainErrorMessage(t, entry.error) : undefined}
           action={
             entry.request && (
@@ -307,11 +306,6 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
     <div className="flex h-full min-h-0 flex-col" data-testid="plan-tab">
       {header}
       {body}
-      <PlanConfirmDialog
-        request={entry.confirmation}
-        onConfirm={(grant) => void runPlan(planId, { analyze: true, confirm: grant })}
-        onCancel={() => usePlanStore.getState().patch(planId, { confirmation: null })}
-      />
       {comparing && <PlanCompare planId={planId} open onOpenChange={setComparing} />}
       <ConfirmDialog
         open={confirm !== null}

@@ -5,7 +5,6 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
-import { EditorHost } from '@/features/editor/EditorHost';
 import { StatusTransaction } from '@/features/editor/StatusTransaction';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
 import { ipc, ipcTransport } from '@/lib/ipc';
@@ -130,7 +129,6 @@ export function StatusBar() {
         </Tooltip>
       </div>
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
-      <EditorHost />
     </footer>
   );
 }

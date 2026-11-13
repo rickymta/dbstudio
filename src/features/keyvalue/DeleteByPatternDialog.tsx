@@ -5,7 +5,10 @@ import { Dialog, DialogContent } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Spinner } from '@/components/ui/Spinner';
 import { ipc, toIpcError } from '@/lib/ipc';
+import { askConfirmation } from '@/features/safety/confirmStore';
+import { guardedCall } from '@/features/safety/useGuardedCall';
 import type {
+  ConfirmationGrant,
   ConfirmationRequest,
   IpcError,
   JobEvent,
@@ -26,10 +29,7 @@ interface DeleteByPatternDialogProps {
   onDone?: () => void;
 }
 
-type Stage =
-  | { name: 'input' }
-  | { name: 'confirm'; request: ConfirmationRequest }
-  | { name: 'running'; jobId: string };
+type Stage = { name: 'input' } | { name: 'running'; jobId: string };
 
 interface JobView {
   status: JobStatus;
@@ -37,7 +37,10 @@ interface JobView {
   message: string | null;
 }
 
-/** "Delete keys by pattern": pattern input, typed confirmation when required, job progress. */
+/**
+ * "Delete keys by pattern": pattern input, job progress. The typed confirmation goes through the
+ * shared destructive dialog (`ConfirmDestructiveHost`).
+ */
 export function DeleteByPatternDialog({
   open,
   sessionId,
@@ -48,7 +51,6 @@ export function DeleteByPatternDialog({
   const { t } = useTranslation('keyvalue');
   const [pattern, setPattern] = useState(() => defaultDeletePattern(node));
   const [stage, setStage] = useState<Stage>({ name: 'input' });
-  const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<IpcError | null>(null);
   const [jobs, setJobs] = useState<Record<string, JobView>>({});
@@ -102,47 +104,48 @@ export function DeleteByPatternDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finished]);
 
-  const start = useCallback(
-    async (grant?: { token: string; typed: string }) => {
-      // A pattern that matches the whole database needs a typed confirmation on any connection.
-      if (!grant && /^\*+$/.test(pattern.trim())) {
-        const name = databaseOfKeyPath(node.path).segments[0]?.name ?? '0';
-        setTyped('');
-        setStage({
-          name: 'confirm',
-          request: {
-            token: '',
-            confirmText: `db${name}`,
-            statements: [],
-            expiresInMs: 0,
+  const start = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const database = databaseOfKeyPath(node.path);
+      // A pattern that matches the whole database needs a typed confirmation on any
+      // connection; on production the backend asks for the same text, so it is not asked twice.
+      const wholeDb = /^\*+$/.test(pattern.trim());
+      const local: ConfirmationRequest = {
+        token: '',
+        confirmText: `db${database.segments[0]?.name ?? '0'}`,
+        statements: [
+          {
+            index: 0,
+            range: { start: 0, end: pattern.length },
+            text: `DELETE KEYS ${pattern}`,
+            reason: 'flushDb',
           },
-        });
-        return;
-      }
-      setBusy(true);
-      setError(null);
-      try {
-        const id = await ipc.keysDeletePattern(
-          sessionId,
-          databaseOfKeyPath(node.path),
-          pattern,
-          grant ?? null,
-        );
-        setStage({ name: 'running', jobId: id });
-      } catch (e) {
-        const err = toIpcError(e);
-        if (err.kind === 'confirmationRequired' && err.confirmation) {
-          setTyped('');
-          setStage({ name: 'confirm', request: err.confirmation });
-        } else {
-          setError(err);
+        ],
+        expiresInMs: 0,
+      };
+      let localTyped = false;
+      const ask = async (request: ConfirmationRequest): Promise<ConfirmationGrant> =>
+        localTyped && request.confirmText === local.confirmText
+          ? { token: request.token, typed: request.confirmText }
+          : askConfirmation(request);
+      const id = await guardedCall(async (grant) => {
+        if (wholeDb && !localTyped) {
+          await askConfirmation(local);
+          localTyped = true;
         }
-      } finally {
-        setBusy(false);
-      }
-    },
-    [sessionId, node.path, pattern],
-  );
+        return ipc.keysDeletePattern(sessionId, database, pattern, grant ?? null);
+      }, ask);
+      setStage({ name: 'running', jobId: id });
+    } catch (e) {
+      const err = toIpcError(e);
+      // Declining the confirmation just returns to the pattern input.
+      if (err.kind !== 'cancelled') setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }, [sessionId, node.path, pattern]);
 
   const cancelJob = () => {
     if (!jobId) return;
@@ -173,35 +176,6 @@ export function DeleteByPatternDialog({
           onClick={() => void start()}
         >
           {t('deletePattern.start')}
-        </Button>
-      </>
-    );
-  } else if (stage.name === 'confirm') {
-    const { request } = stage;
-    body = (
-      <div className="flex flex-col gap-2">
-        <p className="text-sm">{t('deletePattern.confirmPrompt', { pattern })}</p>
-        <p className="font-mono text-xs">
-          {t('deletePattern.typeToConfirm')} <strong>{request.confirmText}</strong>
-        </p>
-        <Input
-          autoFocus
-          aria-label={t('deletePattern.confirmInput')}
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-          className="font-mono"
-        />
-      </div>
-    );
-    footer = (
-      <>
-        <Button onClick={() => onOpenChange(false)}>{t('actions.cancel')}</Button>
-        <Button
-          variant="danger"
-          disabled={busy || typed !== request.confirmText}
-          onClick={() => void start({ token: request.token, typed })}
-        >
-          {t('deletePattern.confirm')}
         </Button>
       </>
     );

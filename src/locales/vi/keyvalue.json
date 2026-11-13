@@ -137,10 +137,6 @@
     "pattern": "Mẫu",
     "hint": "Cú pháp glob: * mọi chuỗi, ? một ký tự, [ab] một tập ký tự. Khớp với tên khóa đầy đủ.",
     "start": "Xóa các khóa khớp",
-    "confirmPrompt": "Kết nối này yêu cầu xác nhận để xóa các khóa khớp \"{{pattern}}\".",
-    "typeToConfirm": "Nhập để xác nhận:",
-    "confirmInput": "Văn bản xác nhận",
-    "confirm": "Xác nhận xóa",
     "running": "Đã xóa {{done}} / {{total}} khóa...",
     "cancelJob": "Hủy tác vụ",
     "status": {
