@@ -153,3 +153,109 @@ pub async fn plan_file_open(state: State<'_, AppState>) -> Result<Option<RawPlan
     tracing::debug!(command = "plan_file_open", "ipc call");
     file_open_impl(&state).await
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use dbstudio_core::{DriverRegistry, PlanFormat};
+    use dbstudio_plan::PlanRule;
+
+    use super::*;
+    use crate::state::testing::test_state_with_host;
+
+    const PG_SPILL: &str =
+        include_str!("../../../crates/dbstudio-plan/tests/fixtures/pg_04_sort_spill_analyze.json");
+
+    fn raw(format: PlanFormat, text: &str) -> RawPlan {
+        RawPlan {
+            format,
+            text: text.into(),
+            statement: "select * from items order by sku".into(),
+            analyzed: true,
+            rolled_back: true,
+            server_version: "16.2".into(),
+            captured_at: "2025-01-01T00:00:00Z".into(),
+            extra: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn parse_returns_an_analysed_tree() {
+        let (state, _, _) = test_state_with_host(DriverRegistry::new());
+        let tree = parse_impl(&state, raw(PlanFormat::PostgresJson, PG_SPILL), None).unwrap();
+        assert!(tree.analyzed);
+        assert!(
+            tree.warnings
+                .iter()
+                .any(|w| w.rule == PlanRule::SpillToDisk)
+        );
+        assert_eq!(tree.hot_path.first(), Some(&0));
+        // Explicit rules win over the defaults.
+        let rules = PlanRules {
+            large_table_rows: 10.0,
+            ..PlanRules::default()
+        };
+        let strict =
+            parse_impl(&state, raw(PlanFormat::PostgresJson, PG_SPILL), Some(rules)).unwrap();
+        assert!(
+            strict
+                .warnings
+                .iter()
+                .any(|w| w.rule == PlanRule::FullScanLargeTable)
+        );
+    }
+
+    #[test]
+    fn parse_errors_are_plain_errors() {
+        let (state, _, _) = test_state_with_host(DriverRegistry::new());
+        let e = parse_impl(&state, raw(PlanFormat::PostgresJson, "{}"), None).unwrap_err();
+        assert!(matches!(e, Error::Other(_)), "{e:?}");
+    }
+
+    #[test]
+    fn default_rules_use_the_settings_factor() {
+        let (state, _, _) = test_state_with_host(DriverRegistry::new());
+        let rules = effective_rules(&state, None);
+        assert!(rules.misestimate_factor >= 1.0);
+        assert_eq!(
+            rules.large_table_rows,
+            PlanRules::default().large_table_rows
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_files_round_trip_through_dialogs() {
+        let (state, _, host) = test_state_with_host(DriverRegistry::new());
+        let original = raw(PlanFormat::PostgresJson, PG_SPILL);
+        // Cancelled dialogs do nothing.
+        assert_eq!(
+            file_save_impl(&state, original.clone()).await.unwrap(),
+            None
+        );
+        assert_eq!(file_open_impl(&state).await.unwrap(), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("q.dbplan.json");
+        *host.save_to.lock().unwrap() = Some(target.clone());
+        let saved = file_save_impl(&state, original.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(saved.ends_with("q.dbplan.json"));
+        assert_eq!(
+            host.suggested.lock().unwrap().as_slice(),
+            ["plan.dbplan.json", "plan.dbplan.json"]
+        );
+
+        *host.open_from.lock().unwrap() = Some(target.clone());
+        let opened = file_open_impl(&state).await.unwrap().unwrap();
+        assert_eq!(opened, original);
+
+        // A file that is not a plan file is rejected, not misread.
+        let junk = dir.path().join("junk.json");
+        std::fs::write(&junk, "[1, 2]").unwrap();
+        *host.open_from.lock().unwrap() = Some(junk);
+        assert!(file_open_impl(&state).await.is_err());
+    }
+}

@@ -1,0 +1,123 @@
+import { create } from 'zustand';
+import { ipc, toIpcError } from '@/lib/ipc';
+import type { ExplainRequest, IpcError, PlanTree, RawPlan, Uuid } from '@/lib/types';
+import { planTabId, useTabsStore } from '@/stores/tabs';
+
+export type PlanStatus = 'loading' | 'ready' | 'error';
+
+/** One plan shown in a `plan` tab. */
+export interface PlanEntry {
+  planId: string;
+  sessionId: Uuid;
+  connectionId: Uuid;
+  /** Dedicated connection the statement was explained on (editor tab lease), if any. */
+  leaseId: Uuid | null;
+  /** What was asked; `null` for a plan opened from a file. */
+  request: ExplainRequest | null;
+  /** The statement text (also set for plans opened from a file). */
+  statement: string;
+  raw: RawPlan | null;
+  tree: PlanTree | null;
+  /** The raw plan arrived but could not be parsed. */
+  parseError: string | null;
+  status: PlanStatus;
+  error: IpcError | null;
+  /** Node selected in the diagram, table and raw views alike. */
+  selectedId: number | null;
+  /** Incremented per run; a late answer of an older run is ignored. */
+  runId: number;
+}
+
+interface PlanState {
+  entries: Record<string, PlanEntry>;
+  add: (entry: PlanEntry) => void;
+  patch: (planId: string, patch: Partial<PlanEntry>) => void;
+  select: (planId: string, nodeId: number | null) => void;
+  remove: (planId: string) => void;
+}
+
+export const usePlanStore = create<PlanState>((set) => ({
+  entries: {},
+  add: (entry) => set((s) => ({ entries: { ...s.entries, [entry.planId]: entry } })),
+  patch: (planId, patch) =>
+    set((s) => {
+      const cur = s.entries[planId];
+      return cur ? { entries: { ...s.entries, [planId]: { ...cur, ...patch } } } : s;
+    }),
+  select: (planId, nodeId) =>
+    set((s) => {
+      const cur = s.entries[planId];
+      return cur && cur.selectedId !== nodeId
+        ? { entries: { ...s.entries, [planId]: { ...cur, selectedId: nodeId } } }
+        : s;
+    }),
+  remove: (planId) =>
+    set((s) => {
+      if (!(planId in s.entries)) return s;
+      const entries = { ...s.entries };
+      delete entries[planId];
+      return { entries };
+    }),
+}));
+
+// Forget the plans of closed tabs.
+useTabsStore.subscribe((state) => {
+  const open = new Set(state.tabs.map((t) => t.id));
+  const { entries, remove } = usePlanStore.getState();
+  for (const id of Object.keys(entries)) {
+    if (!open.has(planTabId(id))) remove(id);
+  }
+});
+
+/**
+ * Explain `entry.request` and store the answer. `analyze` overrides the request's flag (the
+ * request is updated, so "run again" repeats what was last asked).
+ */
+export async function runPlan(planId: string, opts: { analyze?: boolean } = {}): Promise<void> {
+  const store = usePlanStore.getState();
+  const entry = store.entries[planId];
+  if (!entry?.request) return;
+  const request: ExplainRequest = {
+    ...entry.request,
+    queryId: crypto.randomUUID(),
+    analyze: opts.analyze ?? entry.request.analyze ?? false,
+  };
+  const runId = entry.runId + 1;
+  store.patch(planId, { request, runId, status: 'loading', error: null, parseError: null });
+  try {
+    const result = await ipc.planExplain(entry.sessionId, entry.leaseId, request);
+    const cur = usePlanStore.getState().entries[planId];
+    if (!cur || cur.runId !== runId) return;
+    usePlanStore.getState().patch(planId, {
+      raw: result.raw,
+      tree: result.tree,
+      parseError: result.parseError,
+      status: 'ready',
+      selectedId: null,
+    });
+  } catch (e) {
+    const cur = usePlanStore.getState().entries[planId];
+    if (!cur || cur.runId !== runId) return;
+    usePlanStore.getState().patch(planId, { status: 'error', error: toIpcError(e) });
+  }
+}
+
+/** Parse a raw plan (opened from a file) and store the result. */
+export async function loadRawPlan(planId: string, raw: RawPlan): Promise<void> {
+  const store = usePlanStore.getState();
+  const entry = store.entries[planId];
+  if (!entry) return;
+  const runId = entry.runId + 1;
+  store.patch(planId, { raw, runId, status: 'loading', error: null, parseError: null });
+  try {
+    const tree = await ipc.planParse(raw);
+    const cur = usePlanStore.getState().entries[planId];
+    if (!cur || cur.runId !== runId) return;
+    usePlanStore.getState().patch(planId, { tree, status: 'ready', selectedId: null });
+  } catch (e) {
+    const cur = usePlanStore.getState().entries[planId];
+    if (!cur || cur.runId !== runId) return;
+    const err = toIpcError(e);
+    usePlanStore.getState().patch(planId, { status: 'ready', tree: null, parseError: err.message });
+  }
+}

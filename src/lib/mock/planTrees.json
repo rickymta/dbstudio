@@ -1,0 +1,1345 @@
+{
+  "mongo_01_collscan_planner.json": {
+    "analyzed": false,
+    "format": "mongoExplain",
+    "hotPath": [0],
+    "nodeCount": 1,
+    "root": {
+      "actualRows": null,
+      "actualRowsTotal": null,
+      "actualTimeMs": null,
+      "children": [],
+      "condition": "{\"status\":{\"$eq\":\"late\"}}",
+      "estCost": null,
+      "estRows": null,
+      "estStartupCost": null,
+      "extra": { "direction": "forward", "namespace": "shop.orders" },
+      "id": 0,
+      "kind": "fullScan",
+      "loops": null,
+      "object": { "alias": null, "index": null, "name": "orders", "schema": "shop" },
+      "op": "COLLSCAN",
+      "raw": { "end": 22, "kind": "lines", "start": 14 },
+      "selfCost": null,
+      "selfTimeMs": null
+    },
+    "totals": { "executionTimeMs": null, "planningTimeMs": null, "rows": null, "totalCost": null },
+    "warnings": []
+  },
+  "mongo_03_collscan_sort_disk_stats.json": {
+    "analyzed": true,
+    "format": "mongoExplain",
+    "hotPath": [0, 1],
+    "nodeCount": 2,
+    "root": {
+      "actualRows": 250000.0,
+      "actualRowsTotal": 250000.0,
+      "actualTimeMs": 2300.0,
+      "children": [
+        {
+          "actualRows": 250000.0,
+          "actualRowsTotal": 250000.0,
+          "actualTimeMs": 950.0,
+          "children": [],
+          "condition": "{\"kind\":{\"$eq\":\"click\"}}",
+          "estCost": null,
+          "estRows": null,
+          "estStartupCost": null,
+          "extra": { "direction": "forward" },
+          "id": 1,
+          "kind": "fullScan",
+          "loops": 1,
+          "object": { "alias": null, "index": null, "name": "events", "schema": "shop" },
+          "op": "COLLSCAN",
+          "raw": { "end": 130, "kind": "lines", "start": 92 },
+          "selfCost": null,
+          "selfTimeMs": 950.0
+        }
+      ],
+      "condition": null,
+      "estCost": null,
+      "estRows": null,
+      "estStartupCost": null,
+      "extra": {
+        "namespace": "shop.events",
+        "sortPattern": "{\"ts\":-1}",
+        "type": "simple",
+        "usedDisk": "true"
+      },
+      "id": 0,
+      "kind": "sort",
+      "loops": 1,
+      "object": null,
+      "op": "SORT",
+      "raw": { "end": 131, "kind": "lines", "start": 49 },
+      "selfCost": null,
+      "selfTimeMs": 1350.0
+    },
+    "totals": {
+      "executionTimeMs": 2480.0,
+      "planningTimeMs": null,
+      "rows": 250000.0,
+      "totalCost": null
+    },
+    "warnings": [
+      {
+        "nodeId": 0,
+        "params": { "detail": "usedDisk" },
+        "rule": "spillToDisk",
+        "severity": "warning"
+      },
+      {
+        "nodeId": 1,
+        "params": { "rows": "250000", "table": "events" },
+        "rule": "fullScanLargeTable",
+        "severity": "warning"
+      }
+    ]
+  },
+  "mssql_01_clustered_scan_estimated.xml": {
+    "analyzed": false,
+    "format": "msSqlShowplanXml",
+    "hotPath": [0],
+    "nodeCount": 1,
+    "root": {
+      "actualRows": null,
+      "actualRowsTotal": null,
+      "actualTimeMs": null,
+      "children": [],
+      "condition": "[AdventureWorks].[Sales].[SalesOrderHeader].[OrderDate] as [soh].[OrderDate]>='2013-01-01'",
+      "estCost": 1.4412,
+      "estRows": 3820.4,
+      "estStartupCost": null,
+      "extra": {
+        "AvgRowSize": "64",
+        "EstimateCPU": "0.0001",
+        "EstimateIO": "0.01",
+        "EstimateRebinds": "0",
+        "EstimateRewinds": "0",
+        "EstimatedExecutionMode": "Row",
+        "ForceScan": "0",
+        "ForcedIndex": "0",
+        "NoExpandHint": "0",
+        "Operator": "IndexScan",
+        "Ordered": "0",
+        "Parallel": "0",
+        "Statement": "SELECT * FROM Sales.SalesOrderHeader soh WHERE soh.OrderDate >= '2013-01-01'",
+        "Storage": "RowStore",
+        "TableCardinality": "0"
+      },
+      "id": 0,
+      "kind": "fullScan",
+      "loops": null,
+      "object": {
+        "alias": "soh",
+        "index": "PK_SalesOrderHeader_SalesOrderID",
+        "name": "SalesOrderHeader",
+        "schema": "Sales"
+      },
+      "op": "Clustered Index Scan",
+      "raw": { "kind": "xmlNode", "nodeId": "0" },
+      "selfCost": 1.4412,
+      "selfTimeMs": null
+    },
+    "totals": {
+      "executionTimeMs": null,
+      "planningTimeMs": 4.0,
+      "rows": 3820.4,
+      "totalCost": 1.4412
+    },
+    "warnings": []
+  },
+  "mssql_03_parallel_hash_join_actual.xml": {
+    "analyzed": true,
+    "format": "msSqlShowplanXml",
+    "hotPath": [0, 1, 2, 3, 5],
+    "nodeCount": 6,
+    "root": {
+      "actualRows": 9.0,
+      "actualRowsTotal": 9.0,
+      "actualTimeMs": 173.0,
+      "children": [
+        {
+          "actualRows": 9.0,
+          "actualRowsTotal": 9.0,
+          "actualTimeMs": 172.0,
+          "children": [
+            {
+              "actualRows": 4.5,
+              "actualRowsTotal": 9.0,
+              "actualTimeMs": 165.0,
+              "children": [
+                {
+                  "actualRows": 60750.0,
+                  "actualRowsTotal": 121500.0,
+                  "actualTimeMs": 135.0,
+                  "children": [
+                    {
+                      "actualRows": 15732.5,
+                      "actualRowsTotal": 31465.0,
+                      "actualTimeMs": 41.0,
+                      "children": [],
+                      "condition": null,
+                      "estCost": 0.91,
+                      "estRows": 31465.0,
+                      "estStartupCost": null,
+                      "extra": {
+                        "ActualCPUms": "79",
+                        "ActualLogicalReads": "638",
+                        "ActualPhysicalReads": "0",
+                        "ActualRowsRead": "31465",
+                        "AvgRowSize": "64",
+                        "EstimateCPU": "0.0001",
+                        "EstimateIO": "0.01",
+                        "EstimateRebinds": "0",
+                        "EstimateRewinds": "0",
+                        "EstimatedExecutionMode": "Row",
+                        "ForceScan": "0",
+                        "ForcedIndex": "0",
+                        "NoExpandHint": "0",
+                        "Operator": "IndexScan",
+                        "Ordered": "0",
+                        "Parallel": "0",
+                        "Storage": "RowStore",
+                        "TableCardinality": "0"
+                      },
+                      "id": 4,
+                      "kind": "fullScan",
+                      "loops": 2,
+                      "object": {
+                        "alias": "soh",
+                        "index": "PK_SalesOrderHeader_SalesOrderID",
+                        "name": "SalesOrderHeader",
+                        "schema": "Sales"
+                      },
+                      "op": "Clustered Index Scan",
+                      "raw": { "kind": "xmlNode", "nodeId": "5" },
+                      "selfCost": 0.91,
+                      "selfTimeMs": 41.0
+                    },
+                    {
+                      "actualRows": 60800.0,
+                      "actualRowsTotal": 121600.0,
+                      "actualTimeMs": 90.0,
+                      "children": [],
+                      "condition": "[AdventureWorks].[Sales].[SalesOrderDetail].[OrderQty] as [sod].[OrderQty]>(1)",
+                      "estCost": 4.2,
+                      "estRows": 121317.0,
+                      "estStartupCost": null,
+                      "extra": {
+                        "ActualCPUms": "174",
+                        "ActualLogicalReads": "2441",
+                        "ActualPhysicalReads": "0",
+                        "ActualRowsRead": "121600",
+                        "AvgRowSize": "64",
+                        "EstimateCPU": "0.0001",
+                        "EstimateIO": "0.01",
+                        "EstimateRebinds": "0",
+                        "EstimateRewinds": "0",
+                        "EstimatedExecutionMode": "Row",
+                        "ForceScan": "0",
+                        "ForcedIndex": "0",
+                        "NoExpandHint": "0",
+                        "Operator": "IndexScan",
+                        "Ordered": "0",
+                        "Parallel": "0",
+                        "Storage": "RowStore",
+                        "TableCardinality": "0"
+                      },
+                      "id": 5,
+                      "kind": "indexScan",
+                      "loops": 2,
+                      "object": {
+                        "alias": "sod",
+                        "index": "IX_SalesOrderDetail_ProductID",
+                        "name": "SalesOrderDetail",
+                        "schema": "Sales"
+                      },
+                      "op": "Index Scan",
+                      "raw": { "kind": "xmlNode", "nodeId": "6" },
+                      "selfCost": 4.2,
+                      "selfTimeMs": 90.0
+                    }
+                  ],
+                  "condition": "[soh].[SalesOrderID]=[sod].[SalesOrderID]",
+                  "estCost": 6.1,
+                  "estRows": 121317.0,
+                  "estStartupCost": null,
+                  "extra": {
+                    "ActualCPUms": "263",
+                    "ActualLogicalReads": "2439",
+                    "ActualPhysicalReads": "0",
+                    "ActualRowsRead": "121500",
+                    "AvgRowSize": "64",
+                    "EstimateCPU": "0.0001",
+                    "EstimateIO": "0.01",
+                    "EstimateRebinds": "0",
+                    "EstimateRewinds": "0",
+                    "EstimatedExecutionMode": "Row",
+                    "LogicalOp": "Inner Join",
+                    "Operator": "Hash",
+                    "Parallel": "0",
+                    "TableCardinality": "0"
+                  },
+                  "id": 3,
+                  "kind": "hashJoin",
+                  "loops": 2,
+                  "object": null,
+                  "op": "Hash Match",
+                  "raw": { "kind": "xmlNode", "nodeId": "4" },
+                  "selfCost": 0.9899999999999993,
+                  "selfTimeMs": 4.0
+                }
+              ],
+              "condition": null,
+              "estCost": 6.4,
+              "estRows": 9.0,
+              "estStartupCost": null,
+              "extra": {
+                "ActualCPUms": "320",
+                "ActualLogicalReads": "9",
+                "ActualPhysicalReads": "0",
+                "ActualRowsRead": "9",
+                "AvgRowSize": "64",
+                "EstimateCPU": "0.0001",
+                "EstimateIO": "0.01",
+                "EstimateRebinds": "0",
+                "EstimateRewinds": "0",
+                "EstimatedExecutionMode": "Row",
+                "LogicalOp": "Aggregate",
+                "Operator": "Hash",
+                "Parallel": "0",
+                "TableCardinality": "0"
+              },
+              "id": 2,
+              "kind": "hashAggregate",
+              "loops": 2,
+              "object": null,
+              "op": "Hash Match",
+              "raw": { "kind": "xmlNode", "nodeId": "3" },
+              "selfCost": 0.3000000000000007,
+              "selfTimeMs": 30.0
+            }
+          ],
+          "condition": null,
+          "estCost": 6.5,
+          "estRows": 9.0,
+          "estStartupCost": null,
+          "extra": {
+            "ActualCPUms": "3",
+            "ActualLogicalReads": "3",
+            "ActualPhysicalReads": "0",
+            "ActualRowsRead": "9",
+            "AvgRowSize": "64",
+            "EstimateCPU": "0.0001",
+            "EstimateIO": "0.01",
+            "EstimateRebinds": "0",
+            "EstimateRewinds": "0",
+            "EstimatedExecutionMode": "Row",
+            "LogicalOp": "Gather Streams",
+            "Operator": "Parallelism",
+            "Parallel": "0",
+            "TableCardinality": "0"
+          },
+          "id": 1,
+          "kind": "gather",
+          "loops": 1,
+          "object": null,
+          "op": "Parallelism",
+          "raw": { "kind": "xmlNode", "nodeId": "2" },
+          "selfCost": 0.09999999999999964,
+          "selfTimeMs": 7.0
+        }
+      ],
+      "condition": null,
+      "estCost": 6.52,
+      "estRows": 9.0,
+      "estStartupCost": null,
+      "extra": {
+        "ActualCPUms": "1",
+        "ActualLogicalReads": "3",
+        "ActualPhysicalReads": "0",
+        "ActualRowsRead": "9",
+        "AvgRowSize": "64",
+        "Distinct": "0",
+        "EstimateCPU": "0.0001",
+        "EstimateIO": "0.01",
+        "EstimateRebinds": "0",
+        "EstimateRewinds": "0",
+        "EstimatedExecutionMode": "Row",
+        "Operator": "Sort",
+        "Parallel": "0",
+        "Statement": "SELECT soh.TerritoryID, COUNT(*) FROM Sales.SalesOrderHeader soh JOIN Sales.SalesOrderDetail sod ON soh.SalesOrderID=sod.SalesOrderID WHERE sod.OrderQty > 1 GROUP BY soh.TerritoryID ORDER BY soh.TerritoryID",
+        "TableCardinality": "0"
+      },
+      "id": 0,
+      "kind": "sort",
+      "loops": 1,
+      "object": null,
+      "op": "Sort",
+      "raw": { "kind": "xmlNode", "nodeId": "1" },
+      "selfCost": 0.019999999999999574,
+      "selfTimeMs": 1.0
+    },
+    "totals": { "executionTimeMs": 176.0, "planningTimeMs": 4.0, "rows": 9.0, "totalCost": 6.52 },
+    "warnings": []
+  },
+  "mysql_json_02_join_group.json": {
+    "analyzed": false,
+    "format": "mySqlJson",
+    "hotPath": [0, 1, 2, 4],
+    "nodeCount": 5,
+    "root": {
+      "actualRows": null,
+      "actualRowsTotal": null,
+      "actualTimeMs": null,
+      "children": [
+        {
+          "actualRows": null,
+          "actualRowsTotal": null,
+          "actualTimeMs": null,
+          "children": [
+            {
+              "actualRows": null,
+              "actualRowsTotal": null,
+              "actualTimeMs": null,
+              "children": [
+                {
+                  "actualRows": null,
+                  "actualRowsTotal": null,
+                  "actualTimeMs": null,
+                  "children": [],
+                  "condition": "((`dbstudio`.`o`.`created` > DATE'2024-06-01') and (`dbstudio`.`o`.`customer_id` is not null))",
+                  "estCost": 10099.25,
+                  "estRows": 50135.0,
+                  "estStartupCost": null,
+                  "extra": {
+                    "data_read_per_join": "3M",
+                    "eval_cost": "5013.50",
+                    "filtered": "50.00",
+                    "possible_keys": "customer_id, created",
+                    "prefix_cost": "10099.25",
+                    "read_cost": "5085.75",
+                    "rows_examined_per_scan": "100270",
+                    "rows_produced_per_join": "50135",
+                    "used_columns": "id, customer_id, amount, created"
+                  },
+                  "id": 3,
+                  "kind": "fullScan",
+                  "loops": null,
+                  "object": { "alias": null, "index": null, "name": "o", "schema": null },
+                  "op": "Table scan",
+                  "raw": { "end": 36, "kind": "lines", "start": 13 },
+                  "selfCost": 10099.25,
+                  "selfTimeMs": null
+                },
+                {
+                  "actualRows": null,
+                  "actualRowsTotal": null,
+                  "actualTimeMs": null,
+                  "children": [],
+                  "condition": null,
+                  "estCost": 17547.25,
+                  "estRows": 1.0,
+                  "estStartupCost": null,
+                  "extra": {
+                    "data_read_per_join": "8M",
+                    "eval_cost": "5013.50",
+                    "filtered": "100.00",
+                    "key_length": "4",
+                    "possible_keys": "PRIMARY",
+                    "prefix_cost": "27646.50",
+                    "read_cost": "12533.75",
+                    "ref": "dbstudio.o.customer_id",
+                    "rows_examined_per_scan": "1",
+                    "rows_produced_per_join": "50135",
+                    "used_columns": "id, country",
+                    "used_key_parts": "id"
+                  },
+                  "id": 4,
+                  "kind": "indexSeek",
+                  "loops": null,
+                  "object": { "alias": null, "index": "PRIMARY", "name": "c", "schema": null },
+                  "op": "Single-row index lookup",
+                  "raw": { "end": 66, "kind": "lines", "start": 39 },
+                  "selfCost": 17547.25,
+                  "selfTimeMs": null
+                }
+              ],
+              "condition": null,
+              "estCost": 27646.5,
+              "estRows": 50135.0,
+              "estStartupCost": null,
+              "extra": {},
+              "id": 2,
+              "kind": "nestedLoopJoin",
+              "loops": null,
+              "object": null,
+              "op": "Nested loop join",
+              "raw": { "end": 36, "kind": "lines", "start": 13 },
+              "selfCost": 0.0,
+              "selfTimeMs": null
+            }
+          ],
+          "condition": null,
+          "estCost": 27646.5,
+          "estRows": null,
+          "estStartupCost": null,
+          "extra": { "using_filesort": "false", "using_temporary_table": "true" },
+          "id": 1,
+          "kind": "aggregate",
+          "loops": null,
+          "object": null,
+          "op": "Grouping",
+          "raw": { "end": 69, "kind": "lines", "start": 8 },
+          "selfCost": 0.0,
+          "selfTimeMs": null
+        }
+      ],
+      "condition": null,
+      "estCost": 27646.5,
+      "estRows": null,
+      "estStartupCost": null,
+      "extra": { "select_id": "1", "using_filesort": "true" },
+      "id": 0,
+      "kind": "sort",
+      "loops": null,
+      "object": null,
+      "op": "Ordering",
+      "raw": { "end": 70, "kind": "lines", "start": 6 },
+      "selfCost": 0.0,
+      "selfTimeMs": null
+    },
+    "totals": {
+      "executionTimeMs": null,
+      "planningTimeMs": null,
+      "rows": null,
+      "totalCost": 27646.5
+    },
+    "warnings": [
+      {
+        "nodeId": 3,
+        "params": { "rows": "100270", "table": "o" },
+        "rule": "fullScanLargeTable",
+        "severity": "warning"
+      }
+    ]
+  },
+  "mysql_tree_01_analyze_join.txt": {
+    "analyzed": true,
+    "format": "mySqlTree",
+    "hotPath": [0, 1, 2, 3, 6],
+    "nodeCount": 7,
+    "root": {
+      "actualRows": 4.0,
+      "actualRowsTotal": 4.0,
+      "actualTimeMs": 77.5,
+      "children": [
+        {
+          "actualRows": 4.0,
+          "actualRowsTotal": 4.0,
+          "actualTimeMs": 77.0,
+          "children": [
+            {
+              "actualRows": 4.0,
+              "actualRowsTotal": 4.0,
+              "actualTimeMs": 77.0,
+              "children": [
+                {
+                  "actualRows": 58079.0,
+                  "actualRowsTotal": 58079.0,
+                  "actualTimeMs": 60.3,
+                  "children": [
+                    {
+                      "actualRows": 58079.0,
+                      "actualRowsTotal": 58079.0,
+                      "actualTimeMs": 18.9,
+                      "children": [
+                        {
+                          "actualRows": 100000.0,
+                          "actualRowsTotal": 100000.0,
+                          "actualTimeMs": 13.0,
+                          "children": [],
+                          "condition": null,
+                          "estCost": 10099.0,
+                          "estRows": 100270.0,
+                          "estStartupCost": null,
+                          "extra": {},
+                          "id": 5,
+                          "kind": "fullScan",
+                          "loops": 1,
+                          "object": { "alias": null, "index": null, "name": "o", "schema": null },
+                          "op": "Table scan",
+                          "raw": { "end": 5, "kind": "lines", "start": 5 },
+                          "selfCost": 10099.0,
+                          "selfTimeMs": 13.0
+                        }
+                      ],
+                      "condition": "((o.created > DATE'2024-06-01') and (o.customer_id is not null))",
+                      "estCost": 10099.0,
+                      "estRows": 50135.0,
+                      "estStartupCost": null,
+                      "extra": {},
+                      "id": 4,
+                      "kind": "filter",
+                      "loops": 1,
+                      "object": null,
+                      "op": "Filter",
+                      "raw": { "end": 4, "kind": "lines", "start": 4 },
+                      "selfCost": 0.0,
+                      "selfTimeMs": 5.899999999999999
+                    },
+                    {
+                      "actualRows": 1.0,
+                      "actualRowsTotal": 58079.0,
+                      "actualTimeMs": 34.150452,
+                      "children": [],
+                      "condition": "id=o.customer_id",
+                      "estCost": 0.25,
+                      "estRows": 1.0,
+                      "estStartupCost": null,
+                      "extra": {},
+                      "id": 6,
+                      "kind": "indexSeek",
+                      "loops": 58079,
+                      "object": { "alias": null, "index": "PRIMARY", "name": "c", "schema": null },
+                      "op": "Single-row index lookup",
+                      "raw": { "end": 6, "kind": "lines", "start": 6 },
+                      "selfCost": 0.25,
+                      "selfTimeMs": 34.150452
+                    }
+                  ],
+                  "condition": null,
+                  "estCost": 27646.0,
+                  "estRows": 50135.0,
+                  "estStartupCost": null,
+                  "extra": {},
+                  "id": 3,
+                  "kind": "nestedLoopJoin",
+                  "loops": 1,
+                  "object": null,
+                  "op": "Nested loop inner join",
+                  "raw": { "end": 3, "kind": "lines", "start": 3 },
+                  "selfCost": 17546.75,
+                  "selfTimeMs": 7.249547999999997
+                }
+              ],
+              "condition": null,
+              "estCost": 27646.0,
+              "estRows": null,
+              "estStartupCost": null,
+              "extra": {},
+              "id": 2,
+              "kind": "aggregate",
+              "loops": 1,
+              "object": null,
+              "op": "Aggregate using temporary table",
+              "raw": { "end": 2, "kind": "lines", "start": 2 },
+              "selfCost": 0.0,
+              "selfTimeMs": 16.700000000000003
+            }
+          ],
+          "condition": null,
+          "estCost": 27646.0,
+          "estRows": null,
+          "estStartupCost": null,
+          "extra": {},
+          "id": 1,
+          "kind": "other",
+          "loops": 1,
+          "object": null,
+          "op": "Table scan",
+          "raw": { "end": 1, "kind": "lines", "start": 1 },
+          "selfCost": 0.0,
+          "selfTimeMs": 0.0
+        }
+      ],
+      "condition": null,
+      "estCost": 27646.0,
+      "estRows": null,
+      "estStartupCost": null,
+      "extra": { "Sort Key": "`count(*)` DESC" },
+      "id": 0,
+      "kind": "sort",
+      "loops": 1,
+      "object": null,
+      "op": "Sort",
+      "raw": { "end": 0, "kind": "lines", "start": 0 },
+      "selfCost": 0.0,
+      "selfTimeMs": 0.5
+    },
+    "totals": {
+      "executionTimeMs": 77.5,
+      "planningTimeMs": null,
+      "rows": 4.0,
+      "totalCost": 27646.0
+    },
+    "warnings": [
+      {
+        "nodeId": 3,
+        "params": { "loops": "58079" },
+        "rule": "nestedLoopManyRows",
+        "severity": "warning"
+      },
+      {
+        "nodeId": 5,
+        "params": { "rows": "100270", "table": "o" },
+        "rule": "fullScanLargeTable",
+        "severity": "warning"
+      }
+    ]
+  },
+  "oracle_01_full_scan_estimated.json": {
+    "analyzed": false,
+    "format": "oraclePlanRows",
+    "hotPath": [0, 1],
+    "nodeCount": 2,
+    "root": {
+      "actualRows": null,
+      "actualRowsTotal": null,
+      "actualTimeMs": null,
+      "children": [
+        {
+          "actualRows": null,
+          "actualRowsTotal": null,
+          "actualTimeMs": null,
+          "children": [],
+          "condition": "filter: \"STATUS\"='OPEN'",
+          "estCost": 4812.0,
+          "estRows": 1200000.0,
+          "estStartupCost": null,
+          "extra": { "BYTES": "62400000", "OBJECT_ALIAS": "ORDERS@SEL$1" },
+          "id": 1,
+          "kind": "fullScan",
+          "loops": null,
+          "object": { "alias": null, "index": null, "name": "ORDERS", "schema": "SHOP" },
+          "op": "TABLE ACCESS FULL",
+          "raw": { "id": 1, "kind": "row" },
+          "selfCost": 4812.0,
+          "selfTimeMs": null
+        }
+      ],
+      "condition": null,
+      "estCost": 4812.0,
+      "estRows": 1200000.0,
+      "estStartupCost": null,
+      "extra": { "BYTES": "62400000" },
+      "id": 0,
+      "kind": "result",
+      "loops": null,
+      "object": null,
+      "op": "SELECT STATEMENT",
+      "raw": { "id": 0, "kind": "row" },
+      "selfCost": 0.0,
+      "selfTimeMs": null
+    },
+    "totals": {
+      "executionTimeMs": null,
+      "planningTimeMs": null,
+      "rows": 1200000.0,
+      "totalCost": 4812.0
+    },
+    "warnings": [
+      {
+        "nodeId": 1,
+        "params": { "rows": "1200000", "table": "ORDERS" },
+        "rule": "fullScanLargeTable",
+        "severity": "critical"
+      }
+    ]
+  },
+  "oracle_04_group_by_spill_actual.json": {
+    "analyzed": true,
+    "format": "oraclePlanRows",
+    "hotPath": [0, 1, 2, 3],
+    "nodeCount": 4,
+    "root": {
+      "actualRows": 5400.0,
+      "actualRowsTotal": 5400.0,
+      "actualTimeMs": 2900.0,
+      "children": [
+        {
+          "actualRows": 5400.0,
+          "actualRowsTotal": 5400.0,
+          "actualTimeMs": 2890.0,
+          "children": [
+            {
+              "actualRows": 3000000.0,
+              "actualRowsTotal": 3000000.0,
+              "actualTimeMs": 1800.0,
+              "children": [
+                {
+                  "actualRows": 3000000.0,
+                  "actualRowsTotal": 3000000.0,
+                  "actualTimeMs": 1500.0,
+                  "children": [],
+                  "condition": null,
+                  "estCost": 30011.0,
+                  "estRows": 3000000.0,
+                  "estStartupCost": null,
+                  "extra": {
+                    "LAST_CR_BUFFER_GETS": "47900",
+                    "LAST_DISK_READS": "0",
+                    "OBJECT_ALIAS": "OL@SEL$2",
+                    "STARTS": "1"
+                  },
+                  "id": 3,
+                  "kind": "fullScan",
+                  "loops": 1,
+                  "object": {
+                    "alias": "OL",
+                    "index": null,
+                    "name": "ORDER_LINES",
+                    "schema": "SHOP"
+                  },
+                  "op": "TABLE ACCESS FULL",
+                  "raw": { "id": 3, "kind": "row" },
+                  "selfCost": 30011.0,
+                  "selfTimeMs": 1500.0
+                }
+              ],
+              "condition": null,
+              "estCost": 30011.0,
+              "estRows": 3000000.0,
+              "estStartupCost": null,
+              "extra": { "LAST_CR_BUFFER_GETS": "48000", "LAST_DISK_READS": "0", "STARTS": "1" },
+              "id": 2,
+              "kind": "subquery",
+              "loops": 1,
+              "object": { "alias": null, "index": null, "name": "VW_GBF_7", "schema": "SHOP" },
+              "op": "VIEW",
+              "raw": { "id": 2, "kind": "row" },
+              "selfCost": 0.0,
+              "selfTimeMs": 300.0
+            }
+          ],
+          "condition": null,
+          "estCost": 30221.0,
+          "estRows": 5.0,
+          "estStartupCost": null,
+          "extra": {
+            "LAST_CR_BUFFER_GETS": "48000",
+            "LAST_DISK_READS": "0",
+            "LAST_EXECUTION": "1 PASS",
+            "LAST_MEMORY_USED": "1048576",
+            "LAST_TEMPSEG_SIZE": "52428800",
+            "STARTS": "1"
+          },
+          "id": 1,
+          "kind": "hashAggregate",
+          "loops": 1,
+          "object": null,
+          "op": "HASH GROUP BY",
+          "raw": { "id": 1, "kind": "row" },
+          "selfCost": 210.0,
+          "selfTimeMs": 1090.0
+        }
+      ],
+      "condition": null,
+      "estCost": 30221.0,
+      "estRows": 5.0,
+      "estStartupCost": null,
+      "extra": { "LAST_CR_BUFFER_GETS": "48000", "LAST_DISK_READS": "0", "STARTS": "1" },
+      "id": 0,
+      "kind": "result",
+      "loops": 1,
+      "object": null,
+      "op": "SELECT STATEMENT",
+      "raw": { "id": 0, "kind": "row" },
+      "selfCost": 0.0,
+      "selfTimeMs": 10.0
+    },
+    "totals": {
+      "executionTimeMs": 2900.0,
+      "planningTimeMs": null,
+      "rows": 5400.0,
+      "totalCost": 30221.0
+    },
+    "warnings": [
+      {
+        "nodeId": 0,
+        "params": { "actual": "5400", "direction": "under", "estimated": "5", "factor": "1080" },
+        "rule": "misestimate",
+        "severity": "critical"
+      },
+      {
+        "nodeId": 1,
+        "params": { "actual": "5400", "direction": "under", "estimated": "5", "factor": "1080" },
+        "rule": "misestimate",
+        "severity": "critical"
+      },
+      {
+        "nodeId": 1,
+        "params": { "detail": "tempseg 52428800 bytes" },
+        "rule": "spillToDisk",
+        "severity": "warning"
+      },
+      {
+        "nodeId": 3,
+        "params": { "rows": "3000000", "table": "ORDER_LINES" },
+        "rule": "fullScanLargeTable",
+        "severity": "critical"
+      }
+    ]
+  },
+  "pg_02_hashjoin_agg_analyze.json": {
+    "analyzed": true,
+    "format": "postgresJson",
+    "hotPath": [0, 1, 2, 3],
+    "nodeCount": 6,
+    "root": {
+      "actualRows": 4.0,
+      "actualRowsTotal": 4.0,
+      "actualTimeMs": 34.649,
+      "children": [
+        {
+          "actualRows": 4.0,
+          "actualRowsTotal": 4.0,
+          "actualTimeMs": 34.636,
+          "children": [
+            {
+              "actualRows": 87118.0,
+              "actualRowsTotal": 87118.0,
+              "actualTimeMs": 22.512,
+              "children": [
+                {
+                  "actualRows": 87118.0,
+                  "actualRowsTotal": 87118.0,
+                  "actualTimeMs": 11.063,
+                  "children": [],
+                  "condition": "Filter: (created > '2024-06-01'::date)",
+                  "estCost": 2923.84,
+                  "estRows": 89705.0,
+                  "estStartupCost": 0.0,
+                  "extra": {
+                    "Async Capable": "false",
+                    "Local Dirtied Blocks": "0",
+                    "Local Hit Blocks": "0",
+                    "Local Read Blocks": "0",
+                    "Local Written Blocks": "0",
+                    "Parallel Aware": "false",
+                    "Parent Relationship": "Outer",
+                    "Rows Removed by Filter": "62882",
+                    "Shared Dirtied Blocks": "0",
+                    "Shared Hit Blocks": "1013",
+                    "Shared Read Blocks": "0",
+                    "Shared Written Blocks": "0",
+                    "Temp Read Blocks": "0",
+                    "Temp Written Blocks": "0"
+                  },
+                  "id": 3,
+                  "kind": "fullScan",
+                  "loops": 1,
+                  "object": { "alias": "o", "index": null, "name": "orders", "schema": null },
+                  "op": "Seq Scan",
+                  "raw": { "end": 114, "kind": "lines", "start": 87 },
+                  "selfCost": 2923.84,
+                  "selfTimeMs": 11.063
+                },
+                {
+                  "actualRows": 2000.0,
+                  "actualRowsTotal": 2000.0,
+                  "actualTimeMs": 0.332,
+                  "children": [
+                    {
+                      "actualRows": 2000.0,
+                      "actualRowsTotal": 2000.0,
+                      "actualTimeMs": 0.143,
+                      "children": [],
+                      "condition": null,
+                      "estCost": 31.0,
+                      "estRows": 2000.0,
+                      "estStartupCost": 0.0,
+                      "extra": {
+                        "Async Capable": "false",
+                        "Local Dirtied Blocks": "0",
+                        "Local Hit Blocks": "0",
+                        "Local Read Blocks": "0",
+                        "Local Written Blocks": "0",
+                        "Parallel Aware": "false",
+                        "Parent Relationship": "Outer",
+                        "Shared Dirtied Blocks": "0",
+                        "Shared Hit Blocks": "11",
+                        "Shared Read Blocks": "0",
+                        "Shared Written Blocks": "0",
+                        "Temp Read Blocks": "0",
+                        "Temp Written Blocks": "0"
+                      },
+                      "id": 5,
+                      "kind": "fullScan",
+                      "loops": 1,
+                      "object": {
+                        "alias": "c",
+                        "index": null,
+                        "name": "customers",
+                        "schema": null
+                      },
+                      "op": "Seq Scan",
+                      "raw": { "end": 169, "kind": "lines", "start": 144 },
+                      "selfCost": 31.0,
+                      "selfTimeMs": 0.143
+                    }
+                  ],
+                  "condition": null,
+                  "estCost": 31.0,
+                  "estRows": 2000.0,
+                  "estStartupCost": 31.0,
+                  "extra": {
+                    "Async Capable": "false",
+                    "Hash Batches": "1",
+                    "Hash Buckets": "2048",
+                    "Local Dirtied Blocks": "0",
+                    "Local Hit Blocks": "0",
+                    "Local Read Blocks": "0",
+                    "Local Written Blocks": "0",
+                    "Original Hash Batches": "1",
+                    "Original Hash Buckets": "2048",
+                    "Parallel Aware": "false",
+                    "Parent Relationship": "Inner",
+                    "Peak Memory Usage": "95",
+                    "Shared Dirtied Blocks": "0",
+                    "Shared Hit Blocks": "11",
+                    "Shared Read Blocks": "0",
+                    "Shared Written Blocks": "0",
+                    "Temp Read Blocks": "0",
+                    "Temp Written Blocks": "0"
+                  },
+                  "id": 4,
+                  "kind": "other",
+                  "loops": 1,
+                  "object": null,
+                  "op": "Hash",
+                  "raw": { "end": 171, "kind": "lines", "start": 115 },
+                  "selfCost": 0.0,
+                  "selfTimeMs": 0.18900000000000003
+                }
+              ],
+              "condition": "Hash Cond: (o.customer_id = c.id)",
+              "estCost": 3215.81,
+              "estRows": 89705.0,
+              "estStartupCost": 56.0,
+              "extra": {
+                "Async Capable": "false",
+                "Inner Unique": "true",
+                "Join Type": "Inner",
+                "Local Dirtied Blocks": "0",
+                "Local Hit Blocks": "0",
+                "Local Read Blocks": "0",
+                "Local Written Blocks": "0",
+                "Parallel Aware": "false",
+                "Parent Relationship": "Outer",
+                "Shared Dirtied Blocks": "0",
+                "Shared Hit Blocks": "1024",
+                "Shared Read Blocks": "0",
+                "Shared Written Blocks": "0",
+                "Temp Read Blocks": "0",
+                "Temp Written Blocks": "0"
+              },
+              "id": 2,
+              "kind": "hashJoin",
+              "loops": 1,
+              "object": null,
+              "op": "Hash Join",
+              "raw": { "end": 173, "kind": "lines", "start": 60 },
+              "selfCost": 260.9699999999998,
+              "selfTimeMs": 11.116999999999999
+            }
+          ],
+          "condition": null,
+          "estCost": 3888.65,
+          "estRows": 4.0,
+          "estStartupCost": 3888.6,
+          "extra": {
+            "Async Capable": "false",
+            "Disk Usage": "0",
+            "Group Key": "c.country",
+            "HashAgg Batches": "1",
+            "Local Dirtied Blocks": "0",
+            "Local Hit Blocks": "0",
+            "Local Read Blocks": "0",
+            "Local Written Blocks": "0",
+            "Parallel Aware": "false",
+            "Parent Relationship": "Outer",
+            "Partial Mode": "Simple",
+            "Peak Memory Usage": "24",
+            "Planned Partitions": "0",
+            "Shared Dirtied Blocks": "0",
+            "Shared Hit Blocks": "1024",
+            "Shared Read Blocks": "0",
+            "Shared Written Blocks": "0",
+            "Strategy": "Hashed",
+            "Temp Read Blocks": "0",
+            "Temp Written Blocks": "0"
+          },
+          "id": 1,
+          "kind": "hashAggregate",
+          "loops": 1,
+          "object": null,
+          "op": "Aggregate",
+          "raw": { "end": 175, "kind": "lines", "start": 29 },
+          "selfCost": 672.8400000000001,
+          "selfTimeMs": 12.124000000000002
+        }
+      ],
+      "condition": null,
+      "estCost": 3888.7,
+      "estRows": 4.0,
+      "estStartupCost": 3888.69,
+      "extra": {
+        "Async Capable": "false",
+        "Local Dirtied Blocks": "0",
+        "Local Hit Blocks": "0",
+        "Local Read Blocks": "0",
+        "Local Written Blocks": "0",
+        "Parallel Aware": "false",
+        "Shared Dirtied Blocks": "0",
+        "Shared Hit Blocks": "1027",
+        "Shared Read Blocks": "0",
+        "Shared Written Blocks": "0",
+        "Sort Key": "(count(*)) DESC",
+        "Sort Method": "quicksort",
+        "Sort Space Type": "Memory",
+        "Sort Space Used": "25",
+        "Temp Read Blocks": "0",
+        "Temp Written Blocks": "0"
+      },
+      "id": 0,
+      "kind": "sort",
+      "loops": 1,
+      "object": null,
+      "op": "Sort",
+      "raw": { "end": 177, "kind": "lines", "start": 2 },
+      "selfCost": 0.04999999999972715,
+      "selfTimeMs": 0.012999999999998124
+    },
+    "totals": {
+      "executionTimeMs": 34.696,
+      "planningTimeMs": 0.521,
+      "rows": 4.0,
+      "totalCost": 3888.7
+    },
+    "warnings": []
+  },
+  "pg_08_cte_subplan.json": {
+    "analyzed": false,
+    "format": "postgresJson",
+    "hotPath": [0, 1, 2],
+    "nodeCount": 8,
+    "root": {
+      "actualRows": null,
+      "actualRowsTotal": null,
+      "actualTimeMs": null,
+      "children": [
+        {
+          "actualRows": null,
+          "actualRowsTotal": null,
+          "actualTimeMs": null,
+          "children": [
+            {
+              "actualRows": null,
+              "actualRowsTotal": null,
+              "actualTimeMs": null,
+              "children": [],
+              "condition": null,
+              "estCost": 2541.67,
+              "estRows": 152867.0,
+              "estStartupCost": 0.0,
+              "extra": {
+                "Async Capable": "false",
+                "Parallel Aware": "false",
+                "Parent Relationship": "Outer"
+              },
+              "id": 2,
+              "kind": "fullScan",
+              "loops": null,
+              "object": { "alias": null, "index": null, "name": "orders", "schema": null },
+              "op": "Seq Scan",
+              "raw": { "end": 39, "kind": "lines", "start": 28 },
+              "selfCost": 2541.67,
+              "selfTimeMs": null
+            }
+          ],
+          "condition": null,
+          "estCost": 3326.01,
+          "estRows": 2000.0,
+          "estStartupCost": 3306.01,
+          "extra": {
+            "Async Capable": "false",
+            "Group Key": "orders.customer_id",
+            "Parallel Aware": "false",
+            "Parent Relationship": "Outer",
+            "Partial Mode": "Simple",
+            "Planned Partitions": "0",
+            "Strategy": "Hashed"
+          },
+          "id": 1,
+          "kind": "hashAggregate",
+          "loops": null,
+          "object": null,
+          "op": "Aggregate",
+          "raw": { "end": 41, "kind": "lines", "start": 14 },
+          "selfCost": 784.3400000000001,
+          "selfTimeMs": null
+        },
+        {
+          "actualRows": null,
+          "actualRowsTotal": null,
+          "actualTimeMs": null,
+          "children": [
+            {
+              "actualRows": null,
+              "actualRowsTotal": null,
+              "actualTimeMs": null,
+              "children": [],
+              "condition": "Filter: (country = 'VN'::text)",
+              "estCost": 36.0,
+              "estRows": 500.0,
+              "estStartupCost": 0.0,
+              "extra": {
+                "Async Capable": "false",
+                "Parallel Aware": "false",
+                "Parent Relationship": "Outer"
+              },
+              "id": 4,
+              "kind": "fullScan",
+              "loops": null,
+              "object": { "alias": "c", "index": null, "name": "customers", "schema": null },
+              "op": "Seq Scan",
+              "raw": { "end": 64, "kind": "lines", "start": 52 },
+              "selfCost": 36.0,
+              "selfTimeMs": null
+            }
+          ],
+          "condition": null,
+          "estCost": 36.0,
+          "estRows": 500.0,
+          "estStartupCost": 36.0,
+          "extra": {
+            "Async Capable": "false",
+            "Parallel Aware": "false",
+            "Parent Relationship": "Inner"
+          },
+          "id": 3,
+          "kind": "other",
+          "loops": null,
+          "object": null,
+          "op": "Hash",
+          "raw": { "end": 66, "kind": "lines", "start": 42 },
+          "selfCost": 0.0,
+          "selfTimeMs": null
+        },
+        {
+          "actualRows": null,
+          "actualRowsTotal": null,
+          "actualTimeMs": null,
+          "children": [
+            {
+              "actualRows": null,
+              "actualRowsTotal": null,
+              "actualTimeMs": null,
+              "children": [
+                {
+                  "actualRows": null,
+                  "actualRowsTotal": null,
+                  "actualTimeMs": null,
+                  "children": [],
+                  "condition": "Index Cond: (customer_id = c.id)",
+                  "estCost": 4.87,
+                  "estRows": 76.0,
+                  "estStartupCost": 0.0,
+                  "extra": {
+                    "Async Capable": "false",
+                    "Parallel Aware": "false",
+                    "Parent Relationship": "Outer"
+                  },
+                  "id": 7,
+                  "kind": "indexScan",
+                  "loops": null,
+                  "object": {
+                    "alias": null,
+                    "index": "orders_customer_idx",
+                    "name": "orders_customer_idx",
+                    "schema": null
+                  },
+                  "op": "Bitmap Index Scan",
+                  "raw": { "end": 104, "kind": "lines", "start": 93 },
+                  "selfCost": 4.87,
+                  "selfTimeMs": null
+                }
+              ],
+              "condition": "Recheck Cond: (customer_id = c.id)",
+              "estCost": 241.83,
+              "estRows": 76.0,
+              "estStartupCost": 4.88,
+              "extra": {
+                "Async Capable": "false",
+                "Parallel Aware": "false",
+                "Parent Relationship": "Outer"
+              },
+              "id": 6,
+              "kind": "indexScan",
+              "loops": null,
+              "object": { "alias": "x", "index": null, "name": "orders", "schema": null },
+              "op": "Bitmap Heap Scan",
+              "raw": { "end": 106, "kind": "lines", "start": 80 },
+              "selfCost": 236.96,
+              "selfTimeMs": null
+            }
+          ],
+          "condition": null,
+          "estCost": 242.03,
+          "estRows": 1.0,
+          "estStartupCost": 242.02,
+          "extra": {
+            "Async Capable": "false",
+            "Parallel Aware": "false",
+            "Parent Relationship": "SubPlan",
+            "Partial Mode": "Simple",
+            "Strategy": "Plain",
+            "Subplan Name": "SubPlan 1"
+          },
+          "id": 5,
+          "kind": "aggregate",
+          "loops": null,
+          "object": null,
+          "op": "Aggregate",
+          "raw": { "end": 108, "kind": "lines", "start": 67 },
+          "selfCost": 0.19999999999998863,
+          "selfTimeMs": null
+        }
+      ],
+      "condition": "Hash Cond: (orders.customer_id = c.id)",
+      "estCost": 124409.63,
+      "estRows": 500.0,
+      "estStartupCost": 3348.26,
+      "extra": {
+        "Async Capable": "false",
+        "Inner Unique": "true",
+        "Join Type": "Inner",
+        "Parallel Aware": "false"
+      },
+      "id": 0,
+      "kind": "hashJoin",
+      "loops": null,
+      "object": null,
+      "op": "Hash Join",
+      "raw": { "end": 110, "kind": "lines", "start": 2 },
+      "selfCost": 120805.59000000001,
+      "selfTimeMs": null
+    },
+    "totals": {
+      "executionTimeMs": null,
+      "planningTimeMs": null,
+      "rows": 500.0,
+      "totalCost": 124409.63
+    },
+    "warnings": [
+      {
+        "nodeId": 2,
+        "params": { "rows": "152867", "table": "orders" },
+        "rule": "fullScanLargeTable",
+        "severity": "warning"
+      }
+    ]
+  }
+}
