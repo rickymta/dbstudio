@@ -439,7 +439,7 @@ describe('ConnectionsSidebar', () => {
       kind: 'table',
       title: 'x',
       closable: true,
-      payload: { sessionId, connectionId: PG_DEV },
+      payload: { sessionId, connectionId: PG_DEV, path: { segments: [] } },
     });
     const off = registerTabGuard(tabId, () => false);
     await menuAction(screen.getByRole('treeitem', { name: 'PostgreSQL dev' }), 'Disconnect', user);
