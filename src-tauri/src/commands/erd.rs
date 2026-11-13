@@ -95,3 +95,88 @@ pub async fn erd_layout_delete(state: State<'_, AppState>, id: Uuid) -> Result<(
     tracing::debug!(command = "erd_layout_delete", layout = %id, "ipc call");
     layout_delete_impl(&state, id).await
 }
+
+#[cfg(test)]
+mod tests {
+    use dbstudio_core::{ConnectionConfig, DbKind, DdlOptions, ObjectKind, ObjectPath};
+    use dbstudio_store::{ConnectionProfile, SecretChange};
+    use serde_json::json;
+
+    use super::*;
+    use crate::state::{build_registry, testing::test_state};
+
+    fn layout(connection_id: Uuid) -> ErdLayout {
+        ErdLayout {
+            id: Uuid::new_v4(),
+            connection_id,
+            name: "Main".into(),
+            scope: ObjectPath::root().child(ObjectKind::Database, "app"),
+            tables: json!([{"path": {"segments": []}, "x": 1.0, "y": 2.0, "collapsed": false}]),
+            options: json!({"columns": "all"}),
+            viewport: None,
+            snapshot: json!({}),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn layout_commands_roundtrip() {
+        let (state, _) = test_state(build_registry());
+        let profile = ConnectionProfile {
+            config: ConnectionConfig::new(DbKind::Postgres, "pg", "localhost"),
+            group_id: None,
+            color: None,
+            save_password: false,
+            has_password: false,
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let saved = crate::commands::connections::save_impl(&state, profile, SecretChange::Keep)
+            .await
+            .unwrap();
+        let cid = saved.config.id;
+        let l = layout_save_impl(&state, layout(cid)).await.unwrap();
+        assert_eq!(layout_get_impl(&state, l.id).await.unwrap().name, "Main");
+        let list = layouts_list_impl(&state, cid).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].table_count, 1);
+        // Duplicate name on the same connection is refused.
+        assert!(layout_save_impl(&state, layout(cid)).await.is_err());
+        layout_delete_impl(&state, l.id).await.unwrap();
+        assert!(matches!(
+            layout_get_impl(&state, l.id).await,
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_and_ddl_need_a_session() {
+        let (state, _) = test_state(build_registry());
+        let scope = ObjectPath::root().child(ObjectKind::Database, "app");
+        let req = SchemaModelRequest {
+            scope: scope.clone(),
+            tables: vec![],
+            include_views: false,
+            include_comments: false,
+            detail: Default::default(),
+            sample_size: None,
+        };
+        assert!(
+            schema_model_impl(&state, Uuid::new_v4(), req)
+                .await
+                .is_err()
+        );
+        let req = DdlRequest {
+            scope,
+            objects: vec![],
+            options: DdlOptions::default(),
+        };
+        assert!(
+            ddl_generate_impl(&state, Uuid::new_v4(), req)
+                .await
+                .is_err()
+        );
+    }
+}
