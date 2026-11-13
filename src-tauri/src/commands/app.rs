@@ -556,17 +556,29 @@ mod tests {
                     ),
                     "{reason:?}"
                 );
-                assert!(d.message.contains("/nonexistent/instantclient"), "{}", d.message);
+                assert!(
+                    d.message.contains("/nonexistent/instantclient"),
+                    "{}",
+                    d.message
+                );
                 assert!(d.message.contains("Locations tried"), "{}", d.message);
                 assert!(d.message.contains("Instant Client"), "{}", d.message);
-                assert!(d.help_url.as_deref().is_some_and(|u| u.starts_with("https://www.oracle.com/")));
+                assert!(
+                    d.help_url
+                        .as_deref()
+                        .is_some_and(|u| u.starts_with("https://www.oracle.com/"))
+                );
             }
             other => panic!("unexpected status {other:?}"),
         }
         // Same answer as `list_drivers` after the probe.
         let again = list_drivers_impl(&state);
         assert_eq!(
-            again.iter().find(|d| d.kind == DbKind::Oracle).unwrap().status,
+            again
+                .iter()
+                .find(|d| d.kind == DbKind::Oracle)
+                .unwrap()
+                .status,
             d.status
         );
         dbstudio_driver_oracle::configure_client(None);

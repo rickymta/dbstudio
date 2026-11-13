@@ -23,7 +23,7 @@ exec docker run --rm --platform linux/amd64 \
   -v "$root":/work \
   -v "dbstudio-oracle-it-target-$suffix":/target-oracle \
   -v "dbstudio-oracle-it-registry":/root/.cargo/registry \
-  -e DBSTUDIO_IT=1 \
+  -e DBSTUDIO_IT="${DBSTUDIO_IT:-1}" \
   -e DBSTUDIO_IT_ORACLE_HOST="${DBSTUDIO_IT_ORACLE_HOST:-oraclefree}" \
   -e DBSTUDIO_IT_ORACLE_PORT="${DBSTUDIO_IT_ORACLE_PORT_IN_NETWORK:-1521}" \
   -e DBSTUDIO_IT_ORACLE_SERVICE="${DBSTUDIO_IT_ORACLE_SERVICE:-FREEPDB1}" \
