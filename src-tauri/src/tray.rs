@@ -1,11 +1,46 @@
 //! System tray icon and menu (close-to-tray behaviour).
 //!
-//! Owner: package H (backup). Scaffold: placeholder, no tray icon is created. The `tray-icon`
-//! tauri feature is already enabled.
+//! The icon stays while the app runs in the background so scheduled backups keep firing after
+//! the main window is closed. Left click opens the window; the menu has Open and Quit.
 
-#![allow(dead_code)] // placeholder
+use tauri::AppHandle;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-/// Create the tray icon. Placeholder: does nothing.
-pub fn install() {
-    // placeholder
+use crate::background::show_main_window;
+
+/// Id of the tray icon.
+pub const TRAY_ID: &str = "main";
+const MENU_OPEN: &str = "open";
+const MENU_QUIT: &str = "quit";
+
+/// Create the tray icon.
+pub fn install(app: &AppHandle) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, MENU_OPEN, "Open DBStudio", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, MENU_QUIT, "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("DBStudio")
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            MENU_OPEN => show_main_window(app),
+            MENU_QUIT => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
 }

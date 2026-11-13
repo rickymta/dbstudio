@@ -330,7 +330,7 @@ impl Store {
             .prepare(&format!(
                 "SELECT {RUN_COLS} FROM backup_runs \
                  WHERE (?1 IS NULL OR job_id = ?1) AND (?2 IS NULL OR started_at < ?2) \
-                 ORDER BY started_at DESC, id DESC LIMIT ?3"
+                 ORDER BY started_at DESC, rowid DESC LIMIT ?3"
             ))
             .map_err(db_err)?;
         let rows = stmt

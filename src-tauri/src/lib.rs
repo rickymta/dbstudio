@@ -58,6 +58,11 @@ fn build_state(app: &tauri::App) -> Result<state::AppState, Box<dyn std::error::
 /// Build and run the Tauri application.
 pub fn run() {
     let app = tauri::Builder::default()
+        // Must be registered first: a second launch only brings the running window forward.
+        .plugin(tauri_plugin_single_instance::init(
+            background::on_second_instance,
+        ))
+        .on_window_event(background::on_window_event)
         .plugin(tauri_plugin_dialog::init())
         // The opener plugin is only used from Rust; no capability grants it to the webview.
         .plugin(tauri_plugin_opener::init())
@@ -66,7 +71,8 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            // Launched at login the app starts hidden in the tray.
+            Some(vec![background::BACKGROUND_ARG]),
         ))
         .setup(|app| {
             let log_dir = app.path().app_log_dir().ok();
@@ -80,6 +86,8 @@ pub fn run() {
                 not(feature = "custom-protocol")
             ))]
             bridge::spawn_from_env(state.clone());
+            let data_dir = app.path().app_data_dir()?;
+            background::setup(app.handle(), &state, &data_dir);
             app.manage(state);
             Ok(())
         })

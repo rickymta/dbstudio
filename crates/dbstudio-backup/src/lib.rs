@@ -24,6 +24,7 @@ pub mod runner;
 pub mod scheduler;
 pub mod sqlscan;
 
+pub use chrono;
 pub use native::detect_tools;
 pub use scheduler::{
     Clock, Scheduler, SystemClock, next_after, parse_cron, parse_tz, preview_from,

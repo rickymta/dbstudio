@@ -237,20 +237,6 @@ async fn stub_commands_answer_unsupported() {
             uri::parse_uri_impl(&f.state, "postgres://h/db").unwrap_err(),
         ),
         (
-            "backup_jobs_list",
-            backup::jobs_list_impl(&f.state).await.unwrap_err(),
-        ),
-        (
-            "backup_job_delete",
-            backup::job_delete_impl(&f.state, Uuid::new_v4())
-                .await
-                .unwrap_err(),
-        ),
-        (
-            "schedule_preview",
-            backup::schedule_preview_impl("* * * * *".into(), "utc".into(), 3).unwrap_err(),
-        ),
-        (
             "key_read",
             keyvalue::key_read_impl(
                 &f.state,
@@ -593,12 +579,13 @@ async fn path_taking_commands_require_a_grant() {
             .kind(),
         "unsupported"
     );
+    // The backup engine is real: a granted file that is not a backup is an integrity error.
     assert_eq!(
         backup::inspect_impl(&f.state, path, None)
             .await
             .unwrap_err()
             .kind(),
-        "unsupported"
+        "integrity"
     );
 }
 
