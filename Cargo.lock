@@ -1681,7 +1681,9 @@ name = "dbstudio-driver-postgres"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "dbstudio-core",
+ "futures-util",
  "rustls",
  "rustls-native-certs",
  "tokio",
