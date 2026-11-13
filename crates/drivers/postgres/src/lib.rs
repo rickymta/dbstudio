@@ -19,7 +19,7 @@ mod error;
 mod exec;
 mod explain;
 mod lease;
-mod model;
+pub mod model;
 mod search;
 mod session;
 mod sql;
