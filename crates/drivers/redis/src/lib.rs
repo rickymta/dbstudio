@@ -1,15 +1,36 @@
-//! Redis / Valkey driver for DBStudio.
+//! Redis / Valkey driver for DBStudio (Redis 6/7, Valkey 8).
 //!
-//! Scaffold status: the driver registers and describes itself; `connect` returns
-//! `Error::Unsupported`. Package L implements it.
+//! * A [`RedisSession`] stands for a whole server: it keeps one multiplexed connection per
+//!   database (created lazily, never `SELECT` on a shared connection).
+//! * The object tree is `Root -> Database -> KeyPrefix* -> Key`, built from `SCAN` pages (never
+//!   `KEYS`, so it works when `KEYS` is renamed) with a configurable delimiter option
+//!   `delimiter` (default `:`).
+//! * Values are read page by page with [`dbstudio_core::KeyReadRequest`] and edited through
+//!   `ChangeSet::Keys` (`WATCH` + type check + `MULTI/EXEC`; not atomic across changes).
+//! * The console executes one redis-cli line per command; leases are dedicated connections.
+
+mod cli;
+mod conn;
+mod convert;
+mod edit;
+mod error;
+mod exec;
+mod keys;
+mod lease;
+mod session;
+mod tree;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use dbstudio_core::{
     Capabilities, ConnectionConfig, DbKind, Driver, DriverDescriptor, DriverRegistry, DriverStatus,
-    Error, Result, Secret, Session,
+    Result, Secret, Session,
 };
+
+pub use cli::{quote_arg, render_command, tokenize_line};
+pub use exec::DELETE_PATTERN;
+pub use session::RedisSession;
 
 /// Driver for Redis / Valkey.
 #[derive(Debug, Default, Clone, Copy)]
@@ -37,8 +58,7 @@ impl Driver for RedisDriver {
         config: &ConnectionConfig,
         secret: Option<&Secret>,
     ) -> Result<Box<dyn Session>> {
-        let _ = (config, secret);
-        Err(Error::Unsupported("redis".into()))
+        Ok(Box::new(RedisSession::connect(config, secret).await?))
     }
 }
 
@@ -66,23 +86,15 @@ mod tests {
         let mut r = DriverRegistry::new();
         register(&mut r);
         assert!(r.get(DbKind::Redis).is_some());
-        let d = r
-            .descriptors()
-            .into_iter()
-            .find(|d| d.kind == DbKind::Redis)
-            .unwrap();
-        assert_eq!(d.status, DriverStatus::Available);
     }
 
     #[tokio::test]
-    async fn connect_is_unsupported() {
-        let cfg = ConnectionConfig::new(DbKind::Redis, "test", "localhost");
+    async fn unreachable_server_is_a_connection_error() {
+        let mut cfg = ConnectionConfig::new(DbKind::Redis, "test", "127.0.0.1");
+        cfg.port = 1;
+        cfg.tls.mode = dbstudio_core::TlsMode::Disable;
+        cfg.connect_timeout_ms = Some(500);
         let err = RedisDriver::new().connect(&cfg, None).await.err().unwrap();
-        assert_eq!(err.kind(), "unsupported");
-    }
-
-    #[test]
-    fn client_crate_is_linked() {
-        let _ = std::any::type_name::<redis::Client>();
+        assert_eq!(err.kind(), "connection");
     }
 }
