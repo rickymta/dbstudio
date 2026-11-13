@@ -60,6 +60,9 @@ all = [
     "sspi-rs",
 ]
 bigdecimal = ["bigdecimal_"]
+# DBStudio patch: `winauth` also turns on NTLM through sspi-rs on Unix (upstream needs the
+# separate `sspi-rs` feature there), so the workspace feature list works on every OS.
+winauth = ["dep:winauth", "sspi-rs"]
 default = [
     "tds80",
     "winauth",
@@ -321,7 +324,7 @@ optional = true
 default-features = false
 
 [target."cfg(unix)".dependencies.sspi]
-version = "0.18"
+version = "0.23"
 optional = true
 
 [target."cfg(windows)".dependencies.winauth]
