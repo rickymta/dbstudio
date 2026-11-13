@@ -453,10 +453,26 @@ fn split_ambiguity(dialect: ScriptDialect, text: &str) -> Option<String> {
     })
 }
 
-/// What a confirmation token is bound to besides the target: where the text runs, what the user
-/// has to type, and the text itself.
-fn token_payload(input: &GuardInput<'_>, bound_text: &str) -> Vec<u8> {
-    format!("{}\0{}\0{}", input.context, input.confirm_text, bound_text).into_bytes()
+/// What a confirmation token is bound to besides the target: where the text runs, the databases
+/// its statements act on, what the user has to type, and the text itself.
+fn token_payload(
+    input: &GuardInput<'_>,
+    bound_text: &str,
+    confirm_text: &str,
+    databases: &[Option<String>],
+) -> Vec<u8> {
+    let dbs: Vec<&str> = databases
+        .iter()
+        .map(|d| d.as_deref().unwrap_or("-"))
+        .collect();
+    format!(
+        "{}\0{}\0{}\0{}",
+        input.context,
+        confirm_text,
+        dbs.join("\u{1}"),
+        bound_text
+    )
+    .into_bytes()
 }
 
 /// Steps 3-4 of the flow on an already analysed script: policy, verdict, token handling.
@@ -491,17 +507,19 @@ pub fn evaluate(
         }
         Verdict::Deny(other) => Err(other),
         Verdict::Confirm(statements) => {
+            // The user types the database the destructive statements really act on (a `USE`
+            // earlier in the script moves them), not just the one the tab started in.
+            let databases = dbstudio_sql::statement_databases(input.dialect, &bound.text, analysis);
+            let confirm_text =
+                dbstudio_sql::confirm_text_for(input.confirm_text, &databases, &statements);
+            let payload = token_payload(input, &bound.text, &confirm_text, &databases);
             if let Some(grant) = input.confirm {
-                match tokens.consume(grant, input.target_id, &token_payload(input, &bound.text)) {
+                match tokens.consume(grant, input.target_id, &payload) {
                     Ok(()) => return Ok(()),
                     Err(why) => tracing::debug!(?why, "confirmation refused"),
                 }
             }
-            let (token, expires_in_ms) = tokens.issue(
-                input.target_id,
-                &token_payload(input, &bound.text),
-                input.confirm_text,
-            );
+            let (token, expires_in_ms) = tokens.issue(input.target_id, &payload, &confirm_text);
             let statements: Vec<DestructiveStatement> = statements
                 .into_iter()
                 .map(|s| DestructiveStatement {
@@ -511,7 +529,7 @@ pub fn evaluate(
                 .collect();
             Err(Error::ConfirmationRequired(Box::new(ConfirmationRequest {
                 token,
-                confirm_text: input.confirm_text.to_string(),
+                confirm_text,
                 statements,
                 expires_in_ms,
             })))
@@ -1155,5 +1173,81 @@ mod tests {
         i.dialect = ScriptDialect::Postgres;
         i.text = attack;
         run_guard(&t, &i).unwrap();
+    }
+
+    #[test]
+    fn confirmation_asks_for_the_database_the_statement_really_hits() {
+        let mysql = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+        };
+        let text = "USE other; DROP TABLE t";
+        let (t, _) = tokens();
+        let mut i = input(text, false, true, None);
+        i.dialect = mysql;
+        let c = match run_guard(&t, &i).unwrap_err() {
+            Error::ConfirmationRequired(c) => *c,
+            other => panic!("{other:?}"),
+        };
+        // Typing the tab's database ("app") is not enough: the DROP acts on `other`.
+        assert_eq!(c.confirm_text, "other");
+        let wrong = ConfirmationGrant {
+            token: c.token.clone(),
+            typed: "app".into(),
+        };
+        i.confirm = Some(&wrong);
+        let c2 = match run_guard(&t, &i).unwrap_err() {
+            Error::ConfirmationRequired(c) => *c,
+            other => panic!("{other:?}"),
+        };
+        let right = ConfirmationGrant {
+            token: c2.token,
+            typed: "other".into(),
+        };
+        i.confirm = Some(&right);
+        run_guard(&t, &i).unwrap();
+        // Without a USE it is the tab's database.
+        let mut j = input("DROP TABLE t", false, true, None);
+        j.dialect = mysql;
+        let c = match run_guard(&t, &j).unwrap_err() {
+            Error::ConfirmationRequired(c) => *c,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(c.confirm_text, "app");
+    }
+
+    #[test]
+    fn production_fallback_ignores_strings_and_comments() {
+        let unknown = |text: &str| {
+            analysis(vec![stmt(
+                0,
+                0,
+                text.chars().count() as u32,
+                StatementClass::Unknown,
+                None,
+            )])
+        };
+        for ok in [
+            "SELECT 'DROP TABLE t' /* DELETE FROM t */",
+            "-- TRUNCATE t\nSELECT \"delete\" FROM t",
+            "UPDATE t SET a = 1 WHERE id = 1",
+        ] {
+            let a = unknown(ok);
+            assert!(
+                production_fallback(ScriptDialect::Postgres, &a, ok).is_empty(),
+                "{ok}"
+            );
+        }
+        for bad in [
+            "DROP TABLE t",
+            "select 1; truncate t",
+            "CALL p(); DELETE FROM t",
+        ] {
+            let a = unknown(bad);
+            assert!(
+                !production_fallback(ScriptDialect::Postgres, &a, bad).is_empty(),
+                "{bad}"
+            );
+        }
     }
 }

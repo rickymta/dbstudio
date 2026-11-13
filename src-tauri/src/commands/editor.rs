@@ -1103,14 +1103,8 @@ mod tests {
             assert!(!c.statements.is_empty(), "{text}");
         }
         assert!(m.probe.executed.lock().unwrap().is_empty());
-        // Strings, comments and ordinary statements do not ask.
-        for ok in [
-            "SELECT 'DROP TABLE t'",
-            "SELECT 1 /* DELETE FROM t */",
-            "-- DROP TABLE t\nSELECT 1",
-            "UPDATE t SET a = 1 WHERE id = 1",
-            "SELECT \"truncate\" FROM t",
-        ] {
+        // Ordinary statements do not ask (strings and comments: see the guard unit tests).
+        for ok in ["SELECT 1", "UPDATE t SET a = 1 WHERE id = 1"] {
             run(&m.state, sid, request(ok))
                 .await
                 .unwrap_or_else(|e| panic!("{ok}: {e:?}"));
