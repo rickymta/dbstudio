@@ -222,3 +222,192 @@ fn mysql_backslash_escapes_follow_the_dialect_flag() {
     };
     assert_eq!(split(mariadb, sql).len(), 1);
 }
+
+// ---- Mongo classifier hardening and effective database -------------------------------------
+
+use dbstudio_core::{DestructiveReason as R, StatementClass as C};
+use dbstudio_sql::{confirm_text_for, statement_databases};
+
+const MONGO: ScriptDialect = ScriptDialect::MongoShell;
+
+fn mclass(sql: &str) -> (C, Option<R>) {
+    let a = analyze(MONGO, sql);
+    assert_eq!(a.statements.len(), 1, "{sql}");
+    (a.statements[0].class, a.statements[0].destructive)
+}
+
+#[test]
+fn explain_in_the_chain_does_not_hide_writes() {
+    assert_eq!(
+        mclass("db.a.deleteMany({}).explain()"),
+        (C::Write, Some(R::DeleteManyAll))
+    );
+    assert_eq!(
+        mclass("db.dropDatabase().explain()"),
+        (C::Ddl, Some(R::DropDatabase))
+    );
+    assert_eq!(
+        mclass("db.a.aggregate([{$out: 'b'}]).explain()").0,
+        C::Write
+    );
+    assert_eq!(
+        mclass("db.a.aggregate([{$merge: {into: 'b'}}]).explain()").0,
+        C::Write
+    );
+    assert_eq!(
+        mclass("db.a.drop().explain()"),
+        (C::Ddl, Some(R::DropCollection))
+    );
+    assert_eq!(mclass("db.a.insertOne({}).explain()").0, C::Write);
+    // reads still become Explain
+    for q in [
+        "db.a.find({}).explain()",
+        "db.a.aggregate([{$match: {}}]).explain('executionStats')",
+        "db.a.countDocuments({}).explain()",
+        "db.a.distinct('x').explain()",
+    ] {
+        assert!(
+            matches!(mclass(q).0, C::Explain { writes: false, .. }),
+            "{q}"
+        );
+    }
+    // and the guard refuses the hidden writes in read-only mode
+    denied(MONGO, "db.a.deleteMany({}).explain()");
+    denied(MONGO, "db.a.aggregate([{$out:'b'}]).explain()");
+    allowed(MONGO, "db.a.find({}).explain()");
+}
+
+#[test]
+fn empty_filters_of_every_shape_are_destructive() {
+    for q in [
+        "db.a.deleteMany()",
+        "db.a.deleteMany(null)",
+        "db.a.deleteMany(undefined)",
+        "db.a.deleteMany({})",
+        "db.a.remove()",
+        "db.a.remove(null)",
+        "db.a.remove({})",
+    ] {
+        assert_eq!(mclass(q), (C::Write, Some(R::DeleteManyAll)), "{q}");
+    }
+    for q in [
+        "db.a.updateMany(null, {$set: {x: 1}})",
+        "db.a.updateMany(undefined, {$set: {x: 1}})",
+        "db.a.updateMany({}, {$set: {x: 1}})",
+        "db.a.updateMany()",
+    ] {
+        assert_eq!(mclass(q), (C::Write, Some(R::UpdateManyAll)), "{q}");
+    }
+    assert_eq!(mclass("db.a.deleteMany({x: 1})").1, None);
+    assert_eq!(mclass("db.a.remove({x: 1})").1, None);
+    assert_eq!(mclass("db.a.updateMany({x: 1}, {$set: {y: 1}})").1, None);
+}
+
+#[test]
+fn string_form_of_run_command_is_classified_like_the_object_form() {
+    for cmd in ["runCommand", "adminCommand"] {
+        assert_eq!(
+            mclass(&format!("db.{cmd}('dropDatabase')")),
+            (C::Ddl, Some(R::DropDatabase))
+        );
+        assert_eq!(
+            mclass(&format!("db.{cmd}(\"drop\")")),
+            (C::Ddl, Some(R::DropCollection))
+        );
+        assert_eq!(
+            mclass(&format!("db.{cmd}('dropIndexes')")),
+            (C::Ddl, Some(R::AlterDrop))
+        );
+        assert_eq!(
+            mclass(&format!("db.{cmd}('delete')")).1,
+            Some(R::DeleteManyAll)
+        );
+        assert_eq!(
+            mclass(&format!("db.{cmd}('update')")).1,
+            Some(R::UpdateManyAll)
+        );
+        assert_eq!(mclass(&format!("db.{cmd}('ping')")), (C::Read, None));
+        assert_eq!(
+            mclass(&format!("db.{cmd}('shutdown')")),
+            (C::Procedural, None)
+        );
+    }
+    assert_eq!(
+        mclass("db.runCommand({dropIndexes: 'a', index: '*'})"),
+        (C::Ddl, Some(R::AlterDrop))
+    );
+}
+
+#[test]
+fn effective_database_follows_use() {
+    let text = "db.a.drop()\nuse shop\ndb.b.drop()\nuse other\ndb.c.deleteMany({})";
+    let a = analyze(MONGO, text);
+    let dbs = statement_databases(MONGO, text, &a);
+    assert_eq!(
+        dbs,
+        vec![
+            None,
+            Some("shop".to_string()),
+            Some("shop".to_string()),
+            Some("other".to_string()),
+            Some("other".to_string())
+        ]
+    );
+    let policy = Policy {
+        read_only: false,
+        production: true,
+        confirm_text: "initial".into(),
+    };
+    let Verdict::Confirm(list) = check(&policy, &a) else {
+        panic!()
+    };
+    assert_eq!(list.len(), 3);
+    assert_eq!(
+        confirm_text_for("initial", &dbs, &list),
+        "initial, shop, other"
+    );
+    assert_eq!(confirm_text_for("initial", &dbs, &list[1..2]), "shop");
+    assert_eq!(confirm_text_for("initial", &dbs, &[]), "initial");
+    // `use` with a quoted name
+    let t2 = "use 'my-db'\ndb.a.drop()";
+    let a2 = analyze(MONGO, t2);
+    assert_eq!(
+        statement_databases(MONGO, t2, &a2)[1].as_deref(),
+        Some("my-db")
+    );
+    // unparsable scripts: nothing is known
+    let t3 = "use x\ndb.a.find({";
+    let a3 = analyze(MONGO, t3);
+    assert!(
+        statement_databases(MONGO, t3, &a3)
+            .iter()
+            .all(Option::is_none)
+    );
+}
+
+#[test]
+fn effective_database_for_mysql_and_tsql() {
+    for (d, text, quoted) in [
+        (
+            MY,
+            "DROP TABLE a; USE `shop`; DROP TABLE b; use other;",
+            "`shop`",
+        ),
+        (
+            ScriptDialect::MsSql,
+            "DROP TABLE a;\nUSE [shop];\nDROP TABLE b;\nGO\nUSE other",
+            "[shop]",
+        ),
+    ] {
+        let a = analyze(d, text);
+        let dbs = statement_databases(d, text, &a);
+        assert_eq!(dbs.len(), a.statements.len(), "{quoted}");
+        assert_eq!(dbs[0], None);
+        assert_eq!(dbs[1].as_deref(), Some("shop"));
+        assert_eq!(dbs[2].as_deref(), Some("shop"));
+        assert_eq!(dbs.last().unwrap().as_deref(), Some("other"));
+    }
+    // other dialects have no notion of it
+    let a = analyze(PG, "select 1");
+    assert_eq!(statement_databases(PG, "select 1", &a), vec![None]);
+}

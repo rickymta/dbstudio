@@ -838,7 +838,8 @@ pub fn parse(text: &str) -> Result<Vec<ShellStatement>> {
 /// Collection and database operations whose first argument is a filter.
 fn filter_is_all(stmt: &ShellStatement) -> bool {
     match stmt.args.first() {
-        None => true,
+        // `deleteMany()`, `deleteMany(null)` and `deleteMany(undefined)` match everything.
+        None | Some(ShellValue::Null) => true,
         Some(v) => v.is_empty_object(),
     }
 }
@@ -907,26 +908,35 @@ const READ_COMMANDS: &[&str] = &[
 /// Class and destructive reason of a statement.
 pub fn classify(stmt: &ShellStatement) -> (StatementClass, Option<DestructiveReason>) {
     use StatementClass as C;
+    let inner = classify_call(stmt);
+    // `.explain(...)` in the chain turns a READ into an Explain. A write (or any destructive
+    // statement) keeps its class and reason: the chain is not allowed to hide it.
+    if stmt.kind == ShellKind::Collection && inner.0 == C::Read && inner.1.is_none() {
+        if let Some((_, a)) = stmt.chain.iter().find(|(n, _)| n == "explain") {
+            let analyze = matches!(
+                a.first(),
+                Some(ShellValue::String(s)) if s == "executionStats" || s == "allPlansExecution"
+            ) || matches!(a.first(), Some(ShellValue::Bool(true)));
+            return (
+                C::Explain {
+                    analyze,
+                    writes: false,
+                },
+                None,
+            );
+        }
+    }
+    inner
+}
+
+fn classify_call(stmt: &ShellStatement) -> (StatementClass, Option<DestructiveReason>) {
+    use StatementClass as C;
     match stmt.kind {
         ShellKind::Use => return (C::Session, None),
         ShellKind::Show => return (C::Read, None),
         _ => {}
     }
     let m = stmt.method.as_str();
-    // `.explain(...)` anywhere in the chain turns a read into an Explain.
-    if let Some((_, a)) = stmt.chain.iter().find(|(n, _)| n == "explain") {
-        let analyze = matches!(
-            a.first(),
-            Some(ShellValue::String(s)) if s == "executionStats" || s == "allPlansExecution"
-        ) || matches!(a.first(), Some(ShellValue::Bool(true)));
-        return (
-            C::Explain {
-                analyze,
-                writes: false,
-            },
-            None,
-        );
-    }
     if stmt.kind == ShellKind::Database {
         return classify_database(stmt);
     }
@@ -1011,39 +1021,44 @@ fn classify_database(stmt: &ShellStatement) -> (StatementClass, Option<Destructi
         | "revokeRolesFromUser" => (C::Ddl, None),
         "dropDatabase" => (C::Ddl, Some(DestructiveReason::DropDatabase)),
         "runCommand" | "adminCommand" => {
-            let Some(ShellValue::Object(fields)) = stmt.args.first() else {
-                return (C::Procedural, None);
-            };
-            let Some((cmd, val)) = fields.first() else {
-                return (C::Procedural, None);
+            // `db.runCommand("dropDatabase")` is the same as `{dropDatabase: 1}`.
+            let no_fields: Vec<(String, ShellValue)> = Vec::new();
+            let (cmd, fields): (&String, &Vec<(String, ShellValue)>) = match stmt.args.first() {
+                Some(ShellValue::Object(f)) => match f.first() {
+                    Some((c, _)) => (c, f),
+                    None => return (C::Procedural, None),
+                },
+                Some(ShellValue::String(c)) => (c, &no_fields),
+                _ => return (C::Procedural, None),
             };
             match cmd.as_str() {
                 "drop" => (C::Ddl, Some(DestructiveReason::DropCollection)),
                 "dropDatabase" => (C::Ddl, Some(DestructiveReason::DropDatabase)),
+                "dropIndexes" => (C::Ddl, Some(DestructiveReason::AlterDrop)),
                 "delete" => {
-                    let all = fields
-                        .iter()
-                        .find(|(k, _)| k == "deletes")
-                        .is_some_and(|(_, d)| match d {
-                            ShellValue::Array(a) => a.iter().any(|x| {
-                                x.get("q").is_none_or(ShellValue::is_empty_object)
-                                    && matches!(x.get("limit"), Some(ShellValue::Int(0)) | None)
-                            }),
-                            _ => false,
-                        });
+                    let all = fields.is_empty()
+                        || fields.iter().find(|(k, _)| k == "deletes").is_some_and(
+                            |(_, d)| match d {
+                                ShellValue::Array(a) => a.iter().any(|x| {
+                                    x.get("q").is_none_or(ShellValue::is_empty_object)
+                                        && matches!(x.get("limit"), Some(ShellValue::Int(0)) | None)
+                                }),
+                                _ => false,
+                            },
+                        );
                     (C::Write, all.then_some(DestructiveReason::DeleteManyAll))
                 }
                 "update" => {
-                    let all = fields
-                        .iter()
-                        .find(|(k, _)| k == "updates")
-                        .is_some_and(|(_, u)| match u {
-                            ShellValue::Array(a) => a.iter().any(|x| {
-                                x.get("q").is_none_or(ShellValue::is_empty_object)
-                                    && x.get("multi") == Some(&ShellValue::Bool(true))
-                            }),
-                            _ => false,
-                        });
+                    let all = fields.is_empty()
+                        || fields.iter().find(|(k, _)| k == "updates").is_some_and(
+                            |(_, u)| match u {
+                                ShellValue::Array(a) => a.iter().any(|x| {
+                                    x.get("q").is_none_or(ShellValue::is_empty_object)
+                                        && x.get("multi") == Some(&ShellValue::Bool(true))
+                                }),
+                                _ => false,
+                            },
+                        );
                     (C::Write, all.then_some(DestructiveReason::UpdateManyAll))
                 }
                 "insert" | "findAndModify" | "findandmodify" | "create" | "createIndexes"
@@ -1056,10 +1071,7 @@ fn classify_database(stmt: &ShellStatement) -> (StatementClass, Option<Destructi
                     });
                     (if writes { C::Write } else { C::Read }, None)
                 }
-                c if READ_COMMANDS.contains(&c) => {
-                    let _ = val;
-                    (C::Read, None)
-                }
+                c if READ_COMMANDS.contains(&c) => (C::Read, None),
                 _ => (C::Procedural, None),
             }
         }

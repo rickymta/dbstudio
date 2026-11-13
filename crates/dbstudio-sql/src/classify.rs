@@ -44,6 +44,57 @@ pub fn analyze(d: ScriptDialect, text: &str) -> ScriptAnalysis {
     }
 }
 
+/// Database each statement of `analysis` runs against, following `use <db>` (Mongo shell) and
+/// `USE <db>` (MySQL, T-SQL) inside the script. Aligned with `analysis.statements`; `None` =
+/// the session's database before the script (the caller's default). The `use` statement itself
+/// reports the new database. Other dialects always give `None`.
+///
+/// `text` must be the text that was analysed.
+pub fn statement_databases(
+    d: ScriptDialect,
+    text: &str,
+    analysis: &ScriptAnalysis,
+) -> Vec<Option<String>> {
+    let n = analysis.statements.len();
+    match d {
+        ScriptDialect::MongoShell => match mongo_shell::parse(text) {
+            Ok(stmts) if stmts.len() == n => {
+                let mut cur: Option<String> = None;
+                stmts
+                    .iter()
+                    .map(|s| {
+                        if s.kind == mongo_shell::ShellKind::Use {
+                            cur = Some(s.method.clone());
+                        }
+                        cur.clone()
+                    })
+                    .collect()
+            }
+            _ => vec![None; n],
+        },
+        ScriptDialect::MySql { .. } | ScriptDialect::MsSql => {
+            let chars: Vec<char> = text.chars().collect();
+            let mut cur: Option<String> = None;
+            analysis
+                .statements
+                .iter()
+                .map(|s| {
+                    let sig = sig_tokens(d, &chars, s.range);
+                    if w(&sig, 0) == "USE" {
+                        if let Some(t) = sig.get(1) {
+                            if matches!(t.kind, TokenKind::Word | TokenKind::QuotedIdent) {
+                                cur = Some(unquote(&t.raw));
+                            }
+                        }
+                    }
+                    cur.clone()
+                })
+                .collect()
+        }
+        _ => vec![None; n],
+    }
+}
+
 fn range(start: usize, end: usize) -> TextRange {
     TextRange {
         start: to_u32(start),
