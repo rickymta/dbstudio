@@ -14,8 +14,11 @@ async-trait.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 uuid.workspace = true
 oracle.workspace = true
+serde_json.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [lints]
