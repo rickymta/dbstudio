@@ -15,6 +15,8 @@ import { useDataUiStore, useTabUi } from '@/features/data/store';
 import { useGridVersion } from '@/features/data/useGridVersion';
 import { useAppSettings } from '@/features/settings/queries';
 import { describeError } from '@/features/connections/errors';
+import type { EditorMode } from '@/stores/tabs';
+import { getConsolePlugin } from './consolePlugins';
 import type { RunSnapshot } from './editorStore';
 import { resultKind, type StatementResult } from './results';
 
@@ -37,13 +39,15 @@ export interface ResultsPanelProps {
   tabStateId: string;
   run: RunSnapshot | null;
   onLoadMore: () => void;
+  /** Editor mode: MongoDB results can also be shown as documents. */
+  mode?: EditorMode;
 }
 
 const MESSAGES = 'messages';
 /** More result tabs than this are not drawn (a script can have thousands of statements). */
 const MAX_RESULT_TABS = 50;
 
-export function ResultsPanel({ tabStateId, run, onLoadMore }: ResultsPanelProps) {
+export function ResultsPanel({ tabStateId, run, onLoadMore, mode }: ResultsPanelProps) {
   const { t } = useTranslation('editor');
   const [picked, setPicked] = useState<{ runId: number; key: string } | null>(null);
 
@@ -119,7 +123,13 @@ export function ResultsPanel({ tabStateId, run, onLoadMore }: ResultsPanelProps)
         {selected === MESSAGES ? (
           <MessagesView run={run} />
         ) : shown ? (
-          <ResultBody tabStateId={tabStateId} run={run} result={shown} onLoadMore={onLoadMore} />
+          <ResultBody
+            tabStateId={tabStateId}
+            run={run}
+            result={shown}
+            onLoadMore={onLoadMore}
+            mode={mode}
+          />
         ) : run.status === 'running' ? (
           <div className="flex h-full items-center justify-center gap-2 text-muted-foreground">
             <Spinner /> <span>{t('results.running')}</span>
@@ -210,17 +220,20 @@ function ResultBody({
   run,
   result,
   onLoadMore,
+  mode,
 }: {
   tabStateId: string;
   run: RunSnapshot;
   result: StatementResult;
   onLoadMore: () => void;
+  mode?: EditorMode;
 }) {
   const { t, i18n } = useTranslation('editor');
   const nf = new Intl.NumberFormat(i18n.language);
+  const [asDocuments, setAsDocuments] = useState(false);
   const kind = resultKind(result);
   if (result.model && kind !== 'error') {
-    return (
+    const grid = (
       <ResultGrid
         gridId={`${tabStateId}:${run.id}:${result.key}`}
         result={result}
@@ -228,6 +241,22 @@ function ResultBody({
         fetching={run.fetchingMore}
         onLoadMore={onLoadMore}
       />
+    );
+    // A document result (MongoDB) can be read as Extended JSON through the mode's plug-in.
+    const documents = mode === 'mongo' ? getConsolePlugin(mode)?.renderResult?.(result) : null;
+    if (!documents) return grid;
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border px-2">
+          <Button size="sm" aria-pressed={!asDocuments} onClick={() => setAsDocuments(false)}>
+            {t('results.viewTable')}
+          </Button>
+          <Button size="sm" aria-pressed={asDocuments} onClick={() => setAsDocuments(true)}>
+            {t('results.viewDocuments')}
+          </Button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">{asDocuments ? documents : grid}</div>
+      </div>
     );
   }
   if (kind === 'error') return <ErrorView run={run} result={result} />;

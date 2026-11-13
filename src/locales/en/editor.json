@@ -51,7 +51,9 @@
     "truncatedFinal": "Showing {{formatted}} rows; more rows were not fetched.",
     "moreHidden": "+ {{count}} more results (not shown)",
     "loadMore": "Load more",
-    "cellViewer": "Cell viewer"
+    "cellViewer": "Cell viewer",
+    "viewTable": "Table",
+    "viewDocuments": "Documents"
   },
   "tx": {
     "autoCommit": "Auto-commit",

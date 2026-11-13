@@ -427,7 +427,12 @@ function EditorBody({
               </Panel>
               <Separator className="h-px bg-border transition-colors hover:bg-accent data-[separator=active]:bg-accent" />
               <Panel minSize="10%">
-                <ResultsPanel tabStateId={id} run={run} onLoadMore={() => void fetchMore(id)} />
+                <ResultsPanel
+                  tabStateId={id}
+                  run={run}
+                  mode={mode}
+                  onLoadMore={() => void fetchMore(id)}
+                />
               </Panel>
             </Group>
           )}

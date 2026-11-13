@@ -270,9 +270,66 @@ describe('connection loss and console mode', () => {
     await user.type(input, 'GET greeting{Enter}');
     const entry = await screen.findByTestId('console-entry');
     expect(entry).toHaveTextContent('GET greeting');
-    expect(entry).toHaveTextContent('OK');
+    // Typed replies come from the Redis console plug-in (quoted like redis-cli).
+    expect(within(entry).getByTestId('redis-reply')).toHaveTextContent('"OK"');
     await user.type(input, '{ArrowUp}');
     expect(input).toHaveValue('GET greeting');
+  });
+
+  it('suggests Redis commands from script_vocabulary while typing', async () => {
+    const user = userEvent.setup();
+    const base = (await ipc.connectionsList()).profiles[0]!;
+    const redis = await ipc.connectionSave(
+      {
+        ...base,
+        id: '00000000-0000-4000-8000-0000000000d2',
+        name: 'Redis',
+        kind: 'redis',
+        port: 6379,
+      },
+      { action: 'keep' },
+    );
+    const session = await openSession(redis.id);
+    const id = openEditor(session, {});
+    const tab = useTabsStore.getState().tabs.find((t) => t.id === editorTabId(id))!;
+    if (tab.kind !== 'editor') throw new Error('not an editor tab');
+    render(
+      <Providers>
+        <EditorTab {...tab.payload} />
+      </Providers>,
+    );
+    const input = await screen.findByRole('textbox', { name: 'Console input' });
+    await user.type(input, 'fl');
+    const hints = await screen.findByRole('list', { name: 'Command hints' });
+    expect(hints).toHaveTextContent('FLUSHDB [ASYNC]');
+  });
+
+  it('shows MongoDB results as documents on request', async () => {
+    const user = userEvent.setup();
+    const base = (await ipc.connectionsList()).profiles[0]!;
+    const mongo = await ipc.connectionSave(
+      {
+        ...base,
+        id: '00000000-0000-4000-8000-0000000000d3',
+        name: 'Mongo',
+        kind: 'mongodb',
+        port: 27017,
+      },
+      { action: 'keep' },
+    );
+    const session = await openSession(mongo.id);
+    const id = openEditor(session, { text: 'db.users.find()' });
+    const tab = useTabsStore.getState().tabs.find((t) => t.id === editorTabId(id))!;
+    if (tab.kind !== 'editor') throw new Error('not an editor tab');
+    render(
+      <Providers>
+        <EditorTab {...tab.payload} />
+      </Providers>,
+    );
+    await screen.findByTestId('sql-editor', undefined, { timeout: 5000 });
+    await user.click(screen.getByRole('button', { name: /^Run$/ }));
+    await user.click(await screen.findByRole('button', { name: 'Documents' }, { timeout: 5000 }));
+    expect(await screen.findByTestId('mongo-documents')).toHaveTextContent('"name": "doc 1"');
   });
 });
 

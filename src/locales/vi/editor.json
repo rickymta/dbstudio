@@ -51,7 +51,9 @@
     "truncatedFinal": "Đang hiển thị {{formatted}} dòng; các dòng còn lại chưa được tải.",
     "moreHidden": "+ {{count}} kết quả nữa (không hiển thị)",
     "loadMore": "Tải thêm",
-    "cellViewer": "Trình xem ô"
+    "cellViewer": "Trình xem ô",
+    "viewTable": "Bảng",
+    "viewDocuments": "Tài liệu"
   },
   "tx": {
     "autoCommit": "Tự động commit",

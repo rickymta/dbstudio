@@ -64,7 +64,7 @@ describe('DeleteByPatternDialog', () => {
       await screen.findByText('Done. Keys deleted: 900.', undefined, WAIT),
     ).toBeInTheDocument();
     expect(redisDb('0').size).toBe(before - 900);
-    expect(onDone).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
   });
 
   it('suggests * on a database and blocks an empty pattern', async () => {

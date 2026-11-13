@@ -8,7 +8,7 @@ describe('uriFormPatch', () => {
     const parsed = await mockParseMongoUri(
       'mongodb+srv://ada:pw@cluster.example.net/app?authSource=admin&replicaSet=rs0&appName=dbs',
     );
-    expect(parsed.pendingSecretId).toBeNull();
+    expect(parsed.hasPassword).toBe(true);
     const form = { ...initialForm(undefined), name: 'x', ...uriFormPatch(parsed) };
     expect(form.options).toEqual({
       srv: 'true',
