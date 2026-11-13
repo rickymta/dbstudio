@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dbstudio_core::{
-    ApplyResult, ChangeSet, DdlItem, DdlRequest, Editability, ExplainRequest, RawPlan,
+    ApplyResult, ChangeSet, Lease, LeaseOptions, DdlItem, DdlRequest, Editability, ExplainRequest, RawPlan,
     SchemaModel, SchemaModelRequest,
     ExecSummary, ObjectKind, ObjectNode, ObjectPath, ObjectSearchRequest, QueryRequest, Result,
     ResultSink, ScriptDialect, ServerInfo, Session, TableCountRequest, TableDataRequest,
@@ -187,6 +187,10 @@ impl MssqlSession {
 impl Session for MssqlSession {
     fn script_dialect(&self) -> ScriptDialect {
         ScriptDialect::MsSql
+    }
+
+    async fn open_lease(&self, opts: LeaseOptions) -> Result<Box<dyn Lease>> {
+        crate::lease::open(self, opts).await
     }
 
     async fn ping(&self) -> Result<()> {

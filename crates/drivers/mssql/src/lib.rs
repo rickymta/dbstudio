@@ -30,6 +30,7 @@
 //!   enforces read-only connections).
 
 mod batch;
+mod bulk;
 mod browse;
 mod catalog;
 mod conn;
@@ -40,6 +41,7 @@ mod edit;
 mod error;
 mod exec;
 mod explain;
+mod lease;
 mod model;
 mod settings;
 mod session;

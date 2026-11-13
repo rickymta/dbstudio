@@ -108,9 +108,21 @@ pub(crate) async fn explain_on(
     };
     let quiet_ctl = Control::default();
     let mut sink = PlanSink::default();
+    // Inside the caller's transaction (a lease) a savepoint keeps the outer work.
+    let outer = req.analyze
+        && conn
+            .rows("SELECT @@TRANCOUNT")
+            .await?
+            .first()
+            .is_some_and(|r| crate::value::int_at(r, 0) > 0);
     let outcome: Result<()> = async {
         if req.analyze {
-            step(conn, &quiet_ctl, &quiet, "BEGIN TRANSACTION").await?;
+            let begin = if outer {
+                "SAVE TRANSACTION dbstudio_explain"
+            } else {
+                "BEGIN TRANSACTION"
+            };
+            step(conn, &quiet_ctl, &quiet, begin).await?;
             step(conn, &quiet_ctl, &quiet, "SET STATISTICS XML ON").await?;
         } else {
             step(conn, &quiet_ctl, &quiet, "SET SHOWPLAN_XML ON").await?;
@@ -123,13 +135,12 @@ pub(crate) async fn explain_on(
     // Always restore the connection, whatever happened.
     let cleanup = if req.analyze {
         let off = step(conn, &quiet_ctl, &quiet, "SET STATISTICS XML OFF").await;
-        let rb = step(
-            conn,
-            &quiet_ctl,
-            &quiet,
-            "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION",
-        )
-        .await;
+        let rollback = if outer {
+            "ROLLBACK TRANSACTION dbstudio_explain"
+        } else {
+            "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"
+        };
+        let rb = step(conn, &quiet_ctl, &quiet, rollback).await;
         off.and(rb)
     } else {
         step(conn, &quiet_ctl, &quiet, "SET SHOWPLAN_XML OFF").await

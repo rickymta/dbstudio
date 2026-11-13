@@ -132,6 +132,9 @@ impl Settings {
         c.host(&self.host);
         c.port(self.port);
         c.application_name(&self.app_name);
+        // Statements may legitimately be silent for a long time (`WAITFOR`, big scans): the
+        // time limit is the request's `timeout_ms`, not a per-round-trip bound.
+        c.command_timeout(None);
         if !database.is_empty() {
             c.database(database);
         }

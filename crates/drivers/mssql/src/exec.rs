@@ -40,6 +40,10 @@ pub trait Out: Send {
     async fn rows(&mut self, r: Vec<Vec<Value>>) -> Result<()>;
     async fn message(&mut self, m: String) -> Result<()>;
     async fn end(&mut self, e: StatementEnd) -> Result<()>;
+    /// The run paused at `max_rows` (leases); a later `fetch_more` resumes it.
+    async fn paused(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// [`Out`] over a [`ResultSink`].
@@ -98,8 +102,8 @@ pub struct RunParams {
 /// Message to a paused executor.
 #[derive(Debug)]
 pub enum GateMsg {
-    /// Deliver up to this many more rows of the paused result set.
-    Continue(u64),
+    /// Deliver up to `rows` more rows of the paused result set, `batch` rows per call.
+    Continue { rows: u64, batch: Option<usize> },
     /// Drop the rest of the result set (cancels the batch).
     Discard,
 }
@@ -107,8 +111,6 @@ pub enum GateMsg {
 /// Lets a lease pause a run at `max_rows` instead of cancelling it.
 pub struct Gate {
     pub rx: mpsc::Receiver<GateMsg>,
-    /// Called after the end event of the truncated segment was delivered.
-    pub paused: Box<dyn FnMut() + Send>,
 }
 
 impl std::fmt::Debug for Gate {
@@ -247,6 +249,7 @@ async fn run_batch(
     let drain_sleep = tokio::time::sleep(Duration::from_secs(24 * 3600 * 365));
     tokio::pin!(drain_sleep);
 
+    let mut batch_size = p.batch_size;
     let mut reason: Option<Reason> = None;
     let mut sink_error: Option<Error> = None;
     let mut open: Option<OpenSet> = None;
@@ -362,9 +365,12 @@ async fn run_batch(
                             carry = Some(row);
                             let set = open.take().expect("set is open");
                             emit!(finish_set(out, set, true, totals));
-                            (g.paused)();
+                            emit!(out.paused());
                             match g.rx.recv().await {
-                                Some(GateMsg::Continue(n)) => {
+                                Some(GateMsg::Continue { rows: n, batch }) => {
+                                    if let Some(b) = batch {
+                                        batch_size = b.max(1);
+                                    }
                                     emit!(out.start(StatementStart {
                                         index: totals.statements,
                                         range,
@@ -393,7 +399,7 @@ async fn run_batch(
                 let cells: Vec<Value> = row.into_iter().map(|d| value::decode(d, lob)).collect();
                 set.buf.push(cells);
                 set.count += 1;
-                if set.buf.len() >= p.batch_size {
+                if set.buf.len() >= batch_size {
                     let rows = std::mem::take(&mut set.buf);
                     emit!(out.rows(rows));
                 }

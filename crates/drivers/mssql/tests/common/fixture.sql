@@ -31,6 +31,10 @@ CREATE TABLE sales.orders (
 GO
 CREATE INDEX IX_orders_customer ON sales.orders (customer_id DESC) INCLUDE (qty) WHERE qty > 0;
 GO
+CREATE TABLE dbo.simple_t (id INT NOT NULL PRIMARY KEY, name NVARCHAR(50) NULL);
+GO
+INSERT INTO dbo.simple_t VALUES (1, N'one'), (2, N'two'), (3, NULL);
+GO
 CREATE TABLE dbo.nokey (a INT, b NVARCHAR(10));
 GO
 CREATE TABLE dbo.uniq_only (code NVARCHAR(10) NOT NULL, v INT NULL);
