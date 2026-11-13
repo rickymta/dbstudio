@@ -458,6 +458,21 @@ fn entry_name(t: &TableModel, multi_schema: bool, dialect: ScriptDialect) -> Str
 
 /// An export may only read: refuse a query that writes (the lease transaction is read-only too).
 fn check_query_is_read_only(dialect: ScriptDialect, text: &str) -> Result<()> {
+    // Exactly one statement: nothing else may ride along with the exported query.
+    let statements = dbstudio_sql::split(dialect, text)
+        .iter()
+        .filter(|r| {
+            text.chars()
+                .skip(r.start as usize)
+                .take((r.end - r.start) as usize)
+                .any(|c| !c.is_whitespace())
+        })
+        .count();
+    if statements != 1 {
+        return Err(Error::Other(
+            "the query to export must be exactly one statement".into(),
+        ));
+    }
     let analysis = dbstudio_sql::analyze(dialect, text);
     let policy = dbstudio_sql::Policy {
         read_only: true,

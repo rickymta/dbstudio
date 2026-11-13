@@ -488,6 +488,29 @@ async fn a_query_that_writes_is_refused_and_leaves_no_file() {
 }
 
 #[tokio::test]
+async fn a_query_must_be_a_single_statement() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = FakeSession::with_tables(&[("orders", 1)]);
+    let err = run_export(
+        context(session.clone(), Recorder::new()),
+        spec(
+            ExportSource::Query {
+                text: "SELECT 1 AS n; DROP TABLE orders".into(),
+                database: None,
+            },
+            ExportContent::Data,
+            ExportFormat::Csv(CsvOptions::default()),
+            &dir.path().join("q.csv"),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, Error::Other(_)), "{err:?}");
+    assert!(session.statements().is_empty());
+    assert!(leftovers(dir.path()).is_empty());
+}
+
+#[tokio::test]
 async fn cancelling_mid_stream_leaves_nothing_behind() {
     let dir = tempfile::tempdir().unwrap();
     let session = FakeSession::with_tables(&[("orders", 30)]);
