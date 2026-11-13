@@ -148,7 +148,7 @@ impl PostgresSession {
         }
     }
 
-    fn login_db(&self) -> &str {
+    pub(crate) fn login_db(&self) -> &str {
         &self.shared.login_db
     }
 

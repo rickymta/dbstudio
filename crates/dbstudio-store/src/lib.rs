@@ -21,7 +21,7 @@ mod validate;
 
 pub use backup::{BackupJobRow, BackupRunRow};
 pub use db::Store;
-pub use erd::{ErdLayout, ErdLayoutSummary};
+pub use erd::{ERD_CONFLICT, ErdLayout, ErdLayoutSummary};
 pub use history::{
     HISTORY_LIMIT_RANGE, HISTORY_TEXT_MAX_CHARS, HistoryEntry, HistoryQuery, NewHistoryEntry,
 };
