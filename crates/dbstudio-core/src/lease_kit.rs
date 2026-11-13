@@ -85,6 +85,18 @@ pub trait LeaseBackend: Send + 'static {
     async fn close(&mut self) -> Result<bool>;
     /// Handle usable concurrently from another task to interrupt the running call.
     fn canceller(&self) -> Arc<dyn Canceller>;
+    /// Whether a result is pending after `execute` / `fetch_more` returned. `None` (default)
+    /// lets [`ActorLease`] infer it from the events (last statement ended truncated with
+    /// `keep_open`); backends that do not keep every truncated result open must answer.
+    fn has_pending(&self) -> Option<bool> {
+        None
+    }
+    /// How long the pending result may wait for `fetch_more` (at most
+    /// [`LeaseTuning::pending_ttl`]); shorter when it holds server resources that matter, such
+    /// as the transaction of an auto-commit cursor.
+    fn pending_ttl(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// Interrupts the call currently running on a [`LeaseBackend`].
@@ -92,6 +104,13 @@ pub trait LeaseBackend: Send + 'static {
 pub trait Canceller: Send + Sync {
     /// Interrupt the running statement (protocol-level cancel).
     async fn cancel(&self) -> Result<()>;
+    /// Interrupt the running statement only when it belongs to request `query_id`; a request
+    /// that already ended (and was replaced by another) must not be hit. Backends that know
+    /// the id of their running request override this; the default cancels whatever runs.
+    async fn cancel_for(&self, query_id: Uuid) -> Result<()> {
+        let _ = query_id;
+        self.cancel().await
+    }
 }
 
 /// Timings of an [`ActorLease`].
@@ -103,6 +122,12 @@ pub struct LeaseTuning {
     pub cancel_wait: Duration,
     /// `close` waits this long for the rollback / graceful close.
     pub rollback_wait: Duration,
+    /// A lease that received no command for this long is rolled back and closed (an editor tab
+    /// that was forgotten or orphaned). `None` disables the limit.
+    pub idle_ttl: Option<Duration>,
+    /// After a timeout the statement is cancelled; when it still has not ended after this long
+    /// the lease is declared broken and its connection dropped.
+    pub timeout_grace: Duration,
 }
 
 impl Default for LeaseTuning {
@@ -111,6 +136,8 @@ impl Default for LeaseTuning {
             pending_ttl: Duration::from_secs(10 * 60),
             cancel_wait: Duration::from_secs(5),
             rollback_wait: Duration::from_secs(5),
+            idle_ttl: Some(Duration::from_secs(8 * 3600)),
+            timeout_grace: Duration::from_secs(10),
         }
     }
 }
@@ -402,8 +429,12 @@ impl<B: LeaseBackend> ActorLease<B> {
         stop: Arc<AtomicBool>,
         sink: &mut dyn ResultSink,
         timeout: Option<Duration>,
+        query_id: Uuid,
     ) -> Result<ExecSummary> {
         let mut done = Box::pin(done);
+        let hard = tokio::time::sleep(Duration::from_secs(86_400 * 365));
+        tokio::pin!(hard);
+        let mut hard_armed = false;
         let timer = tokio::time::sleep(timeout.unwrap_or(Duration::from_secs(86_400 * 365)));
         tokio::pin!(timer);
         let mut timer_armed = timeout.is_some();
@@ -429,7 +460,7 @@ impl<B: LeaseBackend> ActorLease<B> {
                             if deliver(event, &mut sink_error) {
                                 // The sink wants to stop: make the backend stop too.
                                 stop.store(true, Ordering::Release);
-                                let _ = self.canceller.cancel().await;
+                                let _ = self.canceller.cancel_for(query_id).await;
                             }
                         }
                         // The actor dropped its sink; only the final result is left.
@@ -442,7 +473,15 @@ impl<B: LeaseBackend> ActorLease<B> {
                 _ = &mut timer, if timer_armed => {
                     timer_armed = false;
                     timed_out = true;
-                    let _ = self.canceller.cancel().await;
+                    hard.as_mut().reset(tokio::time::Instant::now() + self.tuning.timeout_grace);
+                    hard_armed = true;
+                    let _ = self.canceller.cancel_for(query_id).await;
+                }
+                _ = &mut hard, if hard_armed => {
+                    // The cancel did not stop the statement: the connection cannot be trusted
+                    // any more. Drop it; the lease is broken.
+                    self.abandon();
+                    break Err(Error::Timeout);
                 }
             }
         };
@@ -454,10 +493,24 @@ impl<B: LeaseBackend> ActorLease<B> {
             return Err(e);
         }
         match outcome {
+            Err(Error::Timeout) => Err(Error::Timeout),
             Err(Error::Connection(m)) => Err(Error::Connection(m)),
             Err(_) if timed_out => Err(Error::Timeout),
             other => other,
         }
+    }
+}
+
+impl<B: LeaseBackend> ActorLease<B> {
+    /// Stop the actor task (dropping the connection) and mark the lease broken.
+    fn abandon(&self) {
+        if let Some(task) = self.task.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            task.abort();
+        }
+        let mut g = self.shared.lock();
+        g.state.broken = true;
+        g.state.running = None;
+        g.busy = false;
     }
 }
 
@@ -478,7 +531,8 @@ impl<B: LeaseBackend> Drop for ActorLease<B> {
 #[async_trait]
 impl<B: LeaseBackend> Lease for ActorLease<B> {
     async fn execute(&self, req: QueryRequest, sink: &mut dyn ResultSink) -> Result<ExecSummary> {
-        let slot = self.claim(Some(req.query_id))?;
+        let query_id = req.query_id;
+        let slot = self.claim(Some(query_id))?;
         let timeout = req.timeout_ms.map(Duration::from_millis);
         let keep_open = req.max_rows.is_some();
         let (events_tx, events_rx) = mpsc::unbounded_channel();
@@ -494,7 +548,8 @@ impl<B: LeaseBackend> Lease for ActorLease<B> {
                 done: done_tx,
             },
         )?;
-        self.pump(events_rx, done_rx, stop, sink, timeout).await
+        self.pump(events_rx, done_rx, stop, sink, timeout, query_id)
+            .await
     }
 
     async fn fetch_more(
@@ -523,7 +578,8 @@ impl<B: LeaseBackend> Lease for ActorLease<B> {
                 done: done_tx,
             },
         )?;
-        self.pump(events_rx, done_rx, stop, sink, None).await
+        self.pump(events_rx, done_rx, stop, sink, None, query_id)
+            .await
     }
 
     async fn discard_result(&self) -> Result<()> {
@@ -537,7 +593,7 @@ impl<B: LeaseBackend> Lease for ActorLease<B> {
         if self.shared.lock().state.running != Some(query_id) {
             return Ok(());
         }
-        self.canceller.cancel().await
+        self.canceller.cancel_for(query_id).await
     }
 
     async fn begin(&self, opts: TxOptions) -> Result<()> {
@@ -611,13 +667,17 @@ impl<B: LeaseBackend> Lease for ActorLease<B> {
         if let Some(report) = *cached {
             return Ok(report);
         }
-        let was_running = {
+        let running = {
             let mut g = self.shared.lock();
             g.closed = true;
-            g.state.running.is_some()
+            g.state.running
         };
-        if was_running {
-            let _ = tokio::time::timeout(self.tuning.cancel_wait, self.canceller.cancel()).await;
+        if let Some(running_id) = running {
+            let _ = tokio::time::timeout(
+                self.tuning.cancel_wait,
+                self.canceller.cancel_for(running_id),
+            )
+            .await;
         }
         let (tx, rx) = oneshot::channel();
         let budget = self.tuning.cancel_wait + self.tuning.rollback_wait + Duration::from_secs(1);
@@ -664,23 +724,32 @@ async fn run_actor<B: LeaseBackend>(
 ) {
     let mut pending_deadline: Option<Instant> = None;
     loop {
-        let cmd = match pending_deadline {
-            Some(deadline) => {
-                tokio::select! {
-                    cmd = cmds.recv() => cmd,
-                    _ = tokio::time::sleep_until(deadline) => {
-                        // Nobody fetched the pending result in time: release it.
-                        let _ = backend.discard_result().await;
-                        pending_deadline = None;
-                        shared.lock().state.pending_result = None;
-                        if let Ok(tx) = backend.probe_tx().await {
-                            shared.lock().state.transaction = tx;
-                        }
-                        continue;
-                    }
+        let idle_deadline = tuning.idle_ttl.map(|d| Instant::now() + d);
+        // `Instant` far in the future stands for "no deadline" in the guarded branches.
+        let far = Instant::now() + Duration::from_secs(86_400 * 365);
+        let cmd = tokio::select! {
+            cmd = cmds.recv() => cmd,
+            _ = tokio::time::sleep_until(pending_deadline.unwrap_or(far)), if pending_deadline.is_some() => {
+                // Nobody fetched the pending result in time: release it.
+                let _ = backend.discard_result().await;
+                pending_deadline = None;
+                shared.lock().state.pending_result = None;
+                if let Ok(tx) = backend.probe_tx().await {
+                    shared.lock().state.transaction = tx;
                 }
+                continue;
             }
-            None => cmds.recv().await,
+            _ = tokio::time::sleep_until(idle_deadline.unwrap_or(far)), if idle_deadline.is_some() => {
+                // Forgotten (or orphaned) lease: roll back and close the connection.
+                let _ = tokio::time::timeout(tuning.rollback_wait, backend.close()).await;
+                let mut g = shared.lock();
+                g.closed = true;
+                g.busy = false;
+                g.state.running = None;
+                g.state.pending_result = None;
+                g.state.broken = true;
+                break;
+            }
         };
         let Some(cmd) = cmd else { break };
 
@@ -703,7 +772,10 @@ async fn run_actor<B: LeaseBackend>(
                 let text = req.text.clone();
                 let mut sink = ChannelSink::new(events, stop);
                 let result = backend.execute(req, &mut sink, keep_open).await;
-                let pending = keep_open && result.is_ok() && sink.ended_truncated();
+                let pending = result.is_ok()
+                    && backend
+                        .has_pending()
+                        .unwrap_or(keep_open && sink.ended_truncated());
                 let context = if result.is_ok() || !matches!(result, Err(Error::Connection(_))) {
                     backend.refresh_context(&text).await.ok().flatten()
                 } else {
@@ -713,7 +785,7 @@ async fn run_actor<B: LeaseBackend>(
                 if let Some(ctx) = context {
                     apply_context(&shared, &ctx);
                 }
-                pending_deadline = pending.then(|| Instant::now() + tuning.pending_ttl);
+                pending_deadline = pending.then(|| Instant::now() + pending_ttl(&backend, &tuning));
                 let _ = done.send(result);
             }
             Cmd::Fetch {
@@ -730,7 +802,10 @@ async fn run_actor<B: LeaseBackend>(
                 } else {
                     backend.fetch_more(max_rows, batch, &mut sink).await
                 };
-                let pending = result.is_ok() && sink.ended_truncated();
+                let pending = result.is_ok()
+                    && backend
+                        .has_pending()
+                        .unwrap_or_else(|| sink.ended_truncated());
                 finish_stream(
                     &mut backend,
                     &shared,
@@ -738,7 +813,7 @@ async fn run_actor<B: LeaseBackend>(
                     pending.then_some(query_id).flatten(),
                 )
                 .await;
-                pending_deadline = pending.then(|| Instant::now() + tuning.pending_ttl);
+                pending_deadline = pending.then(|| Instant::now() + pending_ttl(&backend, &tuning));
                 let _ = done.send(result);
             }
             Cmd::Discard(reply) => {
@@ -798,6 +873,12 @@ async fn run_actor<B: LeaseBackend>(
             }
         }
     }
+}
+
+fn pending_ttl<B: LeaseBackend>(backend: &B, tuning: &LeaseTuning) -> Duration {
+    backend
+        .pending_ttl()
+        .map_or(tuning.pending_ttl, |t| t.min(tuning.pending_ttl))
 }
 
 fn apply_context(shared: &Shared, ctx: &LeaseContext) {
@@ -1299,6 +1380,7 @@ mod tests {
             pending_ttl: Duration::from_secs(60),
             cancel_wait: Duration::from_millis(100),
             rollback_wait: Duration::from_millis(100),
+            ..LeaseTuning::default()
         };
         let lease =
             Arc::new(ActorLease::spawn_with(fake, LeaseOptions::default(), tuning).unwrap());
@@ -1375,5 +1457,64 @@ mod tests {
         let id = lease.state().running.unwrap();
         lease.cancel(id).await.unwrap();
         let _ = runner.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_timeout_whose_cancel_does_not_work_breaks_the_lease() {
+        let (fake, _, _, _) = Fake::new(1);
+        let tuning = LeaseTuning {
+            timeout_grace: Duration::from_millis(150),
+            ..LeaseTuning::default()
+        };
+        let lease = ActorLease::spawn_with(fake, LeaseOptions::default(), tuning).unwrap();
+        let mut req = request("stuck", None);
+        req.timeout_ms = Some(50);
+        let started = std::time::Instant::now();
+        let err = lease
+            .execute(req, &mut CollectingSink::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Timeout), "{err:?}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(lease.state().broken);
+        assert_eq!(lease.state().running, None);
+        // Only close is valid; it does not hang.
+        let report = lease.close().await.unwrap();
+        assert!(report.forced);
+    }
+
+    #[tokio::test]
+    async fn an_idle_lease_is_rolled_back_and_closed() {
+        let (fake, _, _, closes) = Fake::new(1);
+        let tuning = LeaseTuning {
+            idle_ttl: Some(Duration::from_millis(120)),
+            ..LeaseTuning::default()
+        };
+        let lease = ActorLease::spawn_with(fake, LeaseOptions::default(), tuning).unwrap();
+        lease.begin(TxOptions::default()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        assert!(lease.state().broken);
+        let err = lease
+            .execute(request("select", None), &mut CollectingSink::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "connection");
+    }
+
+    #[tokio::test]
+    async fn activity_keeps_a_lease_alive() {
+        let (fake, _, _, closes) = Fake::new(1);
+        let tuning = LeaseTuning {
+            idle_ttl: Some(Duration::from_millis(250)),
+            ..LeaseTuning::default()
+        };
+        let lease = ActorLease::spawn_with(fake, LeaseOptions::default(), tuning).unwrap();
+        for _ in 0..4 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            lease.ping().await.unwrap();
+        }
+        assert_eq!(closes.load(Ordering::SeqCst), 0);
+        assert!(!lease.state().broken);
     }
 }
