@@ -30,12 +30,15 @@ pub struct Unit {
 pub(crate) struct SplitState {
     /// Active MySQL delimiter.
     delimiter: Vec<char>,
+    /// The next character is at the start of a line (only blanks before it on its line).
+    line_start: bool,
 }
 
 impl Default for SplitState {
     fn default() -> Self {
         SplitState {
             delimiter: vec![';'],
+            line_start: true,
         }
     }
 }
@@ -65,12 +68,28 @@ pub(crate) fn scan(
     st: &mut SplitState,
     eof: bool,
 ) -> (Vec<Unit>, usize) {
-    match d {
+    let (mut units, consumed) = match d {
         ScriptDialect::Opaque => scan_opaque(chars, eof),
         ScriptDialect::RedisCli => scan_lines(chars, eof),
         ScriptDialect::MongoShell => scan_mongo(chars, eof),
-        _ => scan_sql(d, chars, st, eof),
+        _ => {
+            let r = scan_sql(d, chars, st, eof);
+            if r.1 > 0 {
+                st.line_start = chars[r.1 - 1] == '\n';
+            }
+            r
+        }
+    };
+    // Unterminated strings / comments run to the end of the text and may swallow trailing
+    // whitespace: ranges are always trimmed.
+    for u in &mut units {
+        let mut e = u.range.end as usize;
+        while e > u.range.start as usize + 1 && chars[e - 1].is_whitespace() {
+            e -= 1;
+        }
+        u.range.end = to_u32(e);
     }
+    (units, consumed)
 }
 
 fn unit(start: usize, end: usize, repeat: u32) -> Unit {
@@ -298,8 +317,22 @@ fn match_go(chars: &[char], i: usize) -> Option<(usize, u32, bool)> {
         let s: String = chars[ds..j].iter().collect();
         count = Some(s.parse().unwrap_or(u32::MAX));
     }
-    while j < n && matches!(chars[j], ' ' | '\t') {
-        j += 1;
+    // blanks and `/* ... */` comments that end on the same line
+    loop {
+        while j < n && matches!(chars[j], ' ' | '\t') {
+            j += 1;
+        }
+        if j + 1 < n && chars[j] == '/' && chars[j + 1] == '*' {
+            let mut k = j + 2;
+            while k + 1 < n && !(chars[k] == '*' && chars[k + 1] == '/') && chars[k] != '\n' {
+                k += 1;
+            }
+            if k + 1 < n && chars[k] == '*' && chars[k + 1] == '/' {
+                j = k + 2;
+                continue;
+            }
+        }
+        break;
     }
     if j + 1 < n && chars[j] == '-' && chars[j + 1] == '-' {
         while j < n && chars[j] != '\n' {
@@ -483,7 +516,7 @@ fn scan_sql(
     let mut consumed = 0usize;
     let mut cur = Cur::default();
     let mut i = 0usize;
-    let mut line_start = true;
+    let mut line_start = st.line_start;
 
     while i < n {
         if line_start {
@@ -829,6 +862,22 @@ mod tests {
         assert_eq!(u.len(), 2);
         assert_eq!(u[0].repeat, 5);
         assert_eq!(u[1].repeat, 1);
+    }
+
+    #[test]
+    fn mssql_go_may_be_followed_by_comments() {
+        assert_eq!(
+            texts(MS, "select 1\nGO /* c */\ndrop table t"),
+            ["select 1", "drop table t"]
+        );
+        assert_eq!(
+            texts(MS, "select 1\ngo 2 /* a */ /* b */ -- c\nselect 2").len(),
+            2
+        );
+        let u = split_batches(MS, "select 1\nGO 3 /* c */\nselect 2");
+        assert_eq!(u[0].repeat, 3);
+        // a comment that spans lines is not part of the GO line
+        assert_eq!(texts(MS, "select 1\nGO /* a\nb */\nselect 2").len(), 1);
     }
 
     #[test]

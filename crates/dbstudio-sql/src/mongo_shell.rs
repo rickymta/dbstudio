@@ -96,6 +96,9 @@ impl ShellValue {
 /// One parsed statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellStatement {
+    /// Database chosen by `db.getSiblingDB("x")` / `db.getMongo().getDB("x")` at the head of
+    /// the statement; `None` = the current database (`use`).
+    pub database: Option<String>,
     /// Range in the text.
     pub range: TextRange,
     /// Shape.
@@ -253,6 +256,7 @@ impl<'a> Parser<'a> {
                     name = name[1..name.len() - 1].to_string();
                 }
                 Ok(ShellStatement {
+                    database: None,
                     range: self.range(start),
                     kind: ShellKind::Use,
                     collection: None,
@@ -268,6 +272,7 @@ impl<'a> Parser<'a> {
                     .ident()
                     .ok_or_else(|| err("`show` needs an argument", s))?;
                 Ok(ShellStatement {
+                    database: None,
                     range: self.range(start),
                     kind: ShellKind::Show,
                     collection: None,
@@ -295,6 +300,8 @@ impl<'a> Parser<'a> {
 
     fn db_statement(&mut self, start: usize) -> Result<ShellStatement> {
         let mut collection: Option<String> = None;
+        let mut database: Option<String> = None;
+        let mut mongo_seen = false;
         let mut method: Option<(String, Vec<ShellValue>)> = None;
         loop {
             if method.is_some() {
@@ -319,6 +326,24 @@ impl<'a> Parser<'a> {
                                 _ => {
                                     return Err(err("getCollection needs one string argument", at));
                                 }
+                            }
+                        } else if name == "getSiblingDB"
+                            && collection.is_none()
+                            && database.is_none()
+                        {
+                            match args.as_slice() {
+                                [ShellValue::String(s)] => database = Some(s.clone()),
+                                _ => return Err(err("getSiblingDB needs one string argument", at)),
+                            }
+                        } else if name == "getMongo" && args.is_empty() && database.is_none() {
+                            mongo_seen = true;
+                        } else if name == "getDB" && mongo_seen && database.is_none() {
+                            match args.as_slice() {
+                                [ShellValue::String(s)] => {
+                                    database = Some(s.clone());
+                                    mongo_seen = false;
+                                }
+                                _ => return Err(err("getDB needs one string argument", at)),
                             }
                         } else {
                             method = Some((name, args));
@@ -369,11 +394,17 @@ impl<'a> Parser<'a> {
                 ));
             }
             let a = self.args()?;
+            // Only cursor modifiers of reads are accepted: a chain must never turn a
+            // statement into something else (`db.c.find().drop()`).
+            if !chain_allowed(collection.is_some(), &m, &name) {
+                return Err(err(format!("`.{name}()` cannot follow `{m}()`"), at));
+            }
             chain.push((name, a));
             end = self.i;
         }
         self.i = end;
         Ok(ShellStatement {
+            database,
             range: self.range(start),
             kind: if collection.is_some() {
                 ShellKind::Collection
@@ -700,6 +731,37 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Cursor methods accepted after `method`; `explain` follows any collection method (it never
+/// changes what the statement does, and the classifier looks at the method).
+fn chain_allowed(on_collection: bool, method: &str, name: &str) -> bool {
+    if !on_collection {
+        return false;
+    }
+    if name == "explain" {
+        return true;
+    }
+    match method {
+        "find" => matches!(
+            name,
+            "sort"
+                | "limit"
+                | "skip"
+                | "project"
+                | "projection"
+                | "hint"
+                | "collation"
+                | "count"
+                | "toArray"
+                | "pretty"
+                | "batchSize"
+                | "maxTimeMS"
+                | "comment"
+        ),
+        "aggregate" => matches!(name, "toArray" | "pretty"),
+        _ => false,
+    }
+}
+
 fn num_text(v: &ShellValue) -> Option<String> {
     match v {
         ShellValue::Int(i) => Some(i.to_string()),
@@ -709,10 +771,29 @@ fn num_text(v: &ShellValue) -> Option<String> {
     }
 }
 
+/// A fresh ObjectId (`ObjectId()` in mongosh): 4 bytes of seconds, 5 bytes derived from the
+/// clock and process, 3 bytes of counter.
+fn new_object_id() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut h = u64::from(std::process::id())
+        ^ now.subsec_nanos() as u64
+        ^ (&COUNTER as *const _ as usize as u64);
+    h = h.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (h >> 29);
+    let secs = now.as_secs() as u32;
+    format!("{secs:08x}{:010x}{:06x}", h & 0xff_ffff_ffff, n & 0xff_ffff)
+}
+
 fn construct(name: &str, args: Vec<ShellValue>, at: usize) -> Result<ShellValue> {
     let bad = |m: &str| err(format!("{name}: {m}"), at);
     match name {
         "ObjectId" => match args.as_slice() {
+            [] => Ok(ShellValue::ObjectId(new_object_id())),
             [ShellValue::String(s)]
                 if s.len() == 24 && s.chars().all(|c| c.is_ascii_hexdigit()) =>
             {
@@ -819,17 +900,18 @@ pub fn parse(text: &str) -> Result<Vec<ShellStatement>> {
 /// Collection and database operations whose first argument is a filter.
 fn filter_is_all(stmt: &ShellStatement) -> bool {
     match stmt.args.first() {
-        None => true,
+        // `deleteMany()`, `deleteMany(null)` and `deleteMany(undefined)` match everything.
+        None | Some(ShellValue::Null) => true,
         Some(v) => v.is_empty_object(),
     }
 }
 
 fn pipeline_writes(stmt: &ShellStatement) -> bool {
+    let writes = |s: &ShellValue| s.get("$out").is_some() || s.get("$merge").is_some();
     match stmt.args.first() {
-        Some(ShellValue::Array(stages)) => stages
-            .iter()
-            .any(|s| s.get("$out").is_some() || s.get("$merge").is_some()),
-        _ => false,
+        Some(ShellValue::Array(stages)) => stages.iter().any(writes),
+        // mongosh also accepts the stages as separate arguments
+        _ => stmt.args.iter().any(writes),
     }
 }
 
@@ -888,26 +970,35 @@ const READ_COMMANDS: &[&str] = &[
 /// Class and destructive reason of a statement.
 pub fn classify(stmt: &ShellStatement) -> (StatementClass, Option<DestructiveReason>) {
     use StatementClass as C;
+    let inner = classify_call(stmt);
+    // `.explain(...)` in the chain turns a READ into an Explain. A write (or any destructive
+    // statement) keeps its class and reason: the chain is not allowed to hide it.
+    if stmt.kind == ShellKind::Collection && inner.0 == C::Read && inner.1.is_none() {
+        if let Some((_, a)) = stmt.chain.iter().find(|(n, _)| n == "explain") {
+            let analyze = matches!(
+                a.first(),
+                Some(ShellValue::String(s)) if s == "executionStats" || s == "allPlansExecution"
+            ) || matches!(a.first(), Some(ShellValue::Bool(true)));
+            return (
+                C::Explain {
+                    analyze,
+                    writes: false,
+                },
+                None,
+            );
+        }
+    }
+    inner
+}
+
+fn classify_call(stmt: &ShellStatement) -> (StatementClass, Option<DestructiveReason>) {
+    use StatementClass as C;
     match stmt.kind {
         ShellKind::Use => return (C::Session, None),
         ShellKind::Show => return (C::Read, None),
         _ => {}
     }
     let m = stmt.method.as_str();
-    // `.explain(...)` anywhere in the chain turns a read into an Explain.
-    if let Some((_, a)) = stmt.chain.iter().find(|(n, _)| n == "explain") {
-        let analyze = matches!(
-            a.first(),
-            Some(ShellValue::String(s)) if s == "executionStats" || s == "allPlansExecution"
-        ) || matches!(a.first(), Some(ShellValue::Bool(true)));
-        return (
-            C::Explain {
-                analyze,
-                writes: false,
-            },
-            None,
-        );
-    }
     if stmt.kind == ShellKind::Database {
         return classify_database(stmt);
     }
@@ -992,39 +1083,44 @@ fn classify_database(stmt: &ShellStatement) -> (StatementClass, Option<Destructi
         | "revokeRolesFromUser" => (C::Ddl, None),
         "dropDatabase" => (C::Ddl, Some(DestructiveReason::DropDatabase)),
         "runCommand" | "adminCommand" => {
-            let Some(ShellValue::Object(fields)) = stmt.args.first() else {
-                return (C::Procedural, None);
-            };
-            let Some((cmd, val)) = fields.first() else {
-                return (C::Procedural, None);
+            // `db.runCommand("dropDatabase")` is the same as `{dropDatabase: 1}`.
+            let no_fields: Vec<(String, ShellValue)> = Vec::new();
+            let (cmd, fields): (&String, &Vec<(String, ShellValue)>) = match stmt.args.first() {
+                Some(ShellValue::Object(f)) => match f.first() {
+                    Some((c, _)) => (c, f),
+                    None => return (C::Procedural, None),
+                },
+                Some(ShellValue::String(c)) => (c, &no_fields),
+                _ => return (C::Procedural, None),
             };
             match cmd.as_str() {
                 "drop" => (C::Ddl, Some(DestructiveReason::DropCollection)),
                 "dropDatabase" => (C::Ddl, Some(DestructiveReason::DropDatabase)),
+                "dropIndexes" => (C::Ddl, Some(DestructiveReason::AlterDrop)),
                 "delete" => {
-                    let all = fields
-                        .iter()
-                        .find(|(k, _)| k == "deletes")
-                        .is_some_and(|(_, d)| match d {
-                            ShellValue::Array(a) => a.iter().any(|x| {
-                                x.get("q").is_none_or(ShellValue::is_empty_object)
-                                    && matches!(x.get("limit"), Some(ShellValue::Int(0)) | None)
-                            }),
-                            _ => false,
-                        });
+                    let all = fields.is_empty()
+                        || fields.iter().find(|(k, _)| k == "deletes").is_some_and(
+                            |(_, d)| match d {
+                                ShellValue::Array(a) => a.iter().any(|x| {
+                                    x.get("q").is_none_or(ShellValue::is_empty_object)
+                                        && matches!(x.get("limit"), Some(ShellValue::Int(0)) | None)
+                                }),
+                                _ => false,
+                            },
+                        );
                     (C::Write, all.then_some(DestructiveReason::DeleteManyAll))
                 }
                 "update" => {
-                    let all = fields
-                        .iter()
-                        .find(|(k, _)| k == "updates")
-                        .is_some_and(|(_, u)| match u {
-                            ShellValue::Array(a) => a.iter().any(|x| {
-                                x.get("q").is_none_or(ShellValue::is_empty_object)
-                                    && x.get("multi") == Some(&ShellValue::Bool(true))
-                            }),
-                            _ => false,
-                        });
+                    let all = fields.is_empty()
+                        || fields.iter().find(|(k, _)| k == "updates").is_some_and(
+                            |(_, u)| match u {
+                                ShellValue::Array(a) => a.iter().any(|x| {
+                                    x.get("q").is_none_or(ShellValue::is_empty_object)
+                                        && x.get("multi") == Some(&ShellValue::Bool(true))
+                                }),
+                                _ => false,
+                            },
+                        );
                     (C::Write, all.then_some(DestructiveReason::UpdateManyAll))
                 }
                 "insert" | "findAndModify" | "findandmodify" | "create" | "createIndexes"
@@ -1037,10 +1133,7 @@ fn classify_database(stmt: &ShellStatement) -> (StatementClass, Option<Destructi
                     });
                     (if writes { C::Write } else { C::Read }, None)
                 }
-                c if READ_COMMANDS.contains(&c) => {
-                    let _ = val;
-                    (C::Read, None)
-                }
+                c if READ_COMMANDS.contains(&c) => (C::Read, None),
                 _ => (C::Procedural, None),
             }
         }
@@ -1212,6 +1305,27 @@ mod tests {
     }
 
     #[test]
+    fn empty_constructors_generate_values() {
+        let s = one("db.a.insertOne({_id: ObjectId(), t: new Date(), u: ISODate()})");
+        let a = &s.args[0];
+        let Some(ShellValue::ObjectId(id)) = a.get("_id") else {
+            panic!("{a:?}")
+        };
+        assert_eq!(id.len(), 24);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(a.get("t"), Some(&ShellValue::Date(String::new())));
+        assert_eq!(a.get("u"), Some(&ShellValue::Date(String::new())));
+        // every call makes a new id
+        let s = one("db.a.insertMany([{_id: ObjectId()}, {_id: ObjectId()}])");
+        let ShellValue::Array(v) = &s.args[0] else {
+            panic!()
+        };
+        assert_ne!(v[0], v[1]);
+        // the explicit form is still validated
+        assert!(parse("db.a.find({_id: ObjectId(\"zz\")})").is_err());
+    }
+
+    #[test]
     fn string_escapes() {
         let s = one(r#"db.a.find({a: "x\ny\t\"q\" é \x41 😀", b: 'it\'s'})"#);
         assert_eq!(
@@ -1268,7 +1382,7 @@ mod tests {
             ("db.a.find({a: 'x})", 14),
             ("db.a.find({a: foo})", 14),
             ("db.a.insertOne({_id: ObjectId(\"zz\")})", 21),
-            ("db.getSiblingDB('x').a.find()", 22),
+            ("db.a.find().drop()", 12),
         ] {
             match parse(text) {
                 Err(Error::Query {

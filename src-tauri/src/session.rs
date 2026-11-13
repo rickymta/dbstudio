@@ -8,6 +8,7 @@ use dbstudio_core::{
     ConnectionConfig, DriverDescriptor, DriverRegistry, Error, Result, ScriptDialect, Secret,
     ServerInfo, Session,
 };
+use dbstudio_ssh::{KnownHosts, MemoryKnownHosts, Tunnel};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -33,11 +34,31 @@ pub struct SessionInfo {
     pub dialect: ScriptDialect,
 }
 
+/// What a connection with an SSH tunnel needs besides the profile: the trusted host keys and
+/// the tunnel secret (password / key passphrase, keychain account `<connId>#ssh`).
+#[derive(Clone)]
+pub struct SshEnv {
+    /// Trusted host keys (`ssh_known_hosts`).
+    pub known: Arc<dyn KnownHosts>,
+    /// SSH password or key passphrase.
+    pub secret: Option<Secret>,
+}
+
+impl std::fmt::Debug for SshEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshEnv")
+            .field("secret", &self.secret.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 struct Entry {
     connection_id: Uuid,
     /// Profile settings at open time (read-only / environment for the guard).
     config: ConnectionConfig,
     session: Arc<dyn Session>,
+    /// SSH tunnel carrying the session; closed together with it.
+    _tunnel: Option<Tunnel>,
 }
 
 /// What `connect` produced.
@@ -46,6 +67,7 @@ struct Connected {
     server_info: ServerInfo,
     descriptor: DriverDescriptor,
     dialect: ScriptDialect,
+    tunnel: Option<Tunnel>,
 }
 
 /// Registry of open sessions. Several sessions may be open for the same connection.
@@ -101,6 +123,7 @@ impl SessionManager {
         &self,
         config: &ConnectionConfig,
         secret: Option<&Secret>,
+        ssh: Option<&SshEnv>,
     ) -> Result<Connected> {
         let driver = self.registry.get(config.kind).ok_or_else(|| {
             Error::Unsupported(format!("driver for {}", config.kind.display_name()))
@@ -112,8 +135,36 @@ impl SessionManager {
                 .filter(|ms| *ms > 0)
                 .unwrap_or(DEFAULT_CONNECT_TIMEOUT_MS),
         );
+        // SSH: the driver connects to the local end of the tunnel and verifies the server
+        // certificate against the original host name.
+        let (tunnelled, tunnel) = match &config.ssh {
+            Some(cfg) => {
+                let fallback = SshEnv {
+                    known: Arc::new(MemoryKnownHosts::new()),
+                    secret: None,
+                };
+                let env = ssh.unwrap_or(&fallback);
+                let t = Tunnel::open(
+                    cfg,
+                    env.secret.as_ref(),
+                    (config.host.clone(), config.port),
+                    env.known.as_ref(),
+                )
+                .await?;
+                let mut c = config.clone();
+                c.host = "127.0.0.1".to_string();
+                c.port = t.local_addr().port();
+                if c.tls.server_name.is_none() {
+                    c.tls.server_name = Some(config.host.clone());
+                }
+                (Some(c), Some(t))
+            }
+            None => (None, None),
+        };
+        let config_for_driver = tunnelled.as_ref().unwrap_or(config);
         let attempt = async {
-            let session: Arc<dyn Session> = Arc::from(driver.connect(config, secret).await?);
+            let session: Arc<dyn Session> =
+                Arc::from(driver.connect(config_for_driver, secret).await?);
             match session.server_info().await {
                 Ok(info) => Ok((session, info)),
                 Err(e) => {
@@ -131,21 +182,34 @@ impl SessionManager {
             server_info: info,
             descriptor,
             dialect,
+            tunnel,
         })
     }
 
     /// Open a new session for `config`.
+    #[allow(dead_code)] // the application uses `open_with_ssh`; tests use this one
     pub async fn open(
         &self,
         config: &ConnectionConfig,
         secret: Option<&Secret>,
+    ) -> Result<SessionInfo> {
+        self.open_with_ssh(config, secret, None).await
+    }
+
+    /// Open a new session for `config`, through an SSH tunnel when the profile has one.
+    pub async fn open_with_ssh(
+        &self,
+        config: &ConnectionConfig,
+        secret: Option<&Secret>,
+        ssh: Option<&SshEnv>,
     ) -> Result<SessionInfo> {
         let Connected {
             session,
             server_info,
             descriptor,
             dialect,
-        } = self.connect(config, secret).await?;
+            tunnel,
+        } = self.connect(config, secret, ssh).await?;
         let session_id = Uuid::new_v4();
         self.lock().insert(
             session_id,
@@ -153,6 +217,7 @@ impl SessionManager {
                 connection_id: config.id,
                 config: config.clone(),
                 session,
+                _tunnel: tunnel,
             },
         );
         tracing::info!(
@@ -173,16 +238,27 @@ impl SessionManager {
     }
 
     /// Connect, read the server info and disconnect again (used by "Test connection").
+    #[allow(dead_code)] // the application uses `test_with_ssh`; tests use this one
     pub async fn test(
         &self,
         config: &ConnectionConfig,
         secret: Option<&Secret>,
     ) -> Result<ServerInfo> {
+        self.test_with_ssh(config, secret, None).await
+    }
+
+    /// Like [`SessionManager::test`], through an SSH tunnel when the profile has one.
+    pub async fn test_with_ssh(
+        &self,
+        config: &ConnectionConfig,
+        secret: Option<&Secret>,
+        ssh: Option<&SshEnv>,
+    ) -> Result<ServerInfo> {
         let Connected {
             session,
             server_info: info,
             ..
-        } = self.connect(config, secret).await?;
+        } = self.connect(config, secret, ssh).await?;
         if let Err(e) = session.close().await {
             tracing::debug!(error = %e, "closing test session failed");
         }
@@ -611,5 +687,32 @@ mod tests {
             probe.last_secret.lock().unwrap().clone(),
             Some(Some("pw".to_string()))
         );
+    }
+
+    #[tokio::test]
+    async fn unreachable_bastion_fails_before_the_driver_is_used() {
+        use dbstudio_core::{SshAuth, SshConfig};
+        // Port that nobody listens on.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let (driver, probe) = MockDriver::new(DbKind::Postgres);
+        let m = manager(driver);
+        let mut cfg = config(DbKind::Postgres);
+        cfg.ssh = Some(SshConfig {
+            host: "127.0.0.1".into(),
+            port,
+            username: "u".into(),
+            auth: SshAuth::Password,
+            keepalive_secs: None,
+            connect_timeout_ms: Some(2000),
+        });
+        let err = m.open(&cfg, None).await.unwrap_err();
+        assert!(matches!(err, Error::Connection(_)), "{err:?}");
+        assert!(m.is_empty());
+        assert_eq!(probe.closes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let err = m.test(&cfg, None).await.unwrap_err();
+        assert!(matches!(err, Error::Connection(_)), "{err:?}");
     }
 }
