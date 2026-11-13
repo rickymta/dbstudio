@@ -1,5 +1,6 @@
 import i18n from '@/lib/i18n';
 import type { ObjectPath, SessionInfo } from '@/lib/types';
+import { useSessionsStore } from '@/stores/sessions';
 import { editorTabId, useTabsStore, type EditorMode, type EditorTabPayload } from '@/stores/tabs';
 import { newTabData, useEditorStore, type EditorTabData } from './editorStore';
 import { registerEditorTab } from './editorRunner';
@@ -9,6 +10,9 @@ export interface OpenEditorOptions {
   path?: ObjectPath;
   /** Initial text of the new editor. */
   text?: string;
+  /** Context to use instead of the one derived from `path`. */
+  database?: string | null;
+  schema?: string | null;
 }
 
 /** Editor language of a session's script dialect. */
@@ -71,7 +75,9 @@ export function addEditorTab(
 export function openEditor(session: SessionInfo, options: OpenEditorOptions = {}): string {
   const tabStateId = crypto.randomUUID();
   const text = options.text ?? '';
-  const { database, schema } = contextOfPath(options.path);
+  const fromPath = contextOfPath(options.path);
+  const database = options.database !== undefined ? options.database : fromPath.database;
+  const schema = options.schema !== undefined ? options.schema : fromPath.schema;
   return addEditorTab(
     {
       tabStateId,
@@ -89,3 +95,40 @@ export function openEditor(session: SessionInfo, options: OpenEditorOptions = {}
     },
   );
 }
+
+/** Show `title` on the tab of an editor (file name after open / save). */
+export function setEditorTitle(tabStateId: string, title: string): void {
+  useEditorStore.getState().patch(tabStateId, { title });
+  useTabsStore.setState((s) => ({
+    tabs: s.tabs.map((t) => (t.id === editorTabId(tabStateId) ? { ...t, title } : t)),
+  }));
+}
+
+/**
+ * New editor on the connection of the active tab (else on the first open session that can run
+ * statements), keeping the database / schema of the active editor. `false` when there is none.
+ */
+export function openEditorForActiveTab(): boolean {
+  const { tabs, activeId } = useTabsStore.getState();
+  const active = tabs.find((t) => t.id === activeId);
+  const sessions = useSessionsStore.getState().sessionsByConnection;
+  const connectionId = active?.payload?.connectionId;
+  const own = connectionId ? sessions[connectionId] : undefined;
+  const session =
+    own && own.descriptor.capabilities.leases
+      ? own
+      : Object.values(sessions).find((s) => s.descriptor.capabilities.leases);
+  if (!session) return false;
+  const data =
+    active?.kind === 'editor' && session === own
+      ? useEditorStore.getState().tabs[active.payload.tabStateId]
+      : undefined;
+  openEditor(session, {
+    database: data ? (data.leaseState?.database ?? data.database) : undefined,
+    schema: data ? (data.leaseState?.schema ?? data.schema) : undefined,
+  });
+  return true;
+}
+
+/** `/path/to/query.sql` -> `query.sql` */
+export const fileBaseName = (path: string): string => path.split(/[\\/]/).pop() || path;

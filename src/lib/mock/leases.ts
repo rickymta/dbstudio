@@ -66,7 +66,10 @@ interface RawStatement {
 }
 
 /** Split on `;` outside strings, quoted identifiers and comments. Offsets are scalar indexes. */
-function splitStatements(chars: string[]): { statements: RawStatement[]; problems: ScriptProblem[] } {
+function splitStatements(chars: string[]): {
+  statements: RawStatement[];
+  problems: ScriptProblem[];
+} {
   const statements: RawStatement[] = [];
   const problems: ScriptProblem[] = [];
   const n = chars.length;
@@ -87,7 +90,8 @@ function splitStatements(chars: string[]): { statements: RawStatement[]; problem
       const from = i;
       i += 2;
       while (i < n && !(chars[i] === '*' && chars[i + 1] === '/')) i++;
-      if (i >= n) problems.push({ range: { start: from, end: n }, message: 'unterminated comment' });
+      if (i >= n)
+        problems.push({ range: { start: from, end: n }, message: 'unterminated comment' });
       i += 2;
     } else if (c === "'" || c === '"' || c === '`') {
       const from = i;
@@ -147,7 +151,12 @@ function findParams(chars: string[]): ParamRef[] {
       i++;
       while (i < n && chars[i] !== c) i++;
       i++;
-    } else if (c === ':' && chars[i + 1] !== ':' && chars[i - 1] !== ':' && /[A-Za-z_]/.test(chars[i + 1] ?? '')) {
+    } else if (
+      c === ':' &&
+      chars[i + 1] !== ':' &&
+      chars[i - 1] !== ':' &&
+      /[A-Za-z_]/.test(chars[i + 1] ?? '')
+    ) {
       let j = i + 1;
       while (j < n && ident.test(chars[j]!)) j++;
       add(chars.slice(i, j).join(''), 'named', i, j);
@@ -161,7 +170,12 @@ function findParams(chars: string[]): ParamRef[] {
       questions++;
       add(`?${questions}`, 'question', i, i + 1);
       i++;
-    } else if (c === '@' && chars[i + 1] !== '@' && chars[i - 1] !== '@' && /[A-Za-z_]/.test(chars[i + 1] ?? '')) {
+    } else if (
+      c === '@' &&
+      chars[i + 1] !== '@' &&
+      chars[i - 1] !== '@' &&
+      /[A-Za-z_]/.test(chars[i + 1] ?? '')
+    ) {
       let j = i + 1;
       while (j < n && ident.test(chars[j]!)) j++;
       add(chars.slice(i, j).join(''), 'at', i, j);
@@ -173,7 +187,8 @@ function findParams(chars: string[]): ParamRef[] {
   return [...byName.values()];
 }
 
-const firstWord = (text: string): string => /^[\s(]*([A-Za-z_]+)/.exec(text)?.[1]?.toUpperCase() ?? '';
+const firstWord = (text: string): string =>
+  /^[\s(]*([A-Za-z_]+)/.exec(text)?.[1]?.toUpperCase() ?? '';
 const hasWhere = (text: string): boolean => /\bWHERE\b/i.test(text);
 
 function classify(
@@ -185,7 +200,18 @@ function classify(
     const cmd = text.trim().split(/\s+/)[0]?.toUpperCase() ?? '';
     if (cmd === 'FLUSHDB') return { class: { kind: 'admin' }, verb: cmd, destructive: 'flushDb' };
     if (cmd === 'FLUSHALL') return { class: { kind: 'admin' }, verb: cmd, destructive: 'flushAll' };
-    const read = ['GET', 'MGET', 'KEYS', 'SCAN', 'TTL', 'TYPE', 'EXISTS', 'PING', 'HGETALL', 'LRANGE'];
+    const read = [
+      'GET',
+      'MGET',
+      'KEYS',
+      'SCAN',
+      'TTL',
+      'TYPE',
+      'EXISTS',
+      'PING',
+      'HGETALL',
+      'LRANGE',
+    ];
     return { class: { kind: read.includes(cmd) ? 'read' : 'write' }, verb: cmd, destructive: null };
   }
   if (dialect.name === 'mongoShell') {
@@ -274,7 +300,12 @@ function analyze(dialect: ScriptDialect, text: string): ScriptAnalysis {
       targets: [],
     };
   });
-  return { dialect, statements: infos, params: dialect.name === 'redisCli' ? [] : findParams(chars), problems };
+  return {
+    dialect,
+    statements: infos,
+    params: dialect.name === 'redisCli' ? [] : findParams(chars),
+    problems,
+  };
 }
 
 // -- execution ---------------------------------------------------------------------------------
@@ -314,7 +345,13 @@ function planRead(text: string, base: number, dialect: ScriptDialect): Plan {
       columns: [{ name: 'document', typeName: 'document', valueKind: 'document' }],
       total: 3,
       row: (i) => [
-        { t: 'document', v: [['_id', { t: 'int', v: i + 1 }], ['name', { t: 'text', v: `doc ${i + 1}` }]] },
+        {
+          t: 'document',
+          v: [
+            ['_id', { t: 'int', v: i + 1 }],
+            ['name', { t: 'text', v: `doc ${i + 1}` }],
+          ],
+        },
       ],
     };
   }
@@ -359,7 +396,11 @@ function profileOfSession(sessionId: Uuid) {
   return info ? findMockProfile(info.connectionId) : undefined;
 }
 
-const emptyResult = (statements: number, state: LeaseState | null, historyId: number | null): ExecuteResult => ({
+const emptyResult = (
+  statements: number,
+  state: LeaseState | null,
+  historyId: number | null,
+): ExecuteResult => ({
   summary: { statements, elapsedMs: 0 },
   state: state ? clone(state) : null,
   historyId,
@@ -448,21 +489,23 @@ async function run(
   const missing = analysis.params.find((p) => !given.has(p.name));
   if (missing) throw ipcError('query', `missing value for parameter ${missing.name}`);
 
-  const confirmText = state.database ?? profile?.database ?? (dialect.name === 'redisCli' ? 'db0' : 'app');
+  const confirmText =
+    state.database ?? profile?.database ?? (dialect.name === 'redisCli' ? 'db0' : 'app');
   guard(request, analysis, profile, confirmText);
 
   // A new execution drops the pending result of the previous one.
   if (lease) lease.pending = null;
   state.pendingResult = null;
 
-  const history = request.recordHistory === false
-    ? null
-    : mockRecordHistory({
-        connectionId: profile?.id ?? '',
-        database: state.database,
-        text: request.text,
-        kind: analysis.statements.length > 1 ? 'script' : 'query',
-      });
+  const history =
+    request.recordHistory === false
+      ? null
+      : mockRecordHistory({
+          connectionId: profile?.id ?? '',
+          database: state.database,
+          text: request.text,
+          kind: analysis.statements.length > 1 ? 'script' : 'query',
+        });
   const maxRows = request.maxRows ?? 1000;
   const queryId = request.queryId;
   const started = Date.now();
@@ -482,20 +525,28 @@ async function run(
       if (sleepMatch) await waitCancellable(Number(sleepMatch[1]) * 1000, lease, queryId);
 
       // Transaction bookkeeping: manual mode opens a transaction before the first statement.
-      const opensTx = kind === 'read' || kind === 'write' || kind === 'ddl' || kind === 'procedural';
-      if (!state.autoCommit && state.transaction === 'idle' && opensTx) state.transaction = 'active';
+      const opensTx =
+        kind === 'read' || kind === 'write' || kind === 'ddl' || kind === 'procedural';
+      if (!state.autoCommit && state.transaction === 'idle' && opensTx)
+        state.transaction = 'active';
 
       try {
         if (kind === 'transaction' && s.class.kind === 'transaction') {
           state.transaction = s.class.op === 'begin' ? 'active' : 'idle';
-          onEvent({ type: 'statementEnd', end: { outcome: { kind: 'done' }, elapsedMs: Date.now() - t0 } });
+          onEvent({
+            type: 'statementEnd',
+            end: { outcome: { kind: 'done' }, elapsedMs: Date.now() - t0 },
+          });
         } else if (kind === 'read' || kind === 'explain') {
           const plan = planRead(text, s.range.start, dialect);
           onEvent({ type: 'columns', columns: plan.columns });
           const limit = Math.min(plan.total, maxRows);
           for (let from = 0; from < limit; from += 500) {
             const to = Math.min(limit, from + 500);
-            onEvent({ type: 'rows', rows: Array.from({ length: to - from }, (_, i) => plan.row(from + i)) });
+            onEvent({
+              type: 'rows',
+              rows: Array.from({ length: to - from }, (_, i) => plan.row(from + i)),
+            });
           }
           const truncated = plan.total > limit;
           rowsTotal += limit;
@@ -505,12 +556,22 @@ async function run(
           }
           onEvent({
             type: 'statementEnd',
-            end: { outcome: { kind: 'rows', rowCount: limit, truncated }, elapsedMs: Date.now() - t0 },
+            end: {
+              outcome: { kind: 'rows', rowCount: limit, truncated },
+              elapsedMs: Date.now() - t0,
+            },
           });
-        } else if (kind === 'write' && dialect.name !== 'redisCli' && dialect.name !== 'mongoShell') {
+        } else if (
+          kind === 'write' &&
+          dialect.name !== 'redisCli' &&
+          dialect.name !== 'mongoShell'
+        ) {
           const rows = s.destructive ? 42 : s.verb === 'INSERT' ? 1 : 3;
           rowsTotal += rows;
-          onEvent({ type: 'statementEnd', end: { outcome: { kind: 'affected', rows }, elapsedMs: Date.now() - t0 } });
+          onEvent({
+            type: 'statementEnd',
+            end: { outcome: { kind: 'affected', rows }, elapsedMs: Date.now() - t0 },
+          });
         } else {
           const notice = /(?:RAISE\s+NOTICE|PRINT)\s+'([^']*)'/i.exec(text);
           if (notice) {
@@ -520,11 +581,15 @@ async function run(
             });
           }
           if (s.implicitCommit) state.transaction = 'idle';
-          onEvent({ type: 'statementEnd', end: { outcome: { kind: 'done' }, elapsedMs: Date.now() - t0 } });
+          onEvent({
+            type: 'statementEnd',
+            end: { outcome: { kind: 'done' }, elapsedMs: Date.now() - t0 },
+          });
         }
       } catch (e) {
         // PostgreSQL aborts the open transaction on the first error.
-        if (dialect.name === 'postgres' && state.transaction === 'active') state.transaction = 'failed';
+        if (dialect.name === 'postgres' && state.transaction === 'active')
+          state.transaction = 'failed';
         throw e;
       }
     }
@@ -564,17 +629,51 @@ export const leasesMock = {
         functions: [],
         commands: [
           { name: 'GET', syntax: 'GET key', summary: 'Get the value of a key', flags: [] },
-          { name: 'SET', syntax: 'SET key value [EX seconds]', summary: 'Set a key', flags: ['EX', 'NX'] },
+          {
+            name: 'SET',
+            syntax: 'SET key value [EX seconds]',
+            summary: 'Set a key',
+            flags: ['EX', 'NX'],
+          },
           { name: 'DEL', syntax: 'DEL key [key ...]', summary: 'Delete keys', flags: [] },
-          { name: 'FLUSHDB', syntax: 'FLUSHDB [ASYNC]', summary: 'Remove all keys', flags: ['ASYNC'] },
+          {
+            name: 'FLUSHDB',
+            syntax: 'FLUSHDB [ASYNC]',
+            summary: 'Remove all keys',
+            flags: ['ASYNC'],
+          },
         ],
       };
     }
     return {
       keywords: [
-        'SELECT', 'FROM', 'WHERE', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'JOIN', 'LEFT JOIN',
-        'INNER JOIN', 'ON', 'INSERT INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE FROM', 'CREATE TABLE',
-        'DROP TABLE', 'AS', 'AND', 'OR', 'NOT', 'NULL', 'DISTINCT', 'BEGIN', 'COMMIT', 'ROLLBACK',
+        'SELECT',
+        'FROM',
+        'WHERE',
+        'GROUP BY',
+        'ORDER BY',
+        'HAVING',
+        'LIMIT',
+        'JOIN',
+        'LEFT JOIN',
+        'INNER JOIN',
+        'ON',
+        'INSERT INTO',
+        'VALUES',
+        'UPDATE',
+        'SET',
+        'DELETE FROM',
+        'CREATE TABLE',
+        'DROP TABLE',
+        'AS',
+        'AND',
+        'OR',
+        'NOT',
+        'NULL',
+        'DISTINCT',
+        'BEGIN',
+        'COMMIT',
+        'ROLLBACK',
       ],
       functions: ['count', 'sum', 'avg', 'min', 'max', 'coalesce', 'now', 'lower', 'upper'],
       commands: [],
@@ -635,7 +734,9 @@ export const leasesMock = {
     const limit = Math.min(pending.total, pending.offset + maxRows);
     onEvent({
       type: 'rows',
-      rows: Array.from({ length: limit - pending.offset }, (_, i) => pending.row(pending.offset + i)),
+      rows: Array.from({ length: limit - pending.offset }, (_, i) =>
+        pending.row(pending.offset + i),
+      ),
     });
     const truncated = limit < pending.total;
     const count = limit - pending.offset;
@@ -686,7 +787,10 @@ export const leasesMock = {
   },
   async leaseSetAutoCommit(leaseId: Uuid, autoCommit: boolean): Promise<LeaseState> {
     const lease = find(leaseId);
-    if (autoCommit && (lease.state.transaction === 'active' || lease.state.transaction === 'failed')) {
+    if (
+      autoCommit &&
+      (lease.state.transaction === 'active' || lease.state.transaction === 'failed')
+    ) {
       throw ipcError('busy', 'a transaction is open');
     }
     lease.state.autoCommit = autoCommit;

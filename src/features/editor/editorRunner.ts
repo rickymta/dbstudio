@@ -24,6 +24,7 @@ import {
   onEditorTabRemoved,
   patchTabData,
   useEditorStore,
+  type EditorTabData,
   type RunSnapshot,
 } from './editorStore';
 import { locateError, problemMarks } from './errorMarks';
@@ -55,7 +56,7 @@ export async function ensureLease(tabId: string, sessionId: Uuid): Promise<Uuid>
 
   const open = (async () => {
     if (data.leaseId) await closeLease(tabId); // belongs to another session, or is broken
-    patchTabData(tabId, { leaseStatus: 'opening', leaseError: null, transactionLost: false });
+    patchTabData(tabId, { leaseStatus: 'opening', leaseError: null });
     try {
       const info = await ipc.leaseOpen(sessionId, {
         database: data.database,
@@ -106,7 +107,8 @@ export function dropLease(tabId: string, reason: 'sessionClosed' | 'broken'): vo
   patchTabData(tabId, {
     leaseId: reason === 'broken' ? data.leaseId : null,
     leaseSessionId: reason === 'broken' ? data.leaseSessionId : null,
-    leaseState: reason === 'broken' && data.leaseState ? { ...data.leaseState, broken: true } : null,
+    leaseState:
+      reason === 'broken' && data.leaseState ? { ...data.leaseState, broken: true } : null,
     leaseStatus: 'none',
     transactionLost: lost,
   });
@@ -436,14 +438,34 @@ export async function confirmClose(tabStateId: string): Promise<boolean> {
 
 const guards = new Map<string, () => void>();
 
-/** Start managing an editor tab: close guard and cleanup. Safe to call twice. */
-export function registerEditorTab(tabStateId: string): void {
-  if (guards.has(tabStateId)) return;
-  guards.set(
-    tabStateId,
-    registerTabGuard(editorTabId(tabStateId), () => confirmClose(tabStateId)),
-  );
+/**
+ * The close guard exists only while a transaction may be open, so tabs without one still
+ * close synchronously (the tab bar and `requestClose` treat any guard as asynchronous).
+ */
+function syncGuard(tabStateId: string, data: EditorTabData | undefined): void {
+  const needed = hasOpenTransaction(data);
+  const registered = guards.get(tabStateId);
+  if (needed && !registered) {
+    guards.set(
+      tabStateId,
+      registerTabGuard(editorTabId(tabStateId), () => confirmClose(tabStateId)),
+    );
+  } else if (!needed && registered) {
+    registered();
+    guards.delete(tabStateId);
+  }
 }
+
+/** Start managing an editor tab (close guard follows its transaction). Safe to call twice. */
+export function registerEditorTab(tabStateId: string): void {
+  syncGuard(tabStateId, getTabData(tabStateId));
+}
+
+useEditorStore.subscribe((state, previous) => {
+  for (const [id, data] of Object.entries(state.tabs)) {
+    if (data !== previous.tabs[id]) syncGuard(id, data);
+  }
+});
 
 onEditorTabRemoved((tabStateId) => {
   guards.get(tabStateId)?.();

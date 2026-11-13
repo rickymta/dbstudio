@@ -29,7 +29,11 @@ beforeEach(resetEditorWorld);
 async function newEditor(connectionId = PG_DEV, text = '') {
   const session = await openSession(connectionId);
   const id = openEditor(session, { text });
-  return { session, id, run: (t: string, baseChar = 0) => runText(id, session.sessionId, { text: t, baseChar }) };
+  return {
+    session,
+    id,
+    run: (t: string, baseChar = 0) => runText(id, session.sessionId, { text: t, baseChar }),
+  };
 }
 
 describe('running scripts', () => {
@@ -44,7 +48,10 @@ describe('running scripts', () => {
     expect(snap.results[1]!.outcome).toEqual({ kind: 'affected', rows: 3 });
     expect(snap.results[2]!.messages).toEqual(['NOTICE:  hello']);
     expect(getTabData(id)!.leaseState!.transaction).toBe('idle');
-    expect((await ipc.historyList({ limit: 10 }))[0]).toMatchObject({ status: 'ok', statements: 4 });
+    expect((await ipc.historyList({ limit: 10 }))[0]).toMatchObject({
+      status: 'ok',
+      statements: 4,
+    });
   });
 
   it('does not start a second run while one is in progress', async () => {

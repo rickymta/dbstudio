@@ -41,9 +41,7 @@ export function selectRunText(
   if (scope === 'all') return doc.trim() === '' ? null : { text: doc, baseChar: 0 };
   if (scope === 'selection') {
     const text = doc.slice(selection.from, selection.to);
-    return text.trim() === ''
-      ? null
-      : { text, baseChar: utf16ToCharOffset(doc, selection.from) };
+    return text.trim() === '' ? null : { text, baseChar: utf16ToCharOffset(doc, selection.from) };
   }
   const found = statementAt(statements, utf16ToCharOffset(doc, selection.from));
   if (!found) return null;

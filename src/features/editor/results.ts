@@ -218,7 +218,8 @@ export class ResultCollector {
 
   /** The run failed: the statement in flight (else a new entry) carries the error. */
   fail(error: IpcError): void {
-    const r = this.current && this.current.outcome === null ? this.current : this.open(this.arrived, null);
+    const r =
+      this.current && this.current.outcome === null ? this.current : this.open(this.arrived, null);
     r.error = error;
     r.model?.fail(error);
     this.current = null;

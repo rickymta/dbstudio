@@ -120,7 +120,9 @@ describe('completion with aliases', () => {
 
   it('skips sub-selects and function calls when collecting references', () => {
     const refs = parseTableRefs(
-      tokenize('SELECT * FROM (SELECT 1) s JOIN generate_series(1, 3) g ON true JOIN orders o ON true'),
+      tokenize(
+        'SELECT * FROM (SELECT 1) s JOIN generate_series(1, 3) g ON true JOIN orders o ON true',
+      ),
     );
     expect(refs).toEqual([{ schema: null, name: 'orders', alias: 'o' }]);
   });

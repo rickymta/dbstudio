@@ -1,5 +1,5 @@
 import { TriangleAlert } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent } from '@/components/ui/Dialog';
@@ -15,24 +15,31 @@ export interface ConfirmDestructiveDialogProps {
   onCancel: () => void;
 }
 
-/** The confirm button works only for the exact text (case and spaces count). */
-export function isConfirmed(request: ConfirmationRequest, typed: string): boolean {
-  return typed === request.confirmText;
-}
-
 /** Asks the user to type the confirmation text before a destructive statement runs. */
 export function ConfirmDestructiveDialog({
   request,
   onConfirm,
   onCancel,
 }: ConfirmDestructiveDialogProps): ReactNode {
+  // Keyed by token: every request starts with an empty input.
+  return request ? (
+    <ConfirmForm key={request.token} request={request} onConfirm={onConfirm} onCancel={onCancel} />
+  ) : null;
+}
+
+function ConfirmForm({
+  request,
+  onConfirm,
+  onCancel,
+}: {
+  request: ConfirmationRequest;
+  onConfirm: (grant: ConfirmationGrant) => void;
+  onCancel: () => void;
+}): ReactNode {
   const { t } = useTranslation('safety');
   const [typed, setTyped] = useState('');
-  const token = request?.token;
-  useEffect(() => setTyped(''), [token]);
-
-  if (!request) return null;
-  const ok = isConfirmed(request, typed);
+  // The button works only for the exact text: case and spaces count.
+  const ok = typed === request.confirmText;
   const submit = () => {
     if (ok) onConfirm({ token: request.token, typed });
   };
@@ -53,7 +60,10 @@ export function ConfirmDestructiveDialog({
         }
       >
         <div className="flex flex-col gap-3">
-          <ul className="flex max-h-48 flex-col gap-2 overflow-auto" aria-label={t('destructive.statements')}>
+          <ul
+            className="flex max-h-48 flex-col gap-2 overflow-auto"
+            aria-label={t('destructive.statements')}
+          >
             {request.statements.map((s) => (
               <li key={`${s.index}-${s.range.start}`} className="rounded border border-border">
                 <div className="flex items-center gap-1.5 border-b border-border bg-warning-soft px-2 py-1 text-xs font-medium text-warning">

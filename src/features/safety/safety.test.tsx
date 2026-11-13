@@ -40,7 +40,9 @@ describe('ConfirmDestructiveDialog', () => {
   it('lists the statements and enables the button only for the exact database name', async () => {
     const user = userEvent.setup();
     const onConfirm = vi.fn();
-    render(wrap(<ConfirmDestructiveDialog request={request} onConfirm={onConfirm} onCancel={vi.fn()} />));
+    render(
+      wrap(<ConfirmDestructiveDialog request={request} onConfirm={onConfirm} onCancel={vi.fn()} />),
+    );
     expect(screen.getByText('DROP TABLE t')).toBeInTheDocument();
     expect(screen.getByText('DELETE FROM users')).toBeInTheDocument();
     const confirm = screen.getByRole('button', { name: 'Run anyway' });
@@ -63,7 +65,11 @@ describe('ConfirmDestructiveDialog', () => {
     const user = userEvent.setup();
     const onConfirm = vi.fn();
     const onCancel = vi.fn();
-    render(wrap(<ConfirmDestructiveDialog request={request} onConfirm={onConfirm} onCancel={onCancel} />));
+    render(
+      wrap(
+        <ConfirmDestructiveDialog request={request} onConfirm={onConfirm} onCancel={onCancel} />,
+      ),
+    );
     const input = screen.getByLabelText(/app_prod/);
     await user.type(input, 'app{Enter}');
     expect(onConfirm).not.toHaveBeenCalled();

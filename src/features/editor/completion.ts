@@ -20,7 +20,8 @@ export interface Catalog {
   defaultSchema?: string | null;
 }
 
-export type CompletionKind = 'table' | 'view' | 'column' | 'schema' | 'keyword' | 'function' | 'alias';
+export type CompletionKind =
+  'table' | 'view' | 'column' | 'schema' | 'keyword' | 'function' | 'alias';
 
 export interface CompletionOption {
   label: string;
@@ -157,10 +158,43 @@ export interface TableRef {
 
 /** Words that can follow a table name without being its alias. */
 const NOT_ALIAS = new Set([
-  'WHERE', 'ON', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'NATURAL', 'OUTER', 'GROUP',
-  'ORDER', 'HAVING', 'LIMIT', 'OFFSET', 'UNION', 'INTERSECT', 'EXCEPT', 'SET', 'VALUES', 'USING',
-  'SELECT', 'RETURNING', 'FETCH', 'FOR', 'WINDOW', 'LATERAL', 'AS', 'FROM', 'INTO', 'WITH',
-  'STRAIGHT_JOIN', 'PIVOT', 'UNPIVOT', 'TABLESAMPLE', 'OVERRIDING', 'DEFAULT',
+  'WHERE',
+  'ON',
+  'JOIN',
+  'INNER',
+  'LEFT',
+  'RIGHT',
+  'FULL',
+  'CROSS',
+  'NATURAL',
+  'OUTER',
+  'GROUP',
+  'ORDER',
+  'HAVING',
+  'LIMIT',
+  'OFFSET',
+  'UNION',
+  'INTERSECT',
+  'EXCEPT',
+  'SET',
+  'VALUES',
+  'USING',
+  'SELECT',
+  'RETURNING',
+  'FETCH',
+  'FOR',
+  'WINDOW',
+  'LATERAL',
+  'AS',
+  'FROM',
+  'INTO',
+  'WITH',
+  'STRAIGHT_JOIN',
+  'PIVOT',
+  'UNPIVOT',
+  'TABLESAMPLE',
+  'OVERRIDING',
+  'DEFAULT',
 ]);
 
 /** Parse `schema.name` starting at `tokens[i]`; returns the name parts and the next index. */
@@ -214,9 +248,14 @@ export function parseTableRefs(tokens: Token[]): TableRef[] {
 const sameName = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
 /** The catalog table a reference points to (unqualified names prefer the default schema). */
-export function resolveTable(catalog: Catalog, schema: string | null, name: string): CatalogTable | null {
+export function resolveTable(
+  catalog: Catalog,
+  schema: string | null,
+  name: string,
+): CatalogTable | null {
   const named = catalog.tables.filter((t) => sameName(t.name, name));
-  if (schema !== null) return named.find((t) => t.schema !== null && sameName(t.schema, schema)) ?? null;
+  if (schema !== null)
+    return named.find((t) => t.schema !== null && sameName(t.schema, schema)) ?? null;
   const preferred = catalog.defaultSchema
     ? named.find((t) => t.schema !== null && sameName(t.schema, catalog.defaultSchema!))
     : undefined;
@@ -379,17 +418,70 @@ export interface CommandHintLike {
 
 /** Operators offered after `$` in a Mongo console (query, update and aggregation stages). */
 export const MONGO_OPERATORS: readonly string[] = [
-  '$eq', '$ne', '$gt', '$gte', '$lt', '$lte', '$in', '$nin', '$and', '$or', '$not', '$nor',
-  '$exists', '$type', '$regex', '$expr', '$elemMatch', '$size', '$all',
-  '$set', '$unset', '$inc', '$push', '$pull', '$addToSet', '$pop', '$rename',
-  '$match', '$group', '$project', '$sort', '$limit', '$skip', '$lookup', '$unwind', '$count',
-  '$addFields', '$facet', '$out', '$merge', '$sum', '$avg', '$min', '$max', '$first', '$last',
+  '$eq',
+  '$ne',
+  '$gt',
+  '$gte',
+  '$lt',
+  '$lte',
+  '$in',
+  '$nin',
+  '$and',
+  '$or',
+  '$not',
+  '$nor',
+  '$exists',
+  '$type',
+  '$regex',
+  '$expr',
+  '$elemMatch',
+  '$size',
+  '$all',
+  '$set',
+  '$unset',
+  '$inc',
+  '$push',
+  '$pull',
+  '$addToSet',
+  '$pop',
+  '$rename',
+  '$match',
+  '$group',
+  '$project',
+  '$sort',
+  '$limit',
+  '$skip',
+  '$lookup',
+  '$unwind',
+  '$count',
+  '$addFields',
+  '$facet',
+  '$out',
+  '$merge',
+  '$sum',
+  '$avg',
+  '$min',
+  '$max',
+  '$first',
+  '$last',
 ];
 
 /** Collection methods offered after `db.<collection>.` in a Mongo console. */
 export const MONGO_METHODS: readonly string[] = [
-  'find', 'findOne', 'aggregate', 'countDocuments', 'distinct', 'insertOne', 'insertMany',
-  'updateOne', 'updateMany', 'replaceOne', 'deleteOne', 'deleteMany', 'createIndex', 'drop',
+  'find',
+  'findOne',
+  'aggregate',
+  'countDocuments',
+  'distinct',
+  'insertOne',
+  'insertMany',
+  'updateOne',
+  'updateMany',
+  'replaceOne',
+  'deleteOne',
+  'deleteMany',
+  'createIndex',
+  'drop',
 ];
 
 export interface ConsoleContext {

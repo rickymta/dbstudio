@@ -27,7 +27,7 @@ export function lineColumn(doc: string, index: number): { line: number; column: 
   }
   // Count scalars, not UTF-16 units, between the line start and the index.
   let column = 1;
-  for (let i = lineStart; i < end; ) {
+  for (let i = lineStart; i < end;) {
     const code = doc.codePointAt(i)!;
     i += code > 0xffff ? 2 : 1;
     column++;

@@ -46,7 +46,7 @@ export function collectEditorTabs(): EditorTabState[] {
 /** Reopen the persisted tabs (once per app start). Resolves to how many were restored. */
 export async function restoreEditorTabs(): Promise<number> {
   let states: EditorTabState[];
-  let kinds = new Map<string, DbKind>();
+  let kinds: Map<string, DbKind>;
   try {
     states = await ipc.editorTabsGet();
     kinds = new Map((await ipc.connectionsList()).profiles.map((p) => [p.id, p.kind]));
@@ -83,6 +83,19 @@ export async function restoreEditorTabs(): Promise<number> {
   }
   useTabsStore.getState().activate(previous);
   return restored;
+}
+
+let restoredOnce: Promise<number> | null = null;
+
+/** `restoreEditorTabs` once per app start, however many times the host mounts. */
+export function restoreEditorTabsOnce(): Promise<number> {
+  restoredOnce ??= restoreEditorTabs();
+  return restoredOnce;
+}
+
+/** Test helper: allow the next `restoreEditorTabsOnce` to restore again. */
+export function resetRestoreOnce(): void {
+  restoredOnce = null;
 }
 
 const SAVE_DELAY_MS = 500;
