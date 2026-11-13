@@ -597,6 +597,51 @@ pub fn split(text: &str) -> Vec<Stmt> {
     sp.out
 }
 
+/// Check that `text` is a fragment of exactly one statement: no top-level `;` or `/` line, no
+/// unterminated string, quoted identifier or block comment (which would swallow what the driver
+/// appends), and balanced parentheses. Used for user text spliced into generated SQL.
+pub fn validate_fragment(text: &str) -> std::result::Result<(), String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut depth = 0i32;
+    for t in tokenize(&chars) {
+        let first = chars[t.start];
+        let last = chars[t.end - 1];
+        match t.tok {
+            Tok::Punct if first == ';' => {
+                return Err("a statement separator (;) is not allowed here".into());
+            }
+            Tok::Punct if first == '(' => depth += 1,
+            Tok::Punct if first == ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err("unbalanced parenthesis".into());
+                }
+            }
+            Tok::Str if t.end - t.start < 2 || last != '\'' => {
+                return Err("unterminated string literal".into());
+            }
+            Tok::Quoted if t.end - t.start < 2 || last != '"' => {
+                return Err("unterminated quoted identifier".into());
+            }
+            Tok::Comment if first == '/' && !text_ends_comment(&chars[t.start..t.end]) => {
+                return Err("unterminated comment".into());
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err("unbalanced parenthesis".into());
+    }
+    if split(text).len() > 1 {
+        return Err("only one statement is allowed here".into());
+    }
+    Ok(())
+}
+
+fn text_ends_comment(c: &[char]) -> bool {
+    c.len() >= 4 && c[c.len() - 2] == '*' && c[c.len() - 1] == '/'
+}
+
 /// Uppercase significant words at the start of `text` (at most `n`), skipping comments.
 pub fn leading_words(text: &str, n: usize) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
@@ -842,6 +887,29 @@ mod tests {
     fn end_if_loop_case_labels() {
         let s = "BEGIN\n  <<outer>>\n  FOR i IN 1..2 LOOP\n    IF i = 1 THEN\n      CONTINUE outer;\n    END IF;\n  END LOOP outer;\n  NULL;\nEND;\nselect 1 from dual;";
         assert_eq!(split(s).len(), 2, "{:#?}", split(s));
+    }
+
+    #[test]
+    fn fragments_must_be_one_balanced_statement() {
+        for ok in [
+            "a = 1",
+            "a = ';' -- x",
+            "f(a, (b)) > 1 /* c */",
+            "MOD(ID, 10) = 0 -- comment",
+        ] {
+            assert!(validate_fragment(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "1 = 1; DROP TABLE t",
+            "a = 1) OR (1 = 1",
+            "(a = 1",
+            "a = 'x",
+            "a = \"x",
+            "a = 1 /* open",
+            "a = 1\n/\nDROP TABLE t",
+        ] {
+            assert!(validate_fragment(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

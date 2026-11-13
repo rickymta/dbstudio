@@ -26,6 +26,8 @@ mod lease;
 mod model;
 mod runtime;
 mod script;
+#[cfg(test)]
+mod script_diff;
 mod session;
 mod sql;
 mod target;

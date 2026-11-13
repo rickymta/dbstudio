@@ -1694,6 +1694,7 @@ dependencies = [
  "dbstudio-core",
  "dbstudio-sql",
  "oracle",
+ "proptest",
  "serde_json",
  "tokio",
  "uuid",

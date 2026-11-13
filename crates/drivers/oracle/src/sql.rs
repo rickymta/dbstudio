@@ -142,6 +142,8 @@ pub fn where_clause(filters: &[ColumnFilter], raw_where: Option<&str>) -> Result
                 "the WHERE clause must not contain a NUL character",
             ));
         }
+        crate::script::validate_fragment(raw)
+            .map_err(|m| Error::query(format!("invalid WHERE clause: {m}")))?;
         // Newlines keep a trailing `-- comment` of the raw text from swallowing the parenthesis.
         parts.push(format!("(\n{raw}\n)"));
     }
@@ -340,6 +342,19 @@ mod tests {
             filter_condition(&f("A", FilterOp::IsNotNull, &[])).unwrap(),
             "\"A\" IS NOT NULL"
         );
+    }
+
+    #[test]
+    fn raw_where_must_be_one_statement_fragment() {
+        for bad in [
+            "1 = 1; DROP TABLE t",
+            "1 = 1) OR (2 = 2",
+            "a = 'x",
+            "a = 1 /* open",
+        ] {
+            assert!(where_clause(&[], Some(bad)).is_err(), "{bad}");
+        }
+        assert!(where_clause(&[], Some("a = ';'")).is_ok());
     }
 
     #[test]

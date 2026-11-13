@@ -139,6 +139,16 @@ pub fn explain(
     tx: TxMode,
 ) -> Result<RawPlan> {
     let stmt = single_statement(&req.text)?;
+    if stmt.kind != StmtKind::Sql {
+        return Err(Error::Unsupported(
+            if req.analyze {
+                "explain_analyze_plsql"
+            } else {
+                "explain_plsql"
+            }
+            .into(),
+        ));
+    }
     let words = script::leading_words(&stmt.text, 2);
     if read_only && let Some(message) = read_only_violation(&stmt) {
         // EXPLAIN PLAN itself is allowed; only the analysed execution of a write is not.
@@ -332,6 +342,12 @@ mod tests {
         assert!(single_statement("select 1 from dual").is_ok());
         assert!(single_statement("select 1 from dual; select 2 from dual").is_err());
         assert!(single_statement("  ").is_err());
+        // A write followed by COMMIT is two statements: refused before anything runs.
+        assert!(single_statement("UPDATE t SET a = 1; COMMIT").is_err());
+        assert!(single_statement("SELECT 1 FROM dual;\n/\nDROP TABLE t").is_err());
+        // A lone COMMIT is not analysable.
+        let w = script::leading_words("COMMIT", 2);
+        assert!(analyze_blocker(&w, &StmtKind::Sql).is_some());
     }
 
     #[test]
