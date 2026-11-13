@@ -1,6 +1,6 @@
 //! Commands managing saved connection profiles and groups.
 
-use dbstudio_core::{Error, ServerInfo};
+use dbstudio_core::{Error, Secret, ServerInfo};
 use dbstudio_store::{
     ConnectionGroup, ConnectionProfile, ConnectionsSnapshot, SecretChange, ssh_secret_account,
 };
@@ -79,19 +79,43 @@ pub(crate) async fn group_delete_impl(state: &AppState, id: Uuid) -> Result<()> 
     blocking(move || svc.delete_group(id)).await
 }
 
-/// Connect with an unsaved profile, read the server info and disconnect.
+/// Connect with an unsaved profile and the stored SSH secret.
+#[cfg(test)]
 pub(crate) async fn test_impl(
     state: &AppState,
     profile: ConnectionProfile,
     secret: SecretChange,
+) -> Result<ServerInfo> {
+    test_with_ssh_impl(state, profile, secret, None).await
+}
+
+/// The SSH secret a connection test uses: `Set` is what the user just typed, `Clear` means none,
+/// `None` / `Keep` use the stored one.
+fn effective_ssh_secret(stored: Option<Secret>, change: Option<SecretChange>) -> Option<Secret> {
+    match change {
+        Some(SecretChange::Set { value }) => Some(value),
+        Some(SecretChange::Clear) => None,
+        Some(SecretChange::Keep) | None => stored,
+    }
+}
+
+/// Connect with an unsaved profile, read the server info and disconnect. `ssh_secret` overrides
+/// the stored SSH password / key passphrase for this test only (nothing is persisted).
+pub(crate) async fn test_with_ssh_impl(
+    state: &AppState,
+    profile: ConnectionProfile,
+    secret: SecretChange,
+    ssh_secret: Option<SecretChange>,
 ) -> Result<ServerInfo> {
     let svc = state.connections.clone();
     let password = {
         let profile = profile.clone();
         blocking(move || svc.resolve_secret(&profile, &secret)).await?
     };
-    // The SSH secret is the stored one (the test command carries no SSH secret change).
-    let ssh = super::ssh::ssh_env(state, &profile.config).await?;
+    let mut ssh = super::ssh::ssh_env(state, &profile.config).await?;
+    if let Some(env) = ssh.as_mut() {
+        env.secret = effective_ssh_secret(env.secret.take(), ssh_secret);
+    }
     state
         .sessions
         .test_with_ssh(&profile.config, password.as_ref(), ssh.as_ref())
@@ -184,9 +208,10 @@ pub async fn connection_test(
     state: State<'_, AppState>,
     profile: ConnectionProfile,
     secret: SecretChange,
+    ssh_secret: Option<SecretChange>,
 ) -> Result<ServerInfo> {
     tracing::debug!(command = "connection_test", connection = %profile.config.id, "ipc call");
-    test_impl(&state, profile, secret).await
+    test_with_ssh_impl(&state, profile, secret, ssh_secret).await
 }
 
 /// Export profiles (all when `ids` is `None`) as JSON without secrets; returns the count.
@@ -208,4 +233,38 @@ pub async fn connections_import(
 ) -> Result<ConnectionsSnapshot> {
     tracing::debug!(command = "connections_import", "ipc call");
     import_impl(&state, path).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(v: &str) -> Option<SecretChange> {
+        Some(SecretChange::Set {
+            value: Secret::new(v),
+        })
+    }
+
+    #[test]
+    fn test_uses_the_typed_ssh_secret_over_the_stored_one() {
+        let stored = || Some(Secret::new("stored"));
+        let text = |s: Option<Secret>| s.map(|s| s.expose().to_string());
+        assert_eq!(
+            text(effective_ssh_secret(stored(), set("typed"))).as_deref(),
+            Some("typed")
+        );
+        assert_eq!(
+            text(effective_ssh_secret(stored(), None)).as_deref(),
+            Some("stored")
+        );
+        assert_eq!(
+            text(effective_ssh_secret(stored(), Some(SecretChange::Keep))).as_deref(),
+            Some("stored")
+        );
+        assert_eq!(
+            text(effective_ssh_secret(stored(), Some(SecretChange::Clear))),
+            None
+        );
+        assert_eq!(text(effective_ssh_secret(None, None)), None);
+    }
 }

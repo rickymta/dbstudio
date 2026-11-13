@@ -120,6 +120,8 @@ describe('ConnectionDialog SSH tunnel', () => {
     expect(await within(dialog).findByRole('status')).toHaveTextContent('16.1');
     // The tunnel settings were part of the tested profile.
     expect(test.mock.calls[1]![0].ssh).toMatchObject({ host: 'bastion.example.com' });
+    // The SSH password typed in the dialog is sent so the test works before saving.
+    expect(test.mock.calls[1]![2]).toEqual({ action: 'set', value: 'tunnel-pw' });
   });
 
   it('shows the host key error when the user declines', async () => {

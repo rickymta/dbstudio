@@ -177,14 +177,16 @@ function ConnectionDialogBody({
     }
     setTest({ status: 'running' });
     try {
+      const testProfile = withSsh(
+        profileFromForm(form, profile, () => crypto.randomUUID()),
+        ssh,
+      );
+      // The SSH password typed in the dialog is used for this test even before it is saved.
+      const sshSecret = sshSecretChange(ssh, profile);
       const info = await runWithHostKey(() =>
-        ipc.connectionTest(
-          withSsh(
-            profileFromForm(form, profile, () => crypto.randomUUID()),
-            ssh,
-          ),
-          testSecret(form),
-        ),
+        sshSecret
+          ? ipc.connectionTest(testProfile, testSecret(form), sshSecret)
+          : ipc.connectionTest(testProfile, testSecret(form)),
       );
       setTest({ status: 'ok', info });
     } catch (e) {
