@@ -91,19 +91,36 @@ export function parseFieldLines(text: string): [Value, Value][] | null {
   return out.length > 0 ? out : null;
 }
 
-/** Append the entries of a later page to the ones already loaded. */
+/** Append `next` to `prev`, dropping items whose identity was already loaded (SCAN may repeat). */
+function appendUnique<T>(prev: T[], next: T[], identity: (item: T) => string): T[] {
+  const seen = new Set(prev.map(identity));
+  const added = next.filter((item) => {
+    const id = identity(item);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return [...prev, ...added];
+}
+
+const valueId = (v: Value): string => JSON.stringify(v);
+
+/**
+ * Append the entries of a later page to the ones already loaded. HSCAN/SSCAN/ZSCAN can return
+ * the same element on several pages, so hash fields, set and sorted-set members are deduplicated.
+ */
 export function mergeEntries(prev: KeyEntries, next: KeyEntries): KeyEntries {
   if (prev.type === 'hash' && next.type === 'hash') {
-    return { type: 'hash', fields: [...prev.fields, ...next.fields] };
+    return { type: 'hash', fields: appendUnique(prev.fields, next.fields, ([f]) => valueId(f)) };
   }
   if (prev.type === 'list' && next.type === 'list') {
     return { type: 'list', start: prev.start, items: [...prev.items, ...next.items] };
   }
   if (prev.type === 'set' && next.type === 'set') {
-    return { type: 'set', members: [...prev.members, ...next.members] };
+    return { type: 'set', members: appendUnique(prev.members, next.members, valueId) };
   }
   if (prev.type === 'zSet' && next.type === 'zSet') {
-    return { type: 'zSet', members: [...prev.members, ...next.members] };
+    return { type: 'zSet', members: appendUnique(prev.members, next.members, ([m]) => valueId(m)) };
   }
   if (prev.type === 'stream' && next.type === 'stream') {
     return { type: 'stream', entries: [...prev.entries, ...next.entries], groups: next.groups };

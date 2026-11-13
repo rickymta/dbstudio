@@ -109,3 +109,36 @@ describe('mergeEntries', () => {
     expect(entryCount({ type: 'json', text: '{}' })).toBe(0);
   });
 });
+
+describe('mergeEntries deduplication', () => {
+  const t = (v: string) => ({ t: 'text' as const, v });
+  it('drops repeated hash fields, set members and zset members across pages', () => {
+    const hash = mergeEntries(
+      { type: 'hash', fields: [[t('a'), t('1')]] },
+      {
+        type: 'hash',
+        fields: [
+          [t('a'), t('1')],
+          [t('b'), t('2')],
+        ],
+      },
+    );
+    expect(hash.type === 'hash' && hash.fields.length).toBe(2);
+    const set = mergeEntries(
+      { type: 'set', members: [t('x')] },
+      { type: 'set', members: [t('x'), t('y')] },
+    );
+    expect(set.type === 'set' && set.members.length).toBe(2);
+    const z = mergeEntries(
+      { type: 'zSet', members: [[t('m'), '1']] },
+      {
+        type: 'zSet',
+        members: [
+          [t('m'), '1'],
+          [t('n'), '2'],
+        ],
+      },
+    );
+    expect(z.type === 'zSet' && z.members.length).toBe(2);
+  });
+});

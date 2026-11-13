@@ -454,9 +454,8 @@ mod tests {
         assert!(tree.nodes.iter().any(|n| n.name == "tmp:"));
     }
 
-    /// Needs the real `redis_cli` classifier of `dbstudio-sql` (package A, milestone A1).
+    /// Uses the real `redis_cli` classifier of `dbstudio-sql`.
     #[tokio::test]
-    #[ignore = "needs dbstudio-sql A1 (RedisCli classification); enable after merging feature/quandh/p2_sql"]
     async fn flushdb_on_production_needs_confirmation_and_read_only_blocks_writes() {
         use crate::guard::{ConfirmTokens, GuardInput, run_guard};
         let tokens = ConfirmTokens::new();

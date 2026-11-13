@@ -1,96 +1,9 @@
 //! redis-cli style line handling: tokenizer, argument quoting and script splitting.
 
-/// Split one command line into arguments like `redis-cli`: whitespace separated, `"..."` with
-/// C-like escapes (`\n \r \t \b \a \\ \" \xHH`), `'...'` where only `\'` is an escape.
+/// Split one command line into arguments like `redis-cli` (shared tokenizer of
+/// `dbstudio-sql`; the error is the human readable message).
 pub fn tokenize_line(line: &str) -> Result<Vec<Vec<u8>>, String> {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    let mut out = Vec::new();
-    while i < bytes.len() {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= bytes.len() {
-            break;
-        }
-        let mut arg = Vec::new();
-        match bytes[i] {
-            b'"' => {
-                i += 1;
-                loop {
-                    if i >= bytes.len() {
-                        return Err("unterminated double quotes".into());
-                    }
-                    match bytes[i] {
-                        b'"' => {
-                            i += 1;
-                            break;
-                        }
-                        b'\\' if i + 1 < bytes.len() => {
-                            i += 1;
-                            match bytes[i] {
-                                b'x' if i + 2 < bytes.len()
-                                    && bytes[i + 1].is_ascii_hexdigit()
-                                    && bytes[i + 2].is_ascii_hexdigit() =>
-                                {
-                                    let hex = &line[i + 1..i + 3];
-                                    arg.push(u8::from_str_radix(hex, 16).unwrap_or(0));
-                                    i += 2;
-                                }
-                                b'n' => arg.push(b'\n'),
-                                b'r' => arg.push(b'\r'),
-                                b't' => arg.push(b'\t'),
-                                b'b' => arg.push(8),
-                                b'a' => arg.push(7),
-                                other => arg.push(other),
-                            }
-                            i += 1;
-                        }
-                        other => {
-                            arg.push(other);
-                            i += 1;
-                        }
-                    }
-                }
-                if i < bytes.len() && !bytes[i].is_ascii_whitespace() {
-                    return Err("closing quote must be followed by a space".into());
-                }
-            }
-            b'\'' => {
-                i += 1;
-                loop {
-                    if i >= bytes.len() {
-                        return Err("unterminated single quotes".into());
-                    }
-                    match bytes[i] {
-                        b'\'' => {
-                            i += 1;
-                            break;
-                        }
-                        b'\\' if i + 1 < bytes.len() && bytes[i + 1] == b'\'' => {
-                            arg.push(b'\'');
-                            i += 2;
-                        }
-                        other => {
-                            arg.push(other);
-                            i += 1;
-                        }
-                    }
-                }
-                if i < bytes.len() && !bytes[i].is_ascii_whitespace() {
-                    return Err("closing quote must be followed by a space".into());
-                }
-            }
-            _ => {
-                while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
-                    arg.push(bytes[i]);
-                    i += 1;
-                }
-            }
-        }
-        out.push(arg);
-    }
-    Ok(out)
+    dbstudio_sql::redis_cli::tokenize_line(line).map_err(|e| e.message())
 }
 
 /// Render one argument so that [`tokenize_line`] reads it back unchanged.
