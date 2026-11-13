@@ -3,6 +3,7 @@ import { Network } from 'lucide-react';
 import { type FC, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Spinner } from '@/components/ui/Spinner';
 import { toast } from '@/components/ui/toastStore';
@@ -142,6 +143,20 @@ const ErdTabInner: FC<ErdTabPayload> = (payload) => {
           )}
           {changedCount > 0 && <span>{t('diff.changed', { n: changedCount })}</span>}
           <span className="text-muted-foreground">{t('diff.hint')}</span>
+          {missingCount > 0 && (
+            <Button size="sm" onClick={erd.forgetMissing}>
+              {t('diff.forget')}
+            </Button>
+          )}
+        </div>
+      )}
+      {erd.truncated && (
+        <div
+          role="status"
+          className="shrink-0 border-b border-border bg-warning-soft px-3 py-1 text-xs"
+          data-testid="erd-truncated-banner"
+        >
+          {t('truncated')}
         </div>
       )}
       <div className="flex min-h-0 flex-1">
@@ -167,6 +182,18 @@ const ErdTabInner: FC<ErdTabPayload> = (payload) => {
           onSave={erd.save}
         />
       )}
+      <ConfirmDialog
+        open={erd.conflict !== null}
+        onOpenChange={(open) => {
+          if (!open) void erd.resolveConflict('reload');
+        }}
+        title={t('conflict.title')}
+        description={t('conflict.description')}
+        confirmLabel={t('conflict.overwrite')}
+        cancelLabel={t('conflict.reload')}
+        destructive
+        onConfirm={() => void erd.resolveConflict('overwrite')}
+      />
       <LayoutsDialog
         open={layoutsOpen}
         onOpenChange={setLayoutsOpen}

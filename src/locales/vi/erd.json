@@ -27,7 +27,8 @@
   "diff": {
     "hint": "Lưu lại bố cục để cập nhật.",
     "missing": "Bảng đã lưu nhưng không còn tồn tại: {{n}}",
-    "changed": "Bảng đã thay đổi kể từ khi lưu bố cục: {{n}}"
+    "changed": "Bảng đã thay đổi kể từ khi lưu bố cục: {{n}}",
+    "forget": "Bỏ các bảng đã mất"
   },
   "toolbar": {
     "label": "Công cụ sơ đồ",
@@ -91,5 +92,12 @@
     "open": "Mở",
     "delete": "Xoá bố cục",
     "tables": "Số bảng: {{n}}"
+  },
+  "truncated": "Schema có hơn 2000 bảng: chỉ hiện 2000 bảng đầu (theo tên).",
+  "conflict": {
+    "title": "Bố cục đã bị đổi ở nơi khác",
+    "description": "Bố cục này đã được lưu bởi người khác (hoặc cửa sổ khác) sau khi bạn mở. Ghi đè bằng bản của bạn, hoặc tải bản đã lưu và bỏ thay đổi của bạn.",
+    "overwrite": "Ghi đè",
+    "reload": "Tải bản đã lưu"
   }
 }

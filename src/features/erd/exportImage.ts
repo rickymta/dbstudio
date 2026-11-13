@@ -94,8 +94,12 @@ const esc = (s: string) =>
 
 const num = (n: number) => String(Math.round(n * 100) / 100);
 
-const truncate = (s: string, max: number) =>
-  max < 2 ? '' : s.length <= max ? s : `${s.slice(0, Math.max(1, max - 1))}…`;
+/** Cut at `max` code points (never inside a surrogate pair). */
+const truncate = (s: string, max: number) => {
+  if (max < 2) return '';
+  const cps = Array.from(s);
+  return cps.length <= max ? s : `${cps.slice(0, Math.max(1, max - 1)).join('')}\u2026`;
+};
 
 const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 

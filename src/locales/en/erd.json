@@ -27,7 +27,8 @@
   "diff": {
     "hint": "Saving the layout again updates it.",
     "missing": "Saved tables that no longer exist: {{n}}",
-    "changed": "Tables changed since the layout was saved: {{n}}"
+    "changed": "Tables changed since the layout was saved: {{n}}",
+    "forget": "Forget missing tables"
   },
   "toolbar": {
     "label": "Diagram tools",
@@ -91,5 +92,12 @@
     "open": "Open",
     "delete": "Delete layout",
     "tables": "Tables: {{n}}"
+  },
+  "truncated": "The schema has more than 2000 tables: only the first 2000 (by name) are shown.",
+  "conflict": {
+    "title": "Layout changed elsewhere",
+    "description": "This layout was saved by someone else (or another window) after you opened it. Overwrite it with your version, or load the saved one and lose your changes.",
+    "overwrite": "Overwrite",
+    "reload": "Load saved"
   }
 }

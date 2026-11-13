@@ -154,6 +154,96 @@ describe('ErdTab (mock IPC)', () => {
     expect(request.scope.segments.at(-1)).toEqual({ kind: 'table', name: 'film' });
   });
 
+  async function saveFirstLayout(user: ReturnType<typeof userEvent.setup>) {
+    const first = await mount();
+    await screen.findByTestId('erd-node-film', {}, { timeout: 5000 });
+    await user.click(screen.getByRole('button', { name: 'Save layout' }));
+    await user.click(await screen.findByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const [summary] = await ipc.erdLayoutsList(PG_CONNECTION);
+    first.unmount();
+    return ipc.erdLayoutGet(summary!.id);
+  }
+
+  it('keeps stored tables that are not on screen when saving again', async () => {
+    const user = userEvent.setup();
+    const saved = await saveFirstLayout(user);
+    const ghostPath: ObjectPath = { segments: [{ kind: 'table', name: 'dropped_table' }] };
+    const viewPath: ObjectPath = {
+      segments: [
+        { kind: 'database', name: 'app_dev' },
+        { kind: 'folder', name: 'schemas' },
+        { kind: 'schema', name: 'public' },
+        { kind: 'folder', name: 'views' },
+        { kind: 'view', name: 'film_list' },
+      ],
+    };
+    const edited = await ipc.erdLayoutSave({
+      ...saved,
+      tables: [
+        ...parseLayoutTables(saved.tables),
+        { path: ghostPath, x: 5, y: 6, collapsed: false },
+        { path: viewPath, x: 77, y: 88, collapsed: false },
+      ],
+    });
+    await mount(edited.id);
+    await screen.findByTestId('erd-node-film', {}, { timeout: 5000 });
+    // The hidden view is not reported as missing; the dropped table is.
+    expect(screen.getByTestId('erd-diff-banner')).toHaveTextContent(
+      'Saved tables that no longer exist: 1',
+    );
+    await user.click(screen.getByRole('button', { name: 'Save layout' }));
+    await user.click(await screen.findByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const after = parseLayoutTables((await ipc.erdLayoutGet(edited.id)).tables);
+    const names = after.map((t) => t.path.segments.at(-1)!.name);
+    expect(names).toContain('dropped_table');
+    expect(after.find((t) => t.path.segments.at(-1)!.name === 'film_list')).toMatchObject({
+      x: 77,
+      y: 88,
+    });
+    // Forgetting the missing tables is an explicit action and removes them on the next save.
+    await user.click(screen.getByRole('button', { name: 'Forget missing tables' }));
+    await user.click(screen.getByRole('button', { name: 'Save layout' }));
+    await user.click(await screen.findByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const final = parseLayoutTables((await ipc.erdLayoutGet(edited.id)).tables);
+    expect(final.map((t) => t.path.segments.at(-1)!.name)).not.toContain('dropped_table');
+    expect(final.map((t) => t.path.segments.at(-1)!.name)).toContain('film_list');
+  });
+
+  it('asks before overwriting a layout that changed elsewhere', async () => {
+    const user = userEvent.setup();
+    const saved = await saveFirstLayout(user);
+    await mount(saved.id);
+    await screen.findByTestId('erd-node-film', {}, { timeout: 5000 });
+    // Someone else saves a new version meanwhile.
+    const elsewhere = await ipc.erdLayoutSave({ ...saved, tables: [] });
+    await user.click(screen.getByRole('button', { name: 'Save layout' }));
+    await user.click(await screen.findByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Layout changed elsewhere')).toBeInTheDocument();
+    // Nothing was written yet.
+    expect((await ipc.erdLayoutGet(saved.id)).updatedAt).toBe(elsewhere.updatedAt);
+    await user.click(screen.getByRole('button', { name: 'Overwrite' }));
+    await waitFor(async () =>
+      expect((await ipc.erdLayoutGet(saved.id)).updatedAt).not.toBe(elsewhere.updatedAt),
+    );
+    expect(parseLayoutTables((await ipc.erdLayoutGet(saved.id)).tables)).toHaveLength(16);
+  });
+
+  it('warns when the schema model was truncated', async () => {
+    sessionId ||= await openMockSession();
+    const real = ipc.schemaModel.bind(ipc);
+    vi.spyOn(ipc, 'schemaModel').mockImplementation(async (id, req) => ({
+      ...(await real(id, req)),
+      truncated: true,
+    }));
+    await mount();
+    expect(
+      await screen.findByTestId('erd-truncated-banner', {}, { timeout: 5000 }),
+    ).toHaveTextContent('2000 tables');
+  });
+
   it('reports a schema that cannot be loaded', async () => {
     sessionId ||= await openMockSession();
     vi.spyOn(ipc, 'schemaModel').mockRejectedValue({ kind: 'unsupported', message: 'no' });

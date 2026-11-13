@@ -389,6 +389,12 @@ export const erdMock = {
     }
     const now = new Date().toISOString();
     const existing = layouts.find((l) => l.id === layout.id);
+    if (existing && existing.updatedAt !== layout.updatedAt) {
+      throw ipcError(
+        'other',
+        'layout-conflict: the layout was changed elsewhere since it was loaded',
+      );
+    }
     const saved: ErdLayout = {
       ...clone(layout),
       name,

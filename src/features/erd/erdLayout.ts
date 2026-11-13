@@ -29,10 +29,14 @@ function inProcess(): Promise<ElkInstance> {
   return bundledElk;
 }
 
+/** Above this many tables ELK is not run on the UI thread as a fallback (the grid is used). */
+const IN_PROCESS_LIMIT = 150;
+
 async function runLayout(graph: ElkNode): Promise<ElkNode> {
   if (typeof Worker !== 'undefined') {
+    let instance: ElkInstance | null = null;
     try {
-      const instance = await inWorker();
+      instance = await inWorker();
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('elk worker timeout')), WORKER_TIMEOUT_MS);
@@ -43,8 +47,13 @@ async function runLayout(graph: ElkNode): Promise<ElkNode> {
         clearTimeout(timer);
       }
     } catch {
-      // The worker could not start (blocked URL, CSP...): run in this thread instead.
+      // Stop the stuck worker; never keep a worker that may still be burning CPU.
+      instance?.terminateWorker();
       workerElk = null;
+      // A big graph must not freeze the UI thread: callers fall back to the grid layout.
+      if ((graph.children?.length ?? 0) > IN_PROCESS_LIMIT) {
+        throw new Error('layout too large to run outside a worker');
+      }
     }
   }
   return (await inProcess()).layout(graph);
