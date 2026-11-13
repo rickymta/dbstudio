@@ -2,8 +2,94 @@
   "tab": {
     "title": "Sơ đồ"
   },
-  "placeholder": {
-    "title": "Sơ đồ",
-    "description": "Sơ đồ quan hệ thực thể chưa khả dụng."
+  "loading": "Đang tải schema…",
+  "laying": "Đang sắp xếp các bảng…",
+  "empty": {
+    "title": "Không có bảng",
+    "description": "Database hoặc schema này không có bảng nào để vẽ."
+  },
+  "error": {
+    "title": "Không tải được schema",
+    "unsupported": "Cơ sở dữ liệu này chưa hỗ trợ sơ đồ.",
+    "retry": "Thử lại"
+  },
+  "node": {
+    "expand": "Hiện cột",
+    "collapse": "Ẩn cột",
+    "view": "view"
+  },
+  "status": {
+    "missing": "đã mất",
+    "new": "mới",
+    "changed": "đã đổi",
+    "changedHint": "Các cột đã thay đổi kể từ khi lưu bố cục này"
+  },
+  "diff": {
+    "hint": "Lưu lại bố cục để cập nhật.",
+    "missing": "Bảng đã lưu nhưng không còn tồn tại: {{n}}",
+    "changed": "Bảng đã thay đổi kể từ khi lưu bố cục: {{n}}"
+  },
+  "toolbar": {
+    "label": "Công cụ sơ đồ",
+    "search": "Tìm bảng",
+    "searchPlaceholder": "Tìm bảng…",
+    "clearSearch": "Xoá tìm kiếm",
+    "depth": "Số bậc",
+    "showAll": "Hiện tất cả bảng",
+    "focus": "Bảng + lân cận",
+    "focusHint": "Chọn một bảng rồi chỉ hiện bảng đó và các bảng có quan hệ với nó",
+    "view": "Hiển thị",
+    "keysOnly": "Chỉ cột khoá",
+    "showTypes": "Hiện kiểu cột",
+    "showViews": "Hiện view",
+    "autoLayout": "Tự sắp xếp",
+    "fit": "Vừa màn hình",
+    "refresh": "Tải lại schema",
+    "color": "Màu bảng",
+    "colorClear": "Màu mặc định",
+    "save": "Lưu bố cục",
+    "layouts": "Bố cục",
+    "export": "Xuất",
+    "ddl": "DDL",
+    "count": "{{shown}}/{{total}} bảng",
+    "levels": "{{n}} bậc"
+  },
+  "export": {
+    "png": "Ảnh PNG",
+    "svg": "Ảnh SVG",
+    "pdf": "Tài liệu PDF",
+    "currentTheme": "Giao diện hiện tại",
+    "light": "Sáng",
+    "dark": "Tối",
+    "saved": "Đã lưu sơ đồ vào {{path}}",
+    "failed": "Không xuất được sơ đồ: {{message}}"
+  },
+  "ddl": {
+    "panel": "DDL của bảng",
+    "loading": "Đang sinh DDL…",
+    "unsupported": "Cơ sở dữ liệu này chưa hỗ trợ sinh DDL.",
+    "error": "Không sinh được DDL",
+    "ariaLabel": "DDL của {{name}}",
+    "copy": "Sao chép",
+    "copied": "Đã chép",
+    "close": "Đóng"
+  },
+  "save": {
+    "title": "Lưu bố cục",
+    "description": "Lưu vị trí bảng, màu và tuỳ chọn hiển thị của sơ đồ này.",
+    "name": "Tên",
+    "defaultName": "Sơ đồ {{name}}",
+    "save": "Lưu",
+    "asNew": "Lưu thành bản mới",
+    "cancel": "Huỷ"
+  },
+  "layouts": {
+    "title": "Bố cục đã lưu",
+    "description": "Các bố cục đã lưu cho database hoặc schema này.",
+    "empty": "Chưa có bố cục nào được lưu",
+    "current": "(đang mở)",
+    "open": "Mở",
+    "delete": "Xoá bố cục",
+    "tables": "Số bảng: {{n}}"
   }
 }
