@@ -62,7 +62,10 @@ export function toIpcError(e: unknown): IpcError {
 
 export type IpcTransport = 'tauri' | 'bridge' | 'mock';
 
+// The bridge is a development aid: both variables are only read when `import.meta.env.DEV` is
+// true, so production builds drop the whole branch (and never contain a bridge token).
 const bridgeUrl = (): string | undefined => {
+  if (!import.meta.env.DEV) return undefined;
   const url = import.meta.env.VITE_IPC_BRIDGE_URL as string | undefined;
   return url ? url.replace(/\/+$/, '') : undefined;
 };
@@ -73,14 +76,17 @@ export function ipcTransport(): IpcTransport {
   return bridgeUrl() ? 'bridge' : 'mock';
 }
 
-function bridgeRequest(command: string, body: unknown): Promise<Response> {
+function bridgeRequest(command: string, body: unknown, signal?: AbortSignal): Promise<Response> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
-  const token = import.meta.env.VITE_IPC_BRIDGE_TOKEN as string | undefined;
+  const token = import.meta.env.DEV
+    ? (import.meta.env.VITE_IPC_BRIDGE_TOKEN as string | undefined)
+    : undefined;
   if (token) headers['x-dbstudio-bridge-token'] = token;
   return fetch(`${bridgeUrl()}/ipc/${command}`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body ?? {}),
+    signal,
   }).catch((e: unknown) => {
     throw {
       kind: 'connection',
@@ -105,43 +111,66 @@ async function bridgeCall<T>(command: string, body: unknown): Promise<T> {
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+/** In-flight bridge fetches by query id, so `queryCancel` can drop the local stream too. */
+const bridgeFetches = new Map<string, AbortController>();
+
+const CANCELLED: IpcError = { kind: 'cancelled', message: 'query cancelled' };
+
 /** POST `table_fetch` and read the NDJSON event stream until its `result`/`error` line. */
-async function bridgeStream(body: unknown, handler: (e: QueryEvent) => void): Promise<ExecSummary> {
-  const res = await bridgeRequest('table_fetch', body);
-  if (res.status !== 200) throw await bridgeFailure(res);
-  if (!res.body) throw { kind: 'connection', message: 'IPC bridge returned no stream' };
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let summary: ExecSummary | null = null;
+async function bridgeStream(
+  body: { sessionId: Uuid; request: TableDataRequest },
+  handler: (e: QueryEvent) => void,
+): Promise<ExecSummary> {
+  const controller = new AbortController();
+  const queryId = body.request.queryId;
+  if (queryId) bridgeFetches.set(queryId, controller);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const res = await bridgeRequest('table_fetch', body, controller.signal);
+    if (res.status !== 200) throw await bridgeFailure(res);
+    if (!res.body) throw { kind: 'connection', message: 'IPC bridge returned no stream' };
+    reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let summary: ExecSummary | null = null;
 
-  const handleLine = (line: string) => {
-    if (!line.trim()) return;
-    const msg = JSON.parse(line) as { type: string; summary?: ExecSummary; error?: unknown };
-    if (msg.type === 'result') summary = msg.summary ?? { statements: 0, elapsedMs: 0 };
-    else if (msg.type === 'error') throw toIpcError(msg.error);
-    else handler(msg as unknown as QueryEvent);
-  };
+    const handleLine = (line: string) => {
+      if (!line.trim()) return;
+      const msg = JSON.parse(line) as { type: string; summary?: ExecSummary; error?: unknown };
+      if (msg.type === 'result') summary = msg.summary ?? { statements: 0, elapsedMs: 0 };
+      else if (msg.type === 'error') throw toIpcError(msg.error);
+      else handler(msg as unknown as QueryEvent);
+    };
 
-  for (;;) {
-    let chunk: ReadableStreamReadResult<Uint8Array>;
-    try {
-      chunk = await reader.read();
-    } catch (e) {
-      throw { kind: 'connection', message: `IPC bridge stream failed: ${String(e)}` };
+    for (;;) {
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (e) {
+        if (controller.signal.aborted) throw CANCELLED;
+        throw { kind: 'connection', message: `IPC bridge stream failed: ${String(e)}` };
+      }
+      buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        handleLine(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf('\n');
+      }
+      if (chunk.done) break;
     }
-    buffer += decoder.decode(chunk.value, { stream: !chunk.done });
-    let newline = buffer.indexOf('\n');
-    while (newline >= 0) {
-      handleLine(buffer.slice(0, newline));
-      buffer = buffer.slice(newline + 1);
-      newline = buffer.indexOf('\n');
-    }
-    if (chunk.done) break;
+    handleLine(buffer);
+    if (!summary) throw { kind: 'connection', message: 'IPC bridge stream ended without a result' };
+    return summary;
+  } catch (e) {
+    if (controller.signal.aborted) throw CANCELLED;
+    throw e;
+  } finally {
+    // Always release the connection, whether the stream finished, failed or was cancelled.
+    if (queryId && bridgeFetches.get(queryId) === controller) bridgeFetches.delete(queryId);
+    await reader?.cancel().catch(() => undefined);
+    controller.abort();
   }
-  handleLine(buffer);
-  if (!summary) throw { kind: 'connection', message: 'IPC bridge stream ended without a result' };
-  return summary;
 }
 
 /**
@@ -267,8 +296,17 @@ export const ipc = {
     call('table_details', () => mock.tableDetails(sessionId, path), { sessionId, path }),
   tableCount: (sessionId: Uuid, request: TableCountRequest): Promise<number> =>
     call('table_count', () => mock.tableCount(sessionId, request), { sessionId, request }),
-  queryCancel: (sessionId: Uuid, queryId: Uuid): Promise<void> =>
-    call('query_cancel', () => mock.queryCancel(sessionId, queryId), { sessionId, queryId }),
+  queryCancel: async (sessionId: Uuid, queryId: Uuid): Promise<void> => {
+    try {
+      await call<void>('query_cancel', () => mock.queryCancel(sessionId, queryId), {
+        sessionId,
+        queryId,
+      });
+    } finally {
+      // Over the dev bridge, also stop reading the local stream of that fetch.
+      bridgeFetches.get(queryId)?.abort();
+    }
+  },
 
   settingsGet: (): Promise<AppSettings> => call('settings_get', () => mock.settingsGet()),
   settingsSet: (settings: AppSettings): Promise<AppSettings> =>

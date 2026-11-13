@@ -169,6 +169,8 @@ impl Driver for MySqlDriver {
             secret_text,
             is_mariadb,
             config.database.clone().filter(|d| !d.is_empty()),
+            tunables.search_timeout_ms,
+            tunables.debug_search_sleep_ms,
         );
         Ok(Box::new(MySqlSession::new(inner)))
     }

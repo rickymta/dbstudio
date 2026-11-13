@@ -346,8 +346,15 @@ impl Session for PostgresSession {
             .clone()
             .unwrap_or_else(|| self.login_db().to_string());
         let mut conn = self.shared.acquire_catalog(&database).await?;
-        let r = search::search(&conn.client, &req, &scope, &database).await;
-        if r.is_ok() || matches!(r, Err(Error::Query { .. })) {
+        let r = search::search(
+            &conn.client,
+            &req,
+            &scope,
+            &database,
+            self.shared.search_timeout,
+        )
+        .await;
+        if r.is_ok() || matches!(r, Err(Error::Query { .. } | Error::Timeout)) {
             conn.mark_reusable();
         }
         r

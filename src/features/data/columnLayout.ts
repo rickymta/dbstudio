@@ -9,24 +9,41 @@ export interface ColumnLayout {
   hidden: string[];
   /** Pinned columns stick to the left, in `order` order. */
   pinned: string[];
+  /** Width by column name. Read with `getWidth` (names such as `__proto__` are plain data). */
   widths: Record<string, number>;
 }
 
 export const EMPTY_LAYOUT: ColumnLayout = { order: [], hidden: [], pinned: [], widths: {} };
 
+// NOTE: the layout is keyed by column NAME. A result with two columns of the same name (a join
+// without aliases) cannot be told apart and would share one slot; that cannot happen for table
+// browsing (`table_fetch`), and a future query-result grid must key by position or alias instead.
+
+/** Own-property width lookup: `constructor`, `toString`, `__proto__`... are ordinary names. */
+export function getWidth(layout: ColumnLayout, name: string): number | undefined {
+  if (!Object.hasOwn(layout.widths, name)) return undefined;
+  const w = layout.widths[name];
+  return typeof w === 'number' && Number.isFinite(w) ? w : undefined;
+}
+
+/** Objects built with `fromEntries` define own properties, so `__proto__` is safe as a key. */
+function widthsFrom(entries: [string, number][]): Record<string, number> {
+  return Object.fromEntries(entries);
+}
+
 /** Layout for the current column names: lost columns dropped, new ones appended at the end. */
 export function reconcileLayout(saved: ColumnLayout, names: string[]): ColumnLayout {
   const known = new Set(names);
-  const order = saved.order.filter((n) => known.has(n));
+  const order = [...new Set(saved.order.filter((n) => known.has(n)))];
   const inOrder = new Set(order);
   for (const n of names) if (!inOrder.has(n)) order.push(n);
-  const widths: Record<string, number> = {};
-  for (const [k, v] of Object.entries(saved.widths)) if (known.has(k)) widths[k] = v;
   return {
     order,
     hidden: saved.hidden.filter((n) => known.has(n)),
     pinned: saved.pinned.filter((n) => known.has(n)),
-    widths,
+    widths: widthsFrom(
+      Object.entries(saved.widths).filter(([k, v]) => known.has(k) && Number.isFinite(v)),
+    ),
   };
 }
 
@@ -49,19 +66,31 @@ export function visibleColumns(layout: ColumnLayout, names: string[]): VisibleCo
 
 const without = (xs: string[], n: string) => xs.filter((x) => x !== n);
 
-export function toggleHidden(layout: ColumnLayout, name: string): ColumnLayout {
-  return layout.hidden.includes(name)
-    ? { ...layout, hidden: without(layout.hidden, name) }
-    : { ...layout, hidden: [...layout.hidden, name] };
+// Every edit below first reconciles with the current column `names`, so it works on a layout
+// that is empty (never saved) or stale (columns added/removed since it was saved).
+
+export function toggleHidden(layout: ColumnLayout, name: string, names: string[]): ColumnLayout {
+  const l = reconcileLayout(layout, names);
+  if (!names.includes(name)) return l;
+  return l.hidden.includes(name)
+    ? { ...l, hidden: without(l.hidden, name) }
+    : { ...l, hidden: [...l.hidden, name] };
 }
 
-export function showAll(layout: ColumnLayout): ColumnLayout {
-  return { ...layout, hidden: [] };
+export function showAll(layout: ColumnLayout, names: string[]): ColumnLayout {
+  return { ...reconcileLayout(layout, names), hidden: [] };
 }
 
-export function setPinned(layout: ColumnLayout, name: string, pinned: boolean): ColumnLayout {
-  const rest = without(layout.pinned, name);
-  return { ...layout, pinned: pinned ? [...rest, name] : rest };
+export function setPinned(
+  layout: ColumnLayout,
+  name: string,
+  pinned: boolean,
+  names: string[],
+): ColumnLayout {
+  const l = reconcileLayout(layout, names);
+  if (!names.includes(name)) return l;
+  const rest = without(l.pinned, name);
+  return { ...l, pinned: pinned ? [...rest, name] : rest };
 }
 
 /** Move `name` before/after `target` in the display order. */
@@ -69,18 +98,26 @@ export function moveColumn(
   layout: ColumnLayout,
   name: string,
   target: string,
+  names: string[],
   placement: 'before' | 'after' = 'before',
 ): ColumnLayout {
-  if (name === target) return layout;
-  const order = without(layout.order, name);
-  const at = order.indexOf(target);
-  if (at < 0) return layout;
-  order.splice(placement === 'before' ? at : at + 1, 0, name);
-  return { ...layout, order };
+  const l = reconcileLayout(layout, names);
+  if (name === target || !names.includes(name) || !names.includes(target)) return l;
+  const order = without(l.order, name);
+  order.splice(order.indexOf(target) + (placement === 'before' ? 0 : 1), 0, name);
+  return { ...l, order };
 }
 
-export function setWidth(layout: ColumnLayout, name: string, width: number): ColumnLayout {
-  return { ...layout, widths: { ...layout.widths, [name]: clampColumnWidth(width) } };
+export function setWidth(
+  layout: ColumnLayout,
+  name: string,
+  width: number,
+  names: string[],
+): ColumnLayout {
+  const l = reconcileLayout(layout, names);
+  if (!names.includes(name)) return l;
+  const entries = Object.entries(l.widths).filter(([k]) => k !== name);
+  return { ...l, widths: widthsFrom([...entries, [name, clampColumnWidth(width)]]) };
 }
 
 export function resetLayout(): ColumnLayout {
@@ -103,23 +140,43 @@ export function layoutStorageKey(connectionId: string, tablePathKey: string): st
   return `dbstudio.gridLayout.${connectionId}.${tablePathKey}`;
 }
 
-const isStrings = (x: unknown): x is string[] =>
-  Array.isArray(x) && x.every((s) => typeof s === 'string');
+const MAX_ENTRIES = 2000;
+const MAX_NAME_LENGTH = 512;
 
+function cleanNames(x: unknown): string[] {
+  if (!Array.isArray(x)) return [];
+  const out: string[] = [];
+  for (const item of x) {
+    if (typeof item === 'string' && item.length <= MAX_NAME_LENGTH) out.push(item);
+    if (out.length >= MAX_ENTRIES) break;
+  }
+  return out;
+}
+
+function cleanWidths(x: unknown): Record<string, number> {
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) return {};
+  const entries: [string, number][] = [];
+  for (const [k, v] of Object.entries(x)) {
+    if (k.length > MAX_NAME_LENGTH || typeof v !== 'number' || !Number.isFinite(v)) continue;
+    entries.push([k, clampColumnWidth(v)]);
+    if (entries.length >= MAX_ENTRIES) break;
+  }
+  return widthsFrom(entries);
+}
+
+/** Stored layout, sanitized: unknown shapes are dropped, widths clamped to the allowed range. */
 export function loadLayout(key: string): ColumnLayout {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return EMPTY_LAYOUT;
-    const o = JSON.parse(raw) as Partial<ColumnLayout>;
-    const widths: Record<string, number> = {};
-    if (o.widths && typeof o.widths === 'object') {
-      for (const [k, v] of Object.entries(o.widths)) if (typeof v === 'number') widths[k] = v;
-    }
+    const o: unknown = JSON.parse(raw);
+    if (typeof o !== 'object' || o === null) return EMPTY_LAYOUT;
+    const r = o as Record<string, unknown>;
     return {
-      order: isStrings(o.order) ? o.order : [],
-      hidden: isStrings(o.hidden) ? o.hidden : [],
-      pinned: isStrings(o.pinned) ? o.pinned : [],
-      widths,
+      order: cleanNames(r.order),
+      hidden: cleanNames(r.hidden),
+      pinned: cleanNames(r.pinned),
+      widths: cleanWidths(r.widths),
     };
   } catch {
     return EMPTY_LAYOUT;

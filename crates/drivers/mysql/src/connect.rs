@@ -19,13 +19,19 @@ pub const DEFAULT_POOL_MAX: usize = 8;
 /// Settings derived from the free-form `options` map of a configuration.
 ///
 /// Recognised keys: `pool_max` (1-32, default 8) and `init_command` (a statement executed on
-/// every new connection, e.g. `SET time_zone = '+00:00'`).
+/// every new connection, e.g. `SET time_zone = '+00:00'`) and `search_timeout_ms` (object search
+/// time limit, default 10000).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tunables {
     /// Maximum number of pooled connections.
     pub pool_max: usize,
     /// Extra statement run on each new connection.
     pub init_command: Option<String>,
+    /// Time limit of one object search in milliseconds (default 10 000).
+    pub search_timeout_ms: u64,
+    /// Diagnostics only (`debug_search_sleep_ms`): sleep this long before a search, to make the
+    /// time limit testable deterministically.
+    pub debug_search_sleep_ms: Option<u64>,
 }
 
 impl Tunables {
@@ -45,9 +51,21 @@ impl Tunables {
             .get("init_command")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let num = |key: &str| -> Result<Option<u64>> {
+            cfg.options
+                .get(key)
+                .map(|v| {
+                    v.trim()
+                        .parse::<u64>()
+                        .map_err(|_| Error::Other(format!("invalid {key} `{v}`")))
+                })
+                .transpose()
+        };
         Ok(Tunables {
             pool_max,
             init_command,
+            search_timeout_ms: num("search_timeout_ms")?.unwrap_or(10_000).max(1),
+            debug_search_sleep_ms: num("debug_search_sleep_ms")?,
         })
     }
 }

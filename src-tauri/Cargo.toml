@@ -39,6 +39,8 @@ uuid.workspace = true
 default = ["postgres", "mysql"]
 postgres = ["dep:dbstudio-driver-postgres"]
 mysql = ["dep:dbstudio-driver-mysql"]
+# Enabled by `tauri build`; also what makes a bundle load the embedded frontend.
+custom-protocol = ["tauri/custom-protocol"]
 # Debug-only HTTP bridge so a browser UI can drive the real backend. Never enable in release.
 dev-bridge = ["dep:axum", "dep:tokio-stream", "tokio/net"]
 

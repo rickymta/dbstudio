@@ -7,3 +7,4 @@ coverage/
 .DS_Store
 src-tauri/gen/
 .claude/worktrees/
+.env*.local

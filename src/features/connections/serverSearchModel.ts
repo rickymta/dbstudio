@@ -14,11 +14,35 @@ export function useSearchableSessions(): SessionInfo[] {
   );
 }
 
-/** Display context of a result: its path without the folder segments and the object itself. */
-export function resultContext(node: ObjectNode): string {
+/** Names above a result: its path without folder segments and without the object itself. */
+export function resultContextParts(node: Pick<ObjectNode, 'path'>): string[] {
   return node.path.segments
     .slice(0, -1)
     .filter((s) => s.kind !== 'folder')
-    .map((s) => s.name)
-    .join('.');
+    .map((s) => s.name);
+}
+
+/** Display context of a result, e.g. `db › schema`. */
+export function resultContext(node: Pick<ObjectNode, 'path'>): string {
+  return resultContextParts(node).join(' › ');
+}
+
+/**
+ * The part of the backend `detail` that is not already said by the context. Drivers put the
+ * location (`db.schema`, `schema`, a database name) first and may append more (`partitioned`).
+ */
+export function extraDetail(node: Pick<ObjectNode, 'path' | 'detail'>): string {
+  let detail = (node.detail ?? '').trim();
+  if (!detail) return '';
+  const parts = resultContextParts(node);
+  const known = [parts.join('.'), parts.join(' › '), parts.at(-1) ?? ''].filter(Boolean);
+  for (const c of known) {
+    if (!detail.toLowerCase().startsWith(c.toLowerCase())) continue;
+    const rest = detail.slice(c.length);
+    if (rest === '' || /^[\s,;·-]/.test(rest)) {
+      detail = rest.replace(/^[\s,;·-]+/, '');
+      break;
+    }
+  }
+  return detail;
 }

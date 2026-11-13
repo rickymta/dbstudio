@@ -2478,3 +2478,32 @@ async fn search(port: u16) {
     s.object_ddl(&weird[0].path).await.unwrap();
 }
 on_both!(search, search_pg16, search_pg12);
+
+async fn search_timeout(port: u16) {
+    let _ = fixture(port).await;
+    let mut cfg = config(port, TlsMode::Prefer);
+    // One millisecond is far too little for a catalog scan.
+    cfg.options.insert("search_timeout_ms".into(), "1".into());
+    let s = try_connect(&cfg, PASSWORD).await.unwrap();
+    let root = dbstudio_core::ObjectPath::root();
+    for _ in 0..3 {
+        let err = s
+            .search_objects(search_req("e", root.clone()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Timeout), "{err:?}");
+        // The connection went back clean: the session keeps working.
+        s.ping().await.unwrap();
+        assert!(!s.list_children(&root).await.unwrap().is_empty());
+    }
+    // The default limit does not interfere with normal searches.
+    let normal = connect(port).await;
+    assert!(
+        !normal
+            .search_objects(search_req("user", root))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+on_both!(search_timeout, search_timeout_pg16, search_timeout_pg12);

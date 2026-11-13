@@ -17,6 +17,7 @@ import { cn } from '@/lib/cn';
 import { Spinner } from '@/components/ui/Spinner';
 import { ColumnMenu } from './ColumnMenu';
 import {
+  getWidth,
   moveColumn,
   saveLayout,
   setWidth,
@@ -35,7 +36,14 @@ import {
   valueToText,
   type CellKind,
 } from './format';
-import { anchoredScrollTop, computeScale, rowTop, scrollTopToRevealRow } from './gridScale';
+import {
+  computeScale,
+  needsOffsetResync,
+  reanchorScrollTop,
+  rowTop,
+  scrollTopToRevealRow,
+  virtualOffsetFor,
+} from './gridScale';
 import type { GridModel } from './gridModel';
 import { isFilterActive } from './request';
 import { loadScroll, saveScroll, useDataUiStore, useTabUi, type CellPos } from './store';
@@ -60,6 +68,19 @@ const TONE: Record<CellKind, string> = {
   structured: 'text-muted-foreground',
 };
 
+/**
+ * A 0x0 rect means the element is hidden (tab switch, minimized window): keep the last real size
+ * so the scroll scale does not change twice for nothing. Before any real size, use the fallback.
+ */
+function validRect(
+  r: { width: number; height: number },
+  last: { current: { width: number; height: number } | null },
+) {
+  if (r.width === 0 && r.height === 0) return last.current ?? FALLBACK_RECT;
+  last.current = r;
+  return r;
+}
+
 interface DataGridProps {
   tabId: string;
   model: GridModel;
@@ -78,6 +99,11 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
   const [ui, patchUi] = useTabUi(tabId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const ratioRef = useRef(1);
+  // Ratio / max scrollTop the DOM was last laid out with (null until the grid first mounts).
+  const appliedRef = useRef<{ ratio: number; maxTop: number } | null>(null);
+  // Re-reports the current scrollTop to the row virtualizer (see the layout effect below).
+  const offsetEmitRef = useRef<(() => void) | null>(null);
+  const lastRectRef = useRef<{ width: number; height: number } | null>(null);
   const gridId = useId();
   const cellId = (r: number, c: number) => `${gridId}-r${r}c${c}`;
 
@@ -95,9 +121,9 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
   const widthOf = useCallback(
     (ci: number) => {
       const c = columns[ci];
-      return c ? (layout.widths[c.name] ?? defaultColumnWidth(c)) : 120;
+      return c ? (getWidth(layout, c.name) ?? defaultColumnWidth(c)) : 120;
     },
-    [columns, layout.widths],
+    [columns, layout],
   );
   const pinnedWidths = pinnedIdx.map(widthOf);
   const pinnedWidth = pinnedWidths.reduce((a, b) => a + b, 0);
@@ -119,10 +145,21 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
     overscan: 12,
     initialRect: FALLBACK_RECT,
     observeElementRect: (inst, cb) =>
-      observeElementRect(inst, (r) => cb(r.height === 0 && r.width === 0 ? FALLBACK_RECT : r)),
+      observeElementRect(inst, (r) => cb(validRect(r, lastRectRef))),
     // Real scrollTop -> virtual offset (identity unless the content height is scaled).
-    observeElementOffset: (inst, cb) =>
-      observeElementOffset(inst, (offset, scrolling) => cb(offset * ratioRef.current, scrolling)),
+    observeElementOffset: (inst, cb) => {
+      offsetEmitRef.current = () => {
+        const el = inst.scrollElement;
+        if (el) cb(virtualOffsetFor(el.scrollTop, ratioRef.current), false);
+      };
+      const stop = observeElementOffset(inst, (offset, scrolling) =>
+        cb(offset * ratioRef.current, scrolling),
+      );
+      return () => {
+        offsetEmitRef.current = null;
+        stop?.();
+      };
+    },
   });
 
   const colVirtualizer = useVirtualizer({
@@ -136,24 +173,41 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
     scrollPaddingStart: ROWNUM_WIDTH + pinnedWidth,
     initialRect: FALLBACK_RECT,
     observeElementRect: (inst, cb) =>
-      observeElementRect(inst, (r) => cb(r.height === 0 && r.width === 0 ? FALLBACK_RECT : r)),
+      observeElementRect(inst, (r) => cb(validRect(r, lastRectRef))),
   });
 
   const viewportHeight = rowVirtualizer.scrollRect?.height ?? FALLBACK_RECT.height;
   const bodyViewport = Math.max(ROW_HEIGHT, viewportHeight - HEADER_HEIGHT);
   const scale = computeScale(rowCount, ROW_HEIGHT, bodyViewport);
 
-  // When appended pages change the scroll ratio, keep the row at the top of the viewport: the
-  // virtual offset stays and the real scrollTop is recomputed for the new ratio.
+  // When the scroll ratio or the content/viewport size changes (pages appended, window resized,
+  // hidden/shown), keep the first visible row, or the bottom if the view was at the bottom. The
+  // position is read from the DOM (`el.scrollTop`), never from the virtualizer's cached offset,
+  // which can lag behind the last scroll event.
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    const previous = ratioRef.current;
+    const prev = appliedRef.current;
     ratioRef.current = scale.ratio;
-    if (!el || previous === scale.ratio) return;
-    const virtualOffset = rowVirtualizer.scrollOffset ?? 0;
-    el.scrollTop = anchoredScrollTop(virtualOffset, scale.ratio);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scale.ratio]);
+    if (!el || el.clientHeight === 0) return; // not laid out (hidden): keep the last state
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    const applied = { ratio: scale.ratio, maxTop };
+    appliedRef.current = applied;
+    if (!prev) return;
+    if (prev.ratio !== scale.ratio) {
+      const next = reanchorScrollTop({
+        realTop: el.scrollTop,
+        prevRatio: prev.ratio,
+        nextRatio: scale.ratio,
+        prevMaxRealTop: prev.maxTop,
+        maxRealTop: maxTop,
+      });
+      if (Math.abs(next - el.scrollTop) >= 1) el.scrollTop = next;
+    }
+    // Assigning an unchanged scrollTop fires no scroll event, so tell the virtualizer explicitly
+    // (ratioRef is already updated above): otherwise it keeps the old virtual offset and draws
+    // and loads for stale rows.
+    if (needsOffsetResync(prev, applied)) offsetEmitRef.current?.();
+  }, [scale.ratio, scale.realHeight, viewportHeight]);
 
   const widthsKey = `${freeWidths.join(',')}|${freeIdx.join(',')}|${pinnedWidth}`;
   useEffect(() => {
@@ -177,7 +231,8 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
   const vRows = rowVirtualizer.getVirtualItems();
   const vCols = colVirtualizer.getVirtualItems();
   const realTop = rowVirtualizer.scrollElement?.scrollTop ?? 0;
-  const virtualOffset = rowVirtualizer.scrollOffset ?? 0;
+  // Both come from the DOM scrollTop so rows stay consistent right after a programmatic scroll.
+  const virtualOffset = realTop * scale.ratio;
   const lastVisible = vRows.length > 0 ? vRows[vRows.length - 1]!.index : -1;
 
   // Fetch the next page when the user gets close to the end of what is loaded.
@@ -311,7 +366,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
     const startX = e.clientX;
     const latest = () => useDataUiStore.getState().byTab[tabId]?.layout ?? layout;
     const move = (ev: PointerEvent) => {
-      commitLayout(setWidth(latest(), name, startWidth + ev.clientX - startX), false);
+      commitLayout(setWidth(latest(), name, startWidth + ev.clientX - startX, names), false);
     };
     const up = () => {
       saveLayout(layoutKey, latest());
@@ -389,7 +444,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
           if (!from || from === col.name) return;
           const rect = e.currentTarget.getBoundingClientRect();
           const after = rect.width > 0 && e.clientX > rect.left + rect.width / 2;
-          commitLayout(moveColumn(layout, from, col.name, after ? 'after' : 'before'));
+          commitLayout(moveColumn(layout, from, col.name, names, after ? 'after' : 'before'));
         }}
         onDragEnd={() => {
           dragName.current = null;

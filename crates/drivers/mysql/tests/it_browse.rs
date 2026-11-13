@@ -24,7 +24,7 @@ async fn tree_levels() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let s = user_session(t).await;
         let tag = t.name;
@@ -198,7 +198,7 @@ async fn ddl_for_every_kind() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let s = user_session(t).await;
         let tag = t.name;
@@ -282,7 +282,7 @@ async fn details_of_tables_and_views() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let s = user_session(t).await;
         let tag = t.name;
@@ -407,7 +407,7 @@ async fn roles_folder_depends_on_privileges() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         let tag = t.name;
         let root = root_session(t).await;
         let top = kids(&*root, &ObjectPath::root()).await;
@@ -453,7 +453,7 @@ async fn server_side_object_search() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         let tag = t.name;
         ensure_fixture(t).await;
         let db1 = scratch_db(t, "search1").await;
@@ -606,5 +606,96 @@ async fn server_side_object_search() {
             db().child(K::Folder, folder::TABLES)
                 .child(K::Table, "people")
         );
+    }
+}
+
+#[tokio::test]
+async fn search_limit_applies_after_kind_filter_and_edge_cases() {
+    if !it_enabled() {
+        return;
+    }
+    for t in targets() {
+        let tag = t.name;
+        ensure_fixture(t).await;
+        let dbn = scratch_db(t, "search3").await;
+        let root = root_session(t).await;
+        let mut sql = String::new();
+        for i in 0..12 {
+            sql.push_str(&format!("CREATE TABLE `{dbn}`.`zz_t{i:02}` (a INT);"));
+        }
+        sql.push_str(&format!("CREATE VIEW `{dbn}`.`zz_view` AS SELECT 1 AS a"));
+        run(&*root, &sql).await;
+        root.close().await.unwrap();
+        let s = user_session(t).await;
+        let scope = ObjectPath::root().child(K::Database, dbn.as_str());
+        let mut req = search_req("zz", scope.clone());
+        req.limit = 10;
+        // More than `limit` tables rank before the view; the kind filter must come first.
+        req.kinds = vec![K::View];
+        assert_eq!(
+            names(&s.search_objects(req.clone()).await.unwrap()),
+            ["zz_view"],
+            "[{tag}]"
+        );
+        req.kinds = vec![K::Table];
+        let tables = s.search_objects(req.clone()).await.unwrap();
+        assert_eq!(tables.len(), 10);
+        assert!(tables.iter().all(|n| n.kind == K::Table));
+        req.kinds = vec![];
+        assert_eq!(s.search_objects(req.clone()).await.unwrap().len(), 10);
+        // Only inapplicable kinds: nothing, and the filter is not dropped.
+        req.kinds = vec![K::Sequence];
+        assert!(s.search_objects(req.clone()).await.unwrap().is_empty());
+        // Whitespace-only queries are empty; surrounding whitespace is ignored.
+        assert!(
+            s.search_objects(search_req("   ", scope.clone()))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let r = s
+            .search_objects(search_req("  zz_view ", scope.clone()))
+            .await
+            .unwrap();
+        assert_eq!(names(&r), ["zz_view"]);
+        // A table (or deeper) is not a valid scope.
+        let bad = scope.child(K::Table, "zz_t00");
+        assert!(matches!(
+            s.search_objects(search_req("zz", bad.clone())).await,
+            Err(Error::NotFound(_))
+        ));
+        assert!(matches!(
+            s.search_objects(search_req("zz", bad.child(K::Folder, folder::COLUMNS)))
+                .await,
+            Err(Error::NotFound(_))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn search_has_a_time_limit() {
+    if !it_enabled() {
+        return;
+    }
+    for t in targets() {
+        let mut c = config(t, "dbstudio", dbstudio_core::TlsMode::Disable);
+        c.options.insert("search_timeout_ms".into(), "400".into());
+        c.options
+            .insert("debug_search_sleep_ms".into(), "20000".into());
+        c.options.insert("pool_max".into(), "1".into());
+        let s = connect_cfg(&c).await.unwrap();
+        let started = std::time::Instant::now();
+        let r = s
+            .search_objects(search_req("user", ObjectPath::root()))
+            .await;
+        assert!(matches!(r, Err(Error::Timeout)), "[{}] {r:?}", t.name);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "[{}]",
+            t.name
+        );
+        // The only pooled connection is healthy again.
+        s.ping().await.unwrap();
+        assert_eq!(query(&*s, "SELECT 1").await.rows.len(), 1);
     }
 }

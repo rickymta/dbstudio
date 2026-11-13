@@ -23,6 +23,8 @@ import { moveFocus } from './rowNav';
 /** Drag-and-drop plumbing handed to every row by the sidebar (CONN-02). */
 export interface DndApi {
   hint: DropTarget | null;
+  /** A move is being saved: dragging is disabled until it finishes. */
+  busy: boolean;
   start: (item: DragItem, e: DragEvent<HTMLElement>) => void;
   end: () => void;
   over: (e: DragEvent<HTMLElement>, row: DragItem) => void;
@@ -32,7 +34,7 @@ export interface DndApi {
 /** Spread on a row element: makes it draggable and a drop target. */
 function dndProps(dnd: DndApi, row: DragItem) {
   return {
-    draggable: true,
+    draggable: !dnd.busy,
     onDragStart: (e: DragEvent<HTMLElement>) => dnd.start(row, e),
     onDragEnd: dnd.end,
     onDragOver: (e: DragEvent<HTMLElement>) => dnd.over(e, row),

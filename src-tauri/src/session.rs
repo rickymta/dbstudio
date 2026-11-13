@@ -231,6 +231,7 @@ pub(crate) mod testing {
         pub connects: AtomicUsize,
         pub closes: AtomicUsize,
         pub last_secret: Mutex<Option<Option<String>>>,
+        pub cancels: Mutex<Vec<Uuid>>,
     }
 
     /// Driver whose sessions stream three row batches; it fails with `Authentication` when
@@ -307,7 +308,8 @@ pub(crate) mod testing {
         async fn execute(&self, _: QueryRequest, _: &mut dyn ResultSink) -> Result<ExecSummary> {
             Err(Error::Unsupported("execute".into()))
         }
-        async fn cancel(&self, _query_id: Uuid) -> Result<()> {
+        async fn cancel(&self, query_id: Uuid) -> Result<()> {
+            self.probe.cancels.lock().unwrap().push(query_id);
             Ok(())
         }
         async fn list_children(&self, parent: &ObjectPath) -> Result<Vec<ObjectNode>> {
@@ -322,6 +324,10 @@ pub(crate) mod testing {
             req: TableDataRequest,
             sink: &mut dyn ResultSink,
         ) -> Result<ExecSummary> {
+            if req.raw_where.as_deref() == Some("slow") {
+                // A query that never answers until it is cancelled or dropped.
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
             sink.on_columns(vec![ColumnMeta {
                 name: "id".into(),
                 type_name: "int8".into(),

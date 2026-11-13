@@ -97,6 +97,11 @@ async fn no_password_is_written_to_disk() {
     #[allow(unused_mut)]
     let mut needles = Vec::from([secret.clone()]);
 
+    // Unique marker proving that THIS test's events reach the log file (other tests share the
+    // process-wide subscriber, so a generic string like "session opened" proves nothing).
+    let marker = format!("leak-marker-{}", Uuid::new_v4().simple());
+    tracing::info!("{marker}");
+
     // A password echoed inside a connection string must be masked by the log writer.
     tracing::error!("driver said: postgres://dbstudio:{secret}@127.0.0.1/db failed");
     tracing::warn!("config dump password={secret} host=x");

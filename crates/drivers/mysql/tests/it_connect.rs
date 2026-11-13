@@ -21,6 +21,9 @@ async fn tls_modes_on_mysql8() {
         return;
     }
     let t = MYSQL8;
+    if !selected(t) {
+        return;
+    }
     // Disable: no TLS.
     let s = connect_cfg(&config(t, "dbstudio", TlsMode::Disable))
         .await
@@ -87,7 +90,7 @@ async fn tls_modes_without_server_tls() {
     if !it_enabled() {
         return;
     }
-    for t in [MARIADB, MARIADB104] {
+    for t in [MARIADB, MARIADB104].into_iter().filter(|t| selected(*t)) {
         let s = connect_cfg(&config(t, "dbstudio", TlsMode::Prefer))
             .await
             .unwrap();
@@ -118,6 +121,9 @@ async fn tls_modes_on_mysql57() {
         return;
     }
     let t = MYSQL57;
+    if !selected(t) {
+        return;
+    }
     let s = connect_cfg(&config(t, "dbstudio", TlsMode::Disable))
         .await
         .unwrap();
@@ -156,7 +162,7 @@ async fn error_classification() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         let cfg = config(t, "dbstudio", TlsMode::Disable);
         // Wrong password.
         let r = MySqlDriverExt::connect_with(&cfg, "wrong-password-xyz").await;
@@ -217,7 +223,7 @@ async fn server_info_and_close() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         let s = user_session(t).await;
         s.ping().await.unwrap();
         let info = s.server_info().await.unwrap();
@@ -242,7 +248,7 @@ async fn default_database_and_read_only() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let mut c = config(t, "dbstudio", TlsMode::Disable);
         c.database = Some(FIXTURE_DB.into());

@@ -20,6 +20,35 @@ function streamResponse(chunks: string[]): Response {
   return new Response(body, { status: 200 });
 }
 
+/** Stream raw bytes cut at arbitrary offsets (may split multi-byte UTF-8 characters). */
+function byteStreamResponse(text: string, cuts: number[]): Response {
+  const bytes = new TextEncoder().encode(text);
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let from = 0;
+      for (const cut of [...cuts, bytes.length]) {
+        controller.enqueue(bytes.slice(from, cut));
+        from = cut;
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200 });
+}
+
+/** A response whose stream never ends; records cancel and follows the fetch abort signal. */
+function endlessResponse(signal: AbortSignal | undefined, onCancel: () => void): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      signal?.addEventListener('abort', () =>
+        controller.error(new DOMException('aborted', 'AbortError')),
+      );
+    },
+    cancel: onCancel,
+  });
+  return new Response(body, { status: 200 });
+}
+
 const request: TableDataRequest = {
   queryId: 'q',
   table: ROOT_PATH,
@@ -134,6 +163,26 @@ describe('ipc dev bridge', () => {
     });
   });
 
+  it('decodes multi-byte UTF-8 split at every possible byte offset', async () => {
+    const text = 'Đơn hàng 😀 ñ';
+    const lines =
+      [
+        JSON.stringify({ type: 'message', message: text }),
+        JSON.stringify({
+          type: 'statementEnd',
+          end: { outcome: { kind: 'done' }, elapsedMs: 1 },
+        }),
+        JSON.stringify({ type: 'result', summary: { statements: 1, elapsedMs: 1 } }),
+      ].join('\n') + '\n';
+    const length = new TextEncoder().encode(lines).length;
+    for (let cut = 1; cut < length; cut += 1) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(byteStreamResponse(lines, [cut, cut + 2])));
+      const events: QueryEvent[] = [];
+      await ipc.tableFetch('s', request, (e) => events.push(e));
+      expect(events[0]).toEqual({ type: 'message', message: text });
+    }
+  });
+
   it('rejects on an error line and on a stream that ends early', async () => {
     const err = JSON.stringify({ type: 'error', error: { kind: 'query', message: 'boom' } });
     vi.stubGlobal(
@@ -155,6 +204,57 @@ describe('ipc dev bridge', () => {
     await expect(ipc.tableFetch('s', request, () => {})).rejects.toMatchObject({
       kind: 'connection',
     });
+  });
+});
+
+describe('bridge cancellation and production gating', () => {
+  it('queryCancel aborts the local stream and cancels the reader', async () => {
+    let signal: AbortSignal | undefined;
+    const fetchMock = vi.fn().mockImplementation((url: string, init: RequestInit) => {
+      if (url.endsWith('/ipc/query_cancel')) return Promise.resolve(jsonResponse(200, undefined));
+      signal = init.signal ?? undefined;
+      return Promise.resolve(endlessResponse(init.signal ?? undefined, () => {}));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const pending = ipc.tableFetch('s', request, () => {});
+    const outcome = pending.then(
+      () => 'done',
+      (e: { kind: string }) => e.kind,
+    );
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    await ipc.queryCancel('s', request.queryId);
+    expect(await outcome).toBe('cancelled');
+    expect(signal!.aborted).toBe(true);
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith('/ipc/query_cancel'))).toBe(true);
+  });
+
+  it('releases the stream when a line cannot be parsed', async () => {
+    let cancelled = false;
+    let signal: AbortSignal | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('not json\n'));
+      },
+      cancel: () => {
+        cancelled = true;
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_u: string, init: RequestInit) => {
+        signal = init.signal ?? undefined;
+        return Promise.resolve(new Response(body, { status: 200 }));
+      }),
+    );
+    await expect(ipc.tableFetch('s', request, () => {})).rejects.toMatchObject({ kind: 'other' });
+    expect(cancelled).toBe(true);
+    expect(signal!.aborted).toBe(true);
+  });
+
+  it('never uses the bridge outside development builds', () => {
+    expect(ipcTransport()).toBe('bridge');
+    vi.stubEnv('DEV', false);
+    expect(ipcTransport()).toBe('mock');
   });
 });
 

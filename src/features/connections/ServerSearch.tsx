@@ -1,4 +1,3 @@
-import { useQueries } from '@tanstack/react-query';
 import type { KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -11,13 +10,17 @@ import { Spinner } from '@/components/ui/Spinner';
 import { KindIcon } from '@/features/explorer/kindIcons';
 import { openObjectTab } from '@/features/explorer/openObject';
 import { activationTab } from '@/features/explorer/treeModel';
-import { ipc, toIpcError } from '@/lib/ipc';
-import { ROOT_PATH } from '@/lib/objectPath';
 import type { ObjectNode, SessionInfo, Uuid } from '@/lib/types';
 import { describeError } from './errors';
 import { useConnectionsSnapshot } from './queries';
 import { moveFocus } from './rowNav';
-import { resultContext, SERVER_SEARCH_LIMIT, SERVER_SEARCH_MIN_CHARS } from './serverSearchModel';
+import { useServerSearch } from './useServerSearch';
+import {
+  extraDetail,
+  resultContext,
+  resultContextParts,
+  SERVER_SEARCH_MIN_CHARS,
+} from './serverSearchModel';
 
 /**
  * "Results from the server" (BROWSE-06): one `object_search` per capable open session, grouped by
@@ -36,15 +39,7 @@ export function ServerSearch({
   const { t } = useTranslation('connections');
   const { data: snapshot } = useConnectionsSnapshot();
   const enabled = query.length >= SERVER_SEARCH_MIN_CHARS;
-  const results = useQueries({
-    queries: sessions.map((s) => ({
-      queryKey: ['objectSearch', s.sessionId, query],
-      queryFn: () =>
-        ipc.objectSearch(s.sessionId, { query, scope: ROOT_PATH, limit: SERVER_SEARCH_LIMIT }),
-      enabled,
-      staleTime: 30_000,
-    })),
-  });
+  const results = useServerSearch(sessions, query, enabled);
 
   if (!enabled || sessions.length === 0) return null;
 
@@ -68,12 +63,12 @@ export function ServerSearch({
           <div key={session.sessionId} role="none">
             <div className="flex items-center gap-1.5 px-3 py-0.5 text-xs font-medium">
               <span className="min-w-0 truncate">{name}</span>
-              {result?.isFetching && <Spinner size={11} />}
+              {result?.fetching && <Spinner size={11} />}
               {result?.data && <span className="text-muted-foreground">({nodes.length})</span>}
             </div>
-            {result?.isError && (
+            {result?.error && (
               <p role="alert" className="px-5 py-0.5 text-xs text-danger">
-                {describeError(t, toIpcError(result.error))}
+                {describeError(t, result.error)}
               </p>
             )}
             {result?.data && nodes.length === 0 && (
@@ -111,6 +106,7 @@ function ResultRow({
   const { t } = useTranslation('connections');
   const openable = activationTab(node.kind, session.descriptor.capabilities) !== null;
   const context = resultContext(node);
+  const extra = extraDetail(node);
   const open = () => openObjectTab(node, session);
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'ArrowDown') moveFocus(e, 1);
@@ -131,7 +127,7 @@ function ResultRow({
           tabIndex={0}
           data-nav-row
           data-testid="server-result"
-          title={[context, node.name].filter(Boolean).join('.')}
+          title={[...resultContextParts(node), node.name].join('.')}
           onDoubleClick={() => (openable ? open() : onShowInTree(session.connectionId, node))}
           onKeyDown={onKeyDown}
           style={{ paddingLeft: 20 }}
@@ -142,9 +138,9 @@ function ResultRow({
           {context && (
             <span className="min-w-0 truncate text-[11px] text-muted-foreground">{context}</span>
           )}
-          {node.detail && (
+          {extra && (
             <span className="ml-auto max-w-[40%] shrink-0 truncate pl-2 text-[11px] text-muted-foreground">
-              {node.detail}
+              {extra}
             </span>
           )}
         </div>

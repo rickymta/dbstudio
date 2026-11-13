@@ -6,6 +6,7 @@ import { Toaster } from '@/components/ui/Toast';
 import { useToastStore } from '@/components/ui/toastStore';
 import { pickFile, pickSavePath } from '@/lib/dialog';
 import i18n from '@/lib/i18n';
+import { revealTuning, useRevealStore } from '@/features/explorer/revealStore';
 import { ipc } from '@/lib/ipc';
 import type { ObjectKind } from '@/lib/types';
 import { resetMockConnections } from '@/lib/mock';
@@ -657,6 +658,32 @@ describe('ConnectionsSidebar', () => {
       );
     });
 
+    it('shows the location of a result once, plus any extra detail', async () => {
+      const original = ipc.objectSearch.bind(ipc);
+      vi.spyOn(ipc, 'objectSearch').mockImplementation(async (sessionId, request) => {
+        const nodes = await original(sessionId, request);
+        return nodes.map((n) =>
+          n.name === 'events' ? { ...n, detail: `${n.detail}, partitioned` } : n,
+        );
+      });
+      const user = setup();
+      await connectDev(user);
+      await user.type(search(), 'events');
+      const row = await screen.findByRole('treeitem', { name: 'events - PostgreSQL dev' }, WAIT);
+      expect(within(row).getAllByText(/app_dev/)).toHaveLength(1);
+      expect(within(row).getByText('app_dev › public')).toBeInTheDocument();
+      expect(within(row).getByText('partitioned')).toBeInTheDocument();
+      // A plain table has the location only, not repeated as detail.
+      await user.clear(search());
+      await user.type(search(), 'products');
+      const plain = await screen.findByRole(
+        'treeitem',
+        { name: 'products - PostgreSQL dev' },
+        WAIT,
+      );
+      expect(within(plain).getAllByText(/app_dev/)).toHaveLength(1);
+    });
+
     it('opens a result like the tree does', async () => {
       const user = setup();
       await connectDev(user);
@@ -826,5 +853,165 @@ describe('ConnectionsSidebar', () => {
       expect(screen.queryByRole('treeitem', { name: 'PostgreSQL dev' })).toBeNull();
       expect(await profileRow('PostgreSQL dev')).toBeInTheDocument();
     });
+  });
+
+  describe('follow-ups from review', () => {
+    const search = () => screen.getByRole('searchbox', { name: 'Filter connections and objects' });
+    const node = (name: string) => ({
+      path: { segments: [{ kind: 'database' as const, name }] },
+      kind: 'database' as const,
+      name,
+      hasChildren: false,
+    });
+
+    it('runs one server search per session at a time and sends only the newest text', async () => {
+      const calls: string[] = [];
+      const finishers: (() => void)[] = [];
+      let active = 0;
+      let maxActive = 0;
+      vi.spyOn(ipc, 'objectSearch').mockImplementation(
+        (_sessionId, request) =>
+          new Promise((resolve) => {
+            calls.push(request.query);
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            finishers.push(() => {
+              active -= 1;
+              resolve([node(`found_${request.query}`)]);
+            });
+          }),
+      );
+      const user = setup();
+      await user.dblClick(await profileRow('PostgreSQL dev'));
+      await screen.findByTestId('object-tree', {}, WAIT);
+      await user.type(search(), 'or');
+      await waitFor(() => expect(calls).toEqual(['or']), WAIT);
+      for (const ch of ['d', 'e', 'r']) {
+        await user.type(search(), ch);
+        await new Promise((r) => setTimeout(r, 400)); // let the debounce fire each time
+      }
+      expect(calls).toEqual(['or']); // still waiting for the running search
+      finishers[0]!();
+      await waitFor(() => expect(calls).toEqual(['or', 'order']), WAIT);
+      expect(screen.queryByText('found_or')).toBeNull(); // the stale answer is never shown
+      finishers[1]!();
+      expect(await screen.findByText('found_order', {}, WAIT)).toBeInTheDocument();
+      expect(maxActive).toBe(1);
+    }, 20_000);
+
+    it('ignores drops that land on a tree or on search results', async () => {
+      const save = vi.spyOn(ipc, 'connectionSave');
+      const user = setup();
+      await user.dblClick(await profileRow('PostgreSQL dev'));
+      const tree = await screen.findByTestId('object-tree', {}, WAIT);
+      const dt = { setData: vi.fn(), effectAllowed: '', dropEffect: '' };
+      const source = screen.getByRole('treeitem', { name: 'PostgreSQL dev' });
+      fireEvent.dragStart(source, { dataTransfer: dt });
+      fireEvent.dragOver(tree, { dataTransfer: dt });
+      fireEvent.drop(tree, { dataTransfer: dt });
+      await user.type(search(), 'users');
+      const results = await screen.findByTestId('server-results', {}, WAIT);
+      fireEvent.dragStart(source, { dataTransfer: dt });
+      fireEvent.dragOver(results, { dataTransfer: dt });
+      fireEvent.drop(results, { dataTransfer: dt });
+      await new Promise((r) => setTimeout(r, 200));
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    it('accepts a top-level drop on the empty area at the end of the list', async () => {
+      setup();
+      await profileRow('PostgreSQL dev');
+      const dt = { setData: vi.fn(), effectAllowed: '', dropEffect: '' };
+      fireEvent.dragStart(screen.getByRole('treeitem', { name: 'PostgreSQL dev' }), {
+        dataTransfer: dt,
+      });
+      const spacer = document.querySelector('[data-drop-root]') as HTMLElement;
+      fireEvent.dragOver(spacer, { dataTransfer: dt });
+      fireEvent.drop(spacer, { dataTransfer: dt });
+      await waitFor(async () => {
+        const dev = (await ipc.connectionsList()).profiles.find((p) => p.name === 'PostgreSQL dev');
+        expect(dev?.groupId).toBeNull();
+      }, WAIT);
+    });
+
+    it('blocks new drags while a move is being saved, then recovers from a failure', async () => {
+      let release: () => void = () => {};
+      // The first write stays pending until released, then fails.
+      const save = vi.spyOn(ipc, 'connectionSave').mockImplementation(
+        () =>
+          new Promise((_resolve, reject) => {
+            release = () => reject({ kind: 'storage', message: 'disk full' });
+          }),
+      );
+      const list = vi.spyOn(ipc, 'connectionsList');
+      setup();
+      await profileRow('PostgreSQL dev');
+      const dt = { setData: vi.fn(), effectAllowed: '', dropEffect: '' };
+      const prod = screen.getByRole('treeitem', { name: 'PostgreSQL prod (read-only)' });
+      const work = screen.getByRole('treeitem', { name: 'Work' });
+      fireEvent.dragStart(prod, { dataTransfer: dt });
+      fireEvent.dragOver(work, { dataTransfer: dt });
+      fireEvent.drop(work, { dataTransfer: dt });
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(prod).toHaveAttribute('draggable', 'false'));
+      // A second drag does not start (default prevented) and nothing else is saved.
+      const started = fireEvent.dragStart(screen.getByRole('treeitem', { name: 'MySQL staging' }), {
+        dataTransfer: dt,
+      });
+      expect(started).toBe(false);
+      const before = list.mock.calls.length;
+      release();
+      expect(await screen.findByRole('alert', {}, WAIT)).toHaveTextContent('disk full');
+      await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(before), WAIT);
+      await waitFor(() => expect(prod).toHaveAttribute('draggable', 'true'));
+    });
+
+    it('gives up a reveal whose target never appears instead of jumping focus later', async () => {
+      const previous = revealTuning.focusTimeoutMs;
+      revealTuning.focusTimeoutMs = 150;
+      try {
+        let ghostOn = false;
+        const original = ipc.objectChildren.bind(ipc);
+        vi.spyOn(ipc, 'objectChildren').mockImplementation(async (sessionId, path) => {
+          const nodes = await original(sessionId, path);
+          const last = path.segments.at(-1);
+          if (ghostOn && last?.kind === 'folder' && last.name === 'tables') {
+            return [
+              ...nodes,
+              {
+                path: { segments: [...path.segments, { kind: 'table' as const, name: 'ghost' }] },
+                kind: 'table' as const,
+                name: 'ghost',
+                hasChildren: false,
+              },
+            ];
+          }
+          return nodes;
+        });
+        const user = setup();
+        await user.dblClick(await profileRow('PostgreSQL dev'));
+        const tree = await screen.findByTestId('object-tree', {}, WAIT);
+        const ghostPath = {
+          segments: [
+            { kind: 'database' as const, name: 'app_dev' },
+            { kind: 'folder' as const, name: 'schemas' },
+            { kind: 'schema' as const, name: 'public' },
+            { kind: 'folder' as const, name: 'tables' },
+            { kind: 'table' as const, name: 'ghost' },
+          ],
+        };
+        useRevealStore.getState().reveal(PG_DEV, ghostPath);
+        await within(tree).findByText('Tables', {}, WAIT);
+        await within(tree).findByText('users', {}, WAIT);
+        await new Promise((r) => setTimeout(r, 400)); // longer than the shortened timeout
+        ghostOn = true;
+        await menuAction(within(tree).getByRole('treeitem', { name: /^Tables/ }), 'Refresh', user);
+        const ghost = await within(tree).findByRole('treeitem', { name: /^ghost/ }, WAIT);
+        await new Promise((r) => setTimeout(r, 100));
+        expect(tree.getAttribute('aria-activedescendant')).not.toBe(ghost.id);
+      } finally {
+        revealTuning.focusTimeoutMs = previous;
+      }
+    }, 15_000);
   });
 });

@@ -71,7 +71,7 @@ export function ColumnMenu({ columns, layout, onChange }: ColumnMenuProps) {
                 <Checkbox
                   aria-label={n}
                   checked={!hidden.has(n)}
-                  onCheckedChange={() => onChange(toggleHidden(l, n))}
+                  onCheckedChange={() => onChange(toggleHidden(l, n, names))}
                 />
                 <span className="min-w-0 flex-1 truncate text-xs">{n}</span>
                 <IconButton
@@ -79,13 +79,17 @@ export function ColumnMenu({ columns, layout, onChange }: ColumnMenuProps) {
                     pinned.has(n) ? `${t('columns.unpin')}: ${n}` : `${t('columns.pin')}: ${n}`
                   }
                   icon={pinned.has(n) ? <PinOff size={12} /> : <Pin size={12} />}
-                  onClick={() => onChange(setPinned(l, n, !pinned.has(n)))}
+                  onClick={() => onChange(setPinned(l, n, !pinned.has(n), names))}
                 />
               </li>
             ))}
           </ul>
           <div className="mt-2 flex justify-between gap-2">
-            <Button size="sm" onClick={() => onChange(showAll(l))} disabled={l.hidden.length === 0}>
+            <Button
+              size="sm"
+              onClick={() => onChange(showAll(l, names))}
+              disabled={l.hidden.length === 0}
+            >
               {t('columns.showAll')}
             </Button>
             <Button

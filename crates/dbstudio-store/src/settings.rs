@@ -61,6 +61,34 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// Read settings field by field from a JSON document: a field that is missing or has an
+    /// unusable value falls back to its default without discarding the others.
+    pub fn from_value_lenient(value: &serde_json::Value) -> Self {
+        fn field<T: serde::de::DeserializeOwned + Default>(
+            value: &serde_json::Value,
+            key: &str,
+        ) -> T {
+            value
+                .get(key)
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default()
+        }
+        let d = AppSettings::default();
+        let s = AppSettings {
+            log_level: field(value, "logLevel"),
+            grid_max_rows: value
+                .get("gridMaxRows")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(d.grid_max_rows),
+            grid_max_cells: value
+                .get("gridMaxCells")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(d.grid_max_cells),
+            timestamp_display: field(value, "timestampDisplay"),
+        };
+        s.normalized()
+    }
+
     /// Clamp numeric fields into their allowed ranges.
     pub fn normalized(mut self) -> Self {
         self.grid_max_rows = self

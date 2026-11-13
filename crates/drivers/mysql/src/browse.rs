@@ -141,32 +141,45 @@ pub async fn search_objects(
     conn: &mut mysql_async::Conn,
     req: &ObjectSearchRequest,
 ) -> Result<Vec<ObjectNode>> {
-    if req.query.is_empty() {
+    let query = req.query.trim();
+    if query.is_empty() {
         return Ok(Vec::new());
     }
     let limit = req.limit.clamp(1, 1000);
+    let applicable = [
+        ObjectKind::Table,
+        ObjectKind::View,
+        ObjectKind::Function,
+        ObjectKind::Procedure,
+    ];
+    // Empty = the default set; otherwise only the requested kinds that exist in MySQL. A request
+    // that names only inapplicable kinds matches nothing.
     let kinds: Vec<ObjectKind> = if req.kinds.is_empty() {
-        vec![
-            ObjectKind::Table,
-            ObjectKind::View,
-            ObjectKind::Function,
-            ObjectKind::Procedure,
-        ]
+        applicable.to_vec()
     } else {
-        req.kinds.clone()
+        req.kinds
+            .iter()
+            .copied()
+            .filter(|k| applicable.contains(k))
+            .collect()
     };
+    if kinds.is_empty() {
+        return Ok(Vec::new());
+    }
     let wants = |k: ObjectKind| kinds.contains(&k);
     // None = every user database; Some(db) = that database only.
     let scope_db: Option<String> = match resolve(&req.scope) {
         Ok(Place::Root) => None,
-        Ok(Place::Database(d))
-        | Ok(Place::DbFolder(d, _))
-        | Ok(Place::Table(d, _, _))
-        | Ok(Place::TableFolder(d, _, _, _)) => Some(d),
+        Ok(Place::Database(d)) | Ok(Place::DbFolder(d, _)) => Some(d),
+        Ok(Place::Table(..)) | Ok(Place::TableFolder(..)) => {
+            return Err(Error::NotFound(
+                "search scope must be the root or a database".into(),
+            ));
+        }
         Ok(Place::Roles) => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
-    let query_lc = req.query.to_lowercase();
+    let query_lc = query.to_lowercase();
     let system_list = SYSTEM_DATABASES.map(|d| format!("'{d}'")).join(",");
     let scope_sql = match &scope_db {
         Some(_) => "AND {col} = ?".to_string(),
@@ -191,15 +204,22 @@ pub async fn search_objects(
     let want_tables = wants(ObjectKind::Table);
     let want_views = wants(ObjectKind::View);
     if want_tables || want_views {
+        // Filter by kind in SQL so that LIMIT applies after it.
+        let type_cond = match (want_tables, want_views) {
+            (true, true) => "TABLE_TYPE <> 'SEQUENCE'",
+            (true, false) => "TABLE_TYPE NOT IN ('VIEW','SEQUENCE')",
+            _ => "TABLE_TYPE = 'VIEW'",
+        };
         let sql = format!(
             "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES \
              WHERE LOCATE(LOWER(?), LOWER(TABLE_NAME)) > 0 {} \
-             AND TABLE_TYPE IN ('BASE TABLE','SYSTEM VERSIONED','SYSTEM VIEW','VIEW') \
+             AND {type_cond} \
              ORDER BY (LOWER(TABLE_NAME) = LOWER(?)) DESC, (LOCATE(LOWER(?), LOWER(TABLE_NAME)) = 1) DESC, \
                       TABLE_NAME, TABLE_SCHEMA LIMIT {limit}",
-            scope_sql.replace("{col}", "TABLE_SCHEMA")
+            scope_sql.replace("{col}", "TABLE_SCHEMA"),
+            type_cond = type_cond
         );
-        let q = req.query.as_str();
+        let q = query;
         let rows: Vec<Row> = match &scope_db {
             Some(d) => rows_vec(conn, &sql, (q, d.as_str(), q, q)).await?,
             None => rows_vec(conn, &sql, (q, q, q)).await?,
@@ -235,7 +255,7 @@ pub async fn search_objects(
                       ROUTINE_NAME, ROUTINE_SCHEMA LIMIT {limit}",
             scope_sql.replace("{col}", "ROUTINE_SCHEMA")
         );
-        let q = req.query.as_str();
+        let q = query;
         let rows: Vec<Row> = match &scope_db {
             Some(d) => rows_vec(conn, &sql, (q, d.as_str(), q, q)).await?,
             None => rows_vec(conn, &sql, (q, q, q)).await?,

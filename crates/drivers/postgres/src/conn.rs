@@ -21,6 +21,8 @@ pub const MAX_CONNS_PER_DB: usize = 4;
 /// Extra connections per database reserved for catalog queries (tree, DDL, details, ping), so
 /// slow data fetches can never starve metadata browsing.
 pub const CATALOG_CONNS_PER_DB: usize = 2;
+/// Default server-side limit for `search_objects` (option `search_timeout_ms` overrides it).
+const DEFAULT_SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -122,6 +124,8 @@ pub struct Shared {
     pub login_db: String,
     connect_timeout: Duration,
     acquire_timeout: Duration,
+    /// Server-side time limit of object searches.
+    pub search_timeout: Duration,
     pools: Mutex<HashMap<String, Arc<Pool>>>,
     closed: Arc<AtomicBool>,
     server_timezone: OnceLock<String>,
@@ -151,7 +155,7 @@ impl Shared {
             startup.push_str("-c default_transaction_read_only=on ");
         }
         for (key, value) in &config.options {
-            if key == "application_name" {
+            if key == "application_name" || key == "search_timeout_ms" {
                 continue;
             }
             if key.is_empty()
@@ -186,6 +190,12 @@ impl Shared {
                 .connect_timeout_ms
                 .map(Duration::from_millis)
                 .unwrap_or(DEFAULT_ACQUIRE_TIMEOUT),
+            search_timeout: config
+                .options
+                .get("search_timeout_ms")
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(Duration::from_millis)
+                .unwrap_or(DEFAULT_SEARCH_TIMEOUT),
             pools: Mutex::new(HashMap::new()),
             closed: Arc::new(AtomicBool::new(false)),
             server_timezone: OnceLock::new(),

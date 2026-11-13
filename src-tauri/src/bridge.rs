@@ -1,9 +1,12 @@
 //! Development-only HTTP bridge: lets the UI run in a normal browser (`pnpm dev`) while calling
 //! the REAL backend of the running desktop app (real databases, real keychain).
 //!
-//! Compiled only with the `dev-bridge` cargo feature AND `debug_assertions` (release builds with
-//! the feature fail to compile, see `lib.rs`). Started only when `DBSTUDIO_DEV_BRIDGE_TOKEN` is
-//! set; listens on `127.0.0.1` only; every request needs the token header.
+//! Compiled only with the `dev-bridge` cargo feature AND `debug_assertions` AND without
+//! Tauri's `custom-protocol` feature (which `tauri build` enables, also for `--debug` bundles):
+//! any other combination fails to compile (see `lib.rs`), and `spawn_from_env` additionally
+//! checks `tauri::is_dev()` at runtime. Started only when `DBSTUDIO_DEV_BRIDGE_TOKEN` is set and
+//! at least 32 characters long; listens on `127.0.0.1` only; every request needs the token
+//! header, a loopback `Host` (DNS-rebinding defence) and, when present, an allowed `Origin`.
 //!
 //! * `POST /ipc/<command>` with a JSON object of arguments (camelCase keys, like Tauri's
 //!   `invoke`) answers `200` + result JSON, or `400` + the serialized `Error`.
@@ -28,7 +31,6 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use uuid::Uuid;
 
 use crate::commands::{app, browse, connections, sessions};
@@ -37,13 +39,27 @@ use crate::state::AppState;
 const TOKEN_HEADER: &str = "x-dbstudio-bridge-token";
 const ALLOWED_ORIGINS: [&str; 2] = ["http://localhost:1420", "http://127.0.0.1:1420"];
 const DEFAULT_PORT: u16 = 1421;
-/// Large enough for `save_cell_value` payloads (256 MB of bytes, base64 encoded).
-const BODY_LIMIT: usize = 400 * 1024 * 1024;
+/// Request body limit. Large `save_cell_value` payloads (over ~12 MB of bytes) are therefore
+/// refused through the bridge; the native command has its own, larger limit.
+const BODY_LIMIT: usize = 16 * 1024 * 1024;
+/// Shortest accepted token.
+pub const MIN_TOKEN_LEN: usize = 32;
+/// Lines buffered per `table_fetch` stream. A client that falls this far behind cancels the fetch.
+const STREAM_BUFFER: usize = 1024;
 
 #[derive(Clone)]
 struct Ctx {
     state: AppState,
     token: String,
+    port: u16,
+}
+
+fn host_allowed(host: Option<&HeaderValue>, port: u16) -> bool {
+    let Some(host) = host.and_then(|h| h.to_str().ok()) else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
 }
 
 /// Compare without early exit so response time does not reveal how much of the token matched.
@@ -88,7 +104,22 @@ fn add_cors(response: &mut Response, origin: Option<HeaderValue>) {
 
 /// CORS and token check for every request.
 async fn guard(State(ctx): State<Ctx>, req: Request, next: Next) -> Response {
+    // Only loopback host names: a DNS-rebinding page reaches 127.0.0.1 under its own name.
+    if !host_allowed(req.headers().get(header::HOST), ctx.port) {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            &Error::Other("host not allowed".into()),
+        );
+    }
+    // A cross-origin browser request is refused outright, not just left without CORS headers.
+    // Requests without an Origin header (curl, same-origin tools) are fine.
     let origin = allowed_origin(&req);
+    if req.headers().contains_key(header::ORIGIN) && origin.is_none() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            &Error::Other("origin not allowed".into()),
+        );
+    }
     if req.method() == Method::OPTIONS {
         // Preflight requests never carry custom headers, so they are answered before the token
         // check; they reveal nothing but the (static) CORS policy.
@@ -117,8 +148,8 @@ async fn guard(State(ctx): State<Ctx>, req: Request, next: Next) -> Response {
 }
 
 /// Build the bridge router around the shared application state.
-pub fn router(state: AppState, token: String) -> Router {
-    let ctx = Ctx { state, token };
+pub fn router(state: AppState, token: String, port: u16) -> Router {
+    let ctx = Ctx { state, token, port };
     Router::new()
         .route("/ipc/{command}", post(ipc))
         .fallback(|| async {
@@ -242,23 +273,38 @@ fn line(value: &impl Serialize) -> Bytes {
     Bytes::from(text)
 }
 
-/// `table_fetch` as an NDJSON stream. A disconnected client drops the receiver, the next send
-/// fails and the sink answers `Cancelled`, which stops the driver.
+/// `table_fetch` as an NDJSON stream with a bounded buffer. When the client disconnects the
+/// receiver is dropped; the task notices through `tx.closed()` (even before the driver has
+/// produced anything), cancels the query on the server and drops the fetch.
 fn fetch_stream(state: AppState, session_id: Uuid, request: TableDataRequest) -> Response {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(STREAM_BUFFER);
+    let query_id = request.query_id;
     tokio::spawn(async move {
+        let session = state.sessions.get(session_id).ok();
         let sender = tx.clone();
-        let result = browse::fetch_impl(&state, session_id, request, move |event: QueryEvent| {
-            sender.send(line(&event)).is_ok()
-        })
-        .await;
-        let last = match result {
-            Ok(summary) => line(&json!({"type": "result", "summary": summary})),
-            Err(error) => line(&json!({"type": "error", "error": error})),
-        };
-        let _ = tx.send(last);
+        // The sink is synchronous, so a full buffer ends the fetch (`Cancelled`) rather than
+        // waiting for the client.
+        let fetch = browse::fetch_impl(&state, session_id, request, move |event: QueryEvent| {
+            sender.try_send(line(&event)).is_ok()
+        });
+        tokio::select! {
+            result = fetch => {
+                let last = match result {
+                    Ok(summary) => line(&json!({"type": "result", "summary": summary})),
+                    Err(error) => line(&json!({"type": "error", "error": error})),
+                };
+                let _ = tx.send(last).await;
+            }
+            () = tx.closed() => {
+                if let Some(session) = session {
+                    let _ = session.cancel(query_id).await;
+                }
+                tracing::debug!(query = %query_id, "bridge client left; fetch cancelled");
+            }
+        }
     });
-    let body = Body::from_stream(UnboundedReceiverStream::new(rx).map(Ok::<_, Infallible>));
+    let body =
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<_, Infallible>));
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/x-ndjson")
@@ -309,21 +355,35 @@ async fn ipc(State(ctx): State<Ctx>, Path(command): Path<String>, body: Bytes) -
 /// Start the bridge when `DBSTUDIO_DEV_BRIDGE_TOKEN` is set (port from
 /// `DBSTUDIO_DEV_BRIDGE_PORT`, default 1421).
 pub fn spawn_from_env(state: AppState) {
-    let Some(token) = std::env::var("DBSTUDIO_DEV_BRIDGE_TOKEN")
-        .ok()
-        .filter(|t| !t.is_empty())
-    else {
-        tracing::info!(
-            "dev-bridge feature compiled in but DBSTUDIO_DEV_BRIDGE_TOKEN is not set; bridge disabled"
-        );
+    if !tauri::is_dev() {
+        tracing::error!("dev bridge refused: this is not a dev build (custom-protocol is active)");
         return;
-    };
+    }
+    let token = std::env::var("DBSTUDIO_DEV_BRIDGE_TOKEN").ok();
     let port = std::env::var("DBSTUDIO_DEV_BRIDGE_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(DEFAULT_PORT);
+    spawn_with(state, token, port);
+}
+
+/// Start the bridge with explicit settings. Returns whether it was started: a missing/empty
+/// token disables it quietly, a token shorter than [`MIN_TOKEN_LEN`] disables it with an error.
+pub fn spawn_with(state: AppState, token: Option<String>, port: u16) -> bool {
+    let Some(token) = token.filter(|t| !t.is_empty()) else {
+        tracing::info!(
+            "dev-bridge feature compiled in but DBSTUDIO_DEV_BRIDGE_TOKEN is not set; bridge disabled"
+        );
+        return false;
+    };
+    if token.chars().count() < MIN_TOKEN_LEN {
+        tracing::error!(
+            "dev bridge NOT started: DBSTUDIO_DEV_BRIDGE_TOKEN must be at least {MIN_TOKEN_LEN} characters"
+        );
+        return false;
+    }
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let app = router(state, token);
+    let app = router(state, token, port);
     tauri::async_runtime::spawn(async move {
         match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => {
@@ -335,6 +395,7 @@ pub fn spawn_from_env(state: AppState) {
             Err(e) => tracing::error!(%addr, error = %e, "dev bridge cannot listen"),
         }
     });
+    true
 }
 
 #[cfg(test)]
@@ -349,14 +410,19 @@ mod tests {
     use crate::session::testing::MockDriver;
     use crate::state::testing::test_state;
 
-    const TOKEN: &str = "s3cret-token";
+    const TOKEN: &str = "s3cret-token-0123456789-abcdefghijkl";
+    const PORT: u16 = 1421;
 
-    fn app() -> Router {
-        let (driver, _) = MockDriver::new(DbKind::Postgres);
+    fn app_with_probe() -> (Router, Arc<crate::session::testing::Probe>, AppState) {
+        let (driver, probe) = MockDriver::new(DbKind::Postgres);
         let mut registry = DriverRegistry::new();
         registry.register(driver);
         let (state, _) = test_state(registry);
-        router(state, TOKEN.into())
+        (router(state.clone(), TOKEN.into(), PORT), probe, state)
+    }
+
+    fn app() -> Router {
+        app_with_probe().0
     }
 
     async fn send(
@@ -367,7 +433,22 @@ mod tests {
         origin: Option<&str>,
         body: Value,
     ) -> (StatusCode, axum::http::HeaderMap, Bytes) {
-        let mut req = axum::http::Request::builder().method(method).uri(uri);
+        send_with_host(app, method, uri, token, origin, body, "127.0.0.1:1421").await
+    }
+
+    async fn send_with_host(
+        app: &Router,
+        method: Method,
+        uri: &str,
+        token: Option<&str>,
+        origin: Option<&str>,
+        body: Value,
+        host: &str,
+    ) -> (StatusCode, axum::http::HeaderMap, Bytes) {
+        let mut req = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::HOST, host);
         if let Some(t) = token {
             req = req.header(TOKEN_HEADER, t);
         }
@@ -438,6 +519,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn foreign_host_and_origin_are_forbidden() {
+        let app = app();
+        // DNS rebinding: right token, but the request arrives under another host name.
+        for host in [
+            "evil.example",
+            "evil.example:1421",
+            "127.0.0.1",
+            "127.0.0.1:9999",
+            "localhost.evil.com:1421",
+        ] {
+            let (status, headers, _) = send_with_host(
+                &app,
+                Method::POST,
+                "/ipc/list_drivers",
+                Some(TOKEN),
+                None,
+                json!({}),
+                host,
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{host}");
+            assert!(headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+        }
+        for host in ["127.0.0.1:1421", "localhost:1421", "LOCALHOST:1421"] {
+            let (status, ..) = send_with_host(
+                &app,
+                Method::POST,
+                "/ipc/list_drivers",
+                Some(TOKEN),
+                None,
+                json!({}),
+                host,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{host}");
+        }
+        // A foreign (or `null`) Origin is rejected even with the correct token; so is preflight.
+        for origin in [
+            "http://evil.example",
+            "null",
+            "http://localhost:1421",
+            "https://localhost:1420",
+        ] {
+            let (status, headers, _) = send(
+                &app,
+                Method::POST,
+                "/ipc/list_drivers",
+                Some(TOKEN),
+                Some(origin),
+                json!({}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{origin}");
+            assert!(headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+            let (status, ..) = send(
+                &app,
+                Method::OPTIONS,
+                "/ipc/list_drivers",
+                None,
+                Some(origin),
+                json!({}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "preflight {origin}");
+        }
+    }
+
+    #[tokio::test]
+    async fn short_or_missing_token_does_not_start_the_bridge() {
+        let (_, _, state) = app_with_probe();
+        assert!(!spawn_with(state.clone(), None, PORT));
+        assert!(!spawn_with(state.clone(), Some(String::new()), PORT));
+        assert!(!spawn_with(
+            state,
+            Some("a".repeat(MIN_TOKEN_LEN - 1)),
+            PORT
+        ));
+    }
+
+    #[tokio::test]
+    async fn disconnecting_client_cancels_a_slow_fetch() {
+        let (app, probe, _) = app_with_probe();
+        let profile = profile_json();
+        let id = profile["id"].clone();
+        call(
+            &app,
+            "connection_save",
+            json!({"profile": profile, "secret": {"action": "keep"}}),
+        )
+        .await;
+        let (_, opened) = call(&app, "session_open", json!({"connectionId": id})).await;
+        let query_id = Uuid::new_v4();
+        let body = json!({"sessionId": opened["sessionId"], "request": {
+            "queryId": query_id,
+            "table": {"segments": [{"kind": "table", "name": "t"}]},
+            "rawWhere": "slow",
+            "limit": 10
+        }});
+        let req = axum::http::Request::builder()
+            .method(Method::POST)
+            .uri("/ipc/table_fetch")
+            .header(header::HOST, "127.0.0.1:1421")
+            .header(TOKEN_HEADER, TOKEN)
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        // The query is slow and has produced no line yet; the client goes away.
+        drop(response);
+        let mut cancelled = false;
+        for _ in 0..100 {
+            if probe.cancels.lock().unwrap().contains(&query_id) {
+                cancelled = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            cancelled,
+            "query_cancel was not issued after the client disconnected"
+        );
+    }
+
+    #[tokio::test]
     async fn cors_policy() {
         let app = app();
         for origin in ALLOWED_ORIGINS {
@@ -466,7 +671,7 @@ mod tests {
             json!({}),
         )
         .await;
-        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
         // Real responses (also 401s, so the browser can read them) carry the header.
         let (_, headers, _) = send(

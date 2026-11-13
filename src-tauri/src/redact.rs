@@ -11,34 +11,88 @@ use tracing_subscriber::fmt::MakeWriter;
 
 const MASK: &str = "***";
 
-// scheme://user:PASSWORD@host (password may contain anything except whitespace; the greedy
-// match ends at the last `@` of the token).
+// scheme://user:PASSWORD@host. The password ends at the FIRST `@` and cannot contain `/`, `?` or
+// `#`, so `postgres://u:pw@host/db?x=a@b.com` only loses `pw`, and URLs with a port but no
+// userinfo (`http://localhost:8080/api?user=a@b.com`) never match.
 static URI: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@]*:)[^\s]*@").unwrap());
-// password=..., pwd: ..., PGPASSWORD=... with a bare, single- or double-quoted value.
-static KEY_VALUE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?i)(\b(?:password|passwd|pwd|pgpassword)\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&"']+)"#,
-    )
-    .unwrap()
-});
-// JSON: "password":"..."
-static JSON_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)("(?:password|passwd|pwd)"\s*:\s*)"(?:[^"\\]|\\.)*""#).unwrap()
+    LazyLock::new(|| Regex::new(r"([A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@?#]*:)[^\s/?#@]*@").unwrap());
+
+// `name<sep>value` where the value is a bare word, a quoted string ('' escapes a quote), a
+// Debug-escaped string (`\"..\"`) or `Some(..)`. Whether the name is sensitive is decided in
+// code so that identifiers like `MYSQL_PWD`, `sslpassword` or `savePassword` are all seen whole.
+static PAIR: LazyLock<Regex> = LazyLock::new(|| {
+    let quoted = r#"\\"(?:[^\\]|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|Some\((?:"(?:[^"\\]|\\.)*"|[^)]*)\)"#;
+    // `=` accepts any value; `:` only a quoted / `Some(..)` value, so prose like
+    // `error: password: authentication failed` is never a match.
+    let pattern = format!(
+        r#"([A-Za-z_][A-Za-z0-9_]*)(["']?)(?:(\s*=\s*)({quoted}|[^\s,;&)"']+)|(\s*:\s*)({quoted}))"#
+    );
+    Regex::new(&pattern).unwrap()
 });
 
-/// Mask passwords in `text`; returns the input unchanged (borrowed) when nothing matched.
+const SENSITIVE_SUFFIXES: [&str; 5] = ["password", "passwd", "pwd", "secret", "token"];
+
+fn is_sensitive_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n == "pass" || n.ends_with("_pass") || SENSITIVE_SUFFIXES.iter().any(|s| n.ends_with(s))
+}
+
+/// Values that are flags or placeholders rather than secrets (`has_password=true`).
+fn is_plain_flag(value: &str) -> bool {
+    let inner = value
+        .strip_prefix("Some(")
+        .and_then(|v| v.strip_suffix(')'))
+        .unwrap_or(value)
+        .trim();
+    matches!(
+        inner.to_ascii_lowercase().as_str(),
+        "true" | "false" | "null" | "none" | "***" | ""
+    )
+}
+
+fn mask_value(value: &str) -> String {
+    if value.starts_with("\\\"") {
+        format!("\\\"{MASK}\\\"")
+    } else if value.starts_with('"') {
+        format!("\"{MASK}\"")
+    } else if value.starts_with('\'') {
+        format!("'{MASK}'")
+    } else if value.starts_with("Some(") {
+        format!("Some({MASK})")
+    } else {
+        MASK.to_string()
+    }
+}
+
+/// Mask passwords in `text`; returns the input unchanged (borrowed) when nothing was masked.
 pub fn redact(text: &str) -> Cow<'_, str> {
-    let mut out = Cow::Borrowed(text);
-    let uri = format!("${{1}}{MASK}@");
-    let kv = format!("${{1}}{MASK}");
-    let json = format!("${{1}}\"{MASK}\"");
-    for (re, replacement) in [(&*URI, &uri), (&*KEY_VALUE, &kv), (&*JSON_KEY, &json)] {
-        if let Cow::Owned(replaced) = re.replace_all(&out, replacement.as_str()) {
-            out = Cow::Owned(replaced);
+    let step1 = URI.replace_all(text, format!("${{1}}{MASK}@").as_str());
+    // Manual scan instead of `replace_all`: after a match that is NOT masked, rescanning starts
+    // at its value, so a password inside a larger quoted message (`err: "x password=\"y\""`)
+    // is still found.
+    let mut step2 = String::with_capacity(step1.len());
+    let (mut copied, mut pos) = (0, 0);
+    while let Some(caps) = PAIR.captures_at(&step1, pos) {
+        let whole = caps.get(0).expect("group 0 always exists");
+        let value = caps
+            .get(4)
+            .or_else(|| caps.get(6))
+            .expect("one value branch always matches");
+        if is_sensitive_name(&caps[1]) && !is_plain_flag(value.as_str()) {
+            step2.push_str(&step1[copied..value.start()]);
+            step2.push_str(&mask_value(value.as_str()));
+            copied = value.end();
+            pos = value.end();
+        } else {
+            pos = value.start().max(whole.start() + 1);
         }
     }
-    out
+    step2.push_str(&step1[copied..]);
+    if step2 == text {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(step2)
+    }
 }
 
 /// Wraps a [`MakeWriter`] so everything written through it is redacted. The fmt layer writes one
@@ -88,19 +142,41 @@ mod tests {
                 "postgres://admin:s3cr3t@db.local:5432/app",
                 "postgres://admin:***@db.local:5432/app",
             ),
-            (
-                "url=mysql://root:p@ss:w/rd@host/db ok",
-                "url=mysql://root:***@host/db ok",
-            ),
             ("mongodb+srv://u:pw@cluster", "mongodb+srv://u:***@cluster"),
+            ("redis://:pw@host:6379/0", "redis://:***@host:6379/0"),
+            (
+                "postgres://u:pw@host/db?x=a@b.com",
+                "postgres://u:***@host/db?x=a@b.com",
+            ),
             (
                 "connect failed: password=hunter2 host=x",
                 "connect failed: password=*** host=x",
             ),
             ("PGPASSWORD=hunter2 psql", "PGPASSWORD=*** psql"),
-            ("pwd: 'two words' next", "pwd: *** next"),
-            ("Password = \"a b\"; user=x", "Password = ***; user=x"),
+            ("MYSQL_PWD=hunter2 mysql", "MYSQL_PWD=*** mysql"),
+            (
+                "sslpassword=hunter2&sslmode=require",
+                "sslpassword=***&sslmode=require",
+            ),
             ("host=h;uid=u;pwd=abc;db=d", "host=h;uid=u;pwd=***;db=d"),
+            ("opts pass=hunter2 next", "opts pass=*** next"),
+            ("api secret=abc token=def", "api secret=*** token=***"),
+            ("Password = \"a b\"; user=x", "Password = \"***\"; user=x"),
+            ("password='it''s fine' rest", "password='***' rest"),
+            ("pwd: 'two words' next", "pwd: '***' next"),
+            // Debug output
+            (
+                r#"Opts { user: Some("u"), pass: Some("hunter2"), db: None }"#,
+                r#"Opts { user: Some("u"), pass: Some(***), db: None }"#,
+            ),
+            (
+                r#"cfg password: Some("hunter2")"#,
+                r#"cfg password: Some(***)"#,
+            ),
+            (
+                r#"err: "connect password=\"hunter2 x\" failed""#,
+                r#"err: "connect password=\"***\" failed""#,
+            ),
             (
                 r#"{"user":"u","password":"a\"b","x":1}"#,
                 r#"{"user":"u","password":"***","x":1}"#,
@@ -120,14 +196,22 @@ mod tests {
         for line in [
             "session opened session=1 connection=2 kind=postgres host=localhost user=admin",
             "authentication failed: password required",
+            "error: password: authentication failed",
             "has_password=true save_password=false",
             "savePassword: true",
+            "has_password: Some(false) token=None",
             "listening on http://127.0.0.1:1421",
+            "http://localhost:8080/api?user=a@b.com",
             "postgres://admin@db.local/app",
             "user@example.com sent mail",
+            "max_tokens=100 bypass=1",
             "unicode ünï 日本 text",
         ] {
-            assert!(matches!(redact(line), Cow::Borrowed(_)), "{line}");
+            assert!(
+                matches!(redact(line), Cow::Borrowed(_)),
+                "{line} -> {}",
+                redact(line)
+            );
         }
     }
 

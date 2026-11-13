@@ -57,7 +57,11 @@ pub fn run() {
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting DBStudio");
             let state =
                 build_state(app).inspect_err(|e| tracing::error!(error = %e, "startup failed"))?;
-            #[cfg(all(feature = "dev-bridge", debug_assertions))]
+            #[cfg(all(
+                feature = "dev-bridge",
+                debug_assertions,
+                not(feature = "custom-protocol")
+            ))]
             bridge::spawn_from_env(state.clone());
             app.manage(state);
             Ok(())

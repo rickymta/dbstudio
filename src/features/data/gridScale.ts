@@ -76,8 +76,58 @@ export function scrollTopToRevealRow(
 
 /**
  * Real `scrollTop` that keeps the same virtual offset (hence the same first visible row) after
- * the scale ratio changed, e.g. because another page of rows was appended.
+ * the scale ratio changed.
  */
 export function anchoredScrollTop(virtualOffset: number, newRatio: number): number {
   return Math.max(0, virtualOffset / newRatio);
+}
+
+/** Virtual offset to report to the row virtualizer for a real `scrollTop` at `ratio`. */
+export function virtualOffsetFor(realTop: number, ratio: number): number {
+  return realTop * ratio;
+}
+
+/** Index of the last row (partly) visible for a virtual offset. */
+export function lastVisibleRow(
+  virtualOffset: number,
+  viewportHeight: number,
+  rowHeight: number,
+  rowCount: number,
+): number {
+  return Math.min(rowCount - 1, Math.floor((virtualOffset + viewportHeight - 1) / rowHeight));
+}
+
+/**
+ * Must the virtualizer be told about a (possibly unchanged) real scrollTop again? Yes whenever the
+ * ratio or the scroll range changed: a browser sends no `scroll` event when `scrollTop` is
+ * assigned the value it already has, yet the virtual offset (scrollTop x ratio) is different.
+ */
+export function needsOffsetResync(
+  prev: { ratio: number; maxTop: number } | null,
+  next: { ratio: number; maxTop: number },
+): boolean {
+  return prev !== null && (prev.ratio !== next.ratio || prev.maxTop !== next.maxTop);
+}
+
+export interface Reanchor {
+  /** The scroll container's CURRENT real `scrollTop` (read from the DOM, the source of truth). */
+  realTop: number;
+  prevRatio: number;
+  nextRatio: number;
+  /** Largest real `scrollTop` before the change (`scrollHeight - clientHeight`). */
+  prevMaxRealTop: number;
+  /** Largest real `scrollTop` after the change. */
+  maxRealTop: number;
+}
+
+/**
+ * New real `scrollTop` after the ratio (or the content/viewport size) changed: the first visible
+ * row stays put, and a view that sat at the bottom stays at the bottom. Depends only on the
+ * values passed in, never on a virtualizer's cached offset (which can lag behind the DOM).
+ */
+export function reanchorScrollTop(p: Reanchor): number {
+  const max = Math.max(0, p.maxRealTop);
+  if (p.prevMaxRealTop > 0 && p.realTop >= p.prevMaxRealTop - 1) return max;
+  const virtual = p.realTop * p.prevRatio;
+  return Math.min(max, anchoredScrollTop(virtual, p.nextRatio));
 }

@@ -43,6 +43,15 @@ function rank(name: string, query: string): number | null {
   return n.includes(query) ? 2 : null;
 }
 
+/** Like the real drivers: the location of the object (`db.schema`, or the database name). */
+function searchDetail(node: ObjectNode): string | null {
+  const parts = node.path.segments
+    .slice(0, -1)
+    .filter((s) => s.kind !== 'folder')
+    .map((s) => s.name);
+  return parts.length ? parts.join('.') : null;
+}
+
 /** Search the fake catalog the way the real drivers do: exact, then prefix, then substring. */
 export function mockObjectSearch(kind: DbKind, request: ObjectSearchRequest): ObjectNode[] {
   const query = request.query.trim().toLowerCase();
@@ -58,5 +67,5 @@ export function mockObjectSearch(kind: DbKind, request: ObjectSearchRequest): Ob
     })
     .sort((a, b) => a.r - b.r || a.n.name.localeCompare(b.n.name))
     .slice(0, Math.max(0, request.limit))
-    .map((x) => x.n);
+    .map((x) => ({ ...x.n, detail: searchDetail(x.n) }));
 }

@@ -62,6 +62,23 @@ pub const MARIADB104: Target = Target {
 };
 pub const TARGETS: [Target; 4] = [MYSQL8, MARIADB, MYSQL57, MARIADB104];
 
+/// Servers to test: all of them, or the comma-separated names in `DBSTUDIO_IT_SERVERS`
+/// (e.g. when a container is down). Unset means every server must be reachable.
+pub fn targets() -> Vec<Target> {
+    match std::env::var("DBSTUDIO_IT_SERVERS") {
+        Ok(list) => TARGETS
+            .into_iter()
+            .filter(|t| list.split(',').any(|n| n.trim() == t.name))
+            .collect(),
+        Err(_) => TARGETS.to_vec(),
+    }
+}
+
+/// Whether `t` is part of this run.
+pub fn selected(t: Target) -> bool {
+    targets().iter().any(|x| x.port == t.port)
+}
+
 /// Scale a timing bound for slow (emulated) servers.
 pub fn slack(t: Target, d: std::time::Duration) -> std::time::Duration {
     if t.slow { d * 4 } else { d }

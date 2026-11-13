@@ -78,6 +78,7 @@ pub async fn search(
     req: &ObjectSearchRequest,
     scope: &Scope,
     database: &str,
+    timeout: std::time::Duration,
 ) -> Result<Vec<ObjectNode>> {
     let query = req.query.trim();
     if query.is_empty() {
@@ -100,7 +101,16 @@ pub async fn search(
         return Ok(Vec::new());
     }
     let limit = i64::from(req.limit.clamp(1, 1000));
-    let rows = client
+    // A short transaction carries `SET LOCAL statement_timeout`, so a search on a huge catalog
+    // cannot hold the connection indefinitely.
+    client
+        .batch_execute(&format!(
+            "BEGIN; SET LOCAL statement_timeout = {}",
+            timeout.as_millis().max(1)
+        ))
+        .await
+        .map_err(map_error)?;
+    let result = client
         .query(
             "SELECT o.sch, o.name, o.kind, o.info FROM ( \
                 SELECT n.nspname::text AS sch, c.relname::text AS name, c.relname::text AS mname, \
@@ -136,8 +146,20 @@ pub async fn search(
              LIMIT $4",
             &[&scope.schema, &query, &kinds, &limit],
         )
-        .await
-        .map_err(map_error)?;
+        .await;
+    let rolled_back = client.batch_execute("ROLLBACK").await.is_ok();
+    let rows = match result {
+        Ok(rows) => rows,
+        Err(e) if e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED) => {
+            return Err(Error::Timeout);
+        }
+        Err(e) => return Err(map_error(e)),
+    };
+    if !rolled_back {
+        return Err(Error::Connection(
+            "could not end the search transaction".into(),
+        ));
+    }
     let with_db = scope.database.is_none() && scope.schema.is_none();
     Ok(rows
         .iter()

@@ -68,9 +68,9 @@ pub fn directives_for(level: LogLevel) -> String {
     out
 }
 
-/// True when the `RUST_LOG` environment variable overrides the configured level.
+/// True when `RUST_LOG` is set and parses, i.e. it overrides the configured level.
 pub fn env_override() -> bool {
-    std::env::var_os("RUST_LOG").is_some_and(|v| !v.is_empty())
+    EnvFilter::try_from_default_env().is_ok()
 }
 
 /// `RUST_LOG` when set, otherwise [`default_directives`].
@@ -115,7 +115,9 @@ pub fn file_writer(dir: &Path) -> io::Result<(NonBlocking, WorkerGuard)> {
 pub fn init(log_dir: Option<&Path>, console: bool) {
     let (filter, handle) = reload::Layer::new(env_filter());
     let console_layer = console.then(|| {
+        // No ANSI colors: escape codes inside field names would defeat the password redactor.
         tracing_subscriber::fmt::layer()
+            .with_ansi(false)
             .with_target(false)
             .with_writer(Redacting(io::stdout))
     });

@@ -260,9 +260,9 @@ impl Store {
             .optional()
             .map_err(db_err)?;
         Ok(text
-            .and_then(|t| serde_json::from_str::<AppSettings>(&t).ok())
-            .unwrap_or_default()
-            .normalized())
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .map(|v| AppSettings::from_value_lenient(&v))
+            .unwrap_or_default())
     }
 
     /// Normalize and persist settings; returns the stored value.
@@ -919,5 +919,20 @@ mod tests {
             .execute("UPDATE settings SET value = 'not json'", [])
             .unwrap();
         assert_eq!(s.get_settings().unwrap(), AppSettings::default());
+        // One unusable field only resets that field.
+        s.lock()
+            .execute(
+                "UPDATE settings SET value = ?1",
+                params![r#"{"logLevel":"loud","gridMaxRows":2000,"timestampDisplay":"local","gridMaxCells":"x"}"#],
+            )
+            .unwrap();
+        let got = s.get_settings().unwrap();
+        assert_eq!(got.log_level, crate::settings::LogLevel::Info);
+        assert_eq!(got.grid_max_rows, 2000);
+        assert_eq!(got.grid_max_cells, AppSettings::default().grid_max_cells);
+        assert_eq!(
+            got.timestamp_display,
+            crate::settings::TimestampDisplay::Local
+        );
     }
 }

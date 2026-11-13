@@ -32,7 +32,7 @@ async fn value_decoding_is_lossless() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let s = user_session(t).await;
         let tag = t.name;
@@ -173,7 +173,7 @@ async fn filters_sort_paging_raw_where() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let s = user_session(t).await;
         let tag = t.name;
@@ -388,7 +388,7 @@ async fn no_backslash_escapes_mode() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let mut c = config(t, "dbstudio", TlsMode::Disable);
         c.options.insert(
@@ -438,7 +438,7 @@ async fn streaming_big_table() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let s = user_session(t).await;
         let tag = t.name;
@@ -532,7 +532,7 @@ async fn sink_stop_keeps_session_usable() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         // A single pooled connection proves it is not returned half-read.
         let mut c = config(t, "dbstudio", TlsMode::Disable);
@@ -598,7 +598,7 @@ async fn cancel_kills_the_statement() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         let s = user_session(t).await;
         let tag = t.name;
         let mk = marker();
@@ -684,7 +684,7 @@ async fn timeout_ms_interrupts() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         let mut c = config(t, "dbstudio", TlsMode::Disable);
         c.options.insert("pool_max".into(), "1".into());
         let s = connect_cfg(&c).await.unwrap();
@@ -711,7 +711,7 @@ async fn execute_scripts() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         let tag = t.name;
         let db = scratch_db(t, "exec").await;
         let s = user_session(t).await;
@@ -824,7 +824,7 @@ async fn concurrent_use_of_one_session() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let s = user_session(t).await;
         let tag = t.name;
@@ -918,7 +918,7 @@ async fn raw_where_cannot_run_extra_statements() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         let tag = t.name;
         let db = raw_where_fixture(t).await;
         let s = user_session(t).await;
@@ -1005,7 +1005,7 @@ async fn paging_is_deterministic() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let s = user_session(t).await;
         let tag = t.name;
@@ -1071,7 +1071,7 @@ async fn count_table_can_be_cancelled() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let s = user_session(t).await;
         let mk = marker();
@@ -1105,7 +1105,7 @@ async fn close_cancels_running_statements() {
     if !it_enabled() {
         return;
     }
-    for t in TARGETS {
+    for t in targets() {
         ensure_fixture(t).await;
         let s = user_session(t).await;
         let mk1 = marker();

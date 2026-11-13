@@ -169,6 +169,9 @@ export function ConnectionsSidebar() {
   // Drag and drop (CONN-02). The dragged item lives in a ref because `dragover` cannot read
   // `dataTransfer` data.
   const dragRef = useRef<DragItem | null>(null);
+  // A saved move plan is several writes in a row; no new drag may start before it finishes.
+  const movingRef = useRef(false);
+  const [moving, setMoving] = useState(false);
   const [hint, setHint] = useState<DropTarget | null>(null);
 
   const targetFor = (e: DragEvent<HTMLElement>, row: DragItem): DropTarget | null => {
@@ -184,7 +187,13 @@ export function ConnectionsSidebar() {
 
   const hover = (e: DragEvent<HTMLElement>, target: DropTarget | null, onRow = false) => {
     const dragged = dragRef.current;
-    if (!dragged || !target || !snapshot || !planMove(snapshot, dragged, target)) {
+    if (
+      !dragged ||
+      !target ||
+      !snapshot ||
+      movingRef.current ||
+      !planMove(snapshot, dragged, target)
+    ) {
       // An invalid drop on a row must not fall through to the "move to root" container.
       if (onRow) e.stopPropagation();
       setHint(null);
@@ -209,15 +218,27 @@ export function ConnectionsSidebar() {
     if (!plan) return;
     e.preventDefault();
     e.stopPropagation();
+    if (movingRef.current) return;
+    movingRef.current = true;
+    setMoving(true);
+    // `run` toasts a failure and reloads the list, so a half-applied plan is shown as it is.
     void run(async () => {
       for (const p of plan.profiles) await ipc.connectionSave(p, { action: 'keep' });
       for (const g of plan.groups) await ipc.groupSave(g);
+    }).finally(() => {
+      movingRef.current = false;
+      setMoving(false);
     });
   };
 
   const dnd: DndApi = {
     hint,
+    busy: moving,
     start: (item, e) => {
+      if (movingRef.current) {
+        e.preventDefault();
+        return;
+      }
       dragRef.current = item;
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', item.id);
@@ -479,8 +500,8 @@ export function ConnectionsSidebar() {
 
       <div
         role="tree"
-        onDragOver={(e) => hover(e, { type: 'root' })}
-        onDrop={(e) => dropOn(e, { type: 'root' })}
+        onDragOver={(e) => isRootDropZone(e) && hover(e, { type: 'root' })}
+        onDrop={(e) => isRootDropZone(e) && dropOn(e, { type: 'root' })}
         aria-label={t('sidebar.title')}
         className={cn(
           'min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-1',
@@ -529,6 +550,8 @@ export function ConnectionsSidebar() {
           sessions={searchableSessions}
           onShowInTree={showInTree}
         />
+        {/* Empty area at the end of the list: dropping here moves an item to the top level. */}
+        <div data-drop-root className="h-8" />
       </div>
 
       <ConnectionDialog
@@ -580,6 +603,12 @@ export function ConnectionsSidebar() {
       />
     </aside>
   );
+}
+
+/** Top-level drops are only accepted on the empty area, not on a tree or a result bubbling up. */
+function isRootDropZone(e: DragEvent<HTMLElement>): boolean {
+  const target = e.target as HTMLElement;
+  return target === e.currentTarget || target.dataset.dropRoot !== undefined;
 }
 
 /** `value`, but only after it stopped changing for `delayMs`. */

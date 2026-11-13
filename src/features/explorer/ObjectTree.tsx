@@ -27,7 +27,7 @@ import { useSession } from '@/stores/sessions';
 import { ddlTabId, tableTabId, useTabsStore } from '@/stores/tabs';
 import { KindIcon } from './kindIcons';
 import { openObjectTab } from './openObject';
-import { useRevealStore } from './revealStore';
+import { revealTuning, useRevealStore } from './revealStore';
 import {
   clearBranch,
   clearSessionCache,
@@ -125,9 +125,12 @@ function SessionTree({
   // Reveal requests ("show in tree"): expand every ancestor, then focus the target row.
   const reveal = useRevealStore((s) => s.request);
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
+  const revealToken = useRef(0);
   useEffect(() => {
     if (!reveal || reveal.connectionId !== connectionId) return;
     useRevealStore.getState().consume(reveal.nonce);
+    setPendingFocus(null); // a newer request replaces an unfinished one
+    const token = ++revealToken.current;
     void (async () => {
       const segments = reveal.path.segments;
       for (let i = 1; i < segments.length; i++) {
@@ -135,11 +138,13 @@ function SessionTree({
         setExpanded((prev) => new Set(prev).add(pathKey(ancestor)));
         try {
           await loadChildren(qc, sessionId, ancestor);
+          if (token !== revealToken.current) return;
         } catch {
+          if (token === revealToken.current) setPendingFocus(null);
           return; // the error row shows where loading failed
         }
       }
-      setPendingFocus(pathKey(reveal.path));
+      if (token === revealToken.current) setPendingFocus(pathKey(reveal.path));
     })();
   }, [reveal, connectionId, qc, sessionId]);
 
@@ -151,6 +156,13 @@ function SessionTree({
     overscan: 12,
     getItemKey: (i) => rows[i]!.key,
   });
+
+  // Give up when the target row never shows up, so focus cannot jump much later.
+  useEffect(() => {
+    if (!pendingFocus) return;
+    const id = setTimeout(() => setPendingFocus(null), revealTuning.focusTimeoutMs);
+    return () => clearTimeout(id);
+  }, [pendingFocus]);
 
   useEffect(() => {
     if (!pendingFocus) return;

@@ -78,8 +78,31 @@ pub(crate) async fn settings_set_impl(
     Ok(stored)
 }
 
+/// Longest file name `save_cell_value` suggests, in UTF-8 bytes.
+const MAX_NAME_BYTES: usize = 200;
+
+/// Device names Windows refuses as file names (with or without an extension).
+fn is_windows_reserved(stem: &str) -> bool {
+    let s = stem.to_ascii_uppercase();
+    matches!(s.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (s.len() == 4
+            && (s.starts_with("COM") || s.starts_with("LPT"))
+            && s.as_bytes()[3].is_ascii_digit()
+            && s.as_bytes()[3] != b'0')
+}
+
+/// Cut `s` to at most `max` bytes without splitting a character.
+fn truncate_bytes(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Make a user-visible file name from an arbitrary suggestion: no path separators, control or
-/// reserved characters, no leading dots, bounded length, never empty.
+/// reserved characters, no leading dots, at most 200 bytes (the extension is kept, characters
+/// are never split), no Windows device names, never empty.
 pub fn sanitize_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -92,11 +115,25 @@ pub fn sanitize_file_name(name: &str) -> String {
         })
         .collect();
     let trimmed = cleaned.trim_matches(|c: char| c == '.' || c.is_whitespace() || c == '_');
-    let limited: String = trimmed.chars().take(120).collect();
-    if limited.is_empty() {
+    if trimmed.is_empty() {
+        return "value.bin".to_string();
+    }
+    // Split off a short extension so truncation never removes it.
+    let (stem, ext) = match trimmed.rfind('.') {
+        Some(dot) if dot > 0 && trimmed.len() - dot <= 17 => trimmed.split_at(dot),
+        _ => (trimmed, ""),
+    };
+    let stem = truncate_bytes(stem, MAX_NAME_BYTES.saturating_sub(ext.len()));
+    let stem = stem.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    // `CON.tar.gz` is reserved too: only the part before the first dot counts.
+    let first = stem.split('.').next().unwrap_or(stem);
+    let suffix = if is_windows_reserved(first) { "_" } else { "" };
+    let (head, tail) = stem.split_at(first.len());
+    let result = format!("{head}{suffix}{tail}{ext}");
+    if result.is_empty() {
         "value.bin".to_string()
     } else {
-        limited
+        result
     }
 }
 
@@ -126,11 +163,17 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let name = path
         .file_name()
         .ok_or_else(|| Error::Other("save path has no file name".into()))?;
-    let mut tmp_name = std::ffi::OsString::from(".");
-    tmp_name.push(name);
-    tmp_name.push(format!(".{}.tmp", Uuid::new_v4().simple()));
-    let tmp = path.with_file_name(tmp_name);
-    let written = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    let _ = name;
+    // Short temporary name: the target's own name may already be near the length limit.
+    let tmp = path.with_file_name(format!(".dbs-{}.tmp", Uuid::new_v4().simple()));
+    let written = (|| {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
     if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
@@ -244,7 +287,22 @@ mod tests {
         );
         assert_eq!(sanitize_file_name(""), "value.bin");
         assert_eq!(sanitize_file_name("///"), "value.bin");
-        assert_eq!(sanitize_file_name(&"x".repeat(500)).chars().count(), 120);
+        assert_eq!(sanitize_file_name(&"x".repeat(500)).len(), 200);
+        // Truncation is by bytes, never inside a character, and keeps the extension.
+        let long = format!("{}.csv", "日".repeat(100));
+        let cut = sanitize_file_name(&long);
+        assert!(cut.len() <= 200 && cut.ends_with(".csv"), "{cut}");
+        assert!(cut.starts_with('日') && std::str::from_utf8(cut.as_bytes()).is_ok());
+        let emoji = "😀".repeat(100);
+        assert!(sanitize_file_name(&emoji).len() <= 200);
+        // Windows device names get a suffix, also with extensions and in any case.
+        assert_eq!(sanitize_file_name("CON"), "CON_");
+        assert_eq!(sanitize_file_name("nul.txt"), "nul_.txt");
+        assert_eq!(sanitize_file_name("Com1.tar.gz"), "Com1_.tar.gz");
+        assert_eq!(sanitize_file_name("LPT9"), "LPT9_");
+        assert_eq!(sanitize_file_name("COM0"), "COM0");
+        assert_eq!(sanitize_file_name("console.txt"), "console.txt");
+        assert_eq!(sanitize_file_name("aux"), "aux_");
         assert_eq!(sanitize_file_name("日本語.txt"), "日本語.txt");
     }
 
@@ -270,6 +328,10 @@ mod tests {
         write_atomic(&path, b"two").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        // A target name near the limit still works (the temp file name is short).
+        let long = dir.path().join(sanitize_file_name(&"y".repeat(500)));
+        write_atomic(&long, b"x").unwrap();
+        assert_eq!(std::fs::read(&long).unwrap(), b"x");
         assert!(write_atomic(&dir.path().join("missing/out.bin"), b"x").is_err());
     }
 

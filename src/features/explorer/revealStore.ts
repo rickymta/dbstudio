@@ -23,3 +23,6 @@ export const useRevealStore = create<RevealState>((set) => ({
   reveal: (connectionId, path) => set({ request: { connectionId, path, nonce: ++nonce } }),
   consume: (n) => set((s) => (s.request?.nonce === n ? { request: null } : s)),
 }));
+
+/** How long a reveal waits for its target row to appear before giving up (adjustable in tests). */
+export const revealTuning = { focusTimeoutMs: 10_000 };

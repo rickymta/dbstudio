@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_SCROLL_HEIGHT,
   anchoredScrollTop,
+  reanchorScrollTop,
+  lastVisibleRow,
+  needsOffsetResync,
+  virtualOffsetFor,
   computeScale,
   rowTop,
   scrollTopToRevealRow,
@@ -74,5 +78,117 @@ describe('scroll anchoring when the ratio changes', () => {
     // ...with anchoring the first visible row is unchanged.
     const real = anchoredScrollTop(virtualOffset, after.ratio);
     expect(Math.floor(toVirtualOffset(real, after) / ROW)).toBe(firstRow);
+  });
+});
+
+describe('reanchorScrollTop', () => {
+  const maxTopOf = (rows: number, view: number) => {
+    const s = computeScale(rows, ROW, view);
+    return { s, max: s.realHeight + 28 - (view + 28) }; // header 28 + body, viewport incl. header
+  };
+  const firstRow = (realTop: number, ratio: number) => (realTop * ratio) / ROW;
+
+  it('keeps the first visible row when the ratio changes A -> B -> A', () => {
+    const A = maxTopOf(1_000_000, 600);
+    const B = maxTopOf(1_000_000, 300); // viewport shrank: different ratio
+    expect(B.s.ratio).not.toBe(A.s.ratio);
+    const realA = 3_566_971;
+    const toB = reanchorScrollTop({
+      realTop: realA,
+      prevRatio: A.s.ratio,
+      nextRatio: B.s.ratio,
+      prevMaxRealTop: A.max,
+      maxRealTop: B.max,
+    });
+    expect(Math.abs(firstRow(toB, B.s.ratio) - firstRow(realA, A.s.ratio))).toBeLessThanOrEqual(1);
+    const backToA = reanchorScrollTop({
+      realTop: toB,
+      prevRatio: B.s.ratio,
+      nextRatio: A.s.ratio,
+      prevMaxRealTop: B.max,
+      maxRealTop: A.max,
+    });
+    expect(Math.abs(firstRow(backToA, A.s.ratio) - firstRow(realA, A.s.ratio))).toBeLessThanOrEqual(
+      1,
+    );
+  });
+
+  it('stays at the bottom when the ratio changes (rows added or viewport resized)', () => {
+    const before = maxTopOf(1_000_000, 600);
+    const grown = maxTopOf(1_020_000, 600);
+    expect(
+      reanchorScrollTop({
+        realTop: before.max,
+        prevRatio: before.s.ratio,
+        nextRatio: grown.s.ratio,
+        prevMaxRealTop: before.max,
+        maxRealTop: grown.max,
+      }),
+    ).toBe(grown.max);
+    const resized = maxTopOf(1_000_000, 900);
+    expect(
+      reanchorScrollTop({
+        realTop: before.max - 0.4,
+        prevRatio: before.s.ratio,
+        nextRatio: resized.s.ratio,
+        prevMaxRealTop: before.max,
+        maxRealTop: resized.max,
+      }),
+    ).toBe(resized.max);
+  });
+
+  it('depends only on the values passed in and clamps into [0, max]', () => {
+    const args = {
+      realTop: 1_000_000,
+      prevRatio: 3,
+      nextRatio: 3.2,
+      prevMaxRealTop: 7_000_000,
+      maxRealTop: 7_500_000,
+    };
+    expect(reanchorScrollTop(args)).toBe(reanchorScrollTop({ ...args }));
+    expect(reanchorScrollTop({ ...args, realTop: 0 })).toBe(0);
+    expect(reanchorScrollTop({ ...args, nextRatio: 0.001, maxRealTop: 5_000 })).toBe(5_000);
+    expect(reanchorScrollTop({ ...args, maxRealTop: -5 })).toBe(0);
+  });
+});
+
+describe('offset resync after appended pages while at the bottom', () => {
+  it('reports maxTop x newRatio and the last visible row follows the new data', () => {
+    const view = 600;
+    const body = (rows: number) => {
+      const s = computeScale(rows, ROW, view);
+      return { s, max: s.realHeight + 28 - (view + 28) };
+    };
+    const before = body(400_000);
+    const after = body(420_000);
+    expect(after.s.realHeight).toBe(before.s.realHeight); // height is clamped: scrollTop is unchanged
+    const realTop = reanchorScrollTop({
+      realTop: before.max,
+      prevRatio: before.s.ratio,
+      nextRatio: after.s.ratio,
+      prevMaxRealTop: before.max,
+      maxRealTop: after.max,
+    });
+    expect(realTop).toBe(before.max); // same value: the browser would send no scroll event
+    // ...so the virtualizer must be told explicitly, with the NEW ratio.
+    expect(
+      needsOffsetResync(
+        { ratio: before.s.ratio, maxTop: before.max },
+        { ratio: after.s.ratio, maxTop: after.max },
+      ),
+    ).toBe(true);
+    const reported = virtualOffsetFor(realTop, after.s.ratio);
+    expect(reported).toBeCloseTo(after.max * after.s.ratio, 6);
+    const stale = virtualOffsetFor(realTop, before.s.ratio);
+    expect(lastVisibleRow(stale, view, ROW, 420_000)).toBeLessThan(402_000);
+    const last = lastVisibleRow(reported, view, ROW, 420_000);
+    expect(last).toBeGreaterThan(419_990);
+    expect(last).toBeLessThanOrEqual(419_999);
+  });
+
+  it('does not resync when neither ratio nor range changed', () => {
+    const a = { ratio: 1, maxTop: 100 };
+    expect(needsOffsetResync(a, { ...a })).toBe(false);
+    expect(needsOffsetResync(null, a)).toBe(false);
   });
 });

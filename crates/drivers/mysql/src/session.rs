@@ -127,6 +127,8 @@ pub(crate) struct Inner {
     /// Ids of pooled connections whose current database was changed by a request. The pool's
     /// `COM_RESET_CONNECTION` does not undo `USE`, so these are repaired lazily.
     dirty_db: Mutex<HashSet<u32>>,
+    search_timeout_ms: u64,
+    debug_search_sleep_ms: Option<u64>,
     /// Key columns per `(database, table)` with the time they were read.
     keys: Mutex<KeyCache>,
 }
@@ -164,6 +166,7 @@ impl QueryGuard {
 }
 
 impl Inner {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         pool: Pool,
         opts: Opts,
@@ -171,6 +174,8 @@ impl Inner {
         secret: Option<String>,
         is_mariadb: bool,
         default_db: Option<String>,
+        search_timeout_ms: u64,
+        debug_search_sleep_ms: Option<u64>,
     ) -> Self {
         Inner {
             pool,
@@ -182,6 +187,8 @@ impl Inner {
             is_mariadb,
             default_db,
             dirty_db: Mutex::new(HashSet::new()),
+            search_timeout_ms,
+            debug_search_sleep_ms,
             keys: Mutex::new(HashMap::new()),
         }
     }
@@ -794,7 +801,27 @@ impl Session for MySqlSession {
 
     async fn search_objects(&self, req: ObjectSearchRequest) -> Result<Vec<ObjectNode>> {
         let mut conn = self.inner.acquire().await?;
-        let r = browse::search_objects(&mut conn, &req).await;
+        // Catalog scans can be very slow on huge servers: bound them and KILL on expiry.
+        let guard = self.inner.begin(
+            conn.id(),
+            Uuid::new_v4(),
+            Some(self.inner.search_timeout_ms),
+        );
+        let r = async {
+            if let Some(ms) = self.inner.debug_search_sleep_ms {
+                let secs = ms as f64 / 1000.0;
+                conn.query_drop(format!("SELECT SLEEP({secs})"))
+                    .await
+                    .map_err(map_query_error)?;
+                if guard.ctl.stopped() {
+                    return Err(Error::Cancelled);
+                }
+            }
+            browse::search_objects(&mut conn, &req).await
+        }
+        .await;
+        let ctl = guard.end().await;
+        let r = ctl.finalize(r);
         self.inner.release(conn, is_conn_error(&r)).await;
         r
     }
