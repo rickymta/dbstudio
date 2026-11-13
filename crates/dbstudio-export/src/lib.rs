@@ -1,20 +1,31 @@
 //! Export of tables / queries to SQL, CSV, XLSX and JSON, and import from files.
 //!
-//! Scaffold status: all types and defaults are final; `run_export`, `run_import` and
-//! `preview_import` return `Error::Unsupported`. Package G fills them in.
+//! `run_export` streams tables or query results through a [`TableWriter`] into a temporary file
+//! that is renamed when the export completes; `run_import` reads CSV / XLSX / JSON / SQL files and
+//! loads them into a table (or runs the script).
 
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use dbstudio_core::{
-    ColumnMeta, DbKind, DdlOptions, Error, JobReporter, ObjectPath, OnConflict, Result, ResultSink,
-    ScriptDialect, Session, StatementInfo, TableModel, Value, ValueKind,
+    ColumnMeta, DbKind, DdlItem, DdlOptions, DdlSection, JobReporter, ObjectPath, OnConflict,
+    Result, ResultSink, ScriptDialect, Session, StatementInfo, TableModel, Value, ValueKind,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use dbstudio_sql::ddl::NewColumn;
+
+mod conn;
+mod engine;
+mod fsio;
+mod import;
+mod values;
+mod writers;
+
+pub use engine::{run_export, run_export_tuned};
+pub use import::{preview_import, run_import};
 
 // ---------------------------------------------------------------------------------------------
 // Export
@@ -351,6 +362,35 @@ pub struct ObjectMeta {
     pub estimated_rows: Option<u64>,
 }
 
+impl ObjectMeta {
+    /// Plain table name (without the schema prefix that `name` may carry).
+    pub fn table_name(&self) -> &str {
+        if let Some(d) = &self.details {
+            return &d.name;
+        }
+        if let Some(p) = self.path.as_ref().and_then(|p| p.last()) {
+            return &p.name;
+        }
+        &self.name
+    }
+}
+
+/// Limits the engine applies; tests lower them to exercise rare paths with little data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportTuning {
+    /// Data rows per XLSX sheet before the next sheet is started (Excel allows 1,048,576 rows
+    /// including the header).
+    pub xlsx_sheet_rows: u32,
+}
+
+impl Default for ExportTuning {
+    fn default() -> Self {
+        ExportTuning {
+            xlsx_sheet_rows: 1_048_575,
+        }
+    }
+}
+
 /// A format writer. Writers are result sinks so query results stream straight to disk.
 pub trait TableWriter: ResultSink {
     /// Start a new object (table / sheet / file entry).
@@ -359,12 +399,19 @@ pub trait TableWriter: ResultSink {
     fn end_object(&mut self) -> Result<()>;
     /// Close the output and return the files produced.
     fn finish(self: Box<Self>) -> Result<Vec<PathBuf>>;
-}
-
-/// Run an export. Scaffold: `Unsupported("export")`.
-pub async fn run_export(ctx: ExportContext, spec: ExportSpec) -> Result<ExportReport> {
-    let _ = (ctx, spec);
-    Err(Error::Unsupported("export".into()))
+    /// Structure statements of the objects (only the SQL writer uses them).
+    fn write_ddl(&mut self, section: DdlSection, items: &[DdlItem]) -> Result<()> {
+        let _ = (section, items);
+        Ok(())
+    }
+    /// Bytes written to disk so far (progress).
+    fn bytes(&self) -> u64 {
+        0
+    }
+    /// Non fatal problems noticed while writing (cut cells...).
+    fn warnings(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -561,23 +608,11 @@ pub struct RowError {
     pub message: String,
 }
 
-/// Preview a file before importing. Scaffold: `Unsupported("import")`.
-pub async fn preview_import(req: ImportPreviewRequest) -> Result<ImportPreview> {
-    let _ = req;
-    Err(Error::Unsupported("import".into()))
-}
-
-/// Run an import. Scaffold: `Unsupported("import")`.
-pub async fn run_import(ctx: ExportContext, spec: ImportSpec) -> Result<ImportReport> {
-    let _ = (ctx, spec);
-    Err(Error::Unsupported("import".into()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use dbstudio_core::testing::write_or_check;
-    use dbstudio_core::{CancelToken, ColumnDetail, JobProgress, ObjectKind};
+    use dbstudio_core::{CancelToken, ColumnDetail, Error, JobProgress, ObjectKind};
     use serde_json::{Value as Json, json};
 
     fn j<T: Serialize>(v: &T) -> Json {
@@ -839,21 +874,10 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn stub_contract_engines_are_unsupported() {
-        let e = run_export(ctx(), export_spec()).await.unwrap_err();
-        assert!(matches!(e, Error::Unsupported(ref s) if s == "export"));
-        let e = run_import(ctx(), import_spec()).await.unwrap_err();
-        assert!(matches!(e, Error::Unsupported(ref s) if s == "import"));
-        let e = preview_import(ImportPreviewRequest {
-            file: "x".into(),
-            format: import_spec().format,
-            rows: 50,
-        })
-        .await
-        .unwrap_err();
-        assert!(matches!(e, Error::Unsupported(ref s) if s == "import"));
+    #[test]
+    fn context_debug_is_available() {
         assert!(format!("{:?}", ctx()).contains("ExportContext"));
+        assert_eq!(ExportTuning::default().xlsx_sheet_rows, 1_048_575);
     }
 
     #[test]

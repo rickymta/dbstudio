@@ -11,17 +11,23 @@ authors.workspace = true
 dbstudio-core.workspace = true
 dbstudio-sql.workspace = true
 calamine.workspace = true
-csv.workspace = true
-rust_xlsxwriter.workspace = true
+rust_xlsxwriter = { workspace = true, features = ["constant_memory"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
 zip.workspace = true
+base64.workspace = true
+time.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 dbstudio-core = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+dbstudio-driver-postgres = { path = "../drivers/postgres" }
+dbstudio-driver-mysql = { path = "../drivers/mysql" }
 
 [lints]
 workspace = true
