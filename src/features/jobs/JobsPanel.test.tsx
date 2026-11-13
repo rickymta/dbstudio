@@ -27,7 +27,7 @@ describe('JobsIndicator and the job center', () => {
     );
     renderWithProviders(<JobsIndicator />);
     const indicator = await screen.findByTestId('jobs-indicator');
-    await waitFor(() => expect(indicator).toHaveTextContent('1 job running'));
+    await waitFor(() => expect(indicator).toHaveTextContent('1 running'));
     expect(within(indicator).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '25');
 
     await userEvent.setup().click(indicator);
@@ -46,7 +46,7 @@ describe('JobsIndicator and the job center', () => {
     await new Promise((r) => setTimeout(r, 20));
     mockEmit('job://progress', { type: 'started', job: job('2', { title: 'Import data.csv' }) });
     await waitFor(() =>
-      expect(screen.getByTestId('jobs-indicator')).toHaveTextContent('1 job running'),
+      expect(screen.getByTestId('jobs-indicator')).toHaveTextContent('1 running'),
     );
     mockEmit('job://progress', {
       type: 'finished',
@@ -64,7 +64,7 @@ describe('JobsIndicator and the job center', () => {
     await userEvent.setup().click(screen.getByTestId('jobs-indicator'));
     const row = await screen.findByTestId('job-2');
     expect(within(row).getByTestId('job-status')).toHaveTextContent('Done');
-    expect(row).toHaveTextContent('2 rows inserted');
+    expect(row).toHaveTextContent('2 row(s) inserted');
     expect(row).toHaveTextContent('Line 4: bad value');
     expect(screen.getByTestId('jobs-indicator')).not.toHaveTextContent('running');
   });

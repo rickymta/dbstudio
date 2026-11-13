@@ -27,21 +27,15 @@
     "restore": "Restoring"
   },
   "indicator": {
-    "running_one": "{{count}} job running",
-    "running_other": "{{count}} jobs running",
     "idle": "Background jobs",
-    "failed_one": "{{count}} failed",
-    "failed_other": "{{count}} failed"
+    "running": "{{count}} running",
+    "failed": "{{count}} failed"
   },
   "result": {
-    "rows_one": "{{count}} row",
-    "rows_other": "{{count}} rows",
-    "inserted_one": "{{count}} row inserted",
-    "inserted_other": "{{count}} rows inserted",
-    "skipped_one": "{{count}} skipped",
-    "skipped_other": "{{count}} skipped",
+    "rows": "{{count}} row(s)",
+    "inserted": "{{count}} row(s) inserted",
+    "skipped": "{{count}} skipped",
     "errorLine": "Line {{line}}",
-    "moreErrors_one": "and {{count}} more error",
-    "moreErrors_other": "and {{count}} more errors"
+    "moreErrors": "and {{count}} more error(s)"
   }
 }

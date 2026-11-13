@@ -126,7 +126,9 @@ describe('mock stores and stubs', () => {
     expect(await ipc.jobsList()).toEqual([]);
     expect(await ipc.backupJobsList()).toEqual([]);
     expect(await ipc.exportPresetsList()).toEqual([]);
-    await expect(ipc.exportStart({} as never)).rejects.toMatchObject({ kind: 'unsupported' });
+    await expect(ipc.exportStart({ destination: { path: '' } } as never)).rejects.toMatchObject({
+      kind: 'permission',
+    });
     expect(await ipc.filePickSave('a.csv', [])).toBeNull();
     expect(await ipc.backgroundGet()).toEqual({ closeToTray: 'auto', autostart: false });
     expect((await ipc.driverDiagnostics('oracle')).status.state).toBe('planned');

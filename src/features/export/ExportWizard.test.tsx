@@ -169,7 +169,7 @@ describe('ExportWizard', () => {
     await waitFor(() => expect(within(row).getByTestId('job-status')).toHaveTextContent('Done'), {
       timeout: 3000,
     });
-    expect(row).toHaveTextContent('2,550 rows'.replace(',', ''));
+    expect(row).toHaveTextContent('2550 row(s)');
     expect(row).toHaveTextContent('/tmp/e2e.sql');
     expect(useWizardStore.getState().exportOrigin).toBeNull();
   });

@@ -27,15 +27,15 @@
     "restore": "Đang khôi phục"
   },
   "indicator": {
-    "running_other": "{{count}} tác vụ đang chạy",
     "idle": "Tác vụ nền",
-    "failed_other": "{{count}} lỗi"
+    "running": "{{count}} đang chạy",
+    "failed": "{{count}} lỗi"
   },
   "result": {
-    "rows_other": "{{count}} dòng",
-    "inserted_other": "đã thêm {{count}} dòng",
-    "skipped_other": "bỏ qua {{count}}",
+    "rows": "{{count}} dòng",
+    "inserted": "đã thêm {{count}} dòng",
+    "skipped": "bỏ qua {{count}}",
     "errorLine": "Dòng {{line}}",
-    "moreErrors_other": "và {{count}} lỗi nữa"
+    "moreErrors": "và {{count}} lỗi nữa"
   }
 }
