@@ -26,8 +26,13 @@ pub fn parse_shell_date(text: &str) -> Result<bson::DateTime> {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(t) {
         return Ok(bson::DateTime::from_millis(dt.timestamp_millis()));
     }
-    let utc = |n: chrono::NaiveDateTime| bson::DateTime::from_millis(n.and_utc().timestamp_millis());
-    for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M"] {
+    let utc =
+        |n: chrono::NaiveDateTime| bson::DateTime::from_millis(n.and_utc().timestamp_millis());
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M",
+    ] {
         if let Ok(n) = chrono::NaiveDateTime::parse_from_str(t, fmt) {
             return Ok(utc(n));
         }
@@ -89,8 +94,14 @@ pub fn shell_to_bson(v: &ShellValue) -> Result<Bson> {
         ShellValue::MinKey => Bson::MinKey,
         ShellValue::MaxKey => Bson::MaxKey,
         ShellValue::Regex { pattern, flags } => Bson::RegularExpression(bson::Regex {
-            pattern: pattern.clone().try_into().map_err(|_| bad("invalid regex"))?,
-            options: flags.clone().try_into().map_err(|_| bad("invalid regex flags"))?,
+            pattern: pattern
+                .clone()
+                .try_into()
+                .map_err(|_| bad("invalid regex"))?,
+            options: flags
+                .clone()
+                .try_into()
+                .map_err(|_| bad("invalid regex flags"))?,
         }),
     })
 }
@@ -99,7 +110,10 @@ pub fn shell_to_bson(v: &ShellValue) -> Result<Bson> {
 pub fn shell_to_doc(v: &ShellValue) -> Result<Document> {
     match shell_to_bson(v)? {
         Bson::Document(d) => Ok(d),
-        other => Err(bad(format!("expected a document, got {}", other.element_type() as u8))),
+        other => Err(bad(format!(
+            "expected a document, got {}",
+            other.element_type() as u8
+        ))),
     }
 }
 
@@ -150,7 +164,10 @@ mod tests {
         let v = ShellValue::Object(vec![
             ("a".into(), ShellValue::Int(1)),
             ("big".into(), ShellValue::Int(1 << 40)),
-            ("o".into(), ShellValue::ObjectId("65f0a1b2c3d4e5f607182930".into())),
+            (
+                "o".into(),
+                ShellValue::ObjectId("65f0a1b2c3d4e5f607182930".into()),
+            ),
             ("d".into(), ShellValue::Date("2024-05-01".into())),
             ("l".into(), ShellValue::NumberLong(5)),
             ("n".into(), ShellValue::NumberDecimal("1.50".into())),
@@ -161,7 +178,9 @@ mod tests {
         assert!(matches!(d.get("o"), Some(Bson::ObjectId(_))));
         assert_eq!(
             d.get("d"),
-            Some(&Bson::DateTime(bson::DateTime::from_millis(1_714_521_600_000)))
+            Some(&Bson::DateTime(bson::DateTime::from_millis(
+                1_714_521_600_000
+            )))
         );
         assert_eq!(d.get("l"), Some(&Bson::Int64(5)));
         assert!(matches!(d.get("n"), Some(Bson::Decimal128(_))));

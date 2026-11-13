@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bson::{Bson, Document, doc};
 use dbstudio_core::{
-    ApplyResult, ChangeSet, DdlItem, DdlRequest, Editability, Error, ExecSummary,
-    ExplainRequest, IndexDetail, Lease, LeaseOptions, NotEditableReason, ObjectKind, ObjectNode,
-    ObjectPath, ObjectSearchRequest, QueryRequest, RawPlan, Result, ResultSink, SchemaModel,
+    ApplyResult, ChangeSet, DdlItem, DdlRequest, Editability, Error, ExecSummary, ExplainRequest,
+    IndexDetail, Lease, LeaseOptions, NotEditableReason, ObjectKind, ObjectNode, ObjectPath,
+    ObjectSearchRequest, QueryRequest, RawPlan, Result, ResultSink, SchemaModel,
     SchemaModelRequest, ScriptDialect, ServerInfo, Session, TableCountRequest, TableDataRequest,
     TableDetails, TableModel, folder,
 };
@@ -87,7 +87,11 @@ pub async fn kill_op(client: &Client, running: &Running, query_id: Uuid) -> Resu
         let ops: Vec<Bson> = r
             .get_document("cursor")
             .and_then(|c| c.get_array("firstBatch"))
-            .map(|a| a.iter().filter_map(|d| d.as_document()?.get("opid").cloned()).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|d| d.as_document()?.get("opid").cloned())
+                    .collect()
+            })
             .unwrap_or_default();
         if !ops.is_empty() {
             for op in ops {
@@ -131,7 +135,12 @@ pub async fn with_timeout<T>(
 }
 
 /// Build the `RunCtx` of a request.
-pub fn run_ctx(req_id: Uuid, max_rows: Option<u64>, batch: Option<u32>, reg: &Registered) -> RunCtx {
+pub fn run_ctx(
+    req_id: Uuid,
+    max_rows: Option<u64>,
+    batch: Option<u32>,
+    reg: &Registered,
+) -> RunCtx {
     RunCtx {
         query_id: req_id,
         max_rows,
@@ -149,6 +158,12 @@ fn human_count(n: i64) -> String {
 }
 
 /// The MongoDB session.
+impl std::fmt::Debug for MongoSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MongoSession").finish()
+    }
+}
+
 pub struct MongoSession {
     pub(crate) conn: Arc<Conn>,
     pub(crate) running: Running,
@@ -181,7 +196,9 @@ impl MongoSession {
                     .get_array("databases")
                     .map(|a| {
                         a.iter()
-                            .filter_map(|d| d.as_document()?.get_str("name").ok().map(str::to_string))
+                            .filter_map(|d| {
+                                d.as_document()?.get_str("name").ok().map(str::to_string)
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -299,11 +316,19 @@ pub async fn explain_statement(
     let [stmt] = stmts.as_slice() else {
         return Err(bad("exactly one statement can be explained"));
     };
-    let db = req.database.clone().unwrap_or_else(|| default_db.to_string());
+    let db = req
+        .database
+        .clone()
+        .unwrap_or_else(|| default_db.to_string());
     let planned = plan(stmt, &db, "")?.ok_or_else(|| bad("this statement cannot be explained"))?;
     match planned.kind {
-        Kind::Cursor | Kind::CountAgg | Kind::Count | Kind::Distinct | Kind::Update
-        | Kind::Delete | Kind::FindAndModify
+        Kind::Cursor
+        | Kind::CountAgg
+        | Kind::Count
+        | Kind::Distinct
+        | Kind::Update
+        | Kind::Delete
+        | Kind::FindAndModify
             if !planned.cmd.contains_key("listCollections")
                 && !planned.cmd.contains_key("listIndexes") => {}
         _ => return Err(Error::Unsupported("explain_this_statement".into())),
@@ -345,10 +370,7 @@ impl Session for MongoSession {
         if let Some(rs) = &self.conn.set_name {
             extra.insert("replicaSet".into(), rs.clone());
         }
-        extra.insert(
-            "transactions".into(),
-            self.conn.transactions.to_string(),
-        );
+        extra.insert("transactions".into(), self.conn.transactions.to_string());
         Ok(ServerInfo {
             product: "MongoDB".into(),
             version: self.conn.version.clone(),
@@ -436,7 +458,9 @@ impl Session for MongoSession {
                 }
                 Ok(out)
             }
-            ObjectKind::Folder if last.name == folder::COLLECTIONS || last.name == folder::VIEWS => {
+            ObjectKind::Folder
+                if last.name == folder::COLLECTIONS || last.name == folder::VIEWS =>
+            {
                 let want_view = last.name == folder::VIEWS;
                 let items: Vec<_> = list_collections(&mut cmd, &db)
                     .await?
@@ -510,7 +534,9 @@ impl Session for MongoSession {
         let Some((coll, _)) = coll else {
             return Err(Error::Unsupported("object_ddl".into()));
         };
-        let items = self.ddl_items(&db, Some(&coll), &Default::default()).await?;
+        let items = self
+            .ddl_items(&db, Some(&coll), &Default::default())
+            .await?;
         if items.is_empty() {
             return Err(Error::NotFound(coll));
         }
@@ -535,7 +561,8 @@ impl Session for MongoSession {
             .map(|s| IndexDetail {
                 name: s.get_str("name").unwrap_or("").to_string(),
                 columns: index_columns(&s),
-                unique: s.get_bool("unique").unwrap_or(false) || s.get_str("name").ok() == Some("_id_"),
+                unique: s.get_bool("unique").unwrap_or(false)
+                    || s.get_str("name").ok() == Some("_id_"),
                 primary: s.get_str("name").ok() == Some("_id_"),
                 method: None,
                 definition: Some(doc_to_ejson(&s, false, false)),
@@ -571,7 +598,15 @@ impl Session for MongoSession {
         let (coll, _) = coll.ok_or_else(|| Error::NotFound("collection".into()))?;
         let filter = build_filter(&req.filters, req.raw_where.as_deref())?;
         let sort = build_sort(&req.sort, true);
-        let command = find_command(&coll, filter, sort, req.offset, req.limit, req.batch_size, req.query_id);
+        let command = find_command(
+            &coll,
+            filter,
+            sort,
+            req.offset,
+            req.limit,
+            req.batch_size,
+            req.query_id,
+        );
         self.find_stream(req.query_id, &db, command, sink, req.batch_size)
             .await
     }
@@ -585,14 +620,18 @@ impl Session for MongoSession {
         let fut = async {
             let mut cmd = Cmd::pooled(self.client());
             if filter.is_empty() && kind != ObjectKind::View {
-                let r = cmd.run(&db, doc! {"count": &coll, "comment": id.to_string()}).await?;
+                let r = cmd
+                    .run(&db, doc! {"count": &coll, "comment": id.to_string()})
+                    .await?;
                 return Ok(num(&r, "n").max(0) as u64);
             }
             let mut pipeline = vec![];
             if !filter.is_empty() {
                 pipeline.push(Bson::Document(doc! {"$match": filter}));
             }
-            pipeline.push(Bson::Document(doc! {"$group": {"_id": 1, "n": {"$sum": 1}}}));
+            pipeline.push(Bson::Document(
+                doc! {"$group": {"_id": 1, "n": {"$sum": 1}}},
+            ));
             let r = cmd
                 .run(
                     &db,
@@ -652,7 +691,11 @@ impl Session for MongoSession {
                         path: Self::db_path(&db)
                             .child(
                                 ObjectKind::Folder,
-                                if is_view { folder::VIEWS } else { folder::COLLECTIONS },
+                                if is_view {
+                                    folder::VIEWS
+                                } else {
+                                    folder::COLLECTIONS
+                                },
                             )
                             .child(kind, name.clone()),
                         kind,
@@ -663,9 +706,7 @@ impl Session for MongoSession {
                 ));
             }
         }
-        hits.sort_by(|a, b| {
-            (a.0, &a.1.name, &a.1.detail).cmp(&(b.0, &b.1.name, &b.1.detail))
-        });
+        hits.sort_by(|a, b| (a.0, &a.1.name, &a.1.detail).cmp(&(b.0, &b.1.name, &b.1.detail)));
         let limit = req.limit.clamp(1, 1000) as usize;
         Ok(hits.into_iter().take(limit).map(|h| h.1).collect())
     }
@@ -721,7 +762,15 @@ impl Session for MongoSession {
             let mut cmd = Cmd::pooled(self.client());
             explain_statement(&mut cmd, &self.conn, &req, &self.conn.default_db()).await
         };
-        with_timeout(req.timeout_ms, self.client(), &self.running, &reg, req.query_id, fut).await
+        with_timeout(
+            req.timeout_ms,
+            self.client(),
+            &self.running,
+            &reg,
+            req.query_id,
+            fut,
+        )
+        .await
     }
 
     async fn schema_model(&self, req: SchemaModelRequest) -> Result<SchemaModel> {
@@ -756,7 +805,11 @@ impl Session for MongoSession {
             let path = Self::db_path(&db)
                 .child(
                     ObjectKind::Folder,
-                    if is_view { folder::VIEWS } else { folder::COLLECTIONS },
+                    if is_view {
+                        folder::VIEWS
+                    } else {
+                        folder::COLLECTIONS
+                    },
                 )
                 .child(kind, name.clone());
             let docs = sample(&mut cmd, &db, &name, size).await?;
@@ -767,7 +820,9 @@ impl Session for MongoSession {
             let mut unique_keys = vec![];
             if !is_view {
                 for s in list_indexes(&mut cmd, &db, &name).await? {
-                    if s.get_bool("unique").unwrap_or(false) && s.get_str("name").ok() != Some("_id_") {
+                    if s.get_bool("unique").unwrap_or(false)
+                        && s.get_str("name").ok() != Some("_id_")
+                    {
                         unique_keys.push(index_columns(&s));
                     }
                 }
@@ -813,11 +868,7 @@ impl Session for MongoSession {
         };
         let mut items = self.ddl_items(&db, only.as_deref(), &req.options).await?;
         if only.is_none() && !objects.is_empty() {
-            items.retain(|i| {
-                i.path
-                    .last()
-                    .is_some_and(|s| objects.contains(&s.name))
-            });
+            items.retain(|i| i.path.last().is_some_and(|s| objects.contains(&s.name)));
         }
         Ok(items)
     }
@@ -848,17 +899,7 @@ impl MongoSession {
             if ty == "view" && !opts.include_views {
                 continue;
             }
-            let parts = ddl_for(
-                self.client(),
-                db,
-                &name,
-                &ty,
-                &options,
-                opts.include_indexes,
-                opts.include_drop,
-                opts.if_not_exists,
-            )
-            .await?;
+            let parts = ddl_for(self.client(), db, &name, &ty, &options, opts).await?;
             for (kind, section, text) in parts {
                 let item = ddl_item(db, &name, kind, section, text);
                 if section == dbstudio_core::DdlSection::PreData {

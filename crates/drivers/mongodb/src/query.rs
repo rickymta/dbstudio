@@ -42,7 +42,9 @@ fn one(f: &ColumnFilter) -> Document {
         FilterOp::Gt => doc! {c: {"$gt": value_of(v0)}},
         FilterOp::Ge => doc! {c: {"$gte": value_of(v0)}},
         FilterOp::Contains => doc! {c: regex(regex_escape(v0))},
-        FilterOp::NotContains => doc! {c: {"$not": regex(regex_escape(v0))}, "$and": [{c: {"$ne": Bson::Null}}]},
+        FilterOp::NotContains => {
+            doc! {c: {"$not": regex(regex_escape(v0))}, "$and": [{c: {"$ne": Bson::Null}}]}
+        }
         FilterOp::StartsWith => doc! {c: regex(format!("^{}", regex_escape(v0)))},
         FilterOp::EndsWith => doc! {c: regex(format!("{}$", regex_escape(v0)))},
         FilterOp::IsNull => doc! {c: Bson::Null},

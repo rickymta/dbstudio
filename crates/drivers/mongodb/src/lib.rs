@@ -25,9 +25,7 @@ use dbstudio_core::{
     Result, Secret, Session,
 };
 
-pub use convert::{
-    bson_to_value, doc_to_ejson, parse_ejson_doc, to_ejson, value_to_bson,
-};
+pub use convert::{bson_to_value, doc_to_ejson, parse_ejson_doc, to_ejson, value_to_bson};
 pub use session::MongoSession;
 
 /// Driver for MongoDB.

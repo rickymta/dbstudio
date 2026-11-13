@@ -13,7 +13,7 @@ use mongodb::options::{AuthMechanism, ClientOptions, Credential, Tls, TlsOptions
 
 const DEFAULT_CONNECT_MS: u64 = 10_000;
 /// Time to try TLS before falling back to plain in `prefer` mode.
-const PREFER_TLS_MS: u64 = 4_000;
+const PREFER_TLS_MS: u64 = 2_000;
 
 /// Map a driver error onto [`Error`]. Messages never contain credentials.
 pub fn map_error(err: mongodb::error::Error) -> Error {
@@ -90,7 +90,8 @@ fn client_pem(config: &ConnectionConfig) -> Result<(Option<PathBuf>, Option<Temp
             let mut data = std::fs::read(cert)?;
             data.push(b'\n');
             data.extend(std::fs::read(key)?);
-            let path = std::env::temp_dir().join(format!("dbstudio-mongo-{}.pem", uuid::Uuid::new_v4()));
+            let path =
+                std::env::temp_dir().join(format!("dbstudio-mongo-{}.pem", uuid::Uuid::new_v4()));
             #[cfg(unix)]
             {
                 use std::io::Write;
@@ -136,6 +137,9 @@ fn base_uri(config: &ConnectionConfig) -> String {
     };
     if srv {
         format!("mongodb+srv://{host}/")
+    } else if let Some(hosts) = opt(config, "hosts") {
+        // Seed list from a pasted URI.
+        format!("mongodb://{hosts}/")
     } else {
         format!("mongodb://{host}:{}/", config.port)
     }
@@ -226,7 +230,9 @@ pub struct Conn {
 
 impl std::fmt::Debug for Conn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Conn").field("version", &self.version).finish()
+        f.debug_struct("Conn")
+            .field("version", &self.version)
+            .finish()
     }
 }
 
@@ -272,8 +278,14 @@ impl Conn {
         let mut last = None;
         for (i, attempt) in attempts.iter().enumerate() {
             let short = attempts.len() > 1 && i + 1 < attempts.len();
-            let mut o = build_options(&self.config, self.secret.as_ref(), *attempt, pem_path.as_ref(), short)
-                .await?;
+            let mut o = build_options(
+                &self.config,
+                self.secret.as_ref(),
+                *attempt,
+                pem_path.as_ref(),
+                short,
+            )
+            .await?;
             o.max_pool_size = Some(2);
             let client = Client::with_options(o).map_err(map_error)?;
             match client.database("admin").run_command(doc! {"ping": 1}).await {
@@ -384,7 +396,10 @@ pub fn check_write_errors(reply: &Document) -> Result<()> {
     }
     if let Ok(e) = reply.get_document("writeConcernError") {
         return Err(Error::Query {
-            message: e.get_str("errmsg").unwrap_or("write concern error").to_string(),
+            message: e
+                .get_str("errmsg")
+                .unwrap_or("write concern error")
+                .to_string(),
             position: None,
         });
     }

@@ -100,7 +100,8 @@ struct Step {
 fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
     let (_, coll) = resolve(&set.collection).ok_or_else(|| bad("invalid collection path"))?;
     let (coll, _) = coll.ok_or_else(|| bad("invalid collection path"))?;
-    let q = |id: &dbstudio_core::Value| -> Result<Document> { Ok(doc! {"_id": value_to_bson(id)?}) };
+    let q =
+        |id: &dbstudio_core::Value| -> Result<Document> { Ok(doc! {"_id": value_to_bson(id)?}) };
     let mut deletes = vec![];
     let mut updates = vec![];
     let mut inserts = vec![];
@@ -111,7 +112,11 @@ fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
                 let query = q(id)?;
                 deletes.push(Step {
                     index,
-                    text: format!("db.getCollection({}).deleteOne({})", jstr(&coll), doc_literal(&query)),
+                    text: format!(
+                        "db.getCollection({}).deleteOne({})",
+                        jstr(&coll),
+                        doc_literal(&query)
+                    ),
                     command: doc! {"delete": &coll, "deletes": [{"q": query, "limit": 1}]},
                     exactly_one: true,
                     is_insert: false,
@@ -153,7 +158,11 @@ fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
                 let d = input_doc(document)?;
                 inserts.push(Step {
                     index,
-                    text: format!("db.getCollection({}).insertOne({})", jstr(&coll), doc_literal(&d)),
+                    text: format!(
+                        "db.getCollection({}).insertOne({})",
+                        jstr(&coll),
+                        doc_literal(&d)
+                    ),
                     command: doc! {"insert": &coll, "documents": [d]},
                     exactly_one: true,
                     is_insert: true,
@@ -182,7 +191,11 @@ async fn run_step(cmd: &mut Cmd<'_>, db: &str, step: &Step) -> Result<u64> {
     let reply = cmd.run(db, step.command.clone()).await?;
     let n = num(&reply, "n");
     if step.exactly_one && n != 1 {
-        let what = if step.is_insert { "inserted" } else { "matched" };
+        let what = if step.is_insert {
+            "inserted"
+        } else {
+            "matched"
+        };
         return Err(bad(format!("expected exactly 1 document {what}, got {n}")));
     }
     Ok(n.max(0) as u64)
@@ -285,7 +298,10 @@ mod tests {
 
     #[test]
     fn preview_orders_delete_update_insert() {
-        let id = Value::Ext(dbstudio_core::ExtValue::new("objectId", "65f0a1b2c3d4e5f607182930"));
+        let id = Value::Ext(dbstudio_core::ExtValue::new(
+            "objectId",
+            "65f0a1b2c3d4e5f607182930",
+        ));
         let p = preview(&set(vec![
             DocumentChange::Insert {
                 document: DocInput::Ejson {
@@ -303,15 +319,25 @@ mod tests {
             DocumentChange::Delete { id },
         ]))
         .unwrap();
-        assert!(p[0].contains("deleteOne({\"_id\": ObjectId(\"65f0a1b2c3d4e5f607182930\")})"), "{p:?}");
-        assert!(p[1].contains("updateOne") && p[1].contains("$set") && p[1].contains("\"address.city\": \"Hue\"") && p[1].contains("$unset"));
+        assert!(
+            p[0].contains("deleteOne({\"_id\": ObjectId(\"65f0a1b2c3d4e5f607182930\")})"),
+            "{p:?}"
+        );
+        assert!(
+            p[1].contains("updateOne")
+                && p[1].contains("$set")
+                && p[1].contains("\"address.city\": \"Hue\"")
+                && p[1].contains("$unset")
+        );
         assert!(p[2].contains("insertOne({\"name\": \"x\"})"));
     }
 
     #[test]
     fn invalid_input_is_rejected() {
         let e = preview(&set(vec![DocumentChange::Insert {
-            document: DocInput::Ejson { text: "{bad".into() },
+            document: DocInput::Ejson {
+                text: "{bad".into(),
+            },
         }]))
         .unwrap_err();
         assert_eq!(e.kind(), "query");

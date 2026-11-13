@@ -15,7 +15,7 @@ use dbstudio_sql::mongo_shell::{ShellKind, ShellStatement, ShellValue};
 use uuid::Uuid;
 
 use crate::conn::{Cmd, num};
-use crate::convert::{bson_to_value, doc_to_value};
+use crate::convert::doc_to_value;
 use crate::shell::{shell_to_bson, shell_to_doc};
 
 /// Default rows per streamed batch.
@@ -115,10 +115,7 @@ async fn fetch_next(cmd: &mut Cmd<'_>, p: &mut Pending, batch: usize) -> Result<
 pub async fn kill_cursor(cmd: &mut Cmd<'_>, p: &Pending) {
     if p.id != 0 {
         let _ = cmd
-            .run(
-                &p.db,
-                doc! {"killCursors": &p.coll, "cursors": [p.id]},
-            )
+            .run(&p.db, doc! {"killCursors": &p.coll, "cursors": [p.id]})
             .await;
     }
 }
@@ -426,7 +423,11 @@ pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Pla
                 "estimatedDocumentCount" => (db.to_string(), doc! {"count": &coll}, Kind::Count),
                 "count" => {
                     let mut c = doc! {"count": &coll, "query": arg_doc(args, 0)?};
-                    merge_opts(&mut c, &arg_opt_doc(args, 1)?, &["skip", "limit", "hint", "collation"]);
+                    merge_opts(
+                        &mut c,
+                        &arg_opt_doc(args, 1)?,
+                        &["skip", "limit", "hint", "collation"],
+                    );
                     (db.to_string(), c, Kind::Count)
                 }
                 "distinct" => {
@@ -508,18 +509,17 @@ pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Pla
                 }
                 m @ ("findOneAndUpdate" | "findOneAndReplace" | "findOneAndDelete") => {
                     let mut c = doc! {"findAndModify": &coll, "query": arg_doc(args, 0)?};
-                    let opts;
-                    if m == "findOneAndDelete" {
+                    let opts = if m == "findOneAndDelete" {
                         c.insert("remove", true);
-                        opts = arg_opt_doc(args, 1)?;
+                        arg_opt_doc(args, 1)?
                     } else {
                         let u = match args.get(1).map(shell_to_bson).transpose()? {
                             Some(b @ (Bson::Document(_) | Bson::Array(_))) => b,
                             _ => return Err(bad("missing update argument")),
                         };
                         c.insert("update", u);
-                        opts = arg_opt_doc(args, 2)?;
-                    }
+                        arg_opt_doc(args, 2)?
+                    };
                     if let Some(o) = &opts {
                         if let Some(p) = o.get("projection") {
                             c.insert("fields", p.clone());
@@ -531,7 +531,11 @@ pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Pla
                             c.insert("new", nw.clone());
                         }
                     }
-                    merge_opts(&mut c, &opts, &["sort", "upsert", "collation", "arrayFilters"]);
+                    merge_opts(
+                        &mut c,
+                        &opts,
+                        &["sort", "upsert", "collation", "arrayFilters"],
+                    );
                     (db.to_string(), c, Kind::FindAndModify)
                 }
                 "drop" => (db.to_string(), doc! {"drop": &coll}, Kind::Done),
@@ -551,11 +555,12 @@ pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Pla
                             }
                         }
                     }
-                    (
-                        db.to_string(),
-                        doc! {"createIndexes": &coll, "indexes": [idx]},
-                        Kind::Command,
-                    )
+                    let mut c = doc! {"createIndexes": &coll, "indexes": [idx]};
+                    // mongosh: createIndex(keys, options, commitQuorum)
+                    if let Some(q) = args.get(2).map(shell_to_bson).transpose()? {
+                        c.insert("commitQuorum", q);
+                    }
+                    (db.to_string(), c, Kind::Command)
                 }
                 "dropIndex" => {
                     let index = match args.first().map(shell_to_bson).transpose()? {
@@ -634,6 +639,11 @@ fn one_doc(sink: &mut dyn ResultSink, d: Document, started: Instant) -> Result<(
     end_rows(sink, 1, false, started)
 }
 
+/// Int32 when the value fits (like the server's own counters), else Int64.
+fn int_bson(n: i64) -> Bson {
+    i32::try_from(n).map(Bson::Int32).unwrap_or(Bson::Int64(n))
+}
+
 fn id_text(b: &Bson) -> String {
     crate::convert::to_ejson(b, false, false)
 }
@@ -677,11 +687,11 @@ pub async fn run_planned(
         Kind::CountAgg => {
             let p = pending_from_reply(&reply, &db)?;
             let n = p.buffer.front().map(|d| num(d, "n")).unwrap_or(0);
-            one_doc(sink, doc! {"count": n}, started)?;
+            one_doc(sink, doc! {"count": int_bson(n)}, started)?;
             Ok(None)
         }
         Kind::Count => {
-            one_doc(sink, doc! {"count": num(&reply, "n")}, started)?;
+            one_doc(sink, doc! {"count": int_bson(num(&reply, "n"))}, started)?;
             Ok(None)
         }
         Kind::Distinct => {
@@ -701,10 +711,7 @@ pub async fn run_planned(
         Kind::Update => {
             let matched = num(&reply, "n");
             let modified = num(&reply, "nModified");
-            let upserted = reply
-                .get_array("upserted")
-                .map(|a| a.len())
-                .unwrap_or(0) as i64;
+            let upserted = reply.get_array("upserted").map(|a| a.len()).unwrap_or(0) as i64;
             let mut msg = format!("matched: {}, modified: {modified}", matched - upserted);
             if let Ok(a) = reply.get_array("upserted") {
                 if let Some(Bson::Document(u)) = a.first() {
@@ -802,8 +809,7 @@ pub async fn run_script(
                 show(cmd, db, &stmt.method, sink).await?;
             }
             _ => {
-                let planned = plan(stmt, db, &comment)?
-                    .ok_or_else(|| bad("empty statement"))?;
+                let planned = plan(stmt, db, &comment)?.ok_or_else(|| bad("empty statement"))?;
                 pending = run_planned(cmd, ctx, planned, keep_last && last, sink)
                     .await
                     .map_err(|e| {
@@ -862,9 +868,4 @@ async fn show(cmd: &mut Cmd<'_>, db: &str, what: &str, sink: &mut dyn ResultSink
         }
         other => Err(Error::Unsupported(format!("show {other}"))),
     }
-}
-
-/// Convert a scalar [`Bson`] list to values (used by helpers).
-pub fn values_of(b: &[Bson]) -> Vec<Value> {
-    b.iter().map(bson_to_value).collect()
 }

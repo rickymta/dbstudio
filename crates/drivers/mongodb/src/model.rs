@@ -119,17 +119,12 @@ pub fn infer_columns(docs: &[Document]) -> Vec<ColumnDetail> {
 }
 
 /// `$sample` of `size` documents (or the first `size` when the collection is small).
-pub async fn sample(
-    cmd: &mut Cmd<'_>,
-    db: &str,
-    coll: &str,
-    size: u32,
-) -> Result<Vec<Document>> {
+pub async fn sample(cmd: &mut Cmd<'_>, db: &str, coll: &str, size: u32) -> Result<Vec<Document>> {
     let r = cmd
         .run(
             db,
             doc! {"aggregate": coll, "pipeline": [{"$sample": {"size": size as i64}}],
-                  "cursor": {"batchSize": size as i64}},
+            "cursor": {"batchSize": size as i64}},
         )
         .await?;
     let mut p = pending_from_reply(&r, db)?;
@@ -143,9 +138,7 @@ pub async fn sample(
 }
 
 /// Relations inferred from `fooId` / `foo_id` ObjectId fields to a collection `foo` / `foos`.
-pub fn infer_relations(
-    tables: &[(ObjectPath, String, Vec<ColumnDetail>)],
-) -> Vec<Relation> {
+pub fn infer_relations(tables: &[(ObjectPath, String, Vec<ColumnDetail>)]) -> Vec<Relation> {
     let mut rels = Vec::new();
     for (path, name, cols) in tables {
         for c in cols {
@@ -263,11 +256,9 @@ pub async fn ddl_for(
     name: &str,
     kind: &str,
     options: &Document,
-    include_indexes: bool,
-    include_drop: bool,
-    if_not_exists: bool,
+    ddl: &dbstudio_core::DdlOptions,
 ) -> Result<Vec<(ObjectKind, DdlSection, String)>> {
-    let _ = if_not_exists;
+    let (include_indexes, include_drop) = (ddl.include_indexes, ddl.include_drop);
     let mut out = Vec::new();
     let mut text = String::new();
     if include_drop {
@@ -325,7 +316,13 @@ pub async fn ddl_for(
 }
 
 /// Build a [`DdlItem`].
-pub fn ddl_item(db: &str, name: &str, kind: ObjectKind, section: DdlSection, text: String) -> DdlItem {
+pub fn ddl_item(
+    db: &str,
+    name: &str,
+    kind: ObjectKind,
+    section: DdlSection,
+    text: String,
+) -> DdlItem {
     let folder = if kind == ObjectKind::View {
         dbstudio_core::folder::VIEWS
     } else {
@@ -395,7 +392,11 @@ mod tests {
         };
         let p = |n: &str| ObjectPath::root().child(ObjectKind::Collection, n);
         let tables = vec![
-            (p("orders"), "orders".to_string(), vec![oid("userId"), oid("product_id")]),
+            (
+                p("orders"),
+                "orders".to_string(),
+                vec![oid("userId"), oid("product_id")],
+            ),
             (p("users"), "users".to_string(), vec![]),
             (p("products"), "products".to_string(), vec![]),
         ];

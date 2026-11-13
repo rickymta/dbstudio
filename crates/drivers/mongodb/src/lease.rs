@@ -8,10 +8,9 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bson::{Bson, Document, doc};
 use dbstudio_core::{
-    BulkInsertRequest, BulkInsertResult, EditValue, EndOutcome, Error, ExecSummary,
-    ExplainRequest, Lease, LeaseCloseReport, LeaseContext, LeaseOptions, LeaseState, OnConflict,
-    QueryRequest, RawPlan, Result, ResultSink, StatementEnd, TableStreamRequest, TxOptions,
-    TxStatus,
+    BulkInsertRequest, BulkInsertResult, EditValue, EndOutcome, Error, ExecSummary, ExplainRequest,
+    Lease, LeaseCloseReport, LeaseContext, LeaseOptions, LeaseState, OnConflict, QueryRequest,
+    RawPlan, Result, ResultSink, StatementEnd, TableStreamRequest, TxOptions, TxStatus,
 };
 use dbstudio_sql::mongo_shell;
 use mongodb::{Client, ClientSession};
@@ -139,7 +138,15 @@ impl Lease for MongoLease {
                 };
                 run_script(&mut cmd, &ctx, &mut db, &statements, true, sink).await
             };
-            with_timeout(req.timeout_ms, &self.client, &self.running, &reg, req.query_id, fut).await
+            with_timeout(
+                req.timeout_ms,
+                &self.client,
+                &self.running,
+                &reg,
+                req.query_id,
+                fut,
+            )
+            .await
         };
         self.set_state(|s| s.running = None);
         match result {
@@ -250,7 +257,11 @@ impl Lease for MongoLease {
         if inner.in_txn {
             inner.in_txn = false;
             self.set_state(|s| s.transaction = TxStatus::Idle);
-            inner.session.commit_transaction().await.map_err(map_error)?;
+            inner
+                .session
+                .commit_transaction()
+                .await
+                .map_err(map_error)?;
         }
         Ok(())
     }
@@ -460,7 +471,10 @@ impl Lease for MongoLease {
                         })
                         .collect();
                     let r = cmd
-                        .run(&db, doc! {"update": &coll, "updates": updates, "ordered": true})
+                        .run(
+                            &db,
+                            doc! {"update": &coll, "updates": updates, "ordered": true},
+                        )
                         .await?;
                     let upserted = r.get_array("upserted").map(|a| a.len()).unwrap_or(0) as u64;
                     let matched = num(&r, "n").max(0) as u64;
@@ -478,12 +492,9 @@ impl Lease for MongoLease {
         for id in ids {
             let _ = self.cancel(id).await;
         }
-        let mut inner = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.inner.lock(),
-        )
-        .await
-        .map_err(|_| Error::Busy("the lease is still busy".into()))?;
+        let mut inner = tokio::time::timeout(std::time::Duration::from_secs(5), self.inner.lock())
+            .await
+            .map_err(|_| Error::Busy("the lease is still busy".into()))?;
         self.drop_pending(&mut inner).await;
         let mut rolled_back = false;
         let mut forced = false;
@@ -503,6 +514,9 @@ impl Lease for MongoLease {
             s.transaction = TxStatus::Idle;
             s.broken = true;
         });
-        Ok(LeaseCloseReport { rolled_back, forced })
+        Ok(LeaseCloseReport {
+            rolled_back,
+            forced,
+        })
     }
 }

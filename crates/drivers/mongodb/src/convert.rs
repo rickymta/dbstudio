@@ -156,8 +156,14 @@ fn ext_to_bson(e: &ExtValue) -> Result<Bson> {
             let body = t.strip_prefix('/').ok_or_else(|| bad("invalid regex"))?;
             let at = body.rfind('/').ok_or_else(|| bad("invalid regex"))?;
             Bson::RegularExpression(bson::Regex {
-                pattern: body[..at].to_string().try_into().map_err(|_| bad("regex"))?,
-                options: body[at + 1..].to_string().try_into().map_err(|_| bad("regex"))?,
+                pattern: body[..at]
+                    .to_string()
+                    .try_into()
+                    .map_err(|_| bad("regex"))?,
+                options: body[at + 1..]
+                    .to_string()
+                    .try_into()
+                    .map_err(|_| bad("regex"))?,
             })
         }
         "binary" => {
@@ -339,10 +345,7 @@ impl W {
                 let ms = dt.timestamp_millis();
                 match (self.canonical, millis_to_iso(ms)) {
                     (false, Some(s)) => self.wrapper("$date", &Self::quoted(&s)),
-                    _ => self.wrapper(
-                        "$date",
-                        &format!("{{\"$numberLong\":\"{ms}\"}}"),
-                    ),
+                    _ => self.wrapper("$date", &format!("{{\"$numberLong\":\"{ms}\"}}")),
                 }
             }
             Bson::Symbol(s) => self.wrapper("$symbol", &Self::quoted(s)),
@@ -454,7 +457,10 @@ mod tests {
         // Out of range dates stay exact.
         let far = bson::DateTime::from_millis(MAX_MILLIS + 1);
         let v = bson_to_value(&Bson::DateTime(far));
-        assert_eq!(v, Value::Ext(ExtValue::new("dateMillis", (MAX_MILLIS + 1).to_string())));
+        assert_eq!(
+            v,
+            Value::Ext(ExtValue::new("dateMillis", (MAX_MILLIS + 1).to_string()))
+        );
         assert_eq!(value_to_bson(&v).unwrap(), Bson::DateTime(far));
     }
 
@@ -462,12 +468,21 @@ mod tests {
     fn ejson_is_ordered_and_parses_back() {
         let d = doc! { "z": 1, "a": { "$gt": 2i64 }, "o": ObjectId::parse_str("65f0a1b2c3d4e5f607182930").unwrap(), "d": bson::DateTime::from_millis(1_700_000_000_123) };
         let canon = doc_to_ejson(&d, false, true);
-        assert!(canon.starts_with("{\"z\":{\"$numberInt\":\"1\"}"), "{canon}");
+        assert!(
+            canon.starts_with("{\"z\":{\"$numberInt\":\"1\"}"),
+            "{canon}"
+        );
         assert!(canon.contains("\"$oid\":\"65f0a1b2c3d4e5f607182930\""));
         assert_eq!(parse_ejson_doc(&canon).unwrap(), d);
         let relaxed = doc_to_ejson(&d, true, false);
-        assert!(relaxed.contains("\"$date\": \"2023-11-14T22:13:20.123Z\""), "{relaxed}");
-        assert_eq!(parse_ejson_doc(&relaxed).unwrap().keys().next().unwrap(), "z");
+        assert!(
+            relaxed.contains("\"$date\": \"2023-11-14T22:13:20.123Z\""),
+            "{relaxed}"
+        );
+        assert_eq!(
+            parse_ejson_doc(&relaxed).unwrap().keys().next().unwrap(),
+            "z"
+        );
         let keys: Vec<_> = parse_ejson_doc(&relaxed).unwrap().keys().cloned().collect();
         assert_eq!(keys, ["z", "a", "o", "d"]);
     }
