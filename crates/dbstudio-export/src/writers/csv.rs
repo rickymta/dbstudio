@@ -109,6 +109,8 @@ impl CsvWriter {
 
     fn write_schema_file(&mut self) -> Result<()> {
         self.start_entry("schema.csv")?;
+        // Empty cells of the dictionary are plain empty fields whatever NULL text is configured.
+        let null_text = std::mem::take(&mut self.opts.null_text);
         // The dictionary is always written with a header and plain NULL handling.
         let header: Vec<&str> = DICTIONARY_HEADER.to_vec();
         self.record(header.iter().map(|h| Some(*h)));
@@ -118,11 +120,15 @@ impl CsvWriter {
             .flat_map(SchemaEntry::dictionary_rows)
             .collect();
         for r in &rows {
-            self.record(r.iter().map(|c| Some(c.as_str())));
+            self.record(
+                r.iter()
+                    .map(|c| if c.is_empty() { None } else { Some(c.as_str()) }),
+            );
             if self.buf.len() >= FLUSH_AT {
                 self.flush_buf()?;
             }
         }
+        self.opts.null_text = null_text;
         self.flush_buf()
     }
 }
