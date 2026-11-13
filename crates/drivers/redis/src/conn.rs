@@ -1,4 +1,8 @@
 //! Connection setup (TLS modes, ACL user, database) and the per-database connection cache.
+//!
+//! Limitation (R6): the `redis` crate connects to and verifies the certificate against the same
+//! `host`, so `tls.server_name` is not honoured. Behind an SSH tunnel the host is `127.0.0.1`;
+//! `VerifyFull`/`VerifyCa` then need a certificate that lists that address.
 
 use std::collections::HashMap;
 use std::time::Duration;

@@ -12,6 +12,10 @@
 //!   roots); the host name is not checked.
 //! * `VerifyFull`: chain and host name are verified. Only `VerifyCa` and `VerifyFull` protect
 //!   against man-in-the-middle attacks.
+//!
+//! The name the certificate is checked against is `tls.server_name` when set (the connection goes
+//! through an SSH tunnel, so the socket address is `127.0.0.1` and says nothing about the server),
+//! else the connection host.
 
 use std::sync::Arc;
 
@@ -24,15 +28,52 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{
     CertificateError, ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_postgres::config::SslMode;
+use tokio_postgres::tls::MakeTlsConnect;
 use tokio_postgres_rustls::MakeRustlsConnect;
+
+/// [`MakeRustlsConnect`] that verifies the certificate against a configured server name instead
+/// of the host `tokio-postgres` connects to (which is the local end of an SSH tunnel).
+#[derive(Clone)]
+pub struct NamedConnector {
+    inner: MakeRustlsConnect,
+    server_name: Option<String>,
+}
+
+impl NamedConnector {
+    /// The name to verify: the override when set and non-empty, else `host`.
+    fn effective<'a>(&'a self, host: &'a str) -> &'a str {
+        self.server_name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .unwrap_or(host)
+    }
+}
+
+impl<S> MakeTlsConnect<S> for NamedConnector
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    type Stream = <MakeRustlsConnect as MakeTlsConnect<S>>::Stream;
+    type TlsConnect = <MakeRustlsConnect as MakeTlsConnect<S>>::TlsConnect;
+    type Error = <MakeRustlsConnect as MakeTlsConnect<S>>::Error;
+
+    fn make_tls_connect(
+        &mut self,
+        host: &str,
+    ) -> std::result::Result<Self::TlsConnect, Self::Error> {
+        let name = self.effective(host).to_string();
+        MakeTlsConnect::<S>::make_tls_connect(&mut self.inner, &name)
+    }
+}
 
 /// Result of translating a [`TlsConfig`]: the libpq-style mode plus the connector (absent for
 /// [`TlsMode::Disable`]).
 #[derive(Clone)]
 pub struct TlsSetup {
     pub ssl_mode: SslMode,
-    pub connector: Option<MakeRustlsConnect>,
+    pub connector: Option<NamedConnector>,
 }
 
 impl std::fmt::Debug for TlsSetup {
@@ -253,7 +294,10 @@ pub fn build(cfg: &TlsConfig) -> Result<TlsSetup> {
         } else {
             SslMode::Require
         },
-        connector: Some(MakeRustlsConnect::new(config)),
+        connector: Some(NamedConnector {
+            inner: MakeRustlsConnect::new(config),
+            server_name: cfg.server_name.clone(),
+        }),
     })
 }
 
@@ -370,6 +414,32 @@ mod tests {
                 "{mode:?}: {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn server_name_overrides_the_connection_host() {
+        let mk = |server_name: Option<&str>| {
+            build(&TlsConfig {
+                mode: TlsMode::Require,
+                server_name: server_name.map(String::from),
+                ..Default::default()
+            })
+            .unwrap()
+            .connector
+            .unwrap()
+        };
+        // Through an SSH tunnel the connection host is 127.0.0.1.
+        assert_eq!(
+            mk(Some("db.internal")).effective("127.0.0.1"),
+            "db.internal"
+        );
+        assert_eq!(mk(None).effective("db.example.com"), "db.example.com");
+        assert_eq!(mk(Some("")).effective("db.example.com"), "db.example.com");
+        let mut c = mk(Some("db.internal"));
+        assert!(
+            MakeTlsConnect::<tokio::io::DuplexStream>::make_tls_connect(&mut c, "127.0.0.1")
+                .is_ok()
+        );
     }
 
     #[test]

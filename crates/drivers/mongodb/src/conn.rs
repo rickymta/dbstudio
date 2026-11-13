@@ -1,4 +1,9 @@
 //! Connection options, TLS policy, error mapping and the raw command helper.
+//!
+//! Limitation (R6): the `mongodb` crate verifies the certificate (and sends SNI) for the host in
+//! the connection string and offers no override, so `tls.server_name` is not honoured. Behind an
+//! SSH tunnel the host is `127.0.0.1`; `VerifyFull` then needs a certificate that lists that
+//! address, otherwise use `VerifyCa`/`Require`.
 
 use std::path::PathBuf;
 use std::str::FromStr;
