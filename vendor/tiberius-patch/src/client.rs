@@ -288,8 +288,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Client<S> {
 
         let ts = TokenStream::new(&mut self.connection);
 
-        let mut result = QueryStream::new(ts.try_unfold());
-        result.forward_to_metadata().await?;
+        // DBStudio patch: do not skip the tokens before the first result set (statement counts
+        // and PRINT messages of statements without a result set); the caller sees every item.
+        let result = QueryStream::new(ts.try_unfold());
 
         Ok(result)
     }
