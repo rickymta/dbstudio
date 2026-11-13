@@ -150,8 +150,8 @@ async fn model_sakila() {
             .unwrap();
         assert!(!m.inferred && !m.truncated);
         let tables = m.tables.iter().filter(|x| x.kind == K::Table).count();
-        assert_eq!(tables, 23, "[{tag}]");
-        assert_eq!(m.tables.len(), 26, "[{tag}] tables + 3 views");
+        assert_eq!(tables, 24, "[{tag}]");
+        assert_eq!(m.tables.len(), 28, "[{tag}] tables + 4 views");
         assert_eq!(m.relations.len(), 32, "[{tag}]");
 
         let film = m.tables.iter().find(|x| x.name == "film").unwrap();
@@ -209,7 +209,7 @@ async fn model_sakila() {
         req.include_views = false;
         req.include_comments = false;
         let m3 = root.schema_model(req).await.unwrap();
-        assert_eq!(m3.tables.len(), 23);
+        assert_eq!(m3.tables.len(), 24);
         assert!(m3.tables.iter().all(|x| x.comment.is_none()));
         assert!(
             m3.tables
@@ -378,6 +378,30 @@ async fn ddl_replays_into_empty_database() {
         assert!(film.sql.contains("COMMENT"), "[{tag}] comments kept");
         assert!(film.sql.contains("AUTO_INCREMENT=3") || film.sql.contains("ENGINE=InnoDB"));
 
+        // Review fixes: an AUTO_INCREMENT key stays in CREATE TABLE, routines precede the views
+        // that call them, stored objects keep the sql_mode they were created under.
+        let tally = items
+            .iter()
+            .find(|i| i.sql.starts_with("CREATE TABLE `tally` ("))
+            .unwrap();
+        assert!(
+            tally.sql.contains("KEY `idx_tally_n` (`n`)"),
+            "[{tag}] {}",
+            tally.sql
+        );
+        assert!(
+            !items
+                .iter()
+                .any(|i| i.kind == K::Index && i.sql.contains("idx_tally_n"))
+        );
+        assert!(
+            pos("fn_double") < pos("v_doubled"),
+            "[{tag}] routine before view"
+        );
+        let ansi = items.iter().find(|i| i.sql.contains("fn_ansi")).unwrap();
+        assert!(ansi.sql.contains("ANSI_QUOTES"), "[{tag}] {}", ansi.sql);
+        assert!(ansi.sql.contains("@dbstudio_mode"));
+
         // Replay into an empty database and compare.
         recreate_db(&*root, "erd_it_copy").await;
         for i in &items {
@@ -392,7 +416,7 @@ async fn ddl_replays_into_empty_database() {
         let (tb, rb) = summary(&b);
         assert_eq!(ta, tb, "[{tag}]");
         assert_eq!(ra, rb, "[{tag}]");
-        assert_eq!(a.tables.len(), 26);
+        assert_eq!(a.tables.len(), 28);
 
         // The copy yields the same DDL (modulo order).
         let again = root
@@ -507,14 +531,20 @@ async fn ddl_options_and_selection() {
             })
             .await
             .unwrap();
-        assert_eq!(items.len(), 23, "[{tag}] only CREATE TABLE items");
+        assert_eq!(items.len(), 24, "[{tag}] only CREATE TABLE items");
         assert!(items.iter().all(|i| i.section == DdlSection::PreData));
         assert!(
             !items
                 .iter()
                 .any(|i| i.sql.contains(" COMMENT ") || i.sql.contains("COMMENT="))
         );
-        assert!(!items.iter().any(|i| i.sql.contains("\n  KEY `")));
+        // (The AUTO_INCREMENT key of `tally` must stay.)
+        assert!(
+            !items
+                .iter()
+                .filter(|i| !i.sql.starts_with("CREATE TABLE `tally`"))
+                .any(|i| i.sql.contains("\n  KEY `"))
+        );
 
         // Qualified names + drop + if-not-exists: the script restores over itself.
         let before = root.schema_model(request(db_path(db))).await.unwrap();

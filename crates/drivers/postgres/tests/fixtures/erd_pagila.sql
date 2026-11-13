@@ -7,6 +7,9 @@
 CREATE TYPE mpaa_rating AS ENUM ('G', 'PG', 'PG-13', 'R', 'NC-17');
 CREATE DOMAIN year AS integer CHECK (VALUE >= 1901 AND VALUE <= 2155);
 
+CREATE EXTENSION pg_trgm WITH SCHEMA public;
+CREATE TYPE floatrange AS RANGE (SUBTYPE = float8);
+
 CREATE SEQUENCE payment_group_seq START WITH 100 INCREMENT BY 5;
 
 CREATE FUNCTION last_updated() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -186,6 +189,17 @@ CREATE TABLE rental_archive (
 CREATE TABLE rental_archive_2023 PARTITION OF rental_archive FOR VALUES FROM ('2023-01-01') TO ('2024-01-01');
 CREATE TABLE rental_archive_2024 PARTITION OF rental_archive FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
 
+-- Classic inheritance with an inherited CHECK, and a table with an identity that has options.
+CREATE TABLE legacy_base (id integer, note text CHECK (length(note) < 100));
+CREATE TABLE legacy_child (extra integer) INHERITS (legacy_base);
+CREATE TABLE ticket (
+    ticket_id integer GENERATED ALWAYS AS IDENTITY (START WITH 100 INCREMENT BY 10) PRIMARY KEY,
+    title text
+);
+ALTER TABLE actor ADD CONSTRAINT actor_name_chk CHECK (first_name <> 'BAD') NOT VALID;
+ALTER DOMAIN year ADD CONSTRAINT year_nonzero CHECK (VALUE <> 0) NOT VALID;
+CREATE INDEX idx_rental_archive_customer ON rental_archive (customer_id);
+
 CREATE SCHEMA erd_aux;
 CREATE TABLE erd_aux.audit_log (
     audit_id bigserial PRIMARY KEY,
@@ -218,6 +232,7 @@ CREATE MATERIALIZED VIEW sales_by_store AS
     FROM payment p JOIN staff st ON st.staff_id = p.staff_id JOIN store s ON s.store_id = st.store_id
     GROUP BY s.store_id;
 CREATE INDEX idx_sales_by_store ON sales_by_store (store_id);
+CREATE MATERIALIZED VIEW actor_names AS SELECT actor_id, first_name FROM actor;
 
 CREATE FUNCTION film_in_stock(p_film_id integer, p_store_id integer) RETURNS SETOF integer
 LANGUAGE sql STABLE AS $$
@@ -243,4 +258,5 @@ INSERT INTO film (title, language_id) VALUES ('Alpha', 1), ('Omega', 2);
 INSERT INTO film_category VALUES (1, 1), (2, 2);
 INSERT INTO film_review (film_id, stars) VALUES (1, 5);
 INSERT INTO erd_aux.audit_log (note) VALUES ('first');
+INSERT INTO ticket (title) VALUES ('a'), ('b');
 SELECT setval('payment_group_seq', 115);

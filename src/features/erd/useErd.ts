@@ -10,6 +10,7 @@ import { pathKey, pathsEqual } from '@/lib/objectPath';
 import type { ErdLayout, IpcError, SchemaModel, Uuid } from '@/lib/types';
 import type { ErdTabPayload } from '@/stores/tabs';
 import { diffLayout, makeSnapshot, type LayoutDiff } from './diff';
+import { ERD_CONFLICT } from './conflict';
 import { autoLayout, gridLayout } from './erdLayout';
 import {
   type ExportFormat,
@@ -32,6 +33,8 @@ import {
   relationKey,
   tableKey,
   tableLabel,
+  type LayoutTable,
+  type Snapshot,
   type Viewport,
 } from './model';
 import { relationEnds } from './notation';
@@ -98,6 +101,12 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
   const [search, setSearch] = useState('');
   const [showDdl, setShowDdl] = useState(false);
   const [layingOut, setLayingOut] = useState(false);
+  // What the stored layout holds, kept apart from the tables on screen so that saving never
+  // drops a table that is merely not shown (hidden views, tables missing from the database).
+  const [savedTables, setSavedTables] = useState<LayoutTable[]>([]);
+  const [savedSnapshot, setSavedSnapshot] = useState<Snapshot>({});
+  const [dropped, setDropped] = useState<ReadonlySet<string>>(new Set());
+  const [conflict, setConflict] = useState<{ name: string; asNew: boolean } | null>(null);
 
   // 1. Seed the state from the saved layout (or the defaults) once it is known. This adjusts
   // state during render (React's pattern for state derived from a changing input) so the first
@@ -116,9 +125,15 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
       );
       setViewport(parseViewport(layout.viewport));
       setLayoutName(layout.name);
+      setSavedTables(saved);
+      setSavedSnapshot(parseSnapshot(layout.snapshot));
+      setDropped(new Set());
     } else {
       setPositions({});
       setViewport(null);
+      setSavedTables([]);
+      setSavedSnapshot({});
+      setDropped(new Set());
     }
   }
   const seeded = seededFor === seedId;
@@ -184,7 +199,7 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
           return next;
         });
       } finally {
-        if (!cancelled) setLayingOut(false);
+        setLayingOut(false);
       }
     })();
     return () => {
@@ -197,15 +212,15 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
 
   // 4. Differences with the saved layout.
   const diff: LayoutDiff = useMemo(() => {
-    if (!layout || !model || layout.id !== activeLayoutId) {
-      return { missing: [], added: [], changed: [] };
-    }
-    return diffLayout(
-      parseLayoutTables(layout.tables),
-      parseSnapshot(layout.snapshot),
-      view.tables,
+    if (!model || savedTables.length === 0) return { missing: [], added: [], changed: [] };
+    // Views are not part of the model while they are hidden: they are not "missing" then.
+    const relevant = savedTables.filter(
+      (t) =>
+        !dropped.has(tableKey(t.path)) &&
+        (options.showViews || t.path.segments[t.path.segments.length - 1]?.kind === 'table'),
     );
-  }, [layout, model, view, activeLayoutId]);
+    return diffLayout(relevant, savedSnapshot, view.tables);
+  }, [model, savedTables, savedSnapshot, dropped, options.showViews, view]);
 
   // 5. Focus, search and selection.
   const visibleKeys = useMemo(
@@ -400,26 +415,50 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
   }, [queryClient, sessionId, modelQuery]);
 
   const save = useCallback(
-    async (name: string, asNew: boolean) => {
+    async (name: string, asNew: boolean, baseUpdatedAt?: string) => {
       if (!model) return null;
       const existing = !asNew && activeLayoutId !== null ? layout : undefined;
+      const inView = new Set(view.tables.map((t) => t.key));
+      const modelKeys = new Set(model.tables.map((t) => tableKey(t.path)));
+      // Tables that are stored but not on screen keep their place (until the user forgets them).
+      const kept = savedTables.filter((t) => {
+        const k = tableKey(t.path);
+        return !inView.has(k) && !dropped.has(k);
+      });
       const body: ErdLayout = {
         id: existing?.id ?? crypto.randomUUID(),
         connectionId,
         name,
         scope,
-        tables: view.tables.map((t) => ({
-          path: t.table.path,
-          x: positions[t.key]?.x ?? 0,
-          y: positions[t.key]?.y ?? 0,
-          collapsed: collapsed.has(t.key),
-          ...(colors.get(t.key) ? { color: colors.get(t.key) } : {}),
-        })),
+        tables: [
+          ...view.tables.map((t) => ({
+            path: t.table.path,
+            x: positions[t.key]?.x ?? 0,
+            y: positions[t.key]?.y ?? 0,
+            collapsed: collapsed.has(t.key),
+            ...(colors.get(t.key) ? { color: colors.get(t.key) } : {}),
+          })),
+          ...kept.map((t) => {
+            const k = tableKey(t.path);
+            return {
+              path: t.path,
+              x: positions[k]?.x ?? t.x,
+              y: positions[k]?.y ?? t.y,
+              collapsed: t.collapsed,
+              ...(t.color ? { color: t.color } : {}),
+            };
+          }),
+        ],
         options,
         viewport: flow.getViewport(),
-        snapshot: makeSnapshot(model.tables),
+        snapshot: {
+          ...Object.fromEntries(
+            Object.entries(savedSnapshot).filter(([k]) => !modelKeys.has(k) && !dropped.has(k)),
+          ),
+          ...makeSnapshot(model.tables),
+        },
         createdAt: existing?.createdAt ?? '',
-        updatedAt: '',
+        updatedAt: baseUpdatedAt ?? existing?.updatedAt ?? '',
       };
       try {
         const saved = await ipc.erdLayoutSave(body);
@@ -428,9 +467,16 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
         setSeededFor(saved.id);
         setActiveLayoutId(saved.id);
         setLayoutName(saved.name);
+        setSavedTables(parseLayoutTables(saved.tables));
+        setSavedSnapshot(parseSnapshot(saved.snapshot));
+        setDropped(new Set());
         return saved;
       } catch (e) {
-        toast.error(errorMessage(e));
+        if (errorMessage(e).startsWith(ERD_CONFLICT)) {
+          setConflict({ name, asNew });
+        } else {
+          toast.error(errorMessage(e));
+        }
         return null;
       }
     },
@@ -447,7 +493,31 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
       options,
       flow,
       queryClient,
+      savedTables,
+      savedSnapshot,
+      dropped,
     ],
+  );
+
+  /** The stored layout changed elsewhere: overwrite it, or load the stored version. */
+  const resolveConflict = useCallback(
+    async (choice: 'overwrite' | 'reload') => {
+      const pending = conflict;
+      setConflict(null);
+      if (!pending || activeLayoutId === null) return;
+      if (choice === 'overwrite') {
+        try {
+          const latest = await ipc.erdLayoutGet(activeLayoutId);
+          await save(pending.name, pending.asNew, latest.updatedAt);
+        } catch (e) {
+          toast.error(errorMessage(e));
+        }
+      } else {
+        await layoutQuery.refetch();
+        setSeededFor(null);
+      }
+    },
+    [conflict, activeLayoutId, save, layoutQuery],
   );
 
   const openLayout = useCallback((id: Uuid) => {
@@ -466,6 +536,8 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
         if (id === activeLayoutId) {
           // Keep what is on screen: the diagram simply becomes an unsaved one.
           setSeededFor('none');
+          setSavedTables([]);
+          setSavedSnapshot({});
           setActiveLayoutId(null);
           setLayoutName(null);
         }
@@ -520,6 +592,10 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
     edges,
     ready,
     layingOut,
+    truncated: model?.truncated ?? false,
+    conflict,
+    resolveConflict,
+    forgetMissing: () => setDropped(new Set(diff.missing.map((m) => tableKey(m.path)))),
     viewport,
     diff,
     // state

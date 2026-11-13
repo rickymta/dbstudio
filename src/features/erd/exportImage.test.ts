@@ -112,6 +112,29 @@ describe('SVG export', () => {
     expect(bad).not.toContain('javascript');
   });
 
+  it('truncates long names by code points, never inside a surrogate pair', async () => {
+    const { view, positions } = await input('light');
+    const film = view.tables.find((t) => t.table.name === 'film')!;
+    const long = { ...film, table: { ...film.table, name: '\u{1F600}'.repeat(80) } };
+    const { svg } = buildSvg({
+      tables: view.tables.map((t) => (t.key === film.key ? long : t)),
+      relations: [],
+      positions,
+      options: DEFAULT_OPTIONS,
+      theme: 'light',
+    });
+    const doc = parse(svg);
+    expect(doc.getElementsByTagName('parsererror')).toHaveLength(0);
+    const titles = [...doc.querySelectorAll('text')]
+      .map((t) => t.textContent ?? '')
+      .filter((t) => t.includes('\u{1F600}'));
+    expect(titles).toHaveLength(1);
+    expect(titles[0]!.endsWith('\u2026')).toBe(true);
+    expect(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(titles[0]!),
+    ).toBe(false);
+  });
+
   it('exports 100 tables and an empty diagram', async () => {
     const big = await input('light', 100);
     const { svg } = buildSvg({
