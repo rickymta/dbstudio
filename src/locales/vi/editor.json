@@ -17,7 +17,8 @@
     "saveAs": "Lưu thành…",
     "history": "Lịch sử và truy vấn đã lưu",
     "shortcuts": "Phím tắt",
-    "context": "Database và schema"
+    "context": "Database và schema",
+    "explain": "Giải thích kế hoạch"
   },
   "run": {
     "nothing": "Không có gì để chạy."
@@ -169,7 +170,8 @@
       "newTab": "Tab editor mới",
       "closeTab": "Đóng tab",
       "findObject": "Tìm đối tượng ở thanh bên",
-      "help": "Hiện bảng phím tắt"
+      "help": "Hiện bảng phím tắt",
+      "explain": "Xem kế hoạch thực thi"
     }
   }
 }

@@ -3,6 +3,7 @@ import {
   FileDown,
   FolderOpen,
   History,
+  ListTree,
   ListVideo,
   Play,
   Save,
@@ -30,6 +31,7 @@ import {
   useTabData,
   type EditorTabData,
 } from './editorStore';
+import { openPlan } from '@/features/plan/open';
 import { invalidateCatalog } from './catalogLoader';
 import { ConsoleView } from './ConsoleView';
 import { isSqlDialect } from './dialects';
@@ -139,6 +141,34 @@ function EditorBody({
     [id, sessionId, t, toast],
   );
 
+  /** Explain the selection or the statement at the cursor in a plan tab (no ANALYZE). */
+  const explain = useCallback(async () => {
+    if (!sessionId || !connectionId) {
+      toast('info', t('connection.notConnected'));
+      return;
+    }
+    editor.current?.flush();
+    const d = useEditorStore.getState().tabs[id];
+    if (!d) return;
+    const whole = await ipc.scriptAnalyze(sessionId, d.text).catch(() => null);
+    const input = selectRunText(
+      d.text,
+      defaultScope(d.selection),
+      d.selection,
+      whole?.statements ?? [],
+    );
+    if (!input) {
+      toast('info', t('run.nothing'));
+      return;
+    }
+    openPlan({
+      session: { sessionId, connectionId },
+      text: input.text,
+      database: d.leaseState?.database ?? d.database,
+      leaseId: d.leaseId,
+    });
+  }, [id, sessionId, connectionId, t, toast]);
+
   const format = () => {
     if (!isSqlDialect(dialect)) return;
     let failed = false;
@@ -205,6 +235,8 @@ function EditorBody({
         );
       case 'runAll':
         return void start('all');
+      case 'explain':
+        return isSqlDialect(dialect) ? void explain() : undefined;
       case 'cancel':
         return void cancelRun(id);
       case 'format':
@@ -298,6 +330,14 @@ function EditorBody({
         {mode !== 'redis' && (
           <>
             <span className="mx-1 h-4 w-px bg-border" aria-hidden />
+            {isSqlDialect(dialect) && (
+              <IconButton
+                label={`${t('toolbar.explain')} (${formatKeys(keysOf('explain'))})`}
+                icon={<ListTree size={14} />}
+                disabled={!sessionId || running}
+                onClick={() => void explain()}
+              />
+            )}
             {isSqlDialect(dialect) && (
               <IconButton
                 label={`${t('toolbar.format')} (${formatKeys(keysOf('format'))})`}

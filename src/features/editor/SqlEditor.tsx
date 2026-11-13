@@ -68,6 +68,7 @@ const CHANGE_DEBOUNCE_MS = 150;
 const EDITOR_SHORTCUTS: ShortcutId[] = [
   'run',
   'runAll',
+  'explain',
   'cancel',
   'format',
   'save',

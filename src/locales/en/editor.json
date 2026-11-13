@@ -17,7 +17,8 @@
     "saveAs": "Save as…",
     "history": "History and saved queries",
     "shortcuts": "Keyboard shortcuts",
-    "context": "Database and schema"
+    "context": "Database and schema",
+    "explain": "Explain plan"
   },
   "run": {
     "nothing": "Nothing to run."
@@ -169,7 +170,8 @@
       "newTab": "New editor tab",
       "closeTab": "Close tab",
       "findObject": "Find objects in the sidebar",
-      "help": "Show keyboard shortcuts"
+      "help": "Show keyboard shortcuts",
+      "explain": "Show the execution plan"
     }
   }
 }

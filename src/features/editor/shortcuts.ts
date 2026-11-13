@@ -4,6 +4,7 @@
 export type ShortcutId =
   | 'run'
   | 'runAll'
+  | 'explain'
   | 'cancel'
   | 'format'
   | 'save'
@@ -24,6 +25,7 @@ export interface Shortcut {
 export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'run', keys: 'Mod-Enter', scope: 'editor' },
   { id: 'runAll', keys: 'Mod-Shift-Enter', scope: 'editor' },
+  { id: 'explain', keys: 'Mod-e', scope: 'editor' },
   { id: 'cancel', keys: 'Mod-.', scope: 'editor' },
   { id: 'format', keys: 'Mod-Shift-f', scope: 'editor' },
   { id: 'save', keys: 'Mod-s', scope: 'editor' },

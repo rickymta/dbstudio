@@ -14,6 +14,7 @@ import { EditorHost } from './EditorHost';
 import { resetRestoreOnce } from './persist';
 import { EditorTab } from './EditorTab';
 import { getTabData, patchTabData } from './editorStore';
+import { usePlanStore } from '@/features/plan/planStore';
 import { openEditor } from './open';
 import { addProductionProfile, openSession, resetEditorWorld } from './testUtils';
 
@@ -223,6 +224,25 @@ describe('EditorTab', () => {
       name: 'one',
       text: 'SELECT 1',
     });
+  });
+});
+
+describe('Explain', () => {
+  it('opens a plan tab for the statement at the cursor with the Explain button and the shortcut', async () => {
+    const { id } = await mountEditor('SELECT * FROM users');
+    await userEvent.click(screen.getByRole('button', { name: /^Explain plan/ }));
+    await waitFor(() =>
+      expect(useTabsStore.getState().tabs.some((t) => t.kind === 'plan')).toBe(true),
+    );
+    const plan = useTabsStore.getState().tabs.find((t) => t.kind === 'plan')!;
+    expect(plan.payload).toMatchObject({ connectionId: expect.any(String) });
+    const entry = Object.values(usePlanStore.getState().entries)[0]!;
+    expect(entry.statement).toBe('SELECT * FROM users');
+    expect(entry.request?.analyze).toBe(false);
+    expect(entry.leaseId).toBe(getTabData(id)!.leaseId);
+    await waitFor(() =>
+      expect(Object.values(usePlanStore.getState().entries)[0]!.status).toBe('ready'),
+    );
   });
 });
 
