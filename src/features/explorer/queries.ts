@@ -110,6 +110,7 @@ export async function loadMoreChildren(
       nextCursor: page.nextCursor,
       total: page.approximateTotal ?? paging.total,
       loadingMore: false,
+      moreError: undefined,
     });
   } catch (e) {
     if (readPaging(qc, sessionId, path)?.nextCursor !== cursor) return;
