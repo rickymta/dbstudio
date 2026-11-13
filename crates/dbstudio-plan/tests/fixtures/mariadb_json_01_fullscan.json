@@ -1,0 +1,12 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "table": {
+      "table_name": "plan_fx_orders",
+      "access_type": "ALL",
+      "rows": 100270,
+      "filtered": 100,
+      "attached_condition": "plan_fx_orders.`status` = 'void'"
+    }
+  }
+}

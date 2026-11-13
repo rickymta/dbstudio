@@ -1,0 +1,83 @@
+{
+  "query_block": {
+    "union_result": {
+      "using_temporary_table": false,
+      "query_specifications": [
+        {
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 1,
+            "cost_info": {
+              "query_cost": "2.06"
+            },
+            "table": {
+              "table_name": "plan_fx_orders",
+              "access_type": "range",
+              "possible_keys": [
+                "PRIMARY",
+                "customer_id",
+                "created"
+              ],
+              "key": "PRIMARY",
+              "used_key_parts": [
+                "id"
+              ],
+              "key_length": "4",
+              "rows_examined_per_scan": 9,
+              "rows_produced_per_join": 9,
+              "filtered": "100.00",
+              "using_index": true,
+              "cost_info": {
+                "read_cost": "1.16",
+                "eval_cost": "0.90",
+                "prefix_cost": "2.06",
+                "data_read_per_join": "576"
+              },
+              "used_columns": [
+                "id"
+              ],
+              "attached_condition": "(`dbstudio`.`plan_fx_orders`.`id` < 10)"
+            }
+          }
+        },
+        {
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 2,
+            "cost_info": {
+              "query_cost": "2.06"
+            },
+            "table": {
+              "table_name": "plan_fx_customers",
+              "access_type": "range",
+              "possible_keys": [
+                "PRIMARY"
+              ],
+              "key": "PRIMARY",
+              "used_key_parts": [
+                "id"
+              ],
+              "key_length": "4",
+              "rows_examined_per_scan": 9,
+              "rows_produced_per_join": 9,
+              "filtered": "100.00",
+              "using_index": true,
+              "cost_info": {
+                "read_cost": "1.16",
+                "eval_cost": "0.90",
+                "prefix_cost": "2.06",
+                "data_read_per_join": "1K"
+              },
+              "used_columns": [
+                "id"
+              ],
+              "attached_condition": "(`dbstudio`.`plan_fx_customers`.`id` < 10)"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

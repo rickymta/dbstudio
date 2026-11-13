@@ -1,18 +1,30 @@
 //! Parsing of the raw plans returned by `Session::explain` into one normalised tree, plus
 //! analysis (self cost/time, hot path, warnings).
 //!
-//! Scaffold status: the types and `Default` rule values are final; `parse` returns
-//! [`PlanError::Unsupported`] and `analyze` does nothing. Package E replaces them.
+//! Supported sources: PostgreSQL JSON, MySQL JSON (v1 and v2) and tree text, MariaDB JSON,
+//! SQL Server showplan XML, Oracle plan rows (JSON) and MongoDB explain output.
+
+mod analyze;
+mod build;
+mod json;
+mod mariadb;
+mod mongo;
+mod mssql;
+mod mysql;
+mod oracle;
+mod postgres;
 
 use std::collections::BTreeMap;
 
 use dbstudio_core::{PlanFormat, RawPlan};
 use serde::{Deserialize, Serialize};
 
+pub use analyze::analyze;
+
 /// Why a plan could not be parsed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlanError {
-    /// No parser for this format yet.
+    /// No parser for this format.
     #[error("unsupported plan format: {0:?}")]
     Unsupported(PlanFormat),
     /// The text is not valid for its format.
@@ -20,14 +32,21 @@ pub enum PlanError {
     Invalid(String),
 }
 
-/// Parse `raw` into a tree. Scaffold: always [`PlanError::Unsupported`].
+/// Parse `raw` into a tree (without warnings or hot path; see [`analyze`]).
 pub fn parse(raw: &RawPlan) -> Result<PlanTree, PlanError> {
-    Err(PlanError::Unsupported(raw.format))
-}
-
-/// Fill warnings, hot path and self cost/time. Scaffold: no-op.
-pub fn analyze(tree: &mut PlanTree, rules: &PlanRules) {
-    let _ = (tree, rules);
+    if raw.text.trim().is_empty() {
+        return Err(PlanError::Invalid("the plan text is empty".into()));
+    }
+    let text = raw.text.as_str();
+    match raw.format {
+        PlanFormat::PostgresJson => postgres::parse(text),
+        PlanFormat::MySqlJson | PlanFormat::MySqlJsonV2 => mysql::parse_json(text, raw.format),
+        PlanFormat::MySqlTree => mysql::parse_tree(text),
+        PlanFormat::MariaDbJson => mariadb::parse(text),
+        PlanFormat::MsSqlShowplanXml => mssql::parse(text),
+        PlanFormat::OraclePlanRows => oracle::parse(text),
+        PlanFormat::MongoExplain => mongo::parse(text),
+    }
 }
 
 /// [`parse`] then [`analyze`].
@@ -369,20 +388,38 @@ mod tests {
     }
 
     #[test]
-    fn stub_contract_parse_is_unsupported_and_analyze_is_noop() {
-        let r = raw(PlanFormat::MySqlJson);
-        assert_eq!(
-            parse(&r),
-            Err(PlanError::Unsupported(PlanFormat::MySqlJson))
-        );
-        assert_eq!(
-            parse_and_analyze(&r, &PlanRules::default()),
-            Err(PlanError::Unsupported(PlanFormat::MySqlJson))
-        );
+    fn invalid_text_is_reported_per_format() {
+        for format in [
+            PlanFormat::PostgresJson,
+            PlanFormat::MySqlJson,
+            PlanFormat::MySqlJsonV2,
+            PlanFormat::MySqlTree,
+            PlanFormat::MariaDbJson,
+            PlanFormat::MsSqlShowplanXml,
+            PlanFormat::OraclePlanRows,
+            PlanFormat::MongoExplain,
+        ] {
+            assert!(
+                matches!(parse(&raw(format)), Err(PlanError::Invalid(_))),
+                "{format:?}"
+            );
+            let mut empty = raw(format);
+            empty.text = "  ".into();
+            assert!(matches!(
+                parse_and_analyze(&empty, &PlanRules::default()),
+                Err(PlanError::Invalid(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn analyze_is_idempotent() {
         let mut t = tree();
-        let before = t.clone();
         analyze(&mut t, &PlanRules::default());
-        assert_eq!(t, before);
+        let once = t.clone();
+        analyze(&mut t, &PlanRules::default());
+        assert_eq!(t, once);
+        assert_eq!(t.hot_path, vec![0, 1]);
     }
 
     #[test]

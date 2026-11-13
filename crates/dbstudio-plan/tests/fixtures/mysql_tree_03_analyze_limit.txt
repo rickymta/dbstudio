@@ -1,0 +1,8 @@
+-> Limit: 10 row(s)  (actual time=140..140 rows=10 loops=1)
+    -> Sort: `count(i.id)` DESC, limit input to 10 row(s) per chunk  (actual time=140..140 rows=10 loops=1)
+        -> Stream results  (cost=75302 rows=100270) (actual time=0.457..133 rows=100000 loops=1)
+            -> Group aggregate: count(i.id)  (cost=75302 rows=100270) (actual time=0.454..125 rows=100000 loops=1)
+                -> Nested loop inner join  (cost=55248 rows=200540) (actual time=0.447..112 rows=200000 loops=1)
+                    -> Covering index scan on o using PRIMARY  (cost=10099 rows=100270) (actual time=0.407..10.4 rows=100000 loops=1)
+                    -> Covering index lookup on i using order_id (order_id=o.id)  (cost=0.25 rows=2) (actual time=616e-6..843e-6 rows=2 loops=100000)
+

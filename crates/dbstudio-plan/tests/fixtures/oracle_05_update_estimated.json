@@ -1,0 +1,47 @@
+[
+  {
+    "ID": 0,
+    "PARENT_ID": null,
+    "POSITION": 0,
+    "OPERATION": "UPDATE STATEMENT",
+    "OPTIONS": null,
+    "OBJECT_OWNER": null,
+    "OBJECT_NAME": null,
+    "OBJECT_ALIAS": null,
+    "CARDINALITY": 1,
+    "BYTES": null,
+    "COST": 3,
+    "ACCESS_PREDICATES": null,
+    "FILTER_PREDICATES": null
+  },
+  {
+    "ID": 1,
+    "PARENT_ID": 0,
+    "POSITION": 1,
+    "OPERATION": "UPDATE",
+    "OPTIONS": null,
+    "OBJECT_OWNER": "SHOP",
+    "OBJECT_NAME": "ORDERS",
+    "OBJECT_ALIAS": null,
+    "CARDINALITY": null,
+    "BYTES": null,
+    "COST": null,
+    "ACCESS_PREDICATES": null,
+    "FILTER_PREDICATES": null
+  },
+  {
+    "ID": 2,
+    "PARENT_ID": 1,
+    "POSITION": 1,
+    "OPERATION": "INDEX",
+    "OPTIONS": "UNIQUE SCAN",
+    "OBJECT_OWNER": "SHOP",
+    "OBJECT_NAME": "ORDERS_PK",
+    "OBJECT_ALIAS": "ORDERS@UPD$1",
+    "CARDINALITY": 1,
+    "BYTES": null,
+    "COST": 2,
+    "ACCESS_PREDICATES": "\"ID\"=:B1",
+    "FILTER_PREDICATES": null
+  }
+]

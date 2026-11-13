@@ -1,0 +1,103 @@
+{
+  "query": "/* select#1 */ select `c`.`country` AS `country`,count(0) AS `count(*)`,sum(`o`.`amount`) AS `sum(o.amount)` from `dbstudio`.`plan_fx_orders` `o` join `dbstudio`.`plan_fx_customers` `c` where ((`c`.`id` = `o`.`customer_id`) and (`o`.`created` > DATE'2024-06-01')) group by `dbstudio`.`c`.`country` order by `count(*)` desc",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "alias": "o",
+                      "operation": "Table scan on o",
+                      "table_name": "plan_fx_orders",
+                      "access_type": "table",
+                      "actual_rows": 100000.0,
+                      "schema_name": "dbstudio",
+                      "actual_loops": 1,
+                      "used_columns": [
+                        "id",
+                        "customer_id",
+                        "amount",
+                        "created"
+                      ],
+                      "estimated_rows": 100270.0,
+                      "actual_last_row_ms": 13.000680000000001,
+                      "actual_first_row_ms": 0.153334,
+                      "estimated_total_cost": 10099.25
+                    }
+                  ],
+                  "condition": "((o.created > DATE'2024-06-01') and (o.customer_id is not null))",
+                  "operation": "Filter: ((o.created > DATE'2024-06-01') and (o.customer_id is not null))",
+                  "access_type": "filter",
+                  "actual_rows": 58079.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 50135.0,
+                  "actual_last_row_ms": 18.910356,
+                  "actual_first_row_ms": 0.171708,
+                  "estimated_total_cost": 10099.25
+                },
+                {
+                  "alias": "c",
+                  "covering": false,
+                  "operation": "Single-row index lookup on c using PRIMARY (id=o.customer_id)",
+                  "index_name": "PRIMARY",
+                  "table_name": "plan_fx_customers",
+                  "access_type": "index",
+                  "actual_rows": 1.0,
+                  "schema_name": "dbstudio",
+                  "actual_loops": 58079,
+                  "used_columns": [
+                    "id",
+                    "country"
+                  ],
+                  "estimated_rows": 1.0,
+                  "lookup_condition": "id=o.customer_id",
+                  "index_access_type": "index_lookup",
+                  "actual_last_row_ms": 0.0005969585047951927,
+                  "actual_first_row_ms": 0.0005749195061898448,
+                  "estimated_total_cost": 0.25000199461454076
+                }
+              ],
+              "join_type": "inner join",
+              "operation": "Nested loop inner join",
+              "access_type": "join",
+              "actual_rows": 58079.0,
+              "actual_loops": 1,
+              "estimated_rows": 50135.0,
+              "join_algorithm": "nested_loop",
+              "actual_last_row_ms": 60.500502999999995,
+              "actual_first_row_ms": 0.178334,
+              "estimated_total_cost": 27646.5
+            }
+          ],
+          "operation": "Aggregate using temporary table",
+          "access_type": "temp_table_aggregate",
+          "actual_rows": 4.0,
+          "actual_loops": 1,
+          "actual_last_row_ms": 76.74995799999999,
+          "actual_first_row_ms": 76.74995799999999
+        }
+      ],
+      "operation": "Table scan on <temporary>",
+      "table_name": "<temporary>",
+      "access_type": "table",
+      "actual_rows": 4.0,
+      "actual_loops": 1,
+      "actual_last_row_ms": 76.753083,
+      "actual_first_row_ms": 76.75262500000001
+    }
+  ],
+  "operation": "Sort: `count(*)` DESC",
+  "query_type": "select",
+  "access_type": "sort",
+  "actual_rows": 4.0,
+  "sort_fields": [
+    "`count(*)` DESC"
+  ],
+  "actual_loops": 1,
+  "actual_last_row_ms": 76.773376,
+  "actual_first_row_ms": 76.773208
+}

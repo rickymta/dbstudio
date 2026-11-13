@@ -1,0 +1,5 @@
+-> Nested loop inner join  (cost=877 rows=2476) (actual time=0.125..2.12 rows=2450 loops=1)
+    -> Filter: (c.id < 50)  (cost=10.1 rows=49) (actual time=0.0171..0.0303 rows=49 loops=1)
+        -> Index range scan on c using PRIMARY over (id < 50)  (cost=10.1 rows=49) (actual time=0.0154..0.0242 rows=49 loops=1)
+    -> Index lookup on o using customer_id (customer_id=c.id)  (cost=12.7 rows=50.5) (actual time=0.0374..0.0404 rows=50 loops=49)
+

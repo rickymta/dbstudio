@@ -1,0 +1,106 @@
+<?xml version="1.0" ?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.6" Build="16.0.1000.6">
+  
+
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        
+
+        <StmtSimple StatementText="SELECT soh.TerritoryID, COUNT(*) FROM Sales.SalesOrderHeader soh JOIN Sales.SalesOrderDetail sod ON soh.SalesOrderID=sod.SalesOrderID WHERE sod.OrderQty &gt; 1 GROUP BY soh.TerritoryID ORDER BY soh.TerritoryID" StatementId="1" StatementCompId="1" StatementType="SELECT" StatementSubTreeCost="6.52" StatementEstRows="9" StatementOptmLevel="FULL" CardinalityEstimationModelVersion="150">
+          <QueryPlan DegreeOfParallelism="2" CachedPlanSize="32" CompileTime="4" CompileCPU="4" CompileMemory="256">
+            <QueryTimeStats CpuTime="640" ElapsedTime="176"/>
+            <RelOp NodeId="1" PhysicalOp="Sort" LogicalOp="Sort" EstimateRows="9" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="6.52" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+              <OutputList/>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="9" ActualRowsRead="9" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="173" ActualCPUms="1" ActualScans="1" ActualLogicalReads="3" ActualPhysicalReads="0"/>
+              </RunTimeInformation>
+              <Sort Distinct="0">
+                <OrderBy>
+                  <OrderByColumn Ascending="1">
+                    <ColumnReference Column="TerritoryID"/>
+                  </OrderByColumn>
+                </OrderBy>
+                <RelOp NodeId="2" PhysicalOp="Parallelism" LogicalOp="Gather Streams" EstimateRows="9" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="6.5" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                  <OutputList/>
+                  <RunTimeInformation>
+                    <RunTimeCountersPerThread Thread="0" ActualRows="9" ActualRowsRead="9" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="172" ActualCPUms="3" ActualScans="1" ActualLogicalReads="3" ActualPhysicalReads="0"/>
+                  </RunTimeInformation>
+                  <Parallelism>
+                    <RelOp NodeId="3" PhysicalOp="Hash Match" LogicalOp="Aggregate" EstimateRows="9" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="6.4" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                      <OutputList/>
+                      <RunTimeInformation>
+                        <RunTimeCountersPerThread Thread="0" ActualRows="0" ActualRowsRead="0" Batches="0" ActualEndOfScans="0" ActualExecutions="0" ActualElapsedms="0" ActualCPUms="0" ActualScans="0" ActualLogicalReads="3" ActualPhysicalReads="0"/>
+                        <RunTimeCountersPerThread Thread="1" ActualRows="5" ActualRowsRead="5" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="160" ActualCPUms="158" ActualScans="1" ActualLogicalReads="3" ActualPhysicalReads="0"/>
+                        <RunTimeCountersPerThread Thread="2" ActualRows="4" ActualRowsRead="4" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="165" ActualCPUms="162" ActualScans="1" ActualLogicalReads="3" ActualPhysicalReads="0"/>
+                      </RunTimeInformation>
+                      <Hash>
+                        <DefinedValues/>
+                        <HashKeysBuild>
+                          <ColumnReference Column="TerritoryID"/>
+                        </HashKeysBuild>
+                        <RelOp NodeId="4" PhysicalOp="Hash Match" LogicalOp="Inner Join" EstimateRows="121317" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="6.1" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                          <OutputList/>
+                          <RunTimeInformation>
+                            <RunTimeCountersPerThread Thread="0" ActualRows="0" ActualRowsRead="0" Batches="0" ActualEndOfScans="0" ActualExecutions="0" ActualElapsedms="0" ActualCPUms="0" ActualScans="0" ActualLogicalReads="3" ActualPhysicalReads="0"/>
+                            <RunTimeCountersPerThread Thread="1" ActualRows="59000" ActualRowsRead="59000" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="132" ActualCPUms="130" ActualScans="1" ActualLogicalReads="1183" ActualPhysicalReads="0"/>
+                            <RunTimeCountersPerThread Thread="2" ActualRows="62500" ActualRowsRead="62500" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="135" ActualCPUms="133" ActualScans="1" ActualLogicalReads="1253" ActualPhysicalReads="0"/>
+                          </RunTimeInformation>
+                          <Hash>
+                            <DefinedValues/>
+                            <HashKeysBuild>
+                              <ColumnReference Column="SalesOrderID"/>
+                            </HashKeysBuild>
+                            <HashKeysProbe>
+                              <ColumnReference Column="SalesOrderID"/>
+                            </HashKeysProbe>
+                            <ProbeResidual>
+                              <ScalarOperator ScalarString="[soh].[SalesOrderID]=[sod].[SalesOrderID]">
+                                <Compare/>
+                              </ScalarOperator>
+                            </ProbeResidual>
+                            <RelOp NodeId="5" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="31465" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="0.91" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                              <OutputList/>
+                              <RunTimeInformation>
+                                <RunTimeCountersPerThread Thread="0" ActualRows="0" ActualRowsRead="0" Batches="0" ActualEndOfScans="0" ActualExecutions="0" ActualElapsedms="0" ActualCPUms="0" ActualScans="0" ActualLogicalReads="3" ActualPhysicalReads="0"/>
+                                <RunTimeCountersPerThread Thread="1" ActualRows="15800" ActualRowsRead="15800" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="41" ActualCPUms="40" ActualScans="1" ActualLogicalReads="319" ActualPhysicalReads="0"/>
+                                <RunTimeCountersPerThread Thread="2" ActualRows="15665" ActualRowsRead="15665" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="40" ActualCPUms="39" ActualScans="1" ActualLogicalReads="316" ActualPhysicalReads="0"/>
+                              </RunTimeInformation>
+                              <IndexScan Ordered="0" ForcedIndex="0" ForceScan="0" NoExpandHint="0" Storage="RowStore">
+                                <Object Database="[AdventureWorks]" Schema="[Sales]" Table="[SalesOrderHeader]" Index="[PK_SalesOrderHeader_SalesOrderID]" Alias="[soh]" IndexKind="Clustered" Storage="RowStore"/>
+                              </IndexScan>
+                            </RelOp>
+                            <RelOp NodeId="6" PhysicalOp="Index Scan" LogicalOp="Index Scan" EstimateRows="121317" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="4.2" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                              <OutputList/>
+                              <RunTimeInformation>
+                                <RunTimeCountersPerThread Thread="0" ActualRows="0" ActualRowsRead="0" Batches="0" ActualEndOfScans="0" ActualExecutions="0" ActualElapsedms="0" ActualCPUms="0" ActualScans="0" ActualLogicalReads="3" ActualPhysicalReads="0"/>
+                                <RunTimeCountersPerThread Thread="1" ActualRows="60500" ActualRowsRead="60500" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="88" ActualCPUms="86" ActualScans="1" ActualLogicalReads="1213" ActualPhysicalReads="0"/>
+                                <RunTimeCountersPerThread Thread="2" ActualRows="61100" ActualRowsRead="61100" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="90" ActualCPUms="88" ActualScans="1" ActualLogicalReads="1225" ActualPhysicalReads="0"/>
+                              </RunTimeInformation>
+                              <IndexScan Ordered="0" ForcedIndex="0" ForceScan="0" NoExpandHint="0" Storage="RowStore">
+                                <Object Database="[AdventureWorks]" Schema="[Sales]" Table="[SalesOrderDetail]" Index="[IX_SalesOrderDetail_ProductID]" Alias="[sod]" IndexKind="NonClustered" Storage="RowStore"/>
+                                <Predicate>
+                                  <ScalarOperator ScalarString="[AdventureWorks].[Sales].[SalesOrderDetail].[OrderQty] as [sod].[OrderQty]&gt;(1)">
+                                    <Compare/>
+                                  </ScalarOperator>
+                                </Predicate>
+                              </IndexScan>
+                            </RelOp>
+                          </Hash>
+                        </RelOp>
+                      </Hash>
+                    </RelOp>
+                  </Parallelism>
+                </RelOp>
+              </Sort>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+        
+
+      </Statements>
+    </Batch>
+  </BatchSequence>
+  
+
+</ShowPlanXML>
