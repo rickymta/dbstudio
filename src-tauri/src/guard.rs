@@ -272,10 +272,20 @@ pub fn evaluate(
     }
 }
 
+/// Analysis step of the flow (an indirection so command tests can substitute a keyword
+/// classifier while `dbstudio_sql::analyze` is still the scaffold).
+fn analyze(dialect: ScriptDialect, text: &str) -> ScriptAnalysis {
+    #[cfg(test)]
+    if let Some(f) = test_support::OVERRIDE.with(std::cell::Cell::get) {
+        return f(dialect, text);
+    }
+    dbstudio_sql::analyze(dialect, text)
+}
+
 /// The five-step flow for a script: bind, analyze, policy, check, verdict.
 pub fn run_guard(tokens: &ConfirmTokens, input: &GuardInput<'_>) -> Result<Guarded> {
     let bound = dbstudio_sql::bind(input.dialect, input.text, input.params)?;
-    let analysis = dbstudio_sql::analyze(input.dialect, &bound.text);
+    let analysis = analyze(input.dialect, &bound.text);
     evaluate(tokens, input, &bound, &analysis)?;
     Ok(Guarded { bound, analysis })
 }
@@ -290,6 +300,141 @@ pub fn ensure_writable(config: &ConnectionConfig, what: &str) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// Helpers shared by the command tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use dbstudio_core::{DestructiveReason, StatementClass, StatementInfo, TxControl};
+
+    use super::*;
+
+    type AnalyzeFn = fn(ScriptDialect, &str) -> ScriptAnalysis;
+
+    thread_local! {
+        pub(super) static OVERRIDE: Cell<Option<AnalyzeFn>> = const { Cell::new(None) };
+    }
+
+    /// Restores the real analyzer when dropped.
+    pub struct KeywordClassifier;
+
+    impl Drop for KeywordClassifier {
+        fn drop(&mut self) {
+            OVERRIDE.with(|c| c.set(None));
+        }
+    }
+
+    /// Classify statements by their first keyword on the current thread (use a current-thread
+    /// runtime in the test). Only for tests.
+    pub fn use_keyword_classifier() -> KeywordClassifier {
+        OVERRIDE.with(|c| c.set(Some(keyword_analyze)));
+        KeywordClassifier
+    }
+
+    /// Whether `dbstudio_sql::analyze` already classifies statements (package A finished).
+    pub fn real_classifier_available() -> bool {
+        dbstudio_sql::analyze(ScriptDialect::Postgres, "select 1")
+            .statements
+            .first()
+            .is_some_and(|s| s.class == StatementClass::Read)
+    }
+
+    /// A minimal classifier: verb decides the class, `DROP`/`TRUNCATE` and `DELETE`/`UPDATE`
+    /// without `WHERE` are destructive.
+    pub fn keyword_analyze(dialect: ScriptDialect, text: &str) -> ScriptAnalysis {
+        let chars: Vec<char> = text.chars().collect();
+        let statements = dbstudio_sql::split(ScriptDialect::Postgres, text)
+            .into_iter()
+            .enumerate()
+            .map(|(i, range)| {
+                let sql: String = chars[range.start as usize..range.end as usize]
+                    .iter()
+                    .collect::<String>()
+                    .to_ascii_uppercase();
+                let verb = sql.split_whitespace().next().unwrap_or("").to_string();
+                let has_where = sql.contains(" WHERE ");
+                let (class, destructive) = match verb.as_str() {
+                    "SELECT" | "SHOW" | "WITH" | "VALUES" => (StatementClass::Read, None),
+                    "INSERT" => (StatementClass::Write, None),
+                    "UPDATE" => (
+                        StatementClass::Write,
+                        (!has_where).then_some(DestructiveReason::UpdateWithoutWhere),
+                    ),
+                    "DELETE" => (
+                        StatementClass::Write,
+                        (!has_where).then_some(DestructiveReason::DeleteWithoutWhere),
+                    ),
+                    "DROP" => (StatementClass::Ddl, Some(DestructiveReason::Drop)),
+                    "TRUNCATE" => (StatementClass::Ddl, Some(DestructiveReason::Truncate)),
+                    "CREATE" | "ALTER" => (StatementClass::Ddl, None),
+                    "BEGIN" => (
+                        StatementClass::Transaction {
+                            op: TxControl::Begin,
+                        },
+                        None,
+                    ),
+                    "COMMIT" => (
+                        StatementClass::Transaction {
+                            op: TxControl::Commit,
+                        },
+                        None,
+                    ),
+                    "ROLLBACK" => (
+                        StatementClass::Transaction {
+                            op: TxControl::Rollback,
+                        },
+                        None,
+                    ),
+                    "SET" | "USE" => (StatementClass::Session, None),
+                    _ => (StatementClass::Unknown, None),
+                };
+                StatementInfo {
+                    index: i as u32,
+                    range,
+                    class,
+                    verb,
+                    destructive,
+                    implicit_commit: false,
+                    targets: Vec::new(),
+                }
+            })
+            .collect();
+        ScriptAnalysis {
+            dialect,
+            statements,
+            params: Vec::new(),
+            problems: Vec::new(),
+        }
+    }
+
+    /// Clock that only moves when told to.
+    #[derive(Debug)]
+    pub struct TestClock {
+        base: Instant,
+        offset_ms: AtomicU64,
+    }
+
+    impl TestClock {
+        pub fn new() -> Arc<Self> {
+            Arc::new(TestClock {
+                base: Instant::now(),
+                offset_ms: AtomicU64::new(0),
+            })
+        }
+        pub fn advance(&self, d: Duration) {
+            self.offset_ms
+                .fetch_add(u64::try_from(d.as_millis()).unwrap(), Ordering::SeqCst);
+        }
+    }
+
+    impl Clock for TestClock {
+        fn now(&self) -> Instant {
+            self.base + Duration::from_millis(self.offset_ms.load(Ordering::SeqCst))
+        }
+    }
 }
 
 #[cfg(test)]
