@@ -9,7 +9,7 @@
 //! | `float` | JSON number, or `"NaN"`, `"Infinity"`, `"-Infinity"` as string |
 //! | `decimal`, `text`, `date`, `time`, `dateTime`, `timestamp`, `uuid` | string |
 //! | `bytes` | base64 string |
-//! | `json` | any JSON value |
+//! | `json` | string holding the raw JSON text exactly as the database returned it (key order and number digits preserved; the consumer parses it) |
 //! | `array` | array of tagged values |
 //! | `document` | object of name to tagged value |
 
@@ -57,7 +57,7 @@ pub enum Value {
     /// UUID in canonical text form.
     Uuid(String),
     /// Arbitrary JSON (JSON / JSONB columns).
-    Json(serde_json::Value),
+    Json(String),
     /// Ordered list (arrays, Redis lists, ...).
     Array(Vec<Value>),
     /// Nested document (MongoDB documents, maps, hashes).
@@ -312,8 +312,12 @@ mod tests {
             json["v"]["id"],
             json!({"t": "int", "v": "9223372036854775807"})
         );
-        roundtrip(Value::Json(json!({"a": [1, 2, {"b": null}]})));
-        roundtrip(Value::Json(serde_json::Value::Null));
+        let raw = r#"{"b":1,"a":2,"n":12345678901234567890123,"i":9007199254740993}"#;
+        assert_eq!(
+            roundtrip(Value::Json(raw.into())),
+            json!({"t": "json", "v": raw})
+        );
+        roundtrip(Value::Json("null".into()));
     }
 
     #[test]

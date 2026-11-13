@@ -54,3 +54,49 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  integration:
+    name: Integration tests (PostgreSQL + MySQL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies for Tauri 2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev build-essential curl wget file
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The Tauri crate embeds ../dist at compile time, so build the frontend first.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Generate test certificates
+        run: sh docker/gen-certs.sh
+
+      - name: Start test databases
+        run: docker compose -f docker/compose.test.yml up -d --wait
+
+      - name: Run integration tests
+        run: DBSTUDIO_IT=1 cargo test --workspace
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker compose -f docker/compose.test.yml logs --no-color
+
+      - name: Stop test databases
+        if: always()
+        run: docker compose -f docker/compose.test.yml down -v

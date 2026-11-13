@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ipc } from '@/lib/ipc';
 import { ROOT_PATH, childPath } from '@/lib/objectPath';
 import { useSessionsStore } from './sessions';
 import { WELCOME_TAB, tableTabId, useTabsStore, type TabItem } from './tabs';
@@ -53,6 +54,26 @@ describe('sessions store (mock IPC)', () => {
     expect(useTabsStore.getState().tabs.some((t) => t.payload?.sessionId === a.sessionId)).toBe(
       false,
     );
+  });
+
+  it('closing while a connection is opening discards the session once it arrives', async () => {
+    const id = '00000000-0000-4000-8000-0000000000b1';
+    const closeSpy = vi.spyOn(ipc, 'sessionClose');
+    const opening = useSessionsStore.getState().open(id);
+    const outcome = opening.then(
+      () => 'opened',
+      (e: { kind: string }) => e.kind,
+    );
+    await useSessionsStore.getState().close(id);
+    expect(useSessionsStore.getState().opening[id]).toBeUndefined();
+    expect(await outcome).toBe('cancelled');
+    expect(useSessionsStore.getState().sessionsByConnection[id]).toBeUndefined();
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    // A later open works normally.
+    const info = await useSessionsStore.getState().open(id);
+    expect(useSessionsStore.getState().sessionsByConnection[id]).toEqual(info);
+    await useSessionsStore.getState().close(id);
+    closeSpy.mockRestore();
   });
 
   it('rejects with an IpcError for an unreachable host', async () => {

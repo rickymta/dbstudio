@@ -6,12 +6,18 @@ import {
   clampColumnWidth,
   decodeBase64,
   defaultColumnWidth,
+  LARGE_COPY_BYTES,
+  RawNumber,
   detectImageMime,
+  estimateValueSize,
   formatBytes,
   formatCell,
   hexDump,
+  parseJsonLossless,
+  stringifyPlain,
   valueToPlain,
   valueToText,
+  visibleWhitespace,
 } from './format';
 
 const b64 = (bytes: number[]) => btoa(String.fromCharCode(...bytes));
@@ -61,11 +67,11 @@ describe('formatCell', () => {
   });
 
   it('shows json on one line and arrays/documents as compact JSON', () => {
-    expect(formatCell({ t: 'json', v: { a: 1, b: [true, null] } }).text).toBe(
+    expect(formatCell({ t: 'json', v: '{"a":1,"b":[true,null]}' }).text).toBe(
       '{"a":1,"b":[true,null]}',
     );
     const arr: Value = { t: 'array', v: [{ t: 'int', v: '9007199254740993' }, { t: 'null' }] };
-    expect(formatCell(arr).text).toBe('["9007199254740993",null]');
+    expect(formatCell(arr).text).toBe('[9007199254740993,null]');
     const doc: Value = { t: 'document', v: { name: { t: 'text', v: 'x' } } };
     expect(formatCell(doc).text).toBe('{"name":"x"}');
   });
@@ -90,7 +96,7 @@ describe('valueToText / valueToPlain', () => {
     expect(valueToText({ t: 'text', v: long })).toBe(long);
     expect(valueToText({ t: 'bool', v: false })).toBe('false');
     expect(valueToText({ t: 'bytes', v: b64([1, 255]) })).toBe('0x01ff');
-    expect(valueToText({ t: 'json', v: { a: [1] } })).toBe('{"a":[1]}');
+    expect(valueToText({ t: 'json', v: '{ "a": [1] }' })).toBe('{ "a": [1] }'); // original text
   });
 
   it('flattens value trees', () => {
@@ -98,7 +104,7 @@ describe('valueToText / valueToPlain', () => {
       t: 'document',
       v: { n: { t: 'int', v: 1 }, xs: { t: 'array', v: [{ t: 'null' }, { t: 'text', v: 's' }] } },
     };
-    expect(valueToPlain(v)).toEqual({ n: 1, xs: [null, 's'] });
+    expect(stringifyPlain(valueToPlain(v))).toBe('{"n":1,"xs":[null,"s"]}');
   });
 });
 
@@ -150,5 +156,72 @@ describe('formatBytes and column widths', () => {
     ).toBeGreaterThan(200);
     expect(clampColumnWidth(5)).toBe(56);
     expect(clampColumnWidth(99999)).toBe(600);
+  });
+});
+
+describe('lossless numbers and robustness', () => {
+  it('shows json cells as the original text, without parsing', () => {
+    const text = '{"id": 9007199254740993, "x": 1e400, "f": 0.1000000000000000055}';
+    expect(formatCell({ t: 'json', v: text }).text).toBe(text);
+    expect(valueToText({ t: 'json', v: text })).toBe(text);
+  });
+
+  it('parses json losslessly and prints numbers verbatim', () => {
+    const text = '{"id": 9007199254740993, "x": 1e400, "f": 0.1000000000000000055, "s": "a"}';
+    const plain = parseJsonLossless(text) as Record<string, unknown>;
+    expect(plain.id).toBeInstanceOf(RawNumber);
+    expect((plain.id as RawNumber).raw).toBe('9007199254740993');
+    expect(stringifyPlain(plain)).toBe(
+      '{"id":9007199254740993,"x":1e400,"f":0.1000000000000000055,"s":"a"}',
+    );
+    expect(stringifyPlain(plain, 2)).toContain('  "x": 1e400');
+    expect(parseJsonLossless('{not json')).toBeUndefined();
+  });
+
+  it('keeps big ints inside documents as numbers (no quotes)', () => {
+    const doc: Value = {
+      t: 'document',
+      v: { id: { t: 'int', v: '9007199254740993' }, n: { t: 'json', v: '{"k": 1.50}' } },
+    };
+    expect(formatCell(doc).text).toBe('{"id":9007199254740993,"n":{"k": 1.50}}');
+    expect(valueToText(doc)).toBe('{"id":9007199254740993,"n":{"k":1.50}}');
+  });
+
+  it('bounds the work for huge arrays', () => {
+    const big: Value = {
+      t: 'array',
+      v: Array.from({ length: 200_000 }, (_, i) => ({ t: 'int', v: i }) as Value),
+    };
+    const d = formatCell(big, 50);
+    expect(d.text.length).toBeLessThanOrEqual(51);
+    expect(d.text.endsWith('…')).toBe(true);
+  });
+
+  it('caches the display per value object', () => {
+    const v: Value = { t: 'text', v: 'x' };
+    expect(formatCell(v)).toBe(formatCell(v));
+  });
+
+  it('does not throw on an unknown kind', () => {
+    const unknown = { t: 'geometry', v: { x: 1 } } as unknown as Value;
+    expect(formatCell(unknown).text).toBe('{"x":1}');
+    expect(valueToText(unknown)).toBe('{"x":1}');
+    expect(() => formatCell({ t: 'weird' } as unknown as Value)).not.toThrow();
+  });
+
+  it('makes control and bidi characters visible', () => {
+    expect(visibleWhitespace('a\u0000b\u001bc\u007fd\u0085e')).toBe('a␀b␛c␡d�e');
+    expect(visibleWhitespace('x‮evil⁦y')).toBe('x⇄evil⇄y');
+    expect(formatCell({ t: 'text', v: 'a‮b' }).text).not.toContain('‮');
+    // The viewer value is untouched.
+    expect(valueToText({ t: 'text', v: 'a‮b' })).toBe('a‮b');
+  });
+
+  it('computes byte size from the base64 length', () => {
+    expect(base64ByteLength('AAAA')).toBe(3);
+    expect(base64ByteLength('AAA=')).toBe(2);
+    expect(base64ByteLength('AA==')).toBe(1);
+    expect(estimateValueSize({ t: 'text', v: 'x'.repeat(10) })).toBe(10);
+    expect(estimateValueSize({ t: 'int', v: 1 })).toBeLessThan(LARGE_COPY_BYTES);
   });
 });

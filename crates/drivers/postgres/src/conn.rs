@@ -18,6 +18,10 @@ use crate::tls::{self, TlsSetup};
 
 /// Maximum simultaneous connections per database.
 pub const MAX_CONNS_PER_DB: usize = 4;
+/// Extra connections per database reserved for catalog queries (tree, DDL, details, ping), so
+/// slow data fetches can never starve metadata browsing.
+pub const CATALOG_CONNS_PER_DB: usize = 2;
+const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One physical connection plus the channel on which its server notices arrive.
@@ -50,6 +54,7 @@ impl Conn {
 struct Pool {
     idle: Mutex<Vec<Conn>>,
     permits: Arc<Semaphore>,
+    catalog_permits: Arc<Semaphore>,
 }
 
 /// A connection checked out of the pool. It goes back to the pool only after
@@ -116,6 +121,7 @@ pub struct Shared {
     tls: TlsSetup,
     pub login_db: String,
     connect_timeout: Duration,
+    acquire_timeout: Duration,
     pools: Mutex<HashMap<String, Arc<Pool>>>,
     closed: Arc<AtomicBool>,
     server_timezone: OnceLock<String>,
@@ -176,6 +182,10 @@ impl Shared {
                 .filter(|d| !d.is_empty())
                 .unwrap_or_else(|| "postgres".to_string()),
             connect_timeout,
+            acquire_timeout: config
+                .connect_timeout_ms
+                .map(Duration::from_millis)
+                .unwrap_or(DEFAULT_ACQUIRE_TIMEOUT),
             pools: Mutex::new(HashMap::new()),
             closed: Arc::new(AtomicBool::new(false)),
             server_timezone: OnceLock::new(),
@@ -200,6 +210,7 @@ impl Shared {
                     idle.clear();
                 }
                 pool.permits.close();
+                pool.catalog_permits.close();
             }
         }
     }
@@ -221,22 +232,36 @@ impl Shared {
                 Arc::new(Pool {
                     idle: Mutex::new(Vec::new()),
                     permits: Arc::new(Semaphore::new(MAX_CONNS_PER_DB)),
+                    catalog_permits: Arc::new(Semaphore::new(CATALOG_CONNS_PER_DB)),
                 })
             })
             .clone()
     }
 
-    /// Check a connection to database `db` out of the pool, connecting lazily.
+    /// Check a connection for data work (queries, table pages) out of the pool, connecting
+    /// lazily. Waits at most the acquire timeout, then fails with [`Error::Timeout`].
     pub async fn acquire(&self, db: &str) -> Result<PooledConn> {
+        self.acquire_kind(db, false).await
+    }
+
+    /// Like [`Shared::acquire`] but from the reserved catalog slots.
+    pub async fn acquire_catalog(&self, db: &str) -> Result<PooledConn> {
+        self.acquire_kind(db, true).await
+    }
+
+    async fn acquire_kind(&self, db: &str, catalog: bool) -> Result<PooledConn> {
         if self.is_closed() {
             return Err(Error::Connection("session is closed".to_string()));
         }
         let pool = self.pool_for(db);
-        let permit = pool
-            .permits
-            .clone()
-            .acquire_owned()
+        let sem = if catalog {
+            pool.catalog_permits.clone()
+        } else {
+            pool.permits.clone()
+        };
+        let permit = tokio::time::timeout(self.acquire_timeout, sem.acquire_owned())
             .await
+            .map_err(|_| Error::Timeout)?
             .map_err(|_| Error::Connection("session is closed".to_string()))?;
         let reused = {
             let mut idle = pool.idle.lock().expect("idle list poisoned");

@@ -118,12 +118,21 @@ pub fn where_clause(filters: &[ColumnFilter], raw_where: Option<&str>) -> Result
     }
 }
 
-/// `ORDER BY ...` clause (leading space) or an empty string.
-pub fn order_clause(sort: &[SortKey]) -> Result<String> {
-    if sort.is_empty() {
+/// `ORDER BY ...` clause (leading space) or an empty string. `tiebreak` columns (a key of the
+/// table) are appended after the user's sort keys, skipping columns already sorted on, so that
+/// `OFFSET` paging is deterministic.
+pub fn order_clause(sort: &[SortKey], tiebreak: &[String]) -> Result<String> {
+    let mut parts = Vec::new();
+    for t in tiebreak {
+        if !sort.iter().any(|s| &s.column == t) {
+            check_no_nul(t, "column name")?;
+            parts.push(format!("{} ASC", quote_ident(t)));
+        }
+    }
+    if sort.is_empty() && parts.is_empty() {
         return Ok(String::new());
     }
-    let mut parts = Vec::new();
+    let tail = std::mem::take(&mut parts);
     for s in sort {
         check_no_nul(&s.column, "column name")?;
         parts.push(format!(
@@ -132,6 +141,7 @@ pub fn order_clause(sort: &[SortKey]) -> Result<String> {
             if s.descending { " DESC" } else { " ASC" }
         ));
     }
+    parts.extend(tail);
     Ok(format!("\nORDER BY {}", parts.join(", ")))
 }
 
@@ -141,13 +151,14 @@ pub fn select_sql(
     filters: &[ColumnFilter],
     raw_where: Option<&str>,
     sort: &[SortKey],
+    tiebreak: &[String],
     offset: u64,
     limit: u64,
 ) -> Result<String> {
     Ok(format!(
         "SELECT * FROM {table}{}{}\nLIMIT {limit} OFFSET {offset}",
         where_clause(filters, raw_where)?,
-        order_clause(sort)?
+        order_clause(sort, tiebreak)?
     ))
 }
 
@@ -300,12 +311,44 @@ pub fn split_statements(sql: &str) -> Vec<Stmt> {
     };
     for (i, c) in masked.char_indices() {
         if c == ';' {
+            if open_atomic_body(&masked[start..i]) {
+                continue;
+            }
             push(start, i);
             start = i + 1;
         }
     }
     push(start, sql.len());
     out
+}
+
+/// True while `stmt` (masked text up to a `;`) is a `CREATE FUNCTION/PROCEDURE ... BEGIN ATOMIC`
+/// body that has not reached its closing `END` yet (PostgreSQL 14+).
+fn open_atomic_body(stmt: &str) -> bool {
+    let w = words(stmt);
+    let mut it = w.iter().map(String::as_str);
+    if it.next() != Some("CREATE") {
+        return false;
+    }
+    let head: Vec<&str> = w.iter().take(6).map(String::as_str).collect();
+    if !head.iter().any(|x| matches!(*x, "FUNCTION" | "PROCEDURE")) {
+        return false;
+    }
+    let Some(atomic) = w
+        .windows(2)
+        .position(|p| p[0] == "BEGIN" && p[1] == "ATOMIC")
+    else {
+        return false;
+    };
+    let mut depth = 0i32;
+    for x in &w[atomic..] {
+        match x.as_str() {
+            "BEGIN" | "CASE" => depth += 1,
+            "END" => depth -= 1,
+            _ => {}
+        }
+    }
+    depth > 0
 }
 
 /// Upper-cased words (letters, digits, `_`) of a statement, outside literals and comments.
@@ -509,16 +552,22 @@ mod tests {
                     descending: false,
                 },
             ],
+            &["id".to_string(), "b".to_string()],
             20,
             10,
         )
         .unwrap();
         assert_eq!(
             sql,
-            "SELECT * FROM \"public\".\"t\"\nWHERE \"a\" = '1'\n  AND \"b\" IS NULL\n  AND (\nc > 5 -- note\n)\nORDER BY \"a\" DESC, \"b\" ASC\nLIMIT 10 OFFSET 20"
+            "SELECT * FROM \"public\".\"t\"\nWHERE \"a\" = '1'\n  AND \"b\" IS NULL\n  AND (\nc > 5 -- note\n)\nORDER BY \"a\" DESC, \"b\" ASC, \"id\" ASC\nLIMIT 10 OFFSET 20"
         );
-        let plain = select_sql("\"t\"", &[], Some("  "), &[], 0, 5).unwrap();
+        let plain = select_sql("\"t\"", &[], Some("  "), &[], &[], 0, 5).unwrap();
         assert_eq!(plain, "SELECT * FROM \"t\"\nLIMIT 5 OFFSET 0");
+        let keyed = select_sql("\"t\"", &[], None, &[], &["id".to_string()], 0, 5).unwrap();
+        assert_eq!(
+            keyed,
+            "SELECT * FROM \"t\"\nORDER BY \"id\" ASC\nLIMIT 5 OFFSET 0"
+        );
         let count = count_sql("\"t\"", &[f("a", FilterOp::Lt, &["3"])], None).unwrap();
         assert_eq!(count, "SELECT count(*) FROM \"t\"\nWHERE \"a\" < '3'");
     }
@@ -538,6 +587,13 @@ mod tests {
         assert_eq!(s[2].char_offset, "select 1;\nselect 'é';".chars().count());
         assert!(split_statements("  -- nothing\n /* at all */ ; ").is_empty());
         assert_eq!(split_statements("select $1").len(), 1);
+        let s = split_statements(
+            "CREATE FUNCTION f(a int) RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT CASE WHEN a > 1 THEN 1 ELSE 2 END; SELECT a; END; SELECT 2; \
+             CREATE PROCEDURE p() BEGIN ATOMIC SELECT 1; END;",
+        );
+        assert_eq!(s.len(), 3, "{s:?}");
+        assert!(s[0].text.trim_end().ends_with("END"));
+        assert_eq!(s[1].text.trim(), "SELECT 2");
         assert_eq!(
             split_statements("select 1 /* ; /* nested ; */ ; */ ; select 2").len(),
             2

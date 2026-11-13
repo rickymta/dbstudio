@@ -225,7 +225,7 @@ export type ValueKind =
 
 /**
  * Tagged cell value. `int`/`uInt` are numbers within +-(2^53-1), otherwise decimal strings;
- * `float` may be the strings "NaN", "Infinity", "-Infinity"; `bytes` is base64.
+ * `json` carries the raw JSON text; `float` may be the strings "NaN", "Infinity", "-Infinity"; `bytes` is base64.
  */
 export type Value =
   | { t: 'null' }
@@ -241,7 +241,8 @@ export type Value =
   | { t: 'dateTime'; v: string }
   | { t: 'timestamp'; v: string }
   | { t: 'uuid'; v: string }
-  | { t: 'json'; v: unknown }
+  /** `v` is the original JSON text from the server (parsed losslessly by the viewer only). */
+  | { t: 'json'; v: string }
   | { t: 'array'; v: Value[] }
   | { t: 'document'; v: Record<string, Value> };
 
@@ -363,4 +364,6 @@ export interface TableCountRequest {
   table: ObjectPath;
   filters: ColumnFilter[];
   rawWhere?: string | null;
+  /** When set, the count can be cancelled with `queryCancel` (it then fails with kind `cancelled`). */
+  queryId?: string;
 }

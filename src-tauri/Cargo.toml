@@ -23,7 +23,7 @@ dbstudio-store = { version = "0.1.0", path = "../crates/dbstudio-store" }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.12.5", features = [] }
-tauri-plugin-dialog = "2.7.3"
+tauri-plugin-dialog = "2.8.4"
 tokio = { workspace = true, features = ["time", "rt", "sync"] }
 tracing.workspace = true
 tracing-appender.workspace = true

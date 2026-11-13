@@ -1,4 +1,9 @@
 //! Building `mysql_async` options from a [`ConnectionConfig`], including the TLS modes.
+//!
+//! `Require` never verifies the certificate (even with a CA file); `Prefer`/`Disable` are open to
+//! man-in-the-middle attacks; only `VerifyCa`/`VerifyFull` authenticate the server. Without a CA
+//! file the bundled webpki-roots set is used, not the OS store. See the crate docs for the
+//! `VerifyCa` host-name limitation.
 
 use std::path::PathBuf;
 use std::time::Duration;

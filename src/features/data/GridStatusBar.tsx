@@ -1,5 +1,6 @@
 import { Octagon, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useSessionsStore } from '@/stores/sessions';
 import { Button } from '@/components/ui/Button';
 import { IconButton } from '@/components/ui/IconButton';
 import { Spinner } from '@/components/ui/Spinner';
@@ -18,8 +19,21 @@ export function GridStatusBar({ model }: GridStatusBarProps) {
   const loading = model.status === 'loading';
   const loaded = model.rows.length;
 
+  // Stop only makes sense when the driver can cancel a query (NFR-EXT-02).
+  const canCancel = useSessionsStore((s) =>
+    Object.values(s.sessionsByConnection).some(
+      (x) => x.sessionId === model.sessionId && x.descriptor.capabilities.cancelQuery,
+    ),
+  );
+
   const notice = model.capped
-    ? t('grid.capped', { max: nf.format(model.maxRows) })
+    ? model.capReason === 'cells'
+      ? t('grid.cappedCells', {
+          rows: nf.format(loaded),
+          cells: nf.format(model.maxCells),
+          columns: model.columns.length,
+        })
+      : t('grid.cappedRows', { max: nf.format(model.maxRows) })
     : model.status === 'stopped'
       ? t('grid.stopped')
       : null;
@@ -51,20 +65,33 @@ export function GridStatusBar({ model }: GridStatusBarProps) {
           {loaded === 1 ? t('status.loadedOne') : t('status.loaded', { count: nf.format(loaded) })}
           {model.total !== null && ` ${t('status.total', { total: nf.format(model.total) })}`}
         </span>
-        {model.total === null && (
+        {model.total === null && !model.counting && (
           <Button
             size="sm"
             variant="ghost"
             title={t('status.countTitle')}
-            disabled={model.counting}
             onClick={() => model.count()}
           >
-            {model.counting ? t('status.counting') : t('status.count')}
+            {t('status.count')}
           </Button>
         )}
+        {model.counting && (
+          <span className="flex items-center gap-1.5">
+            <Spinner />
+            <span>{t('status.counting')}</span>
+            {canCancel && (
+              <Button size="sm" variant="outline" onClick={() => model.cancelCount()}>
+                {t('status.cancelCount')}
+              </Button>
+            )}
+          </span>
+        )}
         {model.countError && (
-          <span className="text-danger">
-            {t('status.countError', { message: model.countError.message })}
+          <span
+            className="max-w-48 truncate text-danger"
+            title={t('status.countError', { message: model.countError.message })}
+          >
+            {t('status.countFailed')}
           </span>
         )}
         {model.lastFetchMs !== null && (
@@ -75,9 +102,11 @@ export function GridStatusBar({ model }: GridStatusBarProps) {
           <>
             <Spinner />
             <span>{t('status.loadingState')}</span>
-            <Button size="sm" variant="outline" onClick={() => model.stop()}>
-              <Octagon size={11} /> {t('status.stop')}
-            </Button>
+            {canCancel && (
+              <Button size="sm" variant="outline" onClick={() => model.stop()}>
+                <Octagon size={11} /> {t('status.stop')}
+              </Button>
+            )}
           </>
         )}
         <IconButton

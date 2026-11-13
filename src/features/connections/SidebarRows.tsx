@@ -15,7 +15,7 @@ import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
 import type { ConnectionGroup, ConnectionProfile, Uuid } from '@/lib/types';
 import { useIsOpening, useSession } from '@/stores/sessions';
-import { KIND_BADGE } from './kindConfig';
+import { kindBadgeFor } from './kindConfig';
 import { connectionColor } from './queries';
 
 export interface RowActions {
@@ -225,7 +225,7 @@ export function ProfileRow({
               aria-hidden
               className="w-[22px] shrink-0 rounded bg-surface-muted py-px text-center text-[9px] font-semibold leading-3 text-muted-foreground"
             >
-              {KIND_BADGE[profile.kind]}
+              {kindBadgeFor(profile.kind)}
             </span>
             <span className="min-w-0 truncate">{profile.name}</span>
             {profile.readOnly && (

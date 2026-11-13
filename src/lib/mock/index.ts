@@ -25,6 +25,7 @@ export const mock = {
   tableFetch: data.tableFetch,
   tableCount: data.tableCount,
   queryCancel: data.queryCancel,
+  setFetchMode: data.setFetchMode,
   async objectChildren(sessionId: string, path: Path) {
     await sleep();
     return mockChildren(sessions.mockSessionKind(sessionId), path);

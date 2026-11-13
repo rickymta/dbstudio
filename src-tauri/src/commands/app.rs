@@ -33,6 +33,17 @@ pub fn app_info(app: tauri::AppHandle) -> AppInfo {
     build_app_info(&info.name, &info.version.to_string())
 }
 
+/// Directory holding the application's log files (for display or copying in the UI).
+#[tauri::command]
+pub fn log_dir(app: tauri::AppHandle) -> Result<String, dbstudio_core::Error> {
+    use tauri::Manager;
+    tracing::debug!(command = "log_dir", "ipc call");
+    app.path()
+        .app_log_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| dbstudio_core::Error::Other(format!("log directory unavailable: {e}")))
+}
+
 #[tauri::command]
 pub fn list_drivers(state: State<'_, AppState>) -> Vec<DriverDescriptor> {
     tracing::debug!(command = "list_drivers", "ipc call");

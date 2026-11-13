@@ -20,15 +20,37 @@ const FILE_SUFFIX: &str = "log";
 
 static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
-/// Default filter: `debug` in debug builds, `info` otherwise; `RUST_LOG` overrides it.
+/// Crates that are noisy at debug level and may include user SQL or parameters.
+const QUIET_CRATES: &[&str] = &[
+    "tokio_postgres",
+    "mysql_async",
+    "mysql_common",
+    "rustls",
+    "tokio_rustls",
+    "hyper",
+    "h2",
+    "tao",
+    "wry",
+];
+
+/// Filter directives used when `RUST_LOG` is not set: `debug` in debug builds, `info`
+/// otherwise, with the chatty database and TLS libraries held at `info` in both.
+pub fn default_directives() -> String {
+    let base = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "info"
+    };
+    let mut out = String::from(base);
+    for krate in QUIET_CRATES {
+        out.push_str(&format!(",{krate}=info"));
+    }
+    out
+}
+
+/// `RUST_LOG` when set, otherwise [`default_directives`].
 pub fn env_filter() -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "info"
-        })
-    })
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_directives()))
 }
 
 /// Non-blocking writer onto a daily rotating file in `dir`, keeping [`MAX_LOG_FILES`] files.
@@ -107,5 +129,45 @@ mod tests {
         );
         let text = std::fs::read_to_string(&files[0]).unwrap();
         assert!(text.contains("session opened") && text.contains("db.example"));
+    }
+
+    #[test]
+    fn default_filter_silences_database_driver_debug_logs() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl io::Write for Buf {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buf = Buf::default();
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .with_env_filter(EnvFilter::new(default_directives()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!(target: "tokio_postgres::query", "SELECT secret FROM users");
+            tracing::debug!(target: "mysql_async::conn", "COM_QUERY");
+            tracing::info!(target: "tokio_postgres::query", "kept at info");
+            tracing::debug!(target: "dbstudio_lib::commands", "ipc call");
+        });
+        let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            !text.contains("SELECT secret") && !text.contains("COM_QUERY"),
+            "{text}"
+        );
+        assert!(text.contains("kept at info"));
+        if cfg!(debug_assertions) {
+            assert!(text.contains("ipc call"), "{text}");
+        }
     }
 }

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Eye, EyeOff, FolderOpen, XCircle } from 'lucide-react';
+import { CheckCircle2, Eye, EyeOff, FolderOpen, TriangleAlert, XCircle } from 'lucide-react';
 import { useId, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
@@ -9,10 +9,18 @@ import { Label } from '@/components/ui/Label';
 import { Select, type SelectOption } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { Switch } from '@/components/ui/Switch';
+import { toast } from '@/components/ui/toastStore';
 import { cn } from '@/lib/cn';
 import { pickFile } from '@/lib/dialog';
 import { ipc, toIpcError } from '@/lib/ipc';
-import type { ConnectionProfile, Environment, IpcError, ServerInfo, Uuid } from '@/lib/types';
+import type {
+  ConnectionProfile,
+  ConnectionsSnapshot,
+  Environment,
+  IpcError,
+  ServerInfo,
+  Uuid,
+} from '@/lib/types';
 import { groupPathOptions } from './connectionsTree';
 import {
   initialForm,
@@ -25,12 +33,13 @@ import {
 import { describeError } from './errors';
 import {
   COLOR_SWATCHES,
-  DATABASE_FIELD,
+  databaseFieldFor,
   ENVIRONMENT_COLOR,
   ENVIRONMENTS,
   TLS_MODES,
   TLS_VERIFYING,
 } from './kindConfig';
+import { needsTlsWarning } from './tlsWarning';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
 
 export interface ConnectionDialogProps {
@@ -161,20 +170,30 @@ function ConnectionDialogBody({
     if (saving || Object.keys(errors).length > 0) return;
     setSaving(true);
     setSaveError(null);
+    const built = profileFromForm(form, profile, () => crypto.randomUUID());
     try {
-      await ipc.connectionSave(
-        profileFromForm(form, profile, () => crypto.randomUUID()),
-        saveSecret(form),
-      );
+      await ipc.connectionSave(built, saveSecret(form));
       await qc.invalidateQueries({ queryKey: connectionsQueryKey });
       onClose();
     } catch (e) {
-      setSaveError(describeError(t, e));
+      const error = toIpcError(e);
+      // The backend may persist the profile and still fail (e.g. keychain error), so always reload.
+      await qc.invalidateQueries({ queryKey: connectionsQueryKey });
+      const saved = qc
+        .getQueryData<ConnectionsSnapshot>(connectionsQueryKey)
+        ?.profiles.find((p) => p.id === built.id);
+      const persisted = saved !== undefined && (!profile || saved.updatedAt !== profile.updatedAt);
+      if (error.kind === 'storage' && persisted) {
+        toast.error(describeError(t, error));
+        onClose();
+        return;
+      }
+      setSaveError(describeError(t, error));
       setSaving(false);
     }
   };
 
-  const fieldKey = DATABASE_FIELD[form.kind];
+  const fieldKey = databaseFieldFor(form.kind);
   const verifying = TLS_VERIFYING.has(form.tlsMode);
   const defaultColor = form.environment ? ENVIRONMENT_COLOR[form.environment] : undefined;
   const passwordPlaceholder =
@@ -380,6 +399,22 @@ function ConnectionDialogBody({
               onValueChange={(v) => update({ tlsMode: v as ConnectionForm['tlsMode'] })}
               options={tlsOptions}
             />
+            <p className="text-xs text-muted-foreground">{t(`tlsHint.${form.tlsMode}`)}</p>
+            {needsTlsWarning(form.tlsMode, form.host) && (
+              <p
+                role="note"
+                data-testid="tls-warning"
+                className={cn(
+                  'flex items-start gap-1.5 rounded-md px-2 py-1.5 text-xs',
+                  form.environment === 'production'
+                    ? 'bg-danger-soft text-danger'
+                    : 'bg-warning-soft text-warning',
+                )}
+              >
+                <TriangleAlert size={14} className="mt-px shrink-0" aria-hidden />
+                <span className="min-w-0">{t(`tlsWarning.${form.tlsMode}`)}</span>
+              </p>
+            )}
           </Field>
           {verifying && (
             <>

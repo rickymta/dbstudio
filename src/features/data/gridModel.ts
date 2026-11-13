@@ -17,20 +17,34 @@ import {
   type FilterDraft,
 } from './request';
 
-/** Rows requested per fetch page. */
-export const PAGE_SIZE = 1000;
+/**
+ * Rows requested per page, growing with each page so ~1M rows need tens of requests instead of
+ * a thousand. The last entry repeats.
+ */
+export const PAGE_SIZES: readonly number[] = [1_000, 5_000, 20_000];
 /** Rows per streamed batch (NFR-PERF-02: 500-1000). */
-export const FETCH_BATCH_SIZE = 500;
-/** Loading stops here (NFR-PERF-03) and the user is told. */
+export const FETCH_BATCH_SIZE = 1_000;
+/** Loading stops at this many rows (NFR-PERF-03) ... */
 export const MAX_LOADED_ROWS = 1_000_000;
+/** ... or when rows x columns reaches this many cells, whichever comes first (memory budget). */
+export const MAX_LOADED_CELLS = 20_000_000;
+/** After Stop, `queryCancel` is retried this many times when the backend says `notFound`. */
+export const CANCEL_RETRIES = 2;
+export const CANCEL_RETRY_DELAY_MS = 150;
+
+export type CapReason = 'rows' | 'cells';
 
 export type GridStatus = 'idle' | 'loading' | 'ready' | 'stopped' | 'error';
 
 export interface GridModelOptions {
   sessionId: Uuid;
   table: ObjectPath;
+  /** Fixed page size (default: growing `PAGE_SIZES`). */
   pageSize?: number;
   maxRows?: number;
+  maxCells?: number;
+  /** Called whenever the rows are discarded (reload): selections by row index become invalid. */
+  onReset?: () => void;
 }
 
 type Scheduler = { request: (cb: () => void) => unknown; cancel: (handle: unknown) => void };
@@ -47,8 +61,9 @@ const frameScheduler: Scheduler = {
 export class GridModel {
   readonly sessionId: Uuid;
   readonly table: ObjectPath;
-  readonly pageSize: number;
+  readonly pageSizes: readonly number[];
   readonly maxRows: number;
+  readonly maxCells: number;
 
   columns: ColumnMeta[] = [];
   /** Mutable on purpose; read it after `getVersion()` changed. */
@@ -57,8 +72,9 @@ export class GridModel {
   error: IpcError | null = null;
   /** No more rows to fetch (short page, or the cap was hit). */
   exhausted = false;
-  /** Loading stopped because `maxRows` was reached. */
+  /** Loading stopped because a row or cell budget was reached. */
   capped = false;
+  capReason: CapReason | null = null;
   sort: SortKey[] = [];
   applied: AppliedFilter = EMPTY_APPLIED;
   /** Row count from `tableCount` for the applied filter; `null` until requested. */
@@ -72,6 +88,9 @@ export class GridModel {
   private generation = 0;
   private countGeneration = 0;
   private queryId: Uuid | null = null;
+  private pagesLoaded = 0;
+  private countQueryId: Uuid | null = null;
+  private onReset: (() => void) | undefined;
   private listeners = new Set<() => void>();
   private framePending = false;
   private frameHandle: unknown = null;
@@ -83,8 +102,10 @@ export class GridModel {
   ) {
     this.sessionId = opts.sessionId;
     this.table = opts.table;
-    this.pageSize = opts.pageSize ?? PAGE_SIZE;
+    this.pageSizes = opts.pageSize ? [opts.pageSize] : PAGE_SIZES;
     this.maxRows = opts.maxRows ?? MAX_LOADED_ROWS;
+    this.maxCells = opts.maxCells ?? MAX_LOADED_CELLS;
+    this.onReset = opts.onReset;
   }
 
   // -- subscription -------------------------------------------------------------------------
@@ -126,11 +147,15 @@ export class GridModel {
   /** Discard rows and load from the first page, cancelling any fetch in flight. */
   reload(): void {
     this.cancelRunning();
+    this.cancelCount();
     this.generation++;
     this.rows = [];
+    this.pagesLoaded = 0;
     this.exhausted = false;
     this.capped = false;
+    this.capReason = null;
     this.error = null;
+    this.onReset?.();
     this.fetchPage();
   }
 
@@ -150,15 +175,43 @@ export class GridModel {
     }
   }
 
-  /** Ask the backend to cancel the running fetch; already received rows are kept. */
+  /**
+   * Stop the running fetch. From the user's point of view it is cancelled right away: rows that
+   * arrive later are ignored, rows already received are kept, and the state is "stopped". The
+   * backend cancel is retried when it does not know the query yet.
+   */
   stop(): void {
-    if (this.status === 'loading') this.cancelRunning();
+    if (this.status !== 'loading') return;
+    this.generation++; // everything still coming from this fetch is ignored
+    this.cancelRunning();
+    this.status = 'stopped';
+    this.notify();
   }
 
   private cancelRunning(): void {
     const id = this.queryId;
     this.queryId = null;
-    if (id) ipc.queryCancel(this.sessionId, id).catch(() => undefined);
+    if (id) this.cancelQuery(id);
+  }
+
+  private cancelQuery(id: Uuid): void {
+    const attempt = (left: number) => {
+      ipc.queryCancel(this.sessionId, id).catch((err: IpcError) => {
+        if (err?.kind === 'notFound' && left > 0 && !this.disposed) {
+          setTimeout(() => attempt(left - 1), CANCEL_RETRY_DELAY_MS);
+        }
+      });
+    };
+    attempt(CANCEL_RETRIES);
+  }
+
+  /** Most rows that may be loaded: the row cap, shrunk by the cell budget once columns are known. */
+  private rowBudget(): { max: number; reason: CapReason } {
+    const byCells =
+      this.columns.length > 0 ? Math.floor(this.maxCells / this.columns.length) : Infinity;
+    return byCells < this.maxRows
+      ? { max: byCells, reason: 'cells' }
+      : { max: this.maxRows, reason: 'rows' };
   }
 
   private fetchPage(): void {
@@ -166,9 +219,12 @@ export class GridModel {
     const queryId = crypto.randomUUID();
     this.queryId = queryId;
     const offset = this.rows.length;
-    const limit = Math.min(this.pageSize, this.maxRows - offset);
+    const budget = this.rowBudget();
+    const pageSize = this.pageSizes[Math.min(this.pagesLoaded, this.pageSizes.length - 1)]!;
+    const limit = Math.min(pageSize, budget.max - offset);
     if (limit <= 0) {
       this.capped = true;
+      this.capReason = budget.reason;
       this.exhausted = true;
       this.status = 'ready';
       this.notify();
@@ -188,6 +244,7 @@ export class GridModel {
     });
     const started = performance.now();
     let received = 0;
+    let endRows: number | null = null;
 
     ipc
       .tableFetch(this.sessionId, request, (e) => {
@@ -200,16 +257,23 @@ export class GridModel {
           for (const r of e.rows) rows.push(r);
           received += e.rows.length;
           this.scheduleNotify();
+        } else if (e.type === 'statementEnd' && e.end.outcome.kind === 'rows') {
+          endRows = e.end.outcome.rowCount;
         }
       })
       .then(() => {
         if (gen !== this.generation) return;
         this.queryId = null;
         this.lastFetchMs = Math.round(performance.now() - started);
-        if (this.rows.length >= this.maxRows) {
+        this.pagesLoaded++;
+        // `ipc.tableFetch` resolves after `statementEnd`, so its row count is authoritative.
+        const pageRows = endRows ?? received;
+        const after = this.rowBudget(); // columns are known now
+        if (this.rows.length >= after.max) {
           this.capped = true;
+          this.capReason = after.reason;
           this.exhausted = true;
-        } else if (received < limit) {
+        } else if (pageRows < limit) {
           this.exhausted = true;
         }
         this.status = 'ready';
@@ -256,7 +320,19 @@ export class GridModel {
 
   // -- count --------------------------------------------------------------------------------
 
+  /** Cancel a running count: back to "not counted", no error; a late result is ignored. */
+  cancelCount(): void {
+    const id = this.countQueryId;
+    this.countQueryId = null;
+    if (!this.counting) return;
+    this.countGeneration++;
+    this.counting = false;
+    if (id) this.cancelQuery(id);
+    this.notify();
+  }
+
   private resetCount(): void {
+    if (this.counting) this.cancelCount();
     this.countGeneration++;
     this.total = null;
     this.counting = false;
@@ -267,27 +343,32 @@ export class GridModel {
   count(): void {
     if (this.counting) return;
     const gen = ++this.countGeneration;
+    const queryId = crypto.randomUUID();
+    this.countQueryId = queryId;
     this.counting = true;
     this.countError = null;
     this.notify();
     ipc
-      .tableCount(this.sessionId, buildCountRequest(this.table, this.applied))
+      .tableCount(this.sessionId, buildCountRequest(this.table, this.applied, queryId))
       .then((n) => {
         if (gen !== this.countGeneration) return;
+        this.countQueryId = null;
         this.total = n;
         this.counting = false;
         this.notify();
       })
       .catch((err: IpcError) => {
         if (gen !== this.countGeneration) return;
-        this.countError = err;
+        this.countQueryId = null;
         this.counting = false;
+        if (err.kind !== 'cancelled') this.countError = err;
         this.notify();
       });
   }
 
   /** Cancel anything running and drop subscribers (the tab was closed). */
   dispose(): void {
+    this.cancelCount();
     this.disposed = true;
     this.cancelRunning();
     this.generation++;

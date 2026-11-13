@@ -287,6 +287,7 @@ async fn session_passthrough_commands() {
             table: table(),
             filters: vec![],
             raw_where: None,
+            query_id: None,
         },
     )
     .await
@@ -423,4 +424,34 @@ async fn duplicate_and_groups_commands() {
     let snap = connections::list_impl(&f.state).await.unwrap();
     assert!(snap.groups.is_empty());
     assert!(snap.profiles.iter().all(|p| p.group_id.is_none()));
+}
+
+#[tokio::test]
+async fn import_command_strips_unsafe_options_from_shared_files() {
+    let f = fixture();
+    let mut p = profile(false);
+    p.config
+        .options
+        .insert("init_command".into(), "DROP DATABASE prod".into());
+    p.config
+        .options
+        .insert("application_name".into(), "dbs".into());
+    let doc = serde_json::json!({
+        "format": "dbstudio-connections", "version": 1, "groups": [], "profiles": [p]
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shared.json");
+    std::fs::write(&path, doc.to_string()).unwrap();
+    let snap = connections::import_impl(&f.state, path.to_string_lossy().into_owned())
+        .await
+        .unwrap();
+    let options = &snap.profiles[0].config.options;
+    assert!(!options.contains_key("init_command"));
+    assert_eq!(
+        options.get("application_name").map(String::as_str),
+        Some("dbs")
+    );
+    // Export refuses non-.json targets.
+    let bad = dir.path().join("out.txt").to_string_lossy().into_owned();
+    assert!(connections::export_impl(&f.state, bad, None).await.is_err());
 }

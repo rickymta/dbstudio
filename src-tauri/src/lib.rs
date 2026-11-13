@@ -43,6 +43,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app::app_info,
             commands::app::list_drivers,
+            commands::app::log_dir,
             commands::connections::connections_list,
             commands::connections::connection_save,
             commands::connections::connection_delete,
@@ -74,5 +75,7 @@ pub fn run() {
     });
 }
 
+#[cfg(all(test, any(feature = "postgres", feature = "mysql")))]
+mod it;
 #[cfg(test)]
 mod tests;

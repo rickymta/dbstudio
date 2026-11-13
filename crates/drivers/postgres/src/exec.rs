@@ -16,14 +16,40 @@ use crate::sql::{self, Stmt};
 pub const DEFAULT_BATCH: usize = 1000;
 
 /// Cancellation state of a running request.
+///
+/// `gate` serialises "send a cancel request" against "the request ends": a cancel is only sent
+/// while the request has not retired, and a request that was (or is being) cancelled never
+/// returns its connection to the pool, so a late cancel can never hit a later statement.
 #[derive(Debug, Default)]
 pub struct Running {
     pub cancelled: AtomicBool,
+    gate: tokio::sync::Mutex<bool>,
 }
 
 impl Running {
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Mark the request finished (waiting for an in-flight cancel send); returns whether a
+    /// cancel was requested, in which case the connection must be discarded.
+    pub async fn retire(&self) -> bool {
+        *self.gate.lock().await = true;
+        self.is_cancelled()
+    }
+
+    /// Flag the request as cancelled and, if it is still running, send the cancel request.
+    pub async fn send_cancel(
+        &self,
+        shared: &crate::conn::Shared,
+        token: &tokio_postgres::CancelToken,
+    ) -> Result<()> {
+        let finished = self.gate.lock().await;
+        if *finished {
+            return Ok(());
+        }
+        self.cancelled.store(true, Ordering::Release);
+        shared.cancel_token(token).await
     }
 }
 
@@ -343,16 +369,17 @@ pub async fn run_table_select(
 }
 
 /// Run a `SELECT count(*)` in a read-only transaction.
-pub async fn run_count(conn: &mut PooledConn, select: &str) -> Result<u64> {
+pub async fn run_count(conn: &mut PooledConn, select: &str, running: &Running) -> Result<u64> {
+    let cancelled = || running.is_cancelled();
     conn.client
         .batch_execute("BEGIN READ ONLY")
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_statement_error(e, 0, cancelled()))?;
     conn.in_txn = true;
     let result = conn.client.query_one(select, &[]).await;
     let _ = conn.client.batch_execute("ROLLBACK").await;
     conn.in_txn = false;
-    let row = result.map_err(map_error)?;
+    let row = result.map_err(|e| map_statement_error(e, 0, cancelled()))?;
     let n: i64 = row.get(0);
     Ok(n.max(0) as u64)
 }

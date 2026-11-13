@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { ipc } from '@/lib/ipc';
-import type { SessionInfo, Uuid } from '@/lib/types';
+import type { IpcError, SessionInfo, Uuid } from '@/lib/types';
 import { useTabsStore } from './tabs';
 
 interface SessionsState {
@@ -21,6 +21,8 @@ function omit<V>(record: Record<string, V>, key: string): Record<string, V> {
 }
 
 const inFlight = new Map<Uuid, Promise<SessionInfo>>();
+/** Connections whose in-flight `open` was cancelled by `close`; the session is closed on arrival. */
+const cancelled = new Set<Uuid>();
 
 export const useSessionsStore = create<SessionsState>((set, get) => ({
   sessionsByConnection: {},
@@ -29,11 +31,19 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
     const existing = get().sessionsByConnection[connectionId];
     if (existing) return Promise.resolve(existing);
     const pending = inFlight.get(connectionId);
-    if (pending) return pending;
+    if (pending) {
+      // Asking again while a cancelled open is still in flight revives it.
+      cancelled.delete(connectionId);
+      return pending;
+    }
     set((s) => ({ opening: { ...s.opening, [connectionId]: true } }));
     const promise = ipc
       .sessionOpen(connectionId, password)
       .then((info) => {
+        if (cancelled.delete(connectionId)) {
+          ipc.sessionClose(info.sessionId).catch(() => undefined);
+          throw { kind: 'cancelled', message: 'connection cancelled' } satisfies IpcError;
+        }
         set((s) => ({ sessionsByConnection: { ...s.sessionsByConnection, [connectionId]: info } }));
         return info;
       })
@@ -46,7 +56,13 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
   },
   close: async (connectionId) => {
     const info = get().sessionsByConnection[connectionId];
-    if (!info) return;
+    if (!info) {
+      if (inFlight.has(connectionId)) {
+        cancelled.add(connectionId);
+        set((st) => ({ opening: omit(st.opening, connectionId) }));
+      }
+      return;
+    }
     set((s) => ({ sessionsByConnection: omit(s.sessionsByConnection, connectionId) }));
     useTabsStore.getState().closeSessionTabs(info.sessionId);
     try {

@@ -75,6 +75,11 @@ pub struct PathSegment {
 }
 
 /// Location of a node in the object tree. The empty path is the server root.
+///
+/// Paths mirror the tree exactly, including [`ObjectKind::Folder`] segments: the path of a node
+/// is the path of its parent (the path `list_children` was called with) plus the node's own
+/// segment, e.g. `[Database db, Folder tables, Table t, Folder columns, Column c]`. Drivers must
+/// also accept paths with or without Folder segments in every method.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectPath {
@@ -113,7 +118,7 @@ impl ObjectPath {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectNode {
-    /// Full path of the node.
+    /// Full path of the node: the parent's path plus this node's own segment.
     pub path: ObjectPath,
     /// Kind of the node.
     pub kind: ObjectKind,

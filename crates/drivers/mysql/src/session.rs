@@ -32,7 +32,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::error::{map_connect_error, map_query_error};
-use crate::sql::{count_sql, quote_ident, select_sql, table_target};
+use crate::sql::{check_raw_where, count_sql, quote_ident, select_sql, table_target};
 use crate::value::{ColInfo, decode_cell};
 use crate::{browse, detect_mariadb, normalize_version};
 
@@ -110,6 +110,9 @@ impl Ctl {
     }
 }
 
+/// Key columns per `(database, table)` with the time they were read.
+type KeyCache = HashMap<(String, String), (Instant, Arc<Vec<String>>)>;
+
 /// Shared state of a session.
 pub(crate) struct Inner {
     pub(crate) pool: Pool,
@@ -124,6 +127,8 @@ pub(crate) struct Inner {
     /// Ids of pooled connections whose current database was changed by a request. The pool's
     /// `COM_RESET_CONNECTION` does not undo `USE`, so these are repaired lazily.
     dirty_db: Mutex<HashSet<u32>>,
+    /// Key columns per `(database, table)` with the time they were read.
+    keys: Mutex<KeyCache>,
 }
 
 impl std::fmt::Debug for Inner {
@@ -177,7 +182,73 @@ impl Inner {
             is_mariadb,
             default_db,
             dirty_db: Mutex::new(HashSet::new()),
+            keys: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Columns that make row order unique: the primary key, else the first unique index made of
+    /// NOT NULL, non-prefix columns; empty for views and keyless tables. Cached for a minute.
+    pub(crate) async fn key_columns(
+        &self,
+        conn: &mut Conn,
+        db: &str,
+        table: &str,
+    ) -> Result<Arc<Vec<String>>> {
+        const TTL: Duration = Duration::from_secs(60);
+        let key = (db.to_string(), table.to_string());
+        if let Some((at, cols)) = self
+            .keys
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&key)
+        {
+            if at.elapsed() < TTL {
+                return Ok(cols.clone());
+            }
+        }
+        let rows: Vec<Row> = conn
+            .exec(
+                "SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, NULLABLE, SUB_PART \
+                 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
+                 ORDER BY INDEX_NAME = 'PRIMARY' DESC, NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX",
+                (db, table),
+            )
+            .await
+            .map_err(map_query_error)?;
+        // Group consecutive rows by index; pick PRIMARY, else the first fully usable unique one.
+        let mut chosen: Vec<String> = Vec::new();
+        let mut current: Option<(String, bool, Vec<String>)> = None;
+        let finish = |cur: Option<(String, bool, Vec<String>)>, chosen: &mut Vec<String>| {
+            if let Some((_, usable, cols)) = cur {
+                if chosen.is_empty() && usable && !cols.is_empty() {
+                    *chosen = cols;
+                }
+            }
+        };
+        for r in &rows {
+            let name = cell(r, 0).unwrap_or_default();
+            let unique = cell(r, 1).as_deref() == Some("0");
+            let col = cell(r, 3);
+            let usable_col =
+                col.is_some() && cell(r, 4).unwrap_or_default().is_empty() && cell(r, 5).is_none();
+            if current.as_ref().is_none_or(|c| c.0 != name) {
+                finish(current.take(), &mut chosen);
+                current = Some((name.clone(), unique, Vec::new()));
+            }
+            if let Some(c) = current.as_mut() {
+                c.1 = c.1 && usable_col;
+                if let Some(col) = col {
+                    c.2.push(col);
+                }
+            }
+        }
+        finish(current.take(), &mut chosen);
+        let cols = Arc::new(chosen);
+        self.keys
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key, (Instant::now(), cols.clone()));
+        Ok(cols)
     }
 
     fn ensure_open(&self) -> Result<()> {
@@ -736,17 +807,30 @@ impl Session for MySqlSession {
             max_rows: None,
         };
         let (res, mut broken) = async {
-            if let Err(e) = conn.query_drop("START TRANSACTION READ ONLY").await {
-                return (Err(map_query_error(e)), false);
-            }
             let nb = match Self::no_backslash_escapes(&mut conn).await {
                 Ok(nb) => nb,
                 Err(e) => return (Err(e), false),
             };
-            let sql = match select_sql(&db, &table, &req, nb) {
+            if let Some(raw) = req.raw_where.as_deref() {
+                if let Err(e) = check_raw_where(raw, nb) {
+                    return (Err(e), false);
+                }
+            }
+            let keys = match self.inner.key_columns(&mut conn, &db, &table).await {
+                Ok(k) => k,
+                Err(e) => return (Err(e), false),
+            };
+            let sql = match select_sql(&db, &table, &req, nb, &keys) {
                 Ok(s) => s,
                 Err(e) => return (Err(e), false),
             };
+            // Let the server confirm this is exactly one statement before running it.
+            if let Err(e) = prepare_single(&mut conn, &sql).await {
+                return (Err(e), false);
+            }
+            if let Err(e) = conn.query_drop("START TRANSACTION READ ONLY").await {
+                return (Err(map_query_error(e)), false);
+            }
             stream_query(
                 &self.inner,
                 &mut conn,
@@ -774,12 +858,17 @@ impl Session for MySqlSession {
     async fn count_table(&self, req: TableCountRequest) -> Result<u64> {
         let (db, table) = table_target(&req.table)?;
         let mut conn = self.inner.acquire().await?;
+        let guard = req.query_id.map(|id| self.inner.begin(conn.id(), id, None));
         let r = async {
+            let nb = Self::no_backslash_escapes(&mut conn).await?;
+            if let Some(raw) = req.raw_where.as_deref() {
+                check_raw_where(raw, nb)?;
+            }
+            let sql = count_sql(&db, &table, &req, nb)?;
+            prepare_single(&mut conn, &sql).await?;
             conn.query_drop("START TRANSACTION READ ONLY")
                 .await
                 .map_err(map_query_error)?;
-            let nb = Self::no_backslash_escapes(&mut conn).await?;
-            let sql = count_sql(&db, &table, &req, nb)?;
             let row: Option<Row> = conn.query_first(sql).await.map_err(map_query_error)?;
             let n = row
                 .and_then(|r| cell(&r, 0))
@@ -788,6 +877,14 @@ impl Session for MySqlSession {
             Ok(n)
         }
         .await;
+        let ctl = match guard {
+            Some(g) => Some(g.end().await),
+            None => None,
+        };
+        let r = match &ctl {
+            Some(c) => c.finalize(r),
+            None => r,
+        };
         let mut broken = is_conn_error(&r);
         if !broken && conn.query_drop("ROLLBACK").await.is_err() {
             broken = true;
@@ -800,12 +897,31 @@ impl Session for MySqlSession {
         if self.inner.closed.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
+        // Stop statements that are still running; they end with `Cancelled`.
+        let running: Vec<Arc<Ctl>> = self
+            .inner
+            .running
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        for ctl in &running {
+            ctl.kill(&self.inner, KillReason::Cancel).await;
+        }
         let pool = self.inner.pool.clone();
         match tokio::time::timeout(Duration::from_secs(5), pool.disconnect()).await {
             Ok(Ok(())) | Err(_) => Ok(()),
             Ok(Err(e)) => Err(map_query_error(e)),
         }
     }
+}
+
+/// Ask the server to prepare `sql`: `COM_STMT_PREPARE` rejects anything that is not exactly one
+/// statement, which backs up the lexical checks on user-typed fragments.
+async fn prepare_single(conn: &mut Conn, sql: &str) -> Result<()> {
+    let stmt = conn.prep(sql).await.map_err(map_query_error)?;
+    conn.close(stmt).await.map_err(map_query_error)
 }
 
 fn is_conn_error<T>(r: &Result<T>) -> bool {

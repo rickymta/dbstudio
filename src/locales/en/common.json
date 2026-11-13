@@ -2,13 +2,6 @@
   "app": {
     "name": "DBStudio"
   },
-  "sidebar": {
-    "connections": "Connections",
-    "empty": "No connections yet",
-    "emptyHint": "Create a connection to start browsing a database.",
-    "newConnection": "New connection",
-    "availableInPhase": "Available in phase {{phase}}"
-  },
   "tabs": {
     "welcome": "Welcome",
     "close": "Close tab"
@@ -73,5 +66,8 @@
   },
   "errors": {
     "unknown": "Something went wrong"
+  },
+  "spinner": {
+    "loading": "Loading"
   }
 }

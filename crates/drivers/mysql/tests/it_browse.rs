@@ -79,8 +79,12 @@ async fn tree_levels() {
         }
         assert!(!tn.contains(&"v_child"));
         assert!(tables.iter().all(|n| n.kind == K::Table && n.has_children));
-        // Canonical table path has no folder segment.
-        assert_eq!(tables[0].path, db().child(K::Table, &tables[0].name));
+        // A node's path is its parent's path plus its own segment.
+        assert_eq!(
+            tables[0].path,
+            db().child(K::Folder, folder::TABLES)
+                .child(K::Table, &tables[0].name)
+        );
 
         // Views, functions, procedures.
         let views = kids(&*s, &db().child(K::Folder, folder::VIEWS)).await;
@@ -89,20 +93,37 @@ async fn tree_levels() {
         let funcs = kids(&*s, &db().child(K::Folder, folder::FUNCTIONS)).await;
         assert_eq!(names(&funcs), ["fn_add"]);
         assert_eq!(funcs[0].kind, K::Function);
+        assert_eq!(
+            funcs[0].path,
+            db().child(K::Folder, folder::FUNCTIONS)
+                .child(K::Function, "fn_add")
+        );
+        assert_eq!(
+            views[0].path,
+            db().child(K::Folder, folder::VIEWS)
+                .child(K::View, "v_child")
+        );
         assert!(funcs[0].detail.as_deref().unwrap_or("").contains("int"));
         let procs = kids(&*s, &db().child(K::Folder, folder::PROCEDURES)).await;
         assert_eq!(names(&procs), ["pr_noop"]);
         assert_eq!(procs[0].kind, K::Procedure);
 
         // Table folders and children.
-        let child = db().child(K::Table, "child");
+        let child = db()
+            .child(K::Folder, folder::TABLES)
+            .child(K::Table, "child");
         let tf = kids(&*s, &child).await;
         assert_eq!(names(&tf), ["columns", "indexes", "triggers"], "[{tag}]");
         assert!(tf.iter().all(|f| f.has_children));
         let cols = kids(&*s, &child.child(K::Folder, folder::COLUMNS)).await;
         assert_eq!(names(&cols), ["id", "parent_id", "note", "gen_len"]);
         assert!(cols.iter().all(|c| c.kind == K::Column && !c.has_children));
-        assert_eq!(cols[0].path, child.child(K::Column, "id"));
+        assert_eq!(
+            cols[0].path,
+            child
+                .child(K::Folder, folder::COLUMNS)
+                .child(K::Column, "id")
+        );
         let idx = kids(&*s, &child.child(K::Folder, folder::INDEXES)).await;
         let mut inames = names(&idx);
         inames.sort();
@@ -272,6 +293,10 @@ async fn details_of_tables_and_views() {
             .unwrap();
         assert_eq!(d.kind, K::Table);
         assert_eq!(d.path, db().child(K::Table, "child"));
+        let folded = db()
+            .child(K::Folder, folder::TABLES)
+            .child(K::Table, "child");
+        assert_eq!(s.table_details(&folded).await.unwrap().path, folded);
         let id = &d.columns[0];
         assert_eq!(
             (id.name.as_str(), id.ordinal, id.primary_key, id.nullable),
@@ -313,7 +338,11 @@ async fn details_of_tables_and_views() {
         assert_eq!(fk.name, "fk_child_parent");
         assert_eq!(fk.columns, ["parent_id"]);
         assert_eq!(fk.referenced_columns, ["id"]);
-        assert_eq!(fk.referenced_table, db().child(K::Table, "parent"));
+        assert_eq!(
+            fk.referenced_table,
+            db().child(K::Folder, folder::TABLES)
+                .child(K::Table, "parent")
+        );
         assert_eq!(fk.on_delete.as_deref(), Some("CASCADE"));
         assert_eq!(fk.on_update.as_deref(), Some("RESTRICT"));
         assert!(d.size_bytes.unwrap() > 0);
@@ -370,5 +399,42 @@ async fn details_of_tables_and_views() {
             Err(Error::NotFound(_))
         ));
         assert!(s.table_details(&ObjectPath::root()).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn roles_folder_depends_on_privileges() {
+    if !it_enabled() {
+        return;
+    }
+    for t in TARGETS {
+        let tag = t.name;
+        let root = root_session(t).await;
+        let top = kids(&*root, &ObjectPath::root()).await;
+        let folder_node = top
+            .iter()
+            .find(|n| n.kind == K::Folder && n.name == folder::ROLES)
+            .unwrap_or_else(|| panic!("[{tag}] roles folder missing"));
+        assert_eq!(
+            folder_node.path,
+            ObjectPath::root().child(K::Folder, folder::ROLES)
+        );
+        assert!(
+            top.last().unwrap().kind == K::Folder,
+            "databases first, folder last"
+        );
+        let roles = kids(&*root, &folder_node.path).await;
+        let r = roles
+            .iter()
+            .find(|n| n.name == "'root'@'%'")
+            .unwrap_or_else(|| panic!("[{tag}] {:?}", names(&roles)));
+        assert_eq!(r.kind, K::Role);
+        assert_eq!(r.path, folder_node.path.child(K::Role, "'root'@'%'"));
+        assert!(!r.has_children);
+        assert!(roles.iter().any(|n| n.name == "'dbstudio'@'%'"));
+        // Without privilege the folder is silently absent.
+        let s = user_session(t).await;
+        let top = kids(&*s, &ObjectPath::root()).await;
+        assert!(!top.iter().any(|n| n.name == folder::ROLES), "[{tag}]");
     }
 }

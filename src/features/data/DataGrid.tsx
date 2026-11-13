@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp } from 'lucide-react';
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -20,10 +21,12 @@ import {
   defaultColumnWidth,
   formatCell,
   isNumericKind,
+  LARGE_COPY_BYTES,
+  estimateValueSize,
   valueToText,
   type CellKind,
 } from './format';
-import { computeScale, rowTop, scrollTopToRevealRow } from './gridScale';
+import { anchoredScrollTop, computeScale, rowTop, scrollTopToRevealRow } from './gridScale';
 import type { GridModel } from './gridModel';
 import { isFilterActive } from './request';
 import { loadScroll, saveScroll, useDataUiStore, useTabUi, type CellPos } from './store';
@@ -63,6 +66,8 @@ export function DataGrid({ tabId, model }: DataGridProps) {
   const [ui, patchUi] = useTabUi(tabId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const ratioRef = useRef(1);
+  const gridId = useId();
+  const cellId = (r: number, c: number) => `${gridId}-r${r}c${c}`;
 
   const { columns, rows } = model;
   const rowCount = rows.length;
@@ -104,8 +109,16 @@ export function DataGrid({ tabId, model }: DataGridProps) {
   const bodyViewport = Math.max(ROW_HEIGHT, viewportHeight - HEADER_HEIGHT);
   const scale = computeScale(rowCount, ROW_HEIGHT, bodyViewport);
 
-  useEffect(() => {
+  // When appended pages change the scroll ratio, keep the row at the top of the viewport: the
+  // virtual offset stays and the real scrollTop is recomputed for the new ratio.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const previous = ratioRef.current;
     ratioRef.current = scale.ratio;
+    if (!el || previous === scale.ratio) return;
+    const virtualOffset = rowVirtualizer.scrollOffset ?? 0;
+    el.scrollTop = anchoredScrollTop(virtualOffset, scale.ratio);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale.ratio]);
 
   const widthsKey = widths.join(',');
@@ -141,6 +154,12 @@ export function DataGrid({ tabId, model }: DataGridProps) {
 
   const totalWidth = colVirtualizer.getTotalSize();
   const selection = ui.selection;
+  const activeCellId =
+    selection &&
+    vRows.some((r) => r.index === selection.row) &&
+    vCols.some((c) => c.index === selection.col)
+      ? cellId(selection.row, selection.col)
+      : undefined;
 
   // -- selection ------------------------------------------------------------------------------
 
@@ -162,8 +181,9 @@ export function DataGrid({ tabId, model }: DataGridProps) {
     if (!selection) return;
     const value = rows[selection.row]?.[selection.col];
     if (!value) return;
+    if (estimateValueSize(value) > LARGE_COPY_BYTES && !window.confirm(t('grid.copyLarge'))) return;
     void navigator.clipboard?.writeText(valueToText(value)).catch(() => undefined);
-  }, [rows, selection]);
+  }, [rows, selection, t]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const nCols = columns.length;
@@ -310,7 +330,8 @@ export function DataGrid({ tabId, model }: DataGridProps) {
         ref={scrollRef}
         role="grid"
         aria-label={t('grid.ariaLabel')}
-        aria-rowcount={rowCount}
+        aria-rowcount={rowCount + 1}
+        aria-activedescendant={activeCellId}
         aria-colcount={columns.length}
         tabIndex={0}
         onKeyDown={onKeyDown}
@@ -324,6 +345,7 @@ export function DataGrid({ tabId, model }: DataGridProps) {
           {/* Sticky header */}
           <div
             role="row"
+            aria-rowindex={1}
             className="sticky top-0 z-20 border-b border-border bg-surface-muted"
             style={{ width: totalWidth, height: HEADER_HEIGHT }}
           >
@@ -403,7 +425,7 @@ export function DataGrid({ tabId, model }: DataGridProps) {
                 <div
                   key={vr.index}
                   role="row"
-                  aria-rowindex={vr.index + 1}
+                  aria-rowindex={vr.index + 2}
                   className="group absolute left-0 hover:bg-accent/5"
                   style={{ top, height: ROW_HEIGHT, width: totalWidth }}
                 >
@@ -424,12 +446,13 @@ export function DataGrid({ tabId, model }: DataGridProps) {
                     return (
                       <div
                         key={vc.key}
+                        id={cellId(vr.index, vc.index)}
                         role="gridcell"
                         aria-selected={selected || undefined}
                         data-r={vr.index}
                         data-c={vc.index}
                         className={cn(
-                          'absolute top-0 truncate border-r border-b border-border/60 px-2 leading-[23px]',
+                          'absolute top-0 truncate border-r border-b border-border/60 px-2 leading-[23px] [unicode-bidi:isolate]',
                           d.align === 'right' && 'text-right',
                           TONE[d.kind],
                           selected &&

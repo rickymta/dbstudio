@@ -1,13 +1,48 @@
 import { useQuery } from '@tanstack/react-query';
-import { Languages, Monitor, Moon, Sun } from 'lucide-react';
+import { Languages, Lock, Monitor, Moon, Sun } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Tooltip } from '@/components/ui/Tooltip';
+import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
 import { ipc } from '@/lib/ipc';
 import { setLanguage, type Language } from '@/lib/i18n';
+import { useTabsStore } from '@/stores/tabs';
 import { THEME_MODES, useThemeStore, type ThemeMode } from '@/stores/theme';
 
 const themeIcons: Record<ThemeMode, typeof Sun> = { system: Monitor, light: Sun, dark: Moon };
+
+/** Connection of the active tab: name, environment color and label, read-only lock (CONN-03). */
+function ActiveConnection() {
+  const { t } = useTranslation();
+  const connectionId = useTabsStore(
+    (s) => s.tabs.find((x) => x.id === s.activeId)?.payload?.connectionId,
+  );
+  const profile = useConnectionProfile(connectionId ?? '');
+  if (!connectionId || !profile) return null;
+  const color = connectionColor(profile);
+  return (
+    <span
+      data-testid="status-connection"
+      className="flex min-w-0 items-center gap-1.5 border-l border-border pl-3"
+    >
+      <span
+        data-testid="status-connection-color"
+        aria-hidden
+        className="size-2 shrink-0 rounded-full bg-border"
+        style={color ? { backgroundColor: color } : undefined}
+      />
+      <span className="truncate text-foreground" title={profile.name}>
+        {profile.name}
+      </span>
+      {profile.environment && (
+        <span className="shrink-0">{t(`connections:environment.${profile.environment}`)}</span>
+      )}
+      {profile.readOnly && (
+        <Lock size={11} aria-label={t('connections:row.readOnly')} className="shrink-0" />
+      )}
+    </span>
+  );
+}
 
 export function StatusBar() {
   const { t, i18n } = useTranslation();
@@ -22,10 +57,13 @@ export function StatusBar() {
 
   return (
     <footer className="flex h-7 shrink-0 items-center justify-between border-t border-border bg-surface px-3 text-xs text-muted-foreground">
-      <span data-testid="app-version">
-        {info ? `${info.name} v${info.version}` : t('app.name')}
-        {info && info.os !== 'browser' ? ` · ${info.os}/${info.arch}` : ''}
-      </span>
+      <div className="flex min-w-0 items-center gap-3">
+        <span data-testid="app-version" className="shrink-0">
+          {info ? `${info.name} v${info.version}` : t('app.name')}
+          {info && info.os !== 'browser' ? ` · ${info.os}/${info.arch}` : ''}
+        </span>
+        <ActiveConnection />
+      </div>
       <div className="flex items-center gap-1">
         <Tooltip content={`${t('theme.label')}: ${t(`theme.${mode}`)}`}>
           <Button

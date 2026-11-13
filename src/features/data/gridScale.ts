@@ -73,3 +73,11 @@ export function scrollTopToRevealRow(
   else return null;
   return Math.max(0, target / scale.ratio);
 }
+
+/**
+ * Real `scrollTop` that keeps the same virtual offset (hence the same first visible row) after
+ * the scale ratio changed, e.g. because another page of rows was appended.
+ */
+export function anchoredScrollTop(virtualOffset: number, newRatio: number): number {
+  return Math.max(0, virtualOffset / newRatio);
+}

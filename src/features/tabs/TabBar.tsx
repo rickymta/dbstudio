@@ -1,5 +1,5 @@
 import { X } from 'lucide-react';
-import type { MouseEvent } from 'react';
+import type { KeyboardEvent, MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
 import { cn } from '@/lib/cn';
@@ -48,6 +48,8 @@ function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
         role="tab"
         type="button"
         aria-selected={active}
+        tabIndex={active ? 0 : -1}
+        data-tab-id={tab.id}
         title={title}
         onClick={() => activate(tab.id)}
         className={cn(
@@ -62,6 +64,7 @@ function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
         <button
           type="button"
           aria-label={`${t('tabs.close')}: ${title}`}
+          tabIndex={-1}
           onClick={() => closeTab(tab.id)}
           className="mr-1 rounded p-0.5 text-muted-foreground opacity-60 hover:bg-surface-muted hover:opacity-100 group-hover:opacity-100"
         >
@@ -75,10 +78,47 @@ function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
 export function TabBar() {
   const tabs = useTabsStore((s) => s.tabs);
   const activeId = useTabsStore((s) => s.activeId);
+  const activate = useTabsStore((s) => s.activate);
+  const closeTab = useTabsStore((s) => s.closeTab);
+
+  const focusTab = (list: HTMLElement, id: string | undefined) => {
+    if (!id) return;
+    const el = Array.from(list.querySelectorAll<HTMLElement>('[data-tab-id]')).find(
+      (e) => e.dataset.tabId === id,
+    );
+    el?.focus();
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const list = e.currentTarget;
+    const current = (e.target as HTMLElement).closest<HTMLElement>('[data-tab-id]');
+    if (!current) return;
+    const id = current.dataset.tabId!;
+    const index = tabs.findIndex((t) => t.id === id);
+    const go = (target: number) => {
+      const next = tabs[(target + tabs.length) % tabs.length];
+      if (!next) return;
+      e.preventDefault();
+      activate(next.id);
+      focusTab(list, next.id);
+    };
+    if (e.key === 'ArrowRight') go(index + 1);
+    else if (e.key === 'ArrowLeft') go(index - 1);
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(tabs.length - 1);
+    else if (e.key === 'Delete' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'w')) {
+      if (!tabs[index]?.closable) return;
+      e.preventDefault();
+      closeTab(id);
+      // The store picks the neighbor; focus it once React has rendered.
+      setTimeout(() => focusTab(list, useTabsStore.getState().activeId), 0);
+    }
+  };
 
   return (
     <div
       role="tablist"
+      onKeyDown={onKeyDown}
       className="flex h-9 shrink-0 items-end gap-px overflow-x-auto border-b border-border bg-surface-muted px-1"
     >
       {tabs.map((tab) => (

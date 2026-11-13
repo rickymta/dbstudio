@@ -63,6 +63,35 @@ fn kind_of_relkind(relkind: &str) -> ObjectKind {
     }
 }
 
+/// Columns of the primary key, else of the smallest unique index whose columns are all
+/// `NOT NULL`; empty for views and tables without such a key.
+pub async fn key_columns(client: &Client, schema: &str, name: &str) -> Result<Vec<String>> {
+    let rows = client
+        .query(
+            "WITH idx AS ( \
+                SELECT i.indrelid, i.indkey::int2[] AS keys \
+                FROM pg_index i \
+                JOIN pg_class c ON c.oid = i.indrelid \
+                JOIN pg_namespace n ON n.oid = c.relnamespace \
+                JOIN pg_class ic ON ic.oid = i.indexrelid \
+                WHERE n.nspname = $1 AND c.relname = $2 AND i.indisvalid \
+                  AND i.indpred IS NULL AND i.indexprs IS NULL \
+                  AND (i.indisprimary OR (i.indisunique AND NOT EXISTS ( \
+                        SELECT 1 FROM unnest(i.indkey::int2[]) u(k) \
+                        JOIN pg_attribute a2 ON a2.attrelid = i.indrelid AND a2.attnum = u.k \
+                        WHERE NOT a2.attnotnull))) \
+                ORDER BY i.indisprimary DESC, i.indnatts, ic.relname LIMIT 1) \
+             SELECT a.attname::text \
+             FROM idx CROSS JOIN LATERAL unnest(idx.keys) WITH ORDINALITY k(attnum, ord) \
+             JOIN pg_attribute a ON a.attrelid = idx.indrelid AND a.attnum = k.attnum \
+             ORDER BY k.ord",
+            &[&schema, &name],
+        )
+        .await
+        .map_err(map_error)?;
+    Ok(rows.iter().map(|r| r.get(0)).collect())
+}
+
 pub async fn table_details(
     client: &Client,
     path: &ObjectPath,

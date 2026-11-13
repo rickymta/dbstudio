@@ -5,6 +5,24 @@
 //! see the `session` module docs for the streaming and cancellation design and the `value`
 //! module docs for how column types map to [`dbstudio_core::Value`].
 //!
+//! # Security notes
+//!
+//! * `Disable` and `Prefer` do not protect against an active man-in-the-middle (`Prefer` even
+//!   falls back to plain text); without TLS, `caching_sha2_password` may request the server's
+//!   RSA public key over the same unauthenticated channel. Only `VerifyCa` and `VerifyFull`
+//!   authenticate the server.
+//! * `Require` encrypts but never verifies the certificate, even when `ca_cert_path` is set.
+//! * Without a CA file the verifying modes use the bundled Mozilla root set (`webpki-roots`),
+//!   NOT the operating system's certificate store.
+//! * Known limitation: `VerifyCa` should skip the host-name check, but `mysql_async` detects a
+//!   name mismatch by matching an old rustls error text that rustls 0.23 no longer produces, so
+//!   `VerifyCa` currently behaves like `VerifyFull` (stricter, never looser). A clear error
+//!   message is returned when the host is not in the certificate.
+//! * `Contains` / `Eq` style filters compare with the connection collation (case-insensitive
+//!   for the default `utf8mb4` collations).
+//! * `raw_where` is user-trusted SQL, but must be a single expression: a lexer rejects `;` and
+//!   unbalanced parentheses and the server confirms the statement with `COM_STMT_PREPARE`.
+//!
 //! Metadata queries avoid 8.x-only features so they should also work on 5.7, but this has not
 //! been tested against a real 5.7 server.
 
@@ -108,7 +126,17 @@ impl Driver for MySqlDriver {
             Ok(v) => v,
             Err(TryError::Core(e)) => return Err(e),
             Err(TryError::My(e)) => {
-                return Err(error::map_connect_error(e, secret_text.as_deref()));
+                let err = error::map_connect_error(e, secret_text.as_deref());
+                return Err(match err {
+                    Error::Tls(m) if m.contains("not valid for name") => Error::Tls(format!(
+                        "{m}. The server certificate does not list host `{}`. Connect with a host \
+                         name or address that appears in the certificate, or re-issue it with \
+                         that name. Note: with this driver verify-ca also checks the host name \
+                         (the TLS library cannot skip it).",
+                        config.host
+                    )),
+                    other => other,
+                });
             }
         };
 

@@ -156,7 +156,7 @@ impl Drop for BrowseConn {
 
 async fn connect(shared: &Shared, db: &str) -> Result<BrowseConn> {
     Ok(BrowseConn {
-        conn: shared.acquire(db).await?,
+        conn: shared.acquire_catalog(db).await?,
     })
 }
 

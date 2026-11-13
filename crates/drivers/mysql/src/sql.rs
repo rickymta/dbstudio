@@ -148,12 +148,10 @@ pub fn where_clause(filters: &[ColumnFilter], raw_where: Option<&str>, nb: bool)
     }
 }
 
-/// `ORDER BY ...` clause (with a leading space) or an empty string.
-pub fn order_clause(sort: &[SortKey]) -> String {
-    if sort.is_empty() {
-        return String::new();
-    }
-    let keys: Vec<String> = sort
+/// `ORDER BY ...` clause (with a leading space) or an empty string. `tie_break` columns (key
+/// columns) are appended unless already present in `sort`, making paging deterministic.
+pub fn order_clause(sort: &[SortKey], tie_break: &[String]) -> String {
+    let mut keys: Vec<String> = sort
         .iter()
         .map(|k| {
             format!(
@@ -163,16 +161,31 @@ pub fn order_clause(sort: &[SortKey]) -> String {
             )
         })
         .collect();
-    format!(" ORDER BY {}", keys.join(", "))
+    for col in tie_break {
+        if !sort.iter().any(|k| k.column.eq_ignore_ascii_case(col)) {
+            keys.push(format!("{} ASC", quote_ident(col)));
+        }
+    }
+    if keys.is_empty() {
+        String::new()
+    } else {
+        format!(" ORDER BY {}", keys.join(", "))
+    }
 }
 
 /// `SELECT *` statement for a page of table data.
-pub fn select_sql(db: &str, table: &str, req: &TableDataRequest, nb: bool) -> Result<String> {
+pub fn select_sql(
+    db: &str,
+    table: &str,
+    req: &TableDataRequest,
+    nb: bool,
+    tie_break: &[String],
+) -> Result<String> {
     Ok(format!(
         "SELECT * FROM {}{}{} LIMIT {} OFFSET {}",
         quote_table(db, table),
         where_clause(&req.filters, req.raw_where.as_deref(), nb)?,
-        order_clause(&req.sort),
+        order_clause(&req.sort, tie_break),
         req.limit,
         req.offset
     ))
@@ -185,6 +198,105 @@ pub fn count_sql(db: &str, table: &str, req: &TableCountRequest, nb: bool) -> Re
         quote_table(db, table),
         where_clause(&req.filters, req.raw_where.as_deref(), nb)?
     ))
+}
+
+/// Validate a user-typed `WHERE` body before it is embedded in a statement.
+///
+/// The text must be a single expression: it is rejected when it contains a `;` outside string
+/// literals / identifiers / comments, unbalanced or extra parentheses, or an unterminated
+/// string, identifier or block comment. Understands `'..'` and `".."` (backslash escapes unless
+/// `no_backslash_escapes`), backticks, `-- ` and `#` line comments, `/* */` comments and the
+/// executable comments `/*! */`, `/*M! */` whose content is lexed as ordinary SQL.
+pub fn check_raw_where(raw: &str, no_backslash_escapes: bool) -> Result<()> {
+    let fail = |why: &str| Err(Error::query(format!("raw WHERE rejected: {why}")));
+    let c: Vec<char> = raw.chars().collect();
+    let mut i = 0;
+    let mut depth: i64 = 0;
+    let mut exec_comments = 0usize;
+    while i < c.len() {
+        match c[i] {
+            q @ ('\'' | '"' | '`') => {
+                i += 1;
+                loop {
+                    let Some(&ch) = c.get(i) else {
+                        return fail("unterminated quoted text");
+                    };
+                    if ch == '\\' && q != '`' && !no_backslash_escapes {
+                        i += 2;
+                    } else if ch == q {
+                        if c.get(i + 1) == Some(&q) {
+                            i += 2; // doubled quote
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            '-' if c.get(i + 1) == Some(&'-')
+                && c.get(i + 2)
+                    .is_none_or(|x| x.is_whitespace() || x.is_control()) =>
+            {
+                while i < c.len() && c[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '#' => {
+                while i < c.len() && c[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if c.get(i + 1) == Some(&'*') => {
+                let exec = c.get(i + 2) == Some(&'!')
+                    || (c.get(i + 2) == Some(&'M') && c.get(i + 3) == Some(&'!'));
+                if exec {
+                    exec_comments += 1;
+                    i += if c[i + 2] == '!' { 3 } else { 4 };
+                    while c.get(i).is_some_and(char::is_ascii_digit) {
+                        i += 1;
+                    }
+                } else {
+                    i += 2;
+                    loop {
+                        match (c.get(i), c.get(i + 1)) {
+                            (Some('*'), Some('/')) => {
+                                i += 2;
+                                break;
+                            }
+                            (Some(_), _) => i += 1,
+                            (None, _) => return fail("unterminated comment"),
+                        }
+                    }
+                }
+            }
+            '*' if exec_comments > 0 && c.get(i + 1) == Some(&'/') => {
+                exec_comments -= 1;
+                i += 2;
+            }
+            '(' => {
+                depth += 1;
+                i += 1;
+            }
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return fail("unbalanced closing parenthesis");
+                }
+                i += 1;
+            }
+            ';' => return fail("`;` (multiple statements) is not allowed"),
+            _ => i += 1,
+        }
+    }
+    if exec_comments > 0 {
+        return fail("unterminated executable comment");
+    }
+    if depth != 0 {
+        return fail("unbalanced parentheses");
+    }
+    Ok(())
 }
 
 /// Resolve the `(database, table)` of a table or view path. Folder segments are ignored so both
@@ -355,10 +467,11 @@ mod tests {
             batch_size: None,
         };
         assert_eq!(
-            select_sql("d", "T", &req, false).unwrap(),
-            "SELECT * FROM `d`.`T` WHERE `a` > '5' AND (b = 2\n) ORDER BY `a` DESC, `b c` ASC LIMIT 10 OFFSET 20"
+            select_sql("d", "T", &req, false, &["a".into(), "id".into()]).unwrap(),
+            "SELECT * FROM `d`.`T` WHERE `a` > '5' AND (b = 2\n) ORDER BY `a` DESC, `b c` ASC, `id` ASC LIMIT 10 OFFSET 20"
         );
         let creq = TableCountRequest {
+            query_id: None,
             table: ObjectPath::root(),
             filters: vec![],
             raw_where: None,
@@ -367,6 +480,70 @@ mod tests {
             count_sql("d", "T", &creq, false).unwrap(),
             "SELECT COUNT(*) FROM `d`.`T`"
         );
+    }
+
+    #[test]
+    fn tie_break_columns() {
+        assert_eq!(order_clause(&[], &[]), "");
+        assert_eq!(
+            order_clause(&[], &["id".into(), "b`".into()]),
+            " ORDER BY `id` ASC, `b``` ASC"
+        );
+        let sort = [SortKey {
+            column: "ID".into(),
+            descending: true,
+        }];
+        assert_eq!(
+            order_clause(&sort, &["id".into(), "k".into()]),
+            " ORDER BY `ID` DESC, `k` ASC"
+        );
+    }
+
+    #[test]
+    fn raw_where_lexer() {
+        let ok = [
+            "a = 1",
+            "name = 'a;b'",
+            "name = \"x;y\" AND (b = 2)",
+            "n = 'it''s ; fine'",
+            "n = 'back\\'; still string'",
+            "`we;ird` = 1",
+            "`a``;b` = 1",
+            "a = 1 -- trailing; comment",
+            "a = 1 # trailing; comment",
+            "a = 1 /* ; ) ( */",
+            "a = /*! 1 */ 1",
+            "a = 1 --x",
+            "((a)) OR (b)",
+        ];
+        for w in ok {
+            assert!(check_raw_where(w, false).is_ok(), "should accept: {w}");
+        }
+        let bad = [
+            "1=1); COMMIT; DELETE FROM d.t; SELECT (1",
+            "1=1; DROP TABLE t",
+            "1=1);",
+            "(a = 1",
+            "a = 1)",
+            "a = 'unterminated",
+            "a = `unterminated",
+            "a = 1 /* open",
+            "a = 1 /*! SELECT 1; */",
+            "a = 1 /*! (",
+            "a = 'x\\' ; DROP TABLE t; --",
+            "a = 1 --;DROP", // `--;` is not a comment: the `;` is live
+        ];
+        for w in bad {
+            assert!(check_raw_where(w, false).is_err(), "should reject: {w}");
+        }
+        // Backslash is an ordinary character under NO_BACKSLASH_ESCAPES.
+        assert!(check_raw_where("a = 'x\\'", true).is_ok());
+        assert!(check_raw_where("a = 'x\\'", false).is_err());
+        assert!(check_raw_where("a = 'x\\' ; --", true).is_err());
+        assert!(matches!(
+            check_raw_where("1; 2", false),
+            Err(Error::Query { position: None, .. })
+        ));
     }
 
     #[test]

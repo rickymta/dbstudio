@@ -49,7 +49,8 @@ describe('mock connections', () => {
     const first = snap.profiles[0]!;
     const copy = await ipc.connectionDuplicate(first.id);
     expect(copy.id).not.toBe(first.id);
-    expect(copy.hasPassword).toBe(false);
+    // The backend copies the stored secret along with the profile.
+    expect(copy.hasPassword).toBe(first.hasPassword);
     const saved = await ipc.connectionSave(
       { ...copy, name: 'renamed' },
       { action: 'set', value: 'pw' },
@@ -197,5 +198,21 @@ describe('mock table data', () => {
     });
     await expect(done).rejects.toMatchObject({ kind: 'cancelled' });
     expect(batches).toBeLessThan(1000);
+  });
+});
+
+describe('mock cancellable count', () => {
+  it('rejects cancelled when queryCancel is called with the count queryId', async () => {
+    const s = await open();
+    const { req, sessionId } = eventsRequest(s);
+    const queryId = crypto.randomUUID();
+    const counting = ipc.tableCount(sessionId, { table: req.table, filters: [], queryId });
+    setTimeout(() => void ipc.queryCancel(sessionId, queryId), 80);
+    await expect(counting).rejects.toMatchObject({ kind: 'cancelled' });
+    // An uncancelled count with a queryId still completes.
+    const id2 = crypto.randomUUID();
+    expect(await ipc.tableCount(sessionId, { table: req.table, filters: [], queryId: id2 })).toBe(
+      1_000_000,
+    );
   });
 });

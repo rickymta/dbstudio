@@ -122,6 +122,10 @@ export function buildTableRequest(s: RequestState): TableDataRequest {
   };
 }
 
-export function buildCountRequest(table: ObjectPath, applied: AppliedFilter): TableCountRequest {
-  return { table, filters: applied.filters, rawWhere: applied.rawWhere };
+export function buildCountRequest(
+  table: ObjectPath,
+  applied: AppliedFilter,
+  queryId?: string,
+): TableCountRequest {
+  return { table, filters: applied.filters, rawWhere: applied.rawWhere, queryId };
 }

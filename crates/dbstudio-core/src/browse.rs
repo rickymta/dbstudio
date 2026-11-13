@@ -6,6 +6,21 @@ use uuid::Uuid;
 use crate::ObjectPath;
 
 /// Comparison operator of a [`ColumnFilter`].
+///
+/// Semantics every driver must follow:
+///
+/// * `Contains`, `NotContains`, `StartsWith` and `EndsWith` are **case-insensitive** and match on
+///   the text form of the column; the user's `%`/`_` (and escape characters) are literal.
+///   Accent sensitivity, and `Eq`/`Ne`/ordering comparisons on strings, follow the database's
+///   collation and may legitimately differ between databases.
+/// * `NotContains` follows SQL `NOT LIKE`: rows where the column is `NULL` are excluded too.
+/// * `In` with no values matches no row.
+/// * `IsNull`/`IsNotNull` ignore `values`.
+///
+/// For [`crate::Session::fetch_table`] the driver always appends the primary key (when the table
+/// has one; otherwise a unique `NOT NULL` key) to the end of `ORDER BY`, even if `sort` is
+/// empty, so that `OFFSET` paging is deterministic. [`crate::Error::Query`] errors from
+/// `fetch_table` and `count_table` have `position: None` because the SQL is generated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FilterOp {
@@ -101,6 +116,9 @@ pub struct TableCountRequest {
     /// User-typed `WHERE` clause body, appended verbatim.
     #[serde(default)]
     pub raw_where: Option<String>,
+    /// Optional identifier so that [`crate::Session::cancel`] can abort a slow count.
+    #[serde(default)]
+    pub query_id: Option<Uuid>,
 }
 
 #[cfg(test)]

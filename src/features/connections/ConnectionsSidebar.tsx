@@ -146,7 +146,9 @@ export function ConnectionsSidebar() {
         await sessions.open(profile.id, password ?? null);
         setProfileExpanded(profile.id, true);
       } catch (e) {
-        const message = describeError(t, toIpcError(e));
+        const error = toIpcError(e);
+        if (error.kind === 'cancelled') return; // disconnected while connecting
+        const message = describeError(t, error);
         setErrors((prev) => ({ ...prev, [profile.id]: message }));
         toast.error(`${profile.name}: ${message}`);
       }
@@ -253,7 +255,7 @@ export function ConnectionsSidebar() {
             className="pb-0.5"
             style={{ paddingLeft: 6 + depth * 12 + 8 }}
           >
-            <ObjectTree connectionId={p.id} filter={filter} />
+            <ObjectTree connectionId={p.id} filter={filter} nested />
           </div>
         )}
       </ProfileRow>

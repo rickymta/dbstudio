@@ -14,6 +14,7 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 use crate::model::{ConnectionGroup, ConnectionProfile, ConnectionsSnapshot};
+use crate::validate::{validate_group, validate_profile};
 
 /// Schema migrations. Entry `i` upgrades the database from version `i` to `i + 1`; the version
 /// is tracked in `PRAGMA user_version`. Never edit an existing entry: append a new one.
@@ -187,20 +188,6 @@ fn group_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ConnectionGroup>> {
     })())
 }
 
-/// Reject profiles that cannot possibly be connected to.
-pub(crate) fn validate_profile(profile: &ConnectionProfile) -> Result<()> {
-    if profile.config.name.trim().is_empty() {
-        return Err(invalid("connection name must not be empty"));
-    }
-    if profile.config.host.trim().is_empty() {
-        return Err(invalid("host must not be empty"));
-    }
-    if profile.config.port == 0 {
-        return Err(invalid("port must be greater than zero"));
-    }
-    Ok(())
-}
-
 /// SQLite-backed store of connection groups and profiles.
 pub struct Store {
     conn: Mutex<Connection>,
@@ -279,7 +266,10 @@ impl Store {
     /// Insert or update (by id) a profile. `created_at` of an existing profile is preserved,
     /// `updated_at` is refreshed; a new profile is appended after the existing ones.
     pub fn save_profile(&self, profile: &ConnectionProfile) -> Result<ConnectionProfile> {
-        validate_profile(profile)?;
+        let mut profile = profile.clone();
+        // An empty color means "no color".
+        profile.color = profile.color.filter(|c| !c.is_empty());
+        validate_profile(&profile)?;
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(db_err)?;
         if let Some(group) = profile.group_id {
@@ -353,9 +343,7 @@ impl Store {
 
     /// Insert or update (by id) a group. The parent must exist and must not create a cycle.
     pub fn save_group(&self, group: &ConnectionGroup) -> Result<ConnectionGroup> {
-        if group.name.trim().is_empty() {
-            return Err(invalid("group name must not be empty"));
-        }
+        validate_group(group)?;
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(db_err)?;
         if let Some(parent) = group.parent_id {
@@ -424,9 +412,7 @@ impl Store {
         let tx = conn.transaction().map_err(db_err)?;
         // Insert parents without their parent first, then link, so order does not matter.
         for g in groups {
-            if g.name.trim().is_empty() {
-                return Err(invalid("group name must not be empty"));
-            }
+            validate_group(g)?;
             tx.execute(
                 "INSERT INTO connection_groups (id, name, parent_id, sort_order)
                  VALUES (?1, ?2, NULL, ?3)",

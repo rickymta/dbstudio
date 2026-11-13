@@ -3,10 +3,9 @@
 //! Queries only use columns available in MySQL 5.7+, 8.x and MariaDB 10.4+ (functional index
 //! expressions, which exist from MySQL 8.0.13, are read opportunistically from `SHOW INDEX`).
 //!
-//! Path convention: a table or view is `[Database, Table|View]`, its folders and children are
-//! `[Database, Table, Folder(columns|indexes|triggers)]` and `[Database, Table, Column|Index|
-//! Trigger]`; functions and procedures are `[Database, Function|Procedure]`. Folder segments in
-//! the middle of a path are ignored when resolving it.
+//! Path convention: a node's path is its parent's path plus its own segment, e.g. `[Database d,
+//! Folder tables, Table t, Folder columns, Column c]`. Paths with or without Folder segments are
+//! both accepted when resolving.
 
 use dbstudio_core::{
     ColumnDetail, Error, ForeignKeyDetail, IndexDetail, ObjectKind, ObjectNode, ObjectPath, Result,
@@ -39,6 +38,7 @@ where
 #[derive(Debug, PartialEq, Eq)]
 enum Place {
     Root,
+    Roles,
     Database(String),
     DbFolder(String, String),
     Table(String, String, ObjectKind),
@@ -57,6 +57,7 @@ fn resolve(path: &ObjectPath) -> Result<Place> {
     let bad = || Error::NotFound(format!("unsupported tree path ({} segments)", n));
     match segs.as_slice() {
         [] => Ok(Place::Root),
+        [f] if f.kind == ObjectKind::Folder && f.name == folder::ROLES => Ok(Place::Roles),
         [d] if d.kind == ObjectKind::Database => Ok(Place::Database(d.name.clone())),
         [d, f] if d.kind == ObjectKind::Database && f.kind == ObjectKind::Folder => {
             Ok(Place::DbFolder(d.name.clone(), f.name.clone()))
@@ -99,7 +100,7 @@ fn node(
     }
 }
 
-fn count(row: &Row, i: usize) -> u64 {
+fn count_of(row: &Row, i: usize) -> u64 {
     cell(row, i)
         .and_then(|s| s.split('.').next().and_then(|x| x.parse().ok()))
         .unwrap_or(0)
@@ -112,7 +113,8 @@ pub async fn list_children(
     is_mariadb: bool,
 ) -> Result<Vec<ObjectNode>> {
     match resolve(parent)? {
-        Place::Root => list_databases(conn).await,
+        Place::Root => list_root(conn, parent).await,
+        Place::Roles => list_roles(conn, parent).await,
         Place::Database(db) => list_db_folders(conn, parent, &db, is_mariadb).await,
         Place::DbFolder(db, f) => list_db_folder(conn, parent, &db, &f).await,
         Place::Table(db, t, kind) => list_table_folders(conn, parent, &db, &t, kind).await,
@@ -120,6 +122,58 @@ pub async fn list_children(
             list_table_folder(conn, parent, &db, &t, kind, &f).await
         }
     }
+}
+
+/// Account name in SQL form: `'user'@'host'`.
+fn account_name(user: &str, host: &str) -> String {
+    let q = |s: &str| s.replace('\\', "\\\\").replace('\'', "''");
+    format!("'{}'@'{}'", q(user), q(host))
+}
+
+/// Databases plus, when the account may read `mysql.user`, a `roles` folder.
+async fn list_root(conn: &mut mysql_async::Conn, parent: &ObjectPath) -> Result<Vec<ObjectNode>> {
+    let mut out = list_databases(conn).await?;
+    let count: std::result::Result<Option<Row>, _> =
+        conn.query_first("SELECT COUNT(*) FROM mysql.user").await;
+    match count {
+        Ok(row) => {
+            let n = row.map(|r| count_of(&r, 0)).unwrap_or(0);
+            out.push(node(
+                parent.child(ObjectKind::Folder, folder::ROLES),
+                ObjectKind::Folder,
+                folder::ROLES,
+                n > 0,
+                Some(n.to_string()),
+            ));
+        }
+        // No privilege (or no such table): the folder is simply not offered.
+        Err(e) if server_code(&e).is_some() => {}
+        Err(e) => return Err(map_query_error(e)),
+    }
+    Ok(out)
+}
+
+async fn list_roles(conn: &mut mysql_async::Conn, parent: &ObjectPath) -> Result<Vec<ObjectNode>> {
+    let rs: Vec<Row> = conn
+        .query("SELECT User, Host FROM mysql.user ORDER BY User, Host")
+        .await
+        .map_err(map_query_error)?;
+    Ok(rs
+        .iter()
+        .map(|r| {
+            let name = account_name(
+                &cell(r, 0).unwrap_or_default(),
+                &cell(r, 1).unwrap_or_default(),
+            );
+            node(
+                parent.child(ObjectKind::Role, name.clone()),
+                ObjectKind::Role,
+                &name,
+                false,
+                None,
+            )
+        })
+        .collect())
 }
 
 async fn list_databases(conn: &mut mysql_async::Conn) -> Result<Vec<ObjectNode>> {
@@ -173,11 +227,11 @@ async fn list_db_folders(
     .await?;
     let (tables, views, sequences) = t
         .first()
-        .map(|x| (count(x, 0), count(x, 1), count(x, 2)))
+        .map(|x| (count_of(x, 0), count_of(x, 1), count_of(x, 2)))
         .unwrap_or_default();
     let (functions, procedures) = r
         .first()
-        .map(|x| (count(x, 0), count(x, 1)))
+        .map(|x| (count_of(x, 0), count_of(x, 1)))
         .unwrap_or_default();
     if tables + views + sequences + functions + procedures == 0 {
         let exists = rows(
@@ -212,23 +266,13 @@ async fn list_db_folders(
     Ok(out)
 }
 
-fn db_path(parent: &ObjectPath) -> ObjectPath {
-    // Strip a trailing folder segment: children of a database folder hang directly under the
-    // database in the canonical path.
-    let mut p = parent.clone();
-    if p.last().is_some_and(|s| s.kind == ObjectKind::Folder) {
-        p.segments.pop();
-    }
-    p
-}
-
 async fn list_db_folder(
     conn: &mut mysql_async::Conn,
     parent: &ObjectPath,
     db: &str,
     f: &str,
 ) -> Result<Vec<ObjectNode>> {
-    let base = db_path(parent);
+    let base = parent.clone();
     match f {
         folder::TABLES | folder::VIEWS | folder::SEQUENCES => {
             let cond = match f {
@@ -337,7 +381,7 @@ async fn list_table_folders(
     .await?;
     let (idx, trg) = c
         .first()
-        .map(|r| (count(r, 0), count(r, 1)))
+        .map(|r| (count_of(r, 0), count_of(r, 1)))
         .unwrap_or_default();
     for (key, n) in [(folder::INDEXES, idx), (folder::TRIGGERS, trg)] {
         out.push(node(
@@ -359,11 +403,7 @@ async fn list_table_folder(
     kind: ObjectKind,
     f: &str,
 ) -> Result<Vec<ObjectNode>> {
-    let base = {
-        let mut p = parent.clone();
-        p.segments.pop();
-        p
-    };
+    let base = parent.clone();
     let _ = kind;
     match f {
         folder::COLUMNS => {
@@ -781,6 +821,7 @@ pub async fn table_details(
                 columns: Vec::new(),
                 referenced_table: ObjectPath::root()
                     .child(ObjectKind::Database, ref_db)
+                    .child(ObjectKind::Folder, folder::TABLES)
                     .child(ObjectKind::Table, ref_table),
                 referenced_columns: Vec::new(),
                 on_update: cell(r, 5),
@@ -794,9 +835,7 @@ pub async fn table_details(
     }
 
     Ok(TableDetails {
-        path: ObjectPath::root()
-            .child(ObjectKind::Database, db)
-            .child(kind, table),
+        path: path.clone(),
         kind,
         comment,
         columns,
@@ -812,9 +851,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn account_names_are_quoted() {
+        assert_eq!(account_name("root", "%"), "'root'@'%'");
+        assert_eq!(account_name("o'neil", "h"), "'o''neil'@'h'");
+        assert_eq!(account_name("", "localhost"), "''@'localhost'");
+    }
+
+    #[test]
     fn resolve_paths() {
         let db = ObjectPath::root().child(ObjectKind::Database, "d");
         assert_eq!(resolve(&ObjectPath::root()).unwrap(), Place::Root);
+        assert_eq!(
+            resolve(&ObjectPath::root().child(ObjectKind::Folder, "roles")).unwrap(),
+            Place::Roles
+        );
         assert_eq!(resolve(&db).unwrap(), Place::Database("d".into()));
         assert_eq!(
             resolve(&db.child(ObjectKind::Folder, "tables")).unwrap(),

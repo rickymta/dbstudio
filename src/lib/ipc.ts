@@ -75,6 +75,66 @@ async function call<T>(
   }
 }
 
+/** How long to wait for `statementEnd` after the command resolved before giving up. */
+export const STATEMENT_END_TIMEOUT_MS = 5000;
+
+function streamFetch(
+  onEvent: (e: QueryEvent) => void,
+  start: (handler: (e: QueryEvent) => void) => Promise<ExecSummary>,
+): Promise<ExecSummary> {
+  return new Promise<ExecSummary>((resolve, reject) => {
+    // Per-call flag: once settled, events that still arrive for this fetch are dropped.
+    let closed = false;
+    let ended = false;
+    let summary: ExecSummary | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = () => {
+      if (closed || !summary || !ended) return;
+      closed = true;
+      clearTimeout(timer);
+      resolve(summary);
+    };
+
+    const handler = (e: QueryEvent) => {
+      if (closed) return;
+      onEvent(e);
+      if (e.type === 'statementEnd') {
+        ended = true;
+        finish();
+      }
+    };
+
+    let pending: Promise<ExecSummary>;
+    try {
+      pending = start(handler);
+    } catch (e) {
+      closed = true;
+      reject(toIpcError(e));
+      return;
+    }
+    pending.then(
+      (s) => {
+        if (closed) return;
+        summary = s;
+        if (ended) return finish();
+        timer = setTimeout(() => {
+          if (closed) return;
+          closed = true;
+          console.warn('table_fetch resolved but no statementEnd arrived; continuing');
+          resolve(s);
+        }, STATEMENT_END_TIMEOUT_MS);
+      },
+      (e) => {
+        if (closed) return;
+        closed = true;
+        clearTimeout(timer);
+        reject(toIpcError(e));
+      },
+    );
+  });
+}
+
 export const ipc = {
   appInfo: (): Promise<AppInfo> => call('app_info', () => mockAppInfo),
   listDrivers: (): Promise<DriverDescriptor[]> => call('list_drivers', () => mockDrivers),
@@ -119,20 +179,22 @@ export const ipc = {
   queryCancel: (sessionId: Uuid, queryId: Uuid): Promise<void> =>
     call('query_cancel', () => mock.queryCancel(sessionId, queryId), { sessionId, queryId }),
 
-  /** Stream a page of table rows; `onEvent` receives columns, row batches and the end marker. */
+  /**
+   * Stream a page of table rows; `onEvent` receives columns, row batches and the end marker.
+   * Resolves only after BOTH the command returned and `statementEnd` was received: Tauri delivers
+   * large Channel payloads on a separate async round trip, so row events may arrive after the
+   * `invoke` promise settled. The backend always sends `statementEnd` after the last `rows`, and a
+   * Channel preserves message order, so `statementEnd` means every row was delivered.
+   */
   tableFetch: (
     sessionId: Uuid,
     request: TableDataRequest,
     onEvent: (e: QueryEvent) => void,
-  ): Promise<ExecSummary> => {
-    return call(
-      'table_fetch',
-      () => mock.tableFetch(sessionId, request, onEvent),
-      () => {
-        const channel = new Channel<QueryEvent>();
-        channel.onmessage = onEvent;
-        return { sessionId, request, onEvent: channel };
-      },
-    );
-  },
+  ): Promise<ExecSummary> =>
+    streamFetch(onEvent, (handler) => {
+      if (!isTauri()) return mock.tableFetch(sessionId, request, handler);
+      const channel = new Channel<QueryEvent>();
+      channel.onmessage = handler;
+      return invoke<ExecSummary>('table_fetch', { sessionId, request, onEvent: channel });
+    }),
 };

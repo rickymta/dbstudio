@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 import { lastSegment, pathKey, ROOT_PATH } from '@/lib/objectPath';
-import type { IpcError, ObjectKind, ObjectNode, ObjectPath } from '@/lib/types';
+import type { Capabilities, IpcError, ObjectKind, ObjectNode, ObjectPath } from '@/lib/types';
 
 /** Load state of the children of one path, as read from the query cache. */
 export type ChildrenState =
@@ -171,8 +171,25 @@ const DDL_KINDS: ReadonlySet<ObjectKind> = new Set([
   'index',
 ]);
 
-/** Which tab (if any) activating an object of `kind` opens. */
-export function activationTab(kind: ObjectKind): 'table' | 'ddl' | null {
+/** Driver capability an object kind depends on, when there is a flag for it. */
+const KIND_CAPABILITY: Partial<Record<ObjectKind, keyof Capabilities>> = {
+  view: 'views',
+  materializedView: 'views',
+  function: 'storedRoutines',
+  procedure: 'storedRoutines',
+  trigger: 'triggers',
+  sequence: 'sequences',
+};
+
+/** False only when the driver explicitly lacks the capability the kind needs. */
+export function kindEnabled(kind: ObjectKind, caps?: Capabilities): boolean {
+  const cap = KIND_CAPABILITY[kind];
+  return !cap || !caps || caps[cap] !== false;
+}
+
+/** Which tab (if any) activating an object of `kind` opens. Unknown kinds open nothing. */
+export function activationTab(kind: ObjectKind, caps?: Capabilities): 'table' | 'ddl' | null {
+  if (!kindEnabled(kind, caps)) return null;
   if (TABLE_KINDS.has(kind)) return 'table';
   if (DDL_KINDS.has(kind)) return 'ddl';
   return null;
@@ -181,8 +198,12 @@ export function activationTab(kind: ObjectKind): 'table' | 'ddl' | null {
 export type NodeAction = 'openData' | 'viewDdl' | 'copyName' | 'copyFullName' | 'refresh';
 
 /** Context-menu actions that apply to a node of `kind`, in display order. */
-export function nodeActions(node: Pick<ObjectNode, 'kind' | 'hasChildren'>): NodeAction[] {
+export function nodeActions(
+  node: Pick<ObjectNode, 'kind' | 'hasChildren'>,
+  caps?: Capabilities,
+): NodeAction[] {
   const actions: NodeAction[] = [];
+  if (!kindEnabled(node.kind, caps)) return node.hasChildren ? ['refresh'] : [];
   if (TABLE_KINDS.has(node.kind)) actions.push('openData');
   if (TABLE_KINDS.has(node.kind) || DDL_KINDS.has(node.kind)) actions.push('viewDdl');
   if (node.kind !== 'folder') actions.push('copyName');

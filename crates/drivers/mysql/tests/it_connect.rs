@@ -41,6 +41,18 @@ async fn tls_modes_on_mysql8() {
     let mut c = cfg_with_ca(t, TlsMode::VerifyFull, "ca.crt");
     c.host = "localhost".into();
     connect_cfg(&c).await.unwrap();
+    // A host that reaches the server but is not in the certificate (0.0.0.0 reaches localhost): the
+    // verifying modes refuse it with an explanatory TLS error. (verify-ca currently also checks
+    // the host name, see the crate docs.)
+    for mode in [TlsMode::VerifyCa, TlsMode::VerifyFull] {
+        let mut c = cfg_with_ca(t, mode, "ca.crt");
+        c.host = "0.0.0.0".into();
+        match connect_cfg(&c).await {
+            Err(Error::Tls(m)) => assert!(m.contains("does not list host"), "{mode:?}: {m}"),
+            Err(e) => panic!("{mode:?}: expected Tls error, got {e:?}"),
+            Ok(_) => panic!("{mode:?}: unexpectedly connected through an alias host"),
+        }
+    }
     // Unrelated CA: chain verification fails.
     for mode in [TlsMode::VerifyCa, TlsMode::VerifyFull] {
         match connect_cfg(&cfg_with_ca(t, mode, "other-ca.crt")).await {

@@ -228,10 +228,14 @@ pub fn decode_cell(info: &ColInfo, bytes: Vec<u8>) -> Value {
             }
         }
         MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => text_or(bytes, Value::Time),
-        MYSQL_TYPE_JSON => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-            Ok(j) => Value::Json(j),
-            Err(_) => lossy_text(bytes),
-        },
+        MYSQL_TYPE_JSON => {
+            // Keep the server's original JSON text (numbers keep their exact digits).
+            if serde_json::from_slice::<serde::de::IgnoredAny>(&bytes).is_ok() {
+                Value::Json(lossy(bytes))
+            } else {
+                lossy_text(bytes)
+            }
+        }
         MYSQL_TYPE_GEOMETRY | MYSQL_TYPE_VECTOR => Value::Bytes(bytes),
         MYSQL_TYPE_ENUM | MYSQL_TYPE_SET | MYSQL_TYPE_NULL => lossy_text(bytes),
         _ => {
@@ -435,7 +439,7 @@ mod tests {
         );
         assert_eq!(
             dec(info(MYSQL_TYPE_JSON), r#"{"a":[1,2]}"#),
-            Value::Json(serde_json::json!({"a":[1,2]}))
+            Value::Json(r#"{"a":[1,2]}"#.to_string())
         );
         assert_eq!(
             dec(info(MYSQL_TYPE_JSON), "not json"),

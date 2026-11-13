@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
+  Box,
   ChevronRight,
   Columns3,
   Database,
@@ -40,7 +41,14 @@ import { Spinner } from '@/components/ui/Spinner';
 import { toast } from '@/components/ui/toastStore';
 import { cn } from '@/lib/cn';
 import { ROOT_PATH } from '@/lib/objectPath';
-import type { ObjectKind, ObjectNode, ObjectPath, SessionInfo, Uuid } from '@/lib/types';
+import type {
+  Capabilities,
+  ObjectKind,
+  ObjectNode,
+  ObjectPath,
+  SessionInfo,
+  Uuid,
+} from '@/lib/types';
 import { useSession } from '@/stores/sessions';
 import { ddlTabId, tableTabId, useTabsStore } from '@/stores/tabs';
 import {
@@ -68,6 +76,8 @@ export interface ObjectTreeProps {
   connectionId: string;
   /** Case-insensitive name filter applied to the already-loaded nodes (BROWSE-06). */
   filter?: string;
+  /** Rendered inside another tree (the connections sidebar): use `group` instead of `tree`. */
+  nested?: boolean;
 }
 
 const ROW_HEIGHT = 24;
@@ -100,14 +110,23 @@ const KIND_ICONS: Record<ObjectKind, LucideIcon> = {
 };
 
 /** Lazy, virtualized object tree of an open connection. Renders nothing without a session. */
-export function ObjectTree({ connectionId, filter }: ObjectTreeProps) {
+export function ObjectTree({ connectionId, filter, nested }: ObjectTreeProps) {
   const session = useSession(connectionId);
   if (!session) return null;
-  return <SessionTree key={session.sessionId} session={session} filter={filter} />;
+  return <SessionTree key={session.sessionId} session={session} filter={filter} nested={nested} />;
 }
 
-function SessionTree({ session, filter }: { session: SessionInfo; filter?: string }) {
+function SessionTree({
+  session,
+  filter,
+  nested,
+}: {
+  session: SessionInfo;
+  filter?: string;
+  nested?: boolean;
+}) {
   const { sessionId, connectionId } = session;
+  const capabilities = session.descriptor.capabilities;
   const { t } = useTranslation('explorer');
   const qc = useQueryClient();
   const openTab = useTabsStore((s) => s.openTab);
@@ -185,7 +204,7 @@ function SessionTree({ session, filter }: { session: SessionInfo; filter?: strin
 
   const activate = useCallback(
     (row: NodeRow) => {
-      const tab = activationTab(row.node.kind);
+      const tab = activationTab(row.node.kind, capabilities);
       if (!tab) {
         if (row.node.hasChildren) setNodeExpanded(row, !row.expanded);
         return;
@@ -209,7 +228,7 @@ function SessionTree({ session, filter }: { session: SessionInfo; filter?: strin
         });
       }
     },
-    [sessionId, connectionId, openTab, setNodeExpanded],
+    [sessionId, connectionId, capabilities, openTab, setNodeExpanded],
   );
 
   const runAction = useCallback(
@@ -280,12 +299,16 @@ function SessionTree({ session, filter }: { session: SessionInfo; filter?: strin
     }
   };
 
-  const activeId = focusKey ? itemId(sessionId, focusKey) : undefined;
+  // aria-activedescendant must name an element that exists; virtualized rows may be unmounted.
+  const virtualItems = virtualizer.getVirtualItems();
+  const activeRendered =
+    focusKey !== null && virtualItems.some((item) => rows[item.index]?.key === focusKey);
+  const activeId = activeRendered && focusKey ? itemId(sessionId, focusKey) : undefined;
 
   return (
     <div
       ref={scrollRef}
-      role="tree"
+      role={nested ? 'group' : 'tree'}
       tabIndex={0}
       aria-label={t('treeLabel')}
       aria-activedescendant={activeId}
@@ -296,7 +319,7 @@ function SessionTree({ session, filter }: { session: SessionInfo; filter?: strin
     >
       {rows.length === 0 && <TreeSkeleton sessionId={sessionId} />}
       <div style={{ height: virtualizer.getTotalSize(), position: 'relative', minWidth: '100%' }}>
-        {virtualizer.getVirtualItems().map((item) => {
+        {virtualItems.map((item) => {
           const row = rows[item.index];
           if (!row) return null;
           return (
@@ -315,6 +338,7 @@ function SessionTree({ session, filter }: { session: SessionInfo; filter?: strin
                 <TreeNodeRow
                   row={row}
                   sessionId={sessionId}
+                  capabilities={capabilities}
                   label={label(row.node)}
                   selected={row.key === focusKey}
                   onSelect={setFocusKey}
@@ -356,6 +380,7 @@ function TreeSkeleton({ sessionId }: { sessionId: Uuid }) {
 interface NodeRowProps {
   row: NodeRow;
   sessionId: Uuid;
+  capabilities: Capabilities;
   label: string;
   selected: boolean;
   onSelect: (key: string) => void;
@@ -367,6 +392,7 @@ interface NodeRowProps {
 const TreeNodeRow = memo(function TreeNodeRow({
   row,
   sessionId,
+  capabilities,
   label,
   selected,
   onSelect,
@@ -376,8 +402,8 @@ const TreeNodeRow = memo(function TreeNodeRow({
 }: NodeRowProps) {
   const { t } = useTranslation('explorer');
   const { node } = row;
-  const Icon = KIND_ICONS[node.kind];
-  const actions = nodeActions(node);
+  const Icon = KIND_ICONS[node.kind] ?? Box; // unknown kinds from newer backends
+  const actions = nodeActions(node, capabilities);
   const content: ReactNode = (
     <div
       id={itemId(sessionId, row.key)}

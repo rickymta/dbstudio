@@ -15,8 +15,8 @@
 //!   `time`/`timetz` -> [`Value::Time`] (`timetz` keeps its offset).
 //! * `infinity` / `-infinity` and BC or 5-digit-year dates cannot be expressed in ISO-8601 and
 //!   are returned as [`Value::Text`].
-//! * `json`/`jsonb` -> [`Value::Json`]; numbers beyond what `serde_json` represents exactly
-//!   (integers above 2^64, more than 17 significant digits) lose precision in this form.
+//! * `json`/`jsonb` -> [`Value::Json`] holding the server's JSON text verbatim (key order and
+//!   number digits are never altered; the consumer parses it).
 //! * Whenever a decoder cannot parse what the server sent, the value falls back to
 //!   [`Value::Text`] with the original text.
 
@@ -151,9 +151,7 @@ fn decode_scalar(ty: &Type, raw: &str) -> Value {
             _ => text(raw),
         },
         Type::UUID => Value::Uuid(raw.to_string()),
-        Type::JSON | Type::JSONB => serde_json::from_str(raw)
-            .map(Value::Json)
-            .unwrap_or_else(|_| text(raw)),
+        Type::JSON | Type::JSONB => Value::Json(raw.to_string()),
         _ => text(raw),
     }
 }
@@ -314,7 +312,6 @@ fn parse_array(elem: &Type, b: &[u8], pos: &mut usize) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn integers_keep_all_digits() {
@@ -442,13 +439,11 @@ mod tests {
 
     #[test]
     fn json_and_uuid() {
+        let raw = r#"{"b": 1, "a": 2, "n": 12345678901234567890123, "i": 9007199254740993}"#;
+        assert_eq!(decode_text(&Type::JSON, raw), Value::Json(raw.into()));
         assert_eq!(
-            decode_text(&Type::JSONB, "{\"a\": [1, null]}"),
-            Value::Json(json!({"a": [1, null]}))
-        );
-        assert_eq!(
-            decode_text(&Type::JSON, "not json"),
-            Value::Text("not json".into())
+            decode_text(&Type::JSONB, "null"),
+            Value::Json("null".into())
         );
         assert_eq!(
             decode_text(&Type::UUID, "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"),
@@ -503,7 +498,7 @@ mod tests {
         );
         assert_eq!(
             decode_text(&Type::JSONB_ARRAY, r#"{"{\"a\": 1}"}"#),
-            Value::Array(vec![Value::Json(json!({"a": 1}))])
+            Value::Array(vec![Value::Json("{\"a\": 1}".into())])
         );
         // Broken array text never errors.
         assert_eq!(

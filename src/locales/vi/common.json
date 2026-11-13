@@ -2,13 +2,6 @@
   "app": {
     "name": "DBStudio"
   },
-  "sidebar": {
-    "connections": "Kết nối",
-    "empty": "Chưa có kết nối nào",
-    "emptyHint": "Tạo một kết nối để bắt đầu duyệt cơ sở dữ liệu.",
-    "newConnection": "Kết nối mới",
-    "availableInPhase": "Có ở giai đoạn {{phase}}"
-  },
   "tabs": {
     "welcome": "Chào mừng",
     "close": "Đóng tab"
@@ -73,5 +66,8 @@
   },
   "errors": {
     "unknown": "Đã xảy ra lỗi"
+  },
+  "spinner": {
+    "loading": "Đang tải"
   }
 }

@@ -50,3 +50,8 @@ export const ENVIRONMENT_COLOR: Record<Environment, string> = {
   staging: 'var(--warning)',
   production: 'var(--danger)',
 };
+
+/** Fallbacks keep the UI working when the backend reports a kind this build does not know. */
+export const databaseFieldFor = (kind: DbKind) => DATABASE_FIELD[kind] ?? 'database';
+export const kindBadgeFor = (kind: DbKind) =>
+  KIND_BADGE[kind] ?? String(kind).slice(0, 2).toUpperCase();

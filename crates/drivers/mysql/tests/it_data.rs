@@ -91,9 +91,12 @@ async fn value_decoding_is_lossless() {
         );
         let expected_json = serde_json::json!({"a": [1, 2, {"b": null}]});
         match cell(0, "c_json") {
-            Value::Json(j) => {
-                assert!(!t.mariadb);
-                assert_eq!(j, expected_json);
+            Value::Json(txt) => {
+                assert!(!t.mariadb, "MariaDB json is longtext");
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&txt).unwrap(),
+                    expected_json
+                );
             }
             Value::Text(txt) => {
                 assert!(t.mariadb, "MySQL json must decode to Json");
@@ -320,38 +323,13 @@ async fn filters_sort_paging_raw_where() {
         r.raw_where = Some("id = no_such_col".into());
         assert!(matches!(fetch(&*s, r).await, Err(Error::Query { .. })));
 
-        // raw_where cannot cause side effects: the fetch runs in a READ ONLY transaction.
-        for evil in [
-            "1=1; DELETE FROM people",
-            "id = 1; UPDATE people SET age = 0",
-            "1=1; CREATE TABLE evil_t (a INT)",
-            "1=1; DROP TABLE people",
-        ] {
-            let mut r = table_req(FIXTURE_DB, "people");
-            r.raw_where = Some(evil.into());
-            let _ = fetch(&*s, r).await; // may stream the first set, then error
-            assert_eq!(
-                query(
-                    &*s,
-                    &format!(
-                        "SELECT COUNT(*) FROM `{FIXTURE_DB}`.people WHERE age <> 0 OR age IS NULL"
-                    )
-                )
-                .await
-                .rows[0][0],
-                Value::Int(7),
-                "[{tag}] side effect from `{evil}`"
-            );
-        }
-        let q = query(&*s, &format!("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='{FIXTURE_DB}' AND TABLE_NAME='evil_t'")).await;
-        assert_eq!(q.rows[0][0], Value::Int(0), "[{tag}] DDL must not run");
-
         // count_table uses the same conditions.
         let count = |filters: Vec<CF>, raw: Option<&str>| {
             let s = s.clone();
             let raw = raw.map(String::from);
             async move {
                 s.count_table(TableCountRequest {
+                    query_id: None,
                     table: ObjectPath::root()
                         .child(K::Database, FIXTURE_DB)
                         .child(K::Table, "people"),
@@ -442,6 +420,7 @@ async fn no_backslash_escapes_mode() {
         );
         let n = s
             .count_table(TableCountRequest {
+                query_id: None,
                 table: ObjectPath::root()
                     .child(K::Database, FIXTURE_DB)
                     .child(K::Table, "people"),
@@ -513,6 +492,7 @@ async fn streaming_big_table() {
         assert_eq!(fetch(&*s, r).await.unwrap().rows.len(), 2000);
         let n = s
             .count_table(TableCountRequest {
+                query_id: None,
                 table: ObjectPath::root()
                     .child(K::Database, FIXTURE_DB)
                     .child(K::Table, "big"),
@@ -621,7 +601,8 @@ async fn cancel_kills_the_statement() {
     for t in TARGETS {
         let s = user_session(t).await;
         let tag = t.name;
-        let q = QueryRequest::new("SELECT SLEEP(60)");
+        let mk = marker();
+        let q = QueryRequest::new(format!("SELECT SLEEP(60) /* {mk} */"));
         let id = q.query_id;
         let s2 = s.clone();
         let task = tokio::spawn(async move {
@@ -630,7 +611,7 @@ async fn cancel_kills_the_statement() {
             let r = s2.execute(q, &mut sink).await;
             (r, started.elapsed())
         });
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        wait_running(t, &mk).await;
         let c0 = Instant::now();
         s.cancel(id).await.unwrap();
         let (r, took) = task.await.unwrap();
@@ -647,7 +628,8 @@ async fn cancel_kills_the_statement() {
         s.ping().await.unwrap();
 
         // Cancel a long multi-statement script between statements.
-        let q = QueryRequest::new("SELECT 1; SELECT SLEEP(60); SELECT 2");
+        let mk = marker();
+        let q = QueryRequest::new(format!("SELECT 1; SELECT SLEEP(60) /* {mk} */; SELECT 2"));
         let id = q.query_id;
         let s2 = s.clone();
         let task = tokio::spawn(async move {
@@ -655,7 +637,7 @@ async fn cancel_kills_the_statement() {
             let r = s2.execute(q, &mut sink).await;
             (r, sink.into_results().len())
         });
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        wait_running(t, &mk).await;
         s.cancel(id).await.unwrap();
         let (r, delivered) = task.await.unwrap();
         assert!(matches!(r, Err(Error::Cancelled)), "[{tag}] {r:?}");
@@ -669,18 +651,21 @@ async fn cancel_kills_the_statement() {
         let mut req = table_req(FIXTURE_DB, "big");
         req.limit = 1_000_000;
         req.batch_size = Some(1000);
+        let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let prog = progress.clone();
         let id = req.query_id;
         let s2 = s.clone();
         let task = tokio::spawn(async move {
             let mut sink = CountingSink {
                 delay_ms: 40,
+                progress: Some(prog),
                 ..Default::default()
             };
             let started = Instant::now();
             let r = s2.fetch_table(req, &mut sink).await;
             (r, sink.batches, started.elapsed())
         });
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        wait_progress(&progress, 2).await;
         s.cancel(id).await.unwrap();
         let (r, batches, took) = task.await.unwrap();
         assert!(matches!(r, Err(Error::Cancelled)), "[{tag}] {r:?}");
@@ -889,5 +874,278 @@ async fn concurrent_use_of_one_session() {
         a.unwrap();
         b.unwrap();
         c.unwrap();
+    }
+}
+
+const RAW_DB_TABLE: &str = "t";
+
+async fn raw_where_fixture(t: Target) -> String {
+    let db = scratch_db(t, "rawwhere").await;
+    let root = root_session(t).await;
+    run(
+        &*root,
+        &format!(
+            "CREATE TABLE `{db}`.t (id INT PRIMARY KEY, name VARCHAR(20));
+             INSERT INTO `{db}`.t VALUES (1,'a;b'),(2,'two'),(3,'three'),(4,'four'),(5,'five')"
+        ),
+    )
+    .await;
+    root.close().await.unwrap();
+    db
+}
+
+async fn raw_where_intact(s: &dyn Session, db: &str, tag: &str, evil: &str) {
+    let n = query(s, &format!("SELECT COUNT(*) FROM `{db}`.t")).await;
+    assert_eq!(
+        n.rows[0][0],
+        Value::Int(5),
+        "[{tag}] data changed by `{evil}`"
+    );
+    let tables = query(
+        s,
+        &format!("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '{db}'"),
+    )
+    .await;
+    assert_eq!(
+        tables.rows[0][0],
+        Value::Int(1),
+        "[{tag}] schema changed by `{evil}`"
+    );
+}
+
+#[tokio::test]
+async fn raw_where_cannot_run_extra_statements() {
+    if !it_enabled() {
+        return;
+    }
+    for t in TARGETS {
+        let tag = t.name;
+        let db = raw_where_fixture(t).await;
+        let s = user_session(t).await;
+        // A profile marked read_only must stay read only too.
+        let mut c = config(t, "dbstudio", TlsMode::Disable);
+        c.read_only = true;
+        let ro: Arc<dyn Session> = Arc::from(connect_cfg(&c).await.unwrap());
+        let table = ObjectPath::root()
+            .child(K::Database, db.as_str())
+            .child(K::Table, RAW_DB_TABLE);
+        let payloads = [
+            format!("1=1); COMMIT; DELETE FROM `{db}`.t; SELECT (1"),
+            format!("1=1); SET SESSION TRANSACTION READ WRITE; DELETE FROM `{db}`.t; SELECT (1"),
+            format!("1=1); CREATE TABLE `{db}`.evil (a INT); SELECT (1"),
+            format!("1=1); DROP TABLE `{db}`.t; SELECT (1"),
+            format!("1=1; DELETE FROM `{db}`.t"),
+            format!("1=1 /*! ); DELETE FROM `{db}`.t; SELECT ( */"),
+            "1=1) /*".to_string(),
+            "(1=1".to_string(),
+            "1=1)".to_string(),
+            "name = 'unterminated".to_string(),
+            format!("1=1 -- \n); DELETE FROM `{db}`.t; SELECT (1"),
+            format!("1=1 # \n); DELETE FROM `{db}`.t; SELECT (1"),
+        ];
+        for evil in &payloads {
+            for sess in [&s, &ro] {
+                let mut r = table_req(&db, RAW_DB_TABLE);
+                r.raw_where = Some(evil.clone());
+                let e = fetch(&**sess, r).await.unwrap_err();
+                assert!(
+                    matches!(e, Error::Query { position: None, .. }),
+                    "[{tag}] fetch `{evil}`: {e:?}"
+                );
+                let e = sess
+                    .count_table(TableCountRequest {
+                        query_id: None,
+                        table: table.clone(),
+                        filters: vec![],
+                        raw_where: Some(evil.clone()),
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(
+                    matches!(e, Error::Query { position: None, .. }),
+                    "[{tag}] count `{evil}`: {e:?}"
+                );
+                raw_where_intact(&**sess, &db, tag, evil).await;
+            }
+        }
+        // Legitimate fragments, including `;` and comment markers inside literals, still work.
+        for (w, expect) in [
+            ("name = 'a;b'", vec![1]),
+            ("name = \"a;b\"", vec![1]),
+            ("name = 'two' -- trailing comment ; (", vec![2]),
+            ("name = 'two' # another ) comment", vec![2]),
+            ("(id > 3) AND /* ; ( */ id < 100", vec![4, 5]),
+            ("id = /*! 3 */", vec![3]),
+            ("name LIKE '%;%'", vec![1]),
+        ] {
+            let mut r = table_req(&db, RAW_DB_TABLE);
+            r.raw_where = Some(w.to_string());
+            assert_eq!(
+                people_ids(&fetch(&*s, r).await.unwrap()),
+                expect,
+                "[{tag}] {w}"
+            );
+            let n = s
+                .count_table(TableCountRequest {
+                    query_id: None,
+                    table: table.clone(),
+                    filters: vec![],
+                    raw_where: Some(w.to_string()),
+                })
+                .await
+                .unwrap();
+            assert_eq!(n as usize, expect.len(), "[{tag}] count {w}");
+        }
+        raw_where_intact(&*s, &db, tag, "legit fragments").await;
+    }
+}
+
+#[tokio::test]
+async fn paging_is_deterministic() {
+    if !it_enabled() {
+        return;
+    }
+    for t in TARGETS {
+        ensure_fixture(t).await;
+        let s = user_session(t).await;
+        let tag = t.name;
+        // `grp` has 2000 rows per value: without a tie-break the pages would overlap.
+        for sort in [
+            vec![SortKey {
+                column: "grp".into(),
+                descending: false,
+            }],
+            vec![SortKey {
+                column: "grp".into(),
+                descending: true,
+            }],
+            vec![],
+        ] {
+            let mut seen = std::collections::HashSet::new();
+            let mut total = 0;
+            for page in 0..8u64 {
+                let mut r = table_req(FIXTURE_DB, "big");
+                r.sort = sort.clone();
+                r.offset = page * 25_000;
+                r.limit = 25_000;
+                let rs = fetch(&*s, r).await.unwrap();
+                total += rs.rows.len();
+                for id in ints(&rs, 0) {
+                    assert!(seen.insert(id), "[{tag}] row {id} appeared on two pages");
+                }
+            }
+            assert_eq!((total, seen.len()), (200_000, 200_000), "[{tag}] {sort:?}");
+        }
+        // Unique NOT NULL index is used when there is no primary key; keyless tables are fine.
+        let db = scratch_db(t, "paging").await;
+        let root = root_session(t).await;
+        run(
+            &*root,
+            &format!(
+                "CREATE TABLE `{db}`.u (a INT NOT NULL, b INT, UNIQUE KEY ua (a));
+                 INSERT INTO `{db}`.u VALUES (3,1),(1,1),(2,1);
+                 CREATE TABLE `{db}`.k (a INT);
+                 INSERT INTO `{db}`.k VALUES (3),(1),(2)"
+            ),
+        )
+        .await;
+        root.close().await.unwrap();
+        let rs = fetch(&*s, table_req(&db, "u")).await.unwrap();
+        assert_eq!(
+            ints(&rs, 0),
+            vec![1, 2, 3],
+            "[{tag}] unique index tie-break"
+        );
+        assert_eq!(fetch(&*s, table_req(&db, "k")).await.unwrap().rows.len(), 3);
+        let mut r = table_req(&db, "u");
+        r.sort = vec![SortKey {
+            column: "B".into(),
+            descending: false,
+        }];
+        assert_eq!(ints(&fetch(&*s, r).await.unwrap(), 0), vec![1, 2, 3]);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn count_table_can_be_cancelled() {
+    if !it_enabled() {
+        return;
+    }
+    for t in TARGETS {
+        ensure_fixture(t).await;
+        let s = user_session(t).await;
+        let mk = marker();
+        let id = Uuid::new_v4();
+        let s2 = s.clone();
+        let table = ObjectPath::root()
+            .child(K::Database, FIXTURE_DB)
+            .child(K::Table, "big");
+        let raw = format!("SLEEP(1) = 0 /* {mk} */");
+        let task = tokio::spawn(async move {
+            s2.count_table(TableCountRequest {
+                query_id: Some(id),
+                table,
+                filters: vec![],
+                raw_where: Some(raw),
+            })
+            .await
+        });
+        wait_running(t, &mk).await;
+        let c0 = Instant::now();
+        s.cancel(id).await.unwrap();
+        let r = task.await.unwrap();
+        assert!(matches!(r, Err(Error::Cancelled)), "[{}] {r:?}", t.name);
+        assert!(c0.elapsed() < Duration::from_secs(3));
+        s.ping().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_cancels_running_statements() {
+    if !it_enabled() {
+        return;
+    }
+    for t in TARGETS {
+        ensure_fixture(t).await;
+        let s = user_session(t).await;
+        let mk1 = marker();
+        let mk2 = marker();
+        let s1 = s.clone();
+        let q = QueryRequest::new(format!("SELECT SLEEP(60) /* {mk1} */"));
+        let exec = tokio::spawn(async move { s1.execute(q, &mut CountingSink::default()).await });
+        let s2 = s.clone();
+        let mut req = table_req(FIXTURE_DB, "big");
+        req.raw_where = Some(format!("SLEEP(1) = 0 /* {mk2} */"));
+        let fetch_task =
+            tokio::spawn(async move { s2.fetch_table(req, &mut CountingSink::default()).await });
+        wait_running(t, &mk1).await;
+        wait_running(t, &mk2).await;
+        let c0 = Instant::now();
+        s.close().await.unwrap();
+        assert!(
+            c0.elapsed() < Duration::from_secs(5),
+            "[{}] close took {:?}",
+            t.name,
+            c0.elapsed()
+        );
+        let r = exec.await.unwrap();
+        assert!(matches!(r, Err(Error::Cancelled)), "[{}] {r:?}", t.name);
+        let r = fetch_task.await.unwrap();
+        assert!(matches!(r, Err(Error::Cancelled)), "[{}] {r:?}", t.name);
+        // The server really stopped them.
+        let root = root_session(t).await;
+        let rs = query(
+            &*root,
+            &format!(
+                "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO LIKE '%{mk1}%' OR INFO LIKE '%{mk2}%'"
+            ),
+        )
+        .await;
+        assert_eq!(
+            rs.rows[0][0],
+            Value::Int(1),
+            "only the probe itself matches"
+        );
+        assert!(matches!(s.ping().await, Err(Error::Connection(_))));
     }
 }

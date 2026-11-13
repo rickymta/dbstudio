@@ -1,5 +1,5 @@
 import { Check, Copy, PanelBottom, PanelRight, X } from 'lucide-react';
-import { useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { IconButton } from '@/components/ui/IconButton';
@@ -8,9 +8,13 @@ import type { ColumnMeta, Value } from '@/lib/types';
 import {
   base64ByteLength,
   decodeBase64,
+  LARGE_COPY_BYTES,
   detectImageMime,
+  estimateValueSize,
   formatBytes,
   hexDump,
+  parseJsonLossless,
+  stringifyPlain,
   valueToPlain,
   valueToText,
 } from './format';
@@ -24,10 +28,14 @@ const MIN_SIZE = 200;
 const MAX_SIZE = 900;
 
 function useCopy() {
+  const { t } = useTranslation('data');
   const [copied, setCopied] = useState(false);
-  const copy = (text: string) => {
+  const copy = (value: Value) => {
+    if (estimateValueSize(value) > LARGE_COPY_BYTES && !window.confirm(t('viewer.copyLarge'))) {
+      return;
+    }
     void navigator.clipboard
-      ?.writeText(text)
+      ?.writeText(valueToText(value))
       .then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 1200);
@@ -38,7 +46,7 @@ function useCopy() {
 }
 
 /** Full-value rendering by kind. Exported for tests. */
-export function ValueView({ value }: { value: Value }) {
+export const ValueView = memo(function ValueView({ value }: { value: Value }) {
   const { t } = useTranslation('data');
   switch (value.t) {
     case 'null':
@@ -53,7 +61,7 @@ export function ValueView({ value }: { value: Value }) {
     case 'json':
     case 'array':
     case 'document':
-      return <StructuredView plain={value.t === 'json' ? value.v : valueToPlain(value)} />;
+      return <StructuredValue value={value} />;
     case 'bytes':
       return <BytesView b64={value.v} />;
     case 'text':
@@ -65,6 +73,16 @@ export function ValueView({ value }: { value: Value }) {
         </pre>
       );
   }
+});
+
+/** json/array/document: lossless tree, or plain text when a json value is not valid JSON. */
+function StructuredValue({ value }: { value: Value }) {
+  const plain = useMemo<unknown>(() => {
+    if (value.t === 'json') return parseJsonLossless(value.v);
+    return valueToPlain(value);
+  }, [value]);
+  if (value.t === 'json' && plain === undefined) return <TextView text={value.v} />;
+  return <StructuredView plain={plain} />;
 }
 
 function TextView({ text }: { text: string }) {
@@ -101,11 +119,7 @@ function StructuredView({ plain }: { plain: unknown }) {
   const [mode, setMode] = useState<TreeMode>('default');
   const [epoch, setEpoch] = useState(0);
   const pretty = useMemo(() => {
-    try {
-      return JSON.stringify(plain, null, 2) ?? 'null';
-    } catch {
-      return String(plain);
-    }
+    return stringifyPlain(plain, 2);
   }, [plain]);
   const setAll = (m: TreeMode) => {
     setMode(m);
@@ -252,12 +266,7 @@ export function CellViewer({ tabId, model }: CellViewerProps) {
           {column && <span className="ml-2 text-muted-foreground">{column.typeName}</span>}
           {sel && <span className="ml-2 text-muted-foreground">#{sel.row + 1}</span>}
         </div>
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={!value}
-          onClick={() => value && copy(valueToText(value))}
-        >
+        <Button size="sm" variant="ghost" disabled={!value} onClick={() => value && copy(value)}>
           {copied ? <Check size={12} /> : <Copy size={12} />}
           {copied ? t('viewer.copied') : t('viewer.copy')}
         </Button>

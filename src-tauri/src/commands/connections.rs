@@ -79,7 +79,20 @@ pub(crate) async fn export_impl(
 
 pub(crate) async fn import_impl(state: &AppState, path: String) -> Result<ConnectionsSnapshot> {
     let svc = state.connections.clone();
-    blocking(move || svc.import_from_file(&path)).await
+    let (snapshot, report) = blocking(move || svc.import_from_file(&path)).await?;
+    tracing::info!(
+        profiles = report.profiles,
+        groups = report.groups,
+        "connections imported"
+    );
+    if report.dropped_options > 0 || report.reset_colors > 0 {
+        tracing::warn!(
+            dropped_options = report.dropped_options,
+            reset_colors = report.reset_colors,
+            "import removed unsafe or invalid values from the imported file"
+        );
+    }
+    Ok(snapshot)
 }
 
 /// All groups and profiles.

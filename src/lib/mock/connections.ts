@@ -148,7 +148,8 @@ export async function connectionDuplicate(id: Uuid): Promise<ConnectionProfile> 
     ...clone(src),
     id: newId(),
     name: `${src.name} (copy)`,
-    hasPassword: false,
+    // The backend copies the stored secret along with the profile.
+    hasPassword: src.hasPassword,
     sortOrder: profiles.length,
     createdAt: now(),
     updatedAt: now(),

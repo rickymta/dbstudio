@@ -67,6 +67,23 @@ impl Error {
         }
     }
 
+    /// Message without the English category prefix that `Display` adds ("connection error: ...").
+    /// This is what is sent to the frontend, which localizes the category itself.
+    pub fn message(&self) -> String {
+        match self {
+            Error::Connection(m)
+            | Error::Authentication(m)
+            | Error::Unsupported(m)
+            | Error::Tls(m)
+            | Error::NotFound(m)
+            | Error::Storage(m)
+            | Error::Other(m) => m.clone(),
+            Error::Query { message, .. } => message.clone(),
+            Error::Io(e) => e.to_string(),
+            Error::Cancelled | Error::Timeout => self.to_string(),
+        }
+    }
+
     /// Shorthand for a query error without position.
     pub fn query(message: impl Into<String>) -> Self {
         Error::Query {
@@ -87,7 +104,7 @@ impl Serialize for Error {
         };
         let mut s = serializer.serialize_struct("Error", 2 + extra)?;
         s.serialize_field("kind", self.kind())?;
-        s.serialize_field("message", &self.to_string())?;
+        s.serialize_field("message", &self.message())?;
         match self {
             Error::Query {
                 position: Some(p), ..
@@ -117,11 +134,19 @@ mod tests {
         let e = Error::Unsupported("explain".into());
         assert_eq!(
             serde_json::to_value(&e).unwrap(),
-            json!({"kind": "unsupported", "message": "unsupported: explain", "capability": "explain"})
+            json!({"kind": "unsupported", "message": "explain", "capability": "explain"})
         );
         assert_eq!(
             serde_json::to_value(Error::Cancelled).unwrap(),
             json!({"kind": "cancelled", "message": "operation cancelled"})
+        );
+        assert_eq!(
+            serde_json::to_value(Error::Connection("refused".into())).unwrap()["message"],
+            "refused"
+        );
+        assert_eq!(
+            Error::Connection("refused".into()).to_string(),
+            "connection error: refused"
         );
         let io: Error = std::io::Error::other("boom").into();
         assert_eq!(serde_json::to_value(&io).unwrap()["kind"], "io");

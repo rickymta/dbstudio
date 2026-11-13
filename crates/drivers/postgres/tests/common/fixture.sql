@@ -94,3 +94,11 @@ CREATE TABLE dbs_it.big AS
     SELECT g::int AS id, md5(g::text) AS name, (g % 10)::int AS grp FROM generate_series(1, 200000) g;
 ALTER TABLE dbs_it.big ADD PRIMARY KEY (id);
 ANALYZE dbs_it.big;
+
+CREATE TABLE dbs_it.dupes AS SELECT g AS k, g % 3 AS grp FROM generate_series(1, 1000) g;
+ALTER TABLE dbs_it.dupes ADD PRIMARY KEY (k);
+CREATE TABLE dbs_it.ukey AS SELECT g AS k, g % 3 AS grp FROM generate_series(1, 1000) g;
+ALTER TABLE dbs_it.ukey ALTER COLUMN k SET NOT NULL;
+CREATE UNIQUE INDEX ukey_k_idx ON dbs_it.ukey (k);
+CREATE TABLE dbs_it.nokey (a int);
+INSERT INTO dbs_it.nokey VALUES (1), (1), (2);

@@ -1,11 +1,13 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Providers } from '@/app/providers';
 import { Toaster } from '@/components/ui/Toast';
+import { useToastStore } from '@/components/ui/toastStore';
 import { pickFile, pickSavePath } from '@/lib/dialog';
 import i18n from '@/lib/i18n';
 import { ipc } from '@/lib/ipc';
+import type { ObjectKind } from '@/lib/types';
 import { resetMockConnections } from '@/lib/mock';
 import { useSessionsStore } from '@/stores/sessions';
 import { useTabsStore, WELCOME_TAB } from '@/stores/tabs';
@@ -17,25 +19,9 @@ const PG_DEV = '00000000-0000-4000-8000-0000000000b1';
 const MYSQL_STAGING = '00000000-0000-4000-8000-0000000000b2';
 const WAIT = { timeout: 4000 };
 
-beforeAll(() => {
-  // Radix primitives call pointer-capture and scroll APIs that jsdom lacks.
-  Element.prototype.hasPointerCapture = () => false;
-  Element.prototype.setPointerCapture = () => {};
-  Element.prototype.releasePointerCapture = () => {};
-  Element.prototype.scrollIntoView = () => {};
-  // jsdom has no layout; give scroll containers a size so the virtual list renders rows.
-  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
-    configurable: true,
-    get: () => 600,
-  });
-  Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
-    configurable: true,
-    get: () => 300,
-  });
-});
-
 beforeEach(async () => {
   resetMockConnections();
+  useToastStore.setState({ toasts: [] });
   localStorage.clear();
   useSessionsStore.setState({ sessionsByConnection: {}, opening: {} });
   useTabsStore.setState({ tabs: [WELCOME_TAB], activeId: WELCOME_TAB.id });
@@ -218,6 +204,25 @@ describe('ConnectionsSidebar', () => {
     expect(await within(dialog).findByText('Storage error: disk full')).toBeInTheDocument();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled();
+  });
+
+  it('closes the dialog and warns when the profile was saved despite a storage error', async () => {
+    const original = ipc.connectionSave.bind(ipc);
+    vi.spyOn(ipc, 'connectionSave').mockImplementation(async (p, secret) => {
+      await original(p, secret);
+      throw {
+        kind: 'storage',
+        message: 'connection saved, but its password could not be stored: keychain',
+      };
+    });
+    const user = setup();
+    await profileRow('PostgreSQL dev');
+    const dialog = await newConnection(user);
+    await user.type(within(dialog).getByLabelText('Name'), 'Half saved');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await profileRow('Half saved')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(await screen.findByRole('alert')).toHaveTextContent('password could not be stored');
   });
 
   it('duplicates a connection', async () => {
@@ -501,5 +506,107 @@ describe('ConnectionsSidebar', () => {
     expect(screen.getByText('locked')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Retry connecting' }));
     expect(await profileRow('PostgreSQL dev')).toBeInTheDocument();
+  });
+
+  it('ignores an unsafe profile color instead of putting it into CSS', async () => {
+    const base = (await ipc.connectionsList()).profiles[2]!; // production profile
+    await ipc.connectionSave(
+      {
+        ...base,
+        id: crypto.randomUUID(),
+        name: 'Painted',
+        color: '#f00, 0 0 0 100vmax #000',
+        groupId: null,
+      },
+      { action: 'keep' },
+    );
+    setup();
+    const row = await profileRow('Painted');
+    expect(row.style.boxShadow).not.toContain('100vmax');
+    expect(row.style.boxShadow).toContain('var(--danger)');
+  });
+
+  it('survives an object kind it does not know', async () => {
+    const original = ipc.objectChildren.bind(ipc);
+    vi.spyOn(ipc, 'objectChildren').mockImplementation(async (sessionId, path) => {
+      if (path.segments.length > 0) return original(sessionId, path);
+      return [
+        {
+          path: { segments: [{ kind: 'hologram' as ObjectKind, name: 'holo' }] },
+          kind: 'hologram' as ObjectKind,
+          name: 'holo',
+          hasChildren: false,
+        },
+      ];
+    });
+    const user = setup();
+    await user.dblClick(await profileRow('PostgreSQL dev'));
+    const holo = await screen.findByText('holo', {}, WAIT);
+    await user.dblClick(holo);
+    expect(useTabsStore.getState().tabs).toHaveLength(1);
+    fireEvent.contextMenu(holo);
+    const menu = await screen.findByRole('menu');
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map((i) => i.textContent),
+    ).toEqual(['Copy name']);
+  });
+
+  it('keeps one valid tree and only points aria-activedescendant at rendered rows', async () => {
+    const many = Array.from({ length: 300 }, (_, i) => ({
+      path: { segments: [{ kind: 'database' as const, name: `db${i}` }] },
+      kind: 'database' as const,
+      name: `db${i}`,
+      hasChildren: false,
+    }));
+    vi.spyOn(ipc, 'objectChildren').mockResolvedValue(many);
+    const user = setup();
+    await user.dblClick(await profileRow('PostgreSQL dev'));
+    const tree = await screen.findByTestId('object-tree', {}, WAIT);
+    await screen.findByText('db0', {}, WAIT);
+    expect(screen.getAllByRole('tree')).toHaveLength(1);
+    expect(tree).toHaveAttribute('role', 'group');
+    // Virtualized: far fewer rows than nodes are mounted.
+    expect(within(tree).getAllByRole('treeitem').length).toBeLessThan(100);
+    await user.click(tree);
+    await user.keyboard('{Home}');
+    const active = () => tree.getAttribute('aria-activedescendant');
+    await waitFor(() => expect(document.getElementById(active() ?? '')).not.toBeNull());
+    await user.keyboard('{End}');
+    // The focused last node is not mounted, so the attribute must be absent.
+    expect(active()).toBeNull();
+    await user.keyboard('{Home}');
+    expect(document.getElementById(active() ?? '')).not.toBeNull();
+  });
+
+  it('warns about unverified TLS on remote hosts, with stronger emphasis for production', async () => {
+    const user = setup();
+    await profileRow('PostgreSQL dev');
+    const dialog = await newConnection(user);
+    const host = within(dialog).getByLabelText('Host');
+    // Default host is localhost and the default mode is prefer: no warning.
+    expect(within(dialog).queryByTestId('tls-warning')).toBeNull();
+    await user.clear(host);
+    await user.type(host, 'db.example.com');
+    const warning = await within(dialog).findByTestId('tls-warning');
+    expect(warning).toHaveTextContent(/fall back to unencrypted/);
+    expect(warning).toHaveClass('text-warning');
+
+    await user.click(within(dialog).getByRole('combobox', { name: 'Environment' }));
+    await user.click(await screen.findByRole('option', { name: 'Production' }));
+    expect(within(dialog).getByTestId('tls-warning')).toHaveClass('text-danger');
+
+    await user.click(within(dialog).getByRole('combobox', { name: 'TLS mode' }));
+    await user.click(await screen.findByRole('option', { name: 'Verify full (CA and host name)' }));
+    expect(within(dialog).queryByTestId('tls-warning')).toBeNull();
+    expect(within(dialog).getByText(/Recommended/)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('combobox', { name: 'TLS mode' }));
+    await user.click(await screen.findByRole('option', { name: 'Disable' }));
+    expect(within(dialog).getByTestId('tls-warning')).toHaveTextContent(/not encrypted/);
+    await user.clear(host);
+    await user.type(host, 'localhost');
+    expect(within(dialog).queryByTestId('tls-warning')).toBeNull();
   });
 });

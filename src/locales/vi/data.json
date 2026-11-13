@@ -54,8 +54,10 @@
     "retry": "Thử lại",
     "ariaLabel": "Lưới dữ liệu",
     "null": "NULL",
-    "capped": "Đã dừng tải ở {{max}} dòng (giới hạn). Hãy thêm bộ lọc để thu hẹp kết quả.",
-    "stopped": "Đã dừng tải. Bấm Làm mới để tải lại từ đầu."
+    "stopped": "Đã dừng tải. Bấm Làm mới để tải lại từ đầu.",
+    "cappedRows": "Đã dừng tải ở {{max}} dòng (giới hạn số dòng). Hãy thêm bộ lọc để thu hẹp kết quả.",
+    "cappedCells": "Đã dừng tải sau {{rows}} dòng: đạt ngân sách bộ nhớ {{cells}} ô ({{columns}} cột). Hãy thêm bộ lọc hoặc sắp xếp để thu hẹp kết quả.",
+    "copyLarge": "Giá trị này rất lớn (trên 5 MB). Vẫn sao chép?"
   },
   "status": {
     "loaded": "Đã tải {{count}} dòng",
@@ -70,7 +72,9 @@
     "stop": "Dừng",
     "refresh": "Làm mới",
     "stopped": "Đã dừng",
-    "done": "Đã tải hết"
+    "done": "Đã tải hết",
+    "countFailed": "Đếm thất bại",
+    "cancelCount": "Huỷ"
   },
   "viewer": {
     "title": "Ô dữ liệu",
@@ -99,7 +103,9 @@
     "column": "Cột",
     "type": "Kiểu",
     "row": "Dòng",
-    "resize": "Đổi kích thước trình xem"
+    "resize": "Đổi kích thước trình xem",
+    "copyLarge": "Giá trị này rất lớn (trên 5 MB). Vẫn sao chép?",
+    "expandLimit": "Chỉ mở rộng {{count}} nút đầu tiên; phần còn lại giữ thu gọn."
   },
   "structure": {
     "summaryRows": "Số dòng ước tính",

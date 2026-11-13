@@ -8,7 +8,7 @@ import type {
   Value,
 } from '@/lib/types';
 import { ipc } from '@/lib/ipc';
-import { GridModel } from './gridModel';
+import { CANCEL_RETRY_DELAY_MS, GridModel } from './gridModel';
 import { emptyDraft } from './request';
 
 vi.mock('@/lib/ipc', () => ({
@@ -204,6 +204,7 @@ describe('GridModel reset on sort / filter', () => {
       table: m.table,
       filters: [],
       rawWhere: 'x = 1',
+      queryId: expect.any(String),
     });
     expect(m.counting).toBe(true);
     m.clearFilter(); // invalidates the in-flight count
@@ -248,6 +249,8 @@ describe('GridModel errors and stop', () => {
     feed(calls[0]!, 0, 4);
     m.stop();
     expect(ipc.queryCancel).toHaveBeenCalledWith('s1', calls[0]!.request.queryId);
+    expect(m.status).toBe('stopped'); // immediately, without waiting for the backend
+    calls[0]!.emit({ type: 'rows', rows: rows(4, 3) }); // late rows of the stopped fetch
     calls[0]!.reject({ kind: 'cancelled', message: 'operation cancelled' });
     await flush();
     expect(m.status).toBe('stopped');
@@ -286,5 +289,170 @@ describe('GridModel errors and stop', () => {
     pending[0]!();
     expect(listener).toHaveBeenCalledTimes(1);
     expect(m.rows).toHaveLength(5);
+  });
+});
+
+describe('GridModel end detection, budgets and stop', () => {
+  const end = (rowCount: number): QueryEvent => ({
+    type: 'statementEnd',
+    end: { outcome: { kind: 'rows', rowCount, truncated: false }, elapsedMs: 1 },
+  });
+
+  it('decides the end from statementEnd rowCount, not from rows counted at resolve time', async () => {
+    const m = makeModel({ pageSize: 4 });
+    m.ensureLoaded();
+    calls[0]!.emit({ type: 'columns', columns: COLUMNS });
+    calls[0]!.emit({ type: 'rows', rows: rows(0, 2) }); // rest of the page "still in flight"
+    calls[0]!.emit(end(4));
+    calls[0]!.resolve();
+    await flush();
+    expect(m.exhausted).toBe(false); // a full page of 4 was reported
+    m.loadMore();
+    expect(calls[1]!.request.offset).toBe(2); // offset follows the rows actually held
+    calls[1]!.emit(end(1));
+    calls[1]!.resolve();
+    await flush();
+    expect(m.exhausted).toBe(true);
+  });
+
+  it('grows the page size with each page', async () => {
+    const m = new GridModel({ sessionId: 's1', table: { segments: [] } }, sync);
+    m.ensureLoaded();
+    expect(calls[0]!.request.limit).toBe(1000);
+    calls[0]!.emit({ type: 'columns', columns: COLUMNS });
+    calls[0]!.emit({ type: 'rows', rows: rows(0, 1000) });
+    calls[0]!.resolve();
+    await flush();
+    m.loadMore();
+    expect(calls[1]!.request.limit).toBe(5000);
+    calls[1]!.emit({ type: 'rows', rows: rows(1000, 5000) });
+    calls[1]!.resolve();
+    await flush();
+    m.loadMore();
+    expect(calls[2]!.request.limit).toBe(20000);
+    calls[2]!.emit({ type: 'rows', rows: rows(6000, 20000) });
+    calls[2]!.resolve();
+    await flush();
+    m.loadMore();
+    expect(calls[3]!.request.limit).toBe(20000);
+    expect(calls[3]!.request.batchSize).toBeGreaterThanOrEqual(500);
+    expect(calls[3]!.request.batchSize).toBeLessThanOrEqual(1000);
+  });
+
+  it('stops on the cell budget (rows x columns) and says why', async () => {
+    const m = new GridModel(
+      { sessionId: 's1', table: { segments: [] }, pageSize: 4, maxCells: 10, maxRows: 100 },
+      sync,
+    );
+    const two: ColumnMeta[] = [COLUMNS[0]!, { name: 'b', typeName: 'int', valueKind: 'int' }];
+    m.ensureLoaded();
+    calls[0]!.emit({ type: 'columns', columns: two });
+    calls[0]!.emit({ type: 'rows', rows: rows(0, 4).map((r) => [...r, ...r]) });
+    calls[0]!.resolve();
+    await flush();
+    m.loadMore();
+    expect(calls[1]!.request.limit).toBe(1); // 10 cells / 2 columns = 5 rows max
+    calls[1]!.emit({ type: 'rows', rows: rows(4, 1).map((r) => [...r, ...r]) });
+    calls[1]!.resolve();
+    await flush();
+    expect(m.capped).toBe(true);
+    expect(m.capReason).toBe('cells');
+    expect(m.rows).toHaveLength(5);
+    m.loadMore();
+    expect(calls).toHaveLength(2);
+  });
+
+  it('reports the row cap reason', async () => {
+    const m = makeModel({ pageSize: 3, maxRows: 3 });
+    m.ensureLoaded();
+    feed(calls[0]!, 0, 3);
+    calls[0]!.resolve();
+    await flush();
+    expect(m.capReason).toBe('rows');
+  });
+
+  it('calls onReset on every reload', () => {
+    const onReset = vi.fn();
+    const m = new GridModel({ sessionId: 's1', table: { segments: [] }, onReset }, sync);
+    m.ensureLoaded();
+    m.toggleSort('id', false);
+    m.applyFilter(emptyDraft());
+    expect(onReset).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries the cancel when the backend does not know the query yet', async () => {
+    vi.mocked(ipc.queryCancel)
+      .mockRejectedValueOnce({ kind: 'notFound', message: 'query' })
+      .mockResolvedValue(undefined);
+    const m = makeModel();
+    m.ensureLoaded();
+    m.stop();
+    expect(ipc.queryCancel).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, CANCEL_RETRY_DELAY_MS + 100));
+    expect(ipc.queryCancel).toHaveBeenCalledTimes(2);
+    // The late result of the cancelled fetch is ignored: the state stays "stopped".
+    calls[0]!.emit({ type: 'rows', rows: rows(0, 3) });
+    calls[0]!.resolve();
+    await flush();
+    expect(m.status).toBe('stopped');
+    expect(m.rows).toHaveLength(0);
+  });
+});
+
+describe('GridModel cancellable count', () => {
+  it('sends a queryId and cancels with it; cancel returns to "not counted" without an error', async () => {
+    let rejectCount: (e: IpcError) => void = () => undefined;
+    vi.mocked(ipc.tableCount).mockImplementation(
+      () => new Promise<number>((_, rej) => (rejectCount = rej)),
+    );
+    const m = makeModel();
+    m.count();
+    const request = vi.mocked(ipc.tableCount).mock.calls[0]![1];
+    expect(request.queryId).toMatch(/[0-9a-f-]{36}/);
+    expect(m.counting).toBe(true);
+
+    m.cancelCount();
+    expect(ipc.queryCancel).toHaveBeenCalledWith('s1', request.queryId);
+    expect(m.counting).toBe(false);
+    expect(m.total).toBeNull();
+    rejectCount({ kind: 'cancelled', message: 'operation cancelled' }); // backend confirms later
+    await flush();
+    expect(m.countError).toBeNull();
+    expect(m.total).toBeNull();
+  });
+
+  it('a cancelled error from the backend is not shown; other errors are kept compactly', async () => {
+    vi.mocked(ipc.tableCount).mockRejectedValueOnce({ kind: 'cancelled', message: 'x' });
+    const m = makeModel();
+    m.count();
+    await flush();
+    expect(m.countError).toBeNull();
+    expect(m.counting).toBe(false);
+    vi.mocked(ipc.tableCount).mockRejectedValueOnce({ kind: 'query', message: 'boom' });
+    m.count();
+    await flush();
+    expect(m.countError?.message).toBe('boom');
+    expect(m.status).toBe('idle'); // the grid itself is untouched
+  });
+
+  it('sort, refresh and dispose cancel a running count and drop its late result', async () => {
+    let resolveCount: (n: number) => void = () => undefined;
+    vi.mocked(ipc.tableCount).mockImplementation(
+      () => new Promise<number>((r) => (resolveCount = r)),
+    );
+    const m = makeModel();
+    m.count();
+    const id = vi.mocked(ipc.tableCount).mock.calls[0]![1].queryId;
+    m.toggleSort('id', false);
+    expect(ipc.queryCancel).toHaveBeenCalledWith('s1', id);
+    expect(m.counting).toBe(false);
+    resolveCount(99);
+    await flush();
+    expect(m.total).toBeNull();
+
+    m.count();
+    const id2 = vi.mocked(ipc.tableCount).mock.calls[1]![1].queryId;
+    m.dispose();
+    expect(ipc.queryCancel).toHaveBeenCalledWith('s1', id2);
   });
 });

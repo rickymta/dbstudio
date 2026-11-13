@@ -10,7 +10,6 @@ authors.workspace = true
 [dependencies]
 dbstudio-core.workspace = true
 async-trait.workspace = true
-serde_json.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-postgres = "0.7.18"

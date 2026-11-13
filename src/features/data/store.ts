@@ -82,7 +82,12 @@ const scrollPositions = new Map<string, { top: number; left: number }>();
 export function getGridModel(tabId: string, sessionId: Uuid, table: ObjectPath): GridModel {
   let m = models.get(tabId);
   if (!m) {
-    m = new GridModel({ sessionId, table });
+    m = new GridModel({
+      sessionId,
+      table,
+      // Row indexes mean other records after a reload: drop the selection.
+      onReset: () => useDataUiStore.getState().patch(tabId, { selection: null }),
+    });
     models.set(tabId, m);
   }
   return m;

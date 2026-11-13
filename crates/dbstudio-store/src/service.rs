@@ -1,6 +1,7 @@
 //! Business layer combining the SQLite [`Store`] and the [`SecretStore`].
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -11,6 +12,27 @@ use uuid::Uuid;
 use crate::db::{Store, now_iso};
 use crate::model::{ConnectionGroup, ConnectionProfile, ConnectionsSnapshot, SecretChange};
 use crate::secret::SecretStore;
+use crate::validate::{IMPORT_OPTION_ALLOWLIST, check_text, is_valid_color};
+
+/// Largest import file accepted (bytes).
+pub const MAX_IMPORT_BYTES: u64 = 5 * 1024 * 1024;
+/// Most profiles one import file may contain.
+pub const MAX_IMPORT_PROFILES: usize = 5_000;
+/// Most groups one import file may contain.
+pub const MAX_IMPORT_GROUPS: usize = 2_000;
+
+/// What an import changed besides adding rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImportReport {
+    /// Profiles added.
+    pub profiles: usize,
+    /// Groups added.
+    pub groups: usize,
+    /// `options` entries removed because their key is not in the import allow-list.
+    pub dropped_options: usize,
+    /// Profiles whose invalid color was reset.
+    pub reset_colors: usize,
+}
 
 /// Value of the `format` field of an export file.
 pub const EXPORT_FORMAT: &str = "dbstudio-connections";
@@ -99,7 +121,9 @@ impl ConnectionService {
         Ok(saved)
     }
 
-    /// Delete a profile and its stored secret.
+    /// Delete a profile and its stored secret. The row is removed first; when the keychain then
+    /// fails the profile stays deleted (so a locked keychain never blocks cleanup) and the
+    /// returned error says the password may remain in the keychain.
     pub fn delete(&self, id: Uuid) -> Result<()> {
         let profile = self.store.get_profile(id)?;
         self.store.delete_profile(id)?;
@@ -252,15 +276,50 @@ impl ConnectionService {
     }
 
     /// Write an export file; returns the number of exported profiles.
+    ///
+    /// Only `.json` paths are accepted. The data is written to a temporary file next to the
+    /// target and renamed into place, so a failure never leaves a half-written export.
     pub fn export_to_file(&self, path: impl AsRef<Path>, ids: Option<&[Uuid]>) -> Result<u32> {
+        let path = path.as_ref();
+        let is_json = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+        if !is_json {
+            return Err(Error::Storage(
+                "export file must have a .json extension".into(),
+            ));
+        }
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| Error::Storage("export path has no file name".into()))?;
         let (json, count) = self.export_json(ids)?;
-        std::fs::write(path, json)?;
+        let mut tmp_name = std::ffi::OsString::from(".");
+        tmp_name.push(file_name);
+        tmp_name.push(format!(".{}.tmp", Uuid::new_v4().simple()));
+        let tmp = path.with_file_name(tmp_name);
+        let written = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path));
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
         Ok(count)
     }
 
     /// Import an export document. Everything gets a fresh id, nothing existing is overwritten.
     pub fn import_json(&self, json: &str) -> Result<ConnectionsSnapshot> {
+        self.import_json_report(json).map(|(snap, _)| snap)
+    }
+
+    /// Like [`ConnectionService::import_json`], also reporting what was sanitized. Only
+    /// allow-listed `options` keys survive, invalid colors are reset and limits are enforced.
+    pub fn import_json_report(&self, json: &str) -> Result<(ConnectionsSnapshot, ImportReport)> {
         let bad = |m: String| Error::Storage(format!("invalid connections file: {m}"));
+        if json.len() as u64 > MAX_IMPORT_BYTES {
+            return Err(bad(format!(
+                "file is larger than {} MB",
+                MAX_IMPORT_BYTES >> 20
+            )));
+        }
         let raw: serde_json::Value =
             serde_json::from_str(json).map_err(|e| bad(format!("not valid JSON ({e})")))?;
         if raw.get("format").and_then(|f| f.as_str()) != Some(EXPORT_FORMAT) {
@@ -272,6 +331,14 @@ impl ConnectionService {
             None => return Err(bad("missing version".into())),
         }
         let file: ExportFile = serde_json::from_value(raw).map_err(|e| bad(e.to_string()))?;
+        if file.profiles.len() > MAX_IMPORT_PROFILES || file.groups.len() > MAX_IMPORT_GROUPS {
+            return Err(bad(format!(
+                "too many entries (limit {MAX_IMPORT_PROFILES} profiles, {MAX_IMPORT_GROUPS} groups)"
+            )));
+        }
+        for g in &file.groups {
+            check_text("group name", &g.name).map_err(|e| bad(e.to_string()))?;
+        }
 
         let group_map: HashMap<Uuid, Uuid> =
             file.groups.iter().map(|g| (g.id, Uuid::new_v4())).collect();
@@ -314,11 +381,24 @@ impl ConnectionService {
             .max()
             .unwrap_or(0);
         let now = now_iso();
+        let mut report = ImportReport {
+            groups: groups.len(),
+            ..ImportReport::default()
+        };
         let profiles: Vec<ConnectionProfile> = file
             .profiles
             .into_iter()
             .enumerate()
             .map(|(i, mut p)| {
+                let before = p.config.options.len();
+                p.config.options.retain(|k, v| {
+                    IMPORT_OPTION_ALLOWLIST.contains(&k.as_str()) && check_text("option", v).is_ok()
+                });
+                report.dropped_options += before - p.config.options.len();
+                if p.color.as_deref().is_some_and(|c| !is_valid_color(c)) {
+                    p.color = None;
+                    report.reset_colors += 1;
+                }
                 p.config.id = Uuid::new_v4();
                 p.group_id = p.group_id.and_then(|g| group_map.get(&g).copied());
                 p.has_password = false;
@@ -328,14 +408,35 @@ impl ConnectionService {
                 p
             })
             .collect();
+        report.profiles = profiles.len();
         self.store.insert_all(&groups, &profiles)?;
-        self.store.snapshot()
+        Ok((self.store.snapshot()?, report))
     }
 
     /// Import from a file on disk.
-    pub fn import_from_file(&self, path: impl AsRef<Path>) -> Result<ConnectionsSnapshot> {
-        let text = std::fs::read_to_string(path)?;
-        self.import_json(&text)
+    ///
+    /// Only regular files up to [`MAX_IMPORT_BYTES`] are read (no devices, directories or
+    /// oversized files; the limit is enforced while reading too, not just from metadata).
+    pub fn import_from_file(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<(ConnectionsSnapshot, ImportReport)> {
+        let file = std::fs::File::open(path.as_ref())?;
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(Error::Storage("import path is not a regular file".into()));
+        }
+        if meta.len() > MAX_IMPORT_BYTES {
+            return Err(Error::Storage(format!(
+                "import file is larger than {} MB",
+                MAX_IMPORT_BYTES >> 20
+            )));
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_IMPORT_BYTES + 1).read_to_end(&mut bytes)?;
+        let text = String::from_utf8(bytes)
+            .map_err(|_| Error::Storage("import file is not valid UTF-8 text".into()))?;
+        self.import_json_report(&text)
     }
 }
 
@@ -728,11 +829,159 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.json");
         assert_eq!(svc.export_to_file(&path, None).unwrap(), 1);
-        let snap = svc.import_from_file(&path).unwrap();
+        let (snap, report) = svc.import_from_file(&path).unwrap();
         assert_eq!(snap.profiles.len(), 2);
+        assert_eq!(report.profiles, 1);
         assert!(matches!(
             svc.import_from_file(dir.path().join("missing.json")),
             Err(Error::Io(_))
         ));
+    }
+
+    fn doc(profiles: serde_json::Value) -> String {
+        serde_json::json!({
+            "format": "dbstudio-connections", "version": 1,
+            "groups": [], "profiles": profiles
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn import_drops_unsafe_options_and_bad_colors() {
+        let (svc, _) = service();
+        let mut p = profile("shared", false);
+        p.config
+            .options
+            .insert("init_command".into(), "DROP DATABASE prod".into());
+        p.config.options.insert("search_path".into(), "evil".into());
+        p.config
+            .options
+            .insert("application_name".into(), "dbs".into());
+        p.config.options.insert("pool_max".into(), "3".into());
+        p.color = Some("red;}</style>".into());
+        let (snap, report) = svc
+            .import_json_report(&doc(serde_json::json!([p])))
+            .unwrap();
+        assert_eq!(report.dropped_options, 2);
+        assert_eq!(report.reset_colors, 1);
+        assert_eq!(report.profiles, 1);
+        let got = &snap.profiles[0];
+        assert_eq!(got.color, None);
+        let keys: Vec<_> = got.config.options.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["application_name", "pool_max"]);
+        // Valid colors survive.
+        let mut ok = profile("ok", false);
+        ok.color = Some("#abc".into());
+        let (snap, report) = svc
+            .import_json_report(&doc(serde_json::json!([ok])))
+            .unwrap();
+        assert_eq!(report.reset_colors, 0);
+        assert!(
+            snap.profiles
+                .iter()
+                .any(|p| p.color.as_deref() == Some("#abc"))
+        );
+    }
+
+    #[test]
+    fn import_rejects_bad_text_and_oversized_input() {
+        let (svc, _) = service();
+        let mut p = profile("bad\nname", false);
+        assert!(
+            svc.import_json(&doc(serde_json::json!([p.clone()])))
+                .is_err()
+        );
+        p.config.name = "x".repeat(300);
+        assert!(svc.import_json(&doc(serde_json::json!([p]))).is_err());
+        assert!(svc.snapshot().unwrap().profiles.is_empty());
+
+        let many: Vec<_> = (0..=MAX_IMPORT_PROFILES)
+            .map(|i| profile(&format!("p{i}"), false))
+            .collect();
+        let err = svc.import_json(&doc(serde_json::json!(many))).unwrap_err();
+        assert!(err.to_string().contains("too many"), "{err}");
+
+        let huge = " ".repeat(MAX_IMPORT_BYTES as usize + 1);
+        assert!(
+            svc.import_json(&huge)
+                .unwrap_err()
+                .to_string()
+                .contains("larger")
+        );
+    }
+
+    #[test]
+    fn import_file_must_be_a_small_regular_file() {
+        let (svc, _) = service();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            svc.import_from_file(dir.path()),
+            Err(Error::Storage(_)) | Err(Error::Io(_))
+        ));
+        let big = dir.path().join("big.json");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_IMPORT_BYTES + 1).unwrap();
+        let err = svc.import_from_file(&big).unwrap_err();
+        assert!(err.to_string().contains("larger"), "{err}");
+        let bin = dir.path().join("bin.json");
+        std::fs::write(&bin, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(svc.import_from_file(&bin).is_err());
+    }
+
+    #[test]
+    fn export_requires_json_extension_and_leaves_no_temp_files() {
+        let (svc, _) = service();
+        svc.save(profile("a", false), SecretChange::Keep).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["out.txt", "out", "out.json.exe", "out.jsonx"] {
+            let err = svc.export_to_file(dir.path().join(bad), None).unwrap_err();
+            assert!(matches!(err, Error::Storage(_)), "{bad}");
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        svc.export_to_file(dir.path().join("OUT.JSON"), None)
+            .unwrap();
+        // Overwrites atomically and leaves only the target behind.
+        svc.export_to_file(dir.path().join("OUT.JSON"), None)
+            .unwrap();
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["OUT.JSON"]);
+        // A failing write (missing directory) reports an I/O error.
+        assert!(matches!(
+            svc.export_to_file(dir.path().join("nope/out.json"), None),
+            Err(Error::Io(_))
+        ));
+    }
+
+    #[test]
+    fn save_validates_color_and_field_limits() {
+        let (svc, _) = service();
+        let mut p = profile("a", false);
+        p.color = Some("javascript:alert(1)".into());
+        assert!(svc.save(p.clone(), SecretChange::Keep).is_err());
+        p.color = Some("#12".into());
+        assert!(svc.save(p.clone(), SecretChange::Keep).is_err());
+        p.color = Some("#a1B2c3".into());
+        assert!(svc.save(p.clone(), SecretChange::Keep).is_ok());
+        p.color = Some(String::new());
+        assert_eq!(svc.save(p.clone(), SecretChange::Keep).unwrap().color, None);
+        p.color = None;
+        p.config.host = "h\u{7}".into();
+        assert!(svc.save(p.clone(), SecretChange::Keep).is_err());
+        p.config.host = "h".into();
+        p.config.username = Some("u".repeat(256));
+        assert!(svc.save(p.clone(), SecretChange::Keep).is_err());
+        p.config.username = None;
+        p.config.database = Some("a\nb".into());
+        assert!(svc.save(p, SecretChange::Keep).is_err());
+        let g = ConnectionGroup {
+            id: Uuid::new_v4(),
+            name: "g\tx".into(),
+            parent_id: None,
+            sort_order: 0,
+        };
+        assert!(svc.save_group(g).is_err());
     }
 }

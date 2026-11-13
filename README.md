@@ -44,6 +44,30 @@ cargo test --workspace
 
 `cargo build -p dbstudio` needs `dist/` to exist, so run `pnpm build` first.
 
+## Integration tests
+
+The driver and command-layer tests that talk to real servers only run when `DBSTUDIO_IT=1`
+(without it they pass immediately; with it, an unreachable server fails the test). They need
+Docker:
+
+```sh
+sh docker/gen-certs.sh
+docker compose -f docker/compose.test.yml up -d --wait
+DBSTUDIO_IT=1 cargo test --workspace
+docker compose -f docker/compose.test.yml down -v
+```
+
+| Service   | Image         | Address           | TLS                            |
+| --------- | ------------- | ----------------- | ------------------------------ |
+| `pg16`    | PostgreSQL 16 | `127.0.0.1:54316` | yes (CA `docker/certs/ca.crt`) |
+| `pg12`    | PostgreSQL 12 | `127.0.0.1:54312` | no                             |
+| `mysql8`  | MySQL 8       | `127.0.0.1:33068` | yes (same CA)                  |
+| `mariadb` | MariaDB 10.6  | `127.0.0.1:33106` | no                             |
+
+Login on every server: user `dbstudio`, password `dbstudio_test`, database `dbstudio`
+(MySQL/MariaDB also have `root` with the same password). These credentials are throw-away and
+bound to localhost only. CI runs the same steps in the `integration` job.
+
 ## IPC types
 
 `tauri-specta` has no stable 2.x release yet (only `2.0.0-rc.*`), so IPC types are written by hand:

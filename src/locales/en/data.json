@@ -54,8 +54,10 @@
     "retry": "Retry",
     "ariaLabel": "Data grid",
     "null": "NULL",
-    "capped": "Loading stopped at {{max}} rows (row limit). Add a filter to narrow the result.",
-    "stopped": "Loading stopped. Press Refresh to start over."
+    "stopped": "Loading stopped. Press Refresh to start over.",
+    "cappedRows": "Loading stopped at {{max}} rows (row limit). Add a filter to narrow the result.",
+    "cappedCells": "Loading stopped after {{rows}} rows: the memory budget of {{cells}} cells ({{columns}} columns) was reached. Add a filter or sort to narrow the result.",
+    "copyLarge": "This value is very large (over 5 MB). Copy it anyway?"
   },
   "status": {
     "loaded": "{{count}} rows loaded",
@@ -70,7 +72,9 @@
     "stop": "Stop",
     "refresh": "Refresh",
     "stopped": "Stopped",
-    "done": "All rows loaded"
+    "done": "All rows loaded",
+    "countFailed": "Count failed",
+    "cancelCount": "Cancel"
   },
   "viewer": {
     "title": "Cell",
@@ -99,7 +103,9 @@
     "column": "Column",
     "type": "Type",
     "row": "Row",
-    "resize": "Resize viewer"
+    "resize": "Resize viewer",
+    "copyLarge": "This value is very large (over 5 MB). Copy it anyway?",
+    "expandLimit": "Expanded the first {{count}} nodes only; the rest stay collapsed."
   },
   "structure": {
     "summaryRows": "Estimated rows",

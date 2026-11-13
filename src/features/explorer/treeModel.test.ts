@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { childPath, pathKey, ROOT_PATH } from '@/lib/objectPath';
-import type { ObjectKind, ObjectNode, ObjectPath } from '@/lib/types';
+import type { Capabilities, ObjectKind, ObjectNode, ObjectPath } from '@/lib/types';
 import {
   activationTab,
   flattenTree,
@@ -182,5 +182,43 @@ describe('activation and menu', () => {
     expect(
       qualifiedName(childPath(childPath(users.path, 'folder', 'columns'), 'column', 'id')),
     ).toBe('public.users.id');
+  });
+});
+
+describe('capabilities and unknown kinds', () => {
+  const caps = (on: Partial<Capabilities>): Capabilities => ({
+    sql: true,
+    transactions: true,
+    schemas: false,
+    multipleDatabases: true,
+    explain: false,
+    explainAnalyze: false,
+    foreignKeys: false,
+    cancelQuery: false,
+    logicalBackup: false,
+    dataEditing: false,
+    storedRoutines: true,
+    triggers: true,
+    views: true,
+    sequences: true,
+    ...on,
+  });
+
+  it('ignores kinds whose capability the driver lacks', () => {
+    const noSeq = caps({ sequences: false });
+    expect(activationTab('sequence', noSeq)).toBeNull();
+    expect(activationTab('sequence', caps({}))).toBe('ddl');
+    expect(nodeActions({ kind: 'sequence', hasChildren: false }, noSeq)).toEqual([]);
+    expect(activationTab('view', caps({ views: false }))).toBeNull();
+    expect(activationTab('function', caps({ storedRoutines: false }))).toBeNull();
+    // Without a descriptor nothing is hidden.
+    expect(activationTab('trigger')).toBe('ddl');
+  });
+
+  it('handles kinds this build does not know', () => {
+    const unknown = 'hologram' as ObjectKind;
+    expect(activationTab(unknown)).toBeNull();
+    expect(nodeActions({ kind: unknown, hasChildren: false })).toEqual(['copyName']);
+    expect(nodeActions({ kind: unknown, hasChildren: true })).toEqual(['copyName', 'refresh']);
   });
 });

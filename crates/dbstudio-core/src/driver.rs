@@ -127,9 +127,13 @@ pub trait Session: Send + Sync {
 
     /// Execute the statements in `req`, streaming results into `sink` in batches of
     /// `req.batch_size` rows. If a sink method returns `Err`, stop and return that error.
+    ///
+    /// `Error::Query::position` is a zero-based character offset into the WHOLE text of
+    /// `req.text` (not into the individual statement).
     async fn execute(&self, req: QueryRequest, sink: &mut dyn ResultSink) -> Result<ExecSummary>;
 
-    /// Cancel the running query identified by `query_id`. Unsupported by default.
+    /// Cancel the running query identified by `query_id`. Unsupported by default. For an id that
+    /// is unknown or whose query already finished, implementations return `Ok(())`.
     async fn cancel(&self, query_id: Uuid) -> Result<()> {
         let _ = query_id;
         Err(Error::Unsupported("cancel_query".into()))
@@ -169,7 +173,8 @@ pub trait Session: Send + Sync {
     }
 
     /// Number of rows matching the filters of `req` (same quoting/escaping contract as
-    /// [`Session::fetch_table`]). Unsupported by default.
+    /// [`Session::fetch_table`]). When `req.query_id` is set the count can be aborted with
+    /// [`Session::cancel`]. Unsupported by default.
     async fn count_table(&self, req: TableCountRequest) -> Result<u64> {
         let _ = req;
         Err(Error::Unsupported("count_table".into()))

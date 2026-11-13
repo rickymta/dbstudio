@@ -1,3 +1,4 @@
+import { safeColor } from './color';
 import type {
   ConnectionProfile,
   DbKind,
@@ -80,7 +81,7 @@ export function initialForm(
     savePassword: profile.savePassword,
     groupId: profile.groupId ?? '',
     environment: profile.environment ?? '',
-    color: profile.color ?? null,
+    color: safeColor(profile.color),
     readOnly: profile.readOnly,
     tlsMode: profile.tls.mode,
     caCertPath: profile.tls.caCertPath ?? '',
@@ -132,7 +133,7 @@ export function profileFromForm(
     environment: form.environment || null,
     options: existing?.options ?? {},
     groupId: form.groupId || null,
-    color: form.color,
+    color: safeColor(form.color),
     savePassword: form.savePassword,
     hasPassword: existing?.hasPassword ?? false,
     sortOrder: existing?.sortOrder ?? 0,

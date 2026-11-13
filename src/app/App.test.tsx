@@ -19,11 +19,16 @@ describe('App shell (browser mock IPC)', () => {
     await i18n.changeLanguage('en');
   });
 
-  it('renders the sidebar empty state and all drivers from list_drivers', async () => {
+  it('renders the seeded connections and all drivers from list_drivers', async () => {
     renderApp();
     expect(screen.getByText('Connections')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /new connection/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /new connection/i })).toBeEnabled();
+    expect(await screen.findByRole('treeitem', { name: 'PostgreSQL dev' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('treeitem', { name: 'PostgreSQL prod (read-only)' }),
+    ).toBeInTheDocument();
     expect(await screen.findByTestId('driver-postgres')).toHaveTextContent('Ready');
+    expect(screen.getByTestId('driver-mysql')).toHaveTextContent('Ready');
     expect(screen.getByTestId('driver-clickhouse')).toHaveTextContent('Phase 10');
     expect(screen.getAllByRole('listitem')).toHaveLength(9);
   });

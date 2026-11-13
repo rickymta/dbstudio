@@ -27,6 +27,22 @@ struct Registration {
 pub struct PostgresSession {
     shared: Arc<Shared>,
     running: Mutex<HashMap<Uuid, Registration>>,
+    /// Cached unique-key columns per table, used as ORDER BY tie-breakers (value expires).
+    keys: Mutex<KeyCache>,
+}
+
+type KeyCache = HashMap<(String, String, String), (Instant, Vec<String>)>;
+
+const KEY_CACHE_TTL: Duration = Duration::from_secs(30);
+
+fn strip_position(e: Error) -> Error {
+    match e {
+        Error::Query { message, .. } => Error::Query {
+            message,
+            position: None,
+        },
+        other => other,
+    }
 }
 
 impl std::fmt::Debug for PostgresSession {
@@ -63,6 +79,7 @@ impl PostgresSession {
         let session = PostgresSession {
             shared: Arc::new(shared),
             running: Mutex::new(HashMap::new()),
+            keys: Mutex::new(HashMap::new()),
         };
         // Connect eagerly so that bad credentials, TLS problems and unreachable hosts are
         // reported by `Driver::connect`.
@@ -71,8 +88,15 @@ impl PostgresSession {
         Ok(session)
     }
 
-    fn register(&self, id: Uuid, conn: &PooledConn) -> (Arc<Running>, Unregister<'_>) {
+    fn register(
+        &self,
+        id: Option<Uuid>,
+        conn: &PooledConn,
+    ) -> (Arc<Running>, Option<Unregister<'_>>) {
         let running = Arc::new(Running::default());
+        let Some(id) = id else {
+            return (running, None);
+        };
         if let Ok(mut map) = self.running.lock() {
             map.insert(
                 id,
@@ -82,15 +106,41 @@ impl PostgresSession {
                 },
             );
         }
-        (running, Unregister { session: self, id })
+        (running, Some(Unregister { session: self, id }))
     }
 
-    /// Cancel on the server and fail with `Timeout`.
-    async fn timeout_cleanup(&self, running: &Running, token: &CancelToken) {
-        running
-            .cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
-        let _ = self.shared.cancel_token(token).await;
+    /// Retire the request and return the connection to the pool when it is clean. A connection
+    /// that has had (or is receiving) a cancel request is never reused.
+    async fn end_request(&self, conn: &mut PooledConn, running: &Running, clean: bool) {
+        let cancelled = running.retire().await;
+        if clean && !cancelled {
+            conn.finish().await;
+        }
+    }
+
+    /// Key columns used to make paging deterministic.
+    async fn table_key(&self, conn: &PooledConn, rel: &details::Relation) -> Vec<String> {
+        let id = (rel.database.clone(), rel.schema.clone(), rel.name.clone());
+        if let Ok(map) = self.keys.lock() {
+            if let Some((at, cols)) = map.get(&id) {
+                if at.elapsed() < KEY_CACHE_TTL {
+                    return cols.clone();
+                }
+            }
+        }
+        let cols = details::key_columns(&conn.client, &rel.schema, &rel.name)
+            .await
+            .unwrap_or_default();
+        if let Ok(mut map) = self.keys.lock() {
+            map.insert(id, (Instant::now(), cols.clone()));
+        }
+        cols
+    }
+
+    fn forget_key(&self, rel: &details::Relation) {
+        if let Ok(mut map) = self.keys.lock() {
+            map.remove(&(rel.database.clone(), rel.schema.clone(), rel.name.clone()));
+        }
     }
 
     fn login_db(&self) -> &str {
@@ -110,7 +160,7 @@ impl PostgresSession {
 #[async_trait]
 impl Session for PostgresSession {
     async fn ping(&self) -> Result<()> {
-        let mut conn = self.shared.acquire(self.login_db()).await?;
+        let mut conn = self.shared.acquire_catalog(self.login_db()).await?;
         let r = conn
             .client
             .simple_query("SELECT 1")
@@ -123,7 +173,7 @@ impl Session for PostgresSession {
     }
 
     async fn server_info(&self) -> Result<ServerInfo> {
-        let mut conn = self.shared.acquire(self.login_db()).await?;
+        let mut conn = self.shared.acquire_catalog(self.login_db()).await?;
         let row = conn
             .client
             .query_one(
@@ -165,7 +215,7 @@ impl Session for PostgresSession {
             .filter(|d| !d.is_empty())
             .unwrap_or_else(|| self.login_db().to_string());
         let mut conn = self.shared.acquire(&db).await?;
-        let (running, _unregister) = self.register(req.query_id, &conn);
+        let (running, _unregister) = self.register(Some(req.query_id), &conn);
         let token = conn.cancel.clone();
         let started = Instant::now();
         let batch = batch_size(req.batch_size);
@@ -175,7 +225,7 @@ impl Session for PostgresSession {
                 Ok(r) => r,
                 Err(_) => {
                     // The connection is mid-statement: cancel it on the server and drop it.
-                    self.timeout_cleanup(&running, &token).await;
+                    let _ = running.send_cancel(&self.shared, &token).await;
                     return Err(Error::Timeout);
                 }
             },
@@ -183,33 +233,31 @@ impl Session for PostgresSession {
         };
         match result {
             Ok(statements) => {
-                conn.finish().await;
+                self.end_request(&mut conn, &running, true).await;
                 Ok(ExecSummary {
                     statements,
                     elapsed_ms: started.elapsed().as_millis() as u64,
                 })
             }
             Err(e) => {
-                if matches!(e, Error::Query { .. } | Error::Cancelled) {
-                    conn.finish().await;
-                }
+                let clean = matches!(e, Error::Query { .. } | Error::Cancelled);
+                self.end_request(&mut conn, &running, clean).await;
                 Err(e)
             }
         }
     }
 
     async fn cancel(&self, query_id: Uuid) -> Result<()> {
-        let (running, token) = {
+        let found = {
             let map = self.running.lock().expect("running map poisoned");
-            match map.get(&query_id) {
-                Some(r) => (r.running.clone(), r.token.clone()),
-                None => return Err(Error::NotFound(format!("no running query {query_id}"))),
-            }
+            map.get(&query_id)
+                .map(|r| (r.running.clone(), r.token.clone()))
         };
-        running
-            .cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.shared.cancel_token(&token).await
+        // Unknown or already finished: nothing to cancel.
+        match found {
+            Some((running, token)) => running.send_cancel(&self.shared, &token).await,
+            None => Ok(()),
+        }
     }
 
     async fn list_children(&self, parent: &ObjectPath) -> Result<Vec<ObjectNode>> {
@@ -217,14 +265,14 @@ impl Session for PostgresSession {
     }
 
     async fn object_ddl(&self, path: &ObjectPath) -> Result<String> {
-        let mut conn = self.shared.acquire(self.database_of(path)).await?;
+        let mut conn = self.shared.acquire_catalog(self.database_of(path)).await?;
         let r = ddl::object_ddl(&conn.client, path).await;
         conn.finish().await;
         r
     }
 
     async fn table_details(&self, path: &ObjectPath) -> Result<TableDetails> {
-        let mut conn = self.shared.acquire(self.database_of(path)).await?;
+        let mut conn = self.shared.acquire_catalog(self.database_of(path)).await?;
         let r = details::table_details(&conn.client, path, self.database_of(path)).await;
         conn.finish().await;
         r
@@ -237,16 +285,24 @@ impl Session for PostgresSession {
     ) -> Result<ExecSummary> {
         let target = details::resolve_relation(&req.table)?;
         let table = sql::qualified(&target.schema, &target.name);
-        let select = sql::select_sql(
+        let mut conn = self.shared.acquire(&target.database).await?;
+        let key = self.table_key(&conn, &target).await;
+        let select = match sql::select_sql(
             &table,
             &req.filters,
             req.raw_where.as_deref(),
             &req.sort,
+            &key,
             req.offset,
             req.limit,
-        )?;
-        let mut conn = self.shared.acquire(&target.database).await?;
-        let (running, _unregister) = self.register(req.query_id, &conn);
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                conn.finish().await;
+                return Err(e);
+            }
+        };
+        let (running, _unregister) = self.register(Some(req.query_id), &conn);
         let started = Instant::now();
         let result = exec::run_table_select(
             &mut conn,
@@ -255,22 +311,17 @@ impl Session for PostgresSession {
             sink,
             &running,
         )
-        .await;
-        match result {
-            Ok(()) => {
-                conn.finish().await;
-                Ok(ExecSummary {
-                    statements: 1,
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                })
-            }
-            Err(e) => {
-                if matches!(e, Error::Query { .. } | Error::Cancelled) {
-                    conn.finish().await;
-                }
-                Err(e)
-            }
+        .await
+        .map_err(strip_position);
+        if result.is_err() {
+            self.forget_key(&target);
         }
+        let clean = matches!(result, Ok(()) | Err(Error::Query { .. } | Error::Cancelled));
+        self.end_request(&mut conn, &running, clean).await;
+        result.map(|()| ExecSummary {
+            statements: 1,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        })
     }
 
     async fn count_table(&self, req: TableCountRequest) -> Result<u64> {
@@ -278,22 +329,34 @@ impl Session for PostgresSession {
         let table = sql::qualified(&target.schema, &target.name);
         let select = sql::count_sql(&table, &req.filters, req.raw_where.as_deref())?;
         let mut conn = self.shared.acquire(&target.database).await?;
-        let r = exec::run_count(&mut conn, &select).await;
-        if matches!(r, Ok(_) | Err(Error::Query { .. })) {
-            conn.finish().await;
-        }
-        r
+        let (running, _unregister) = self.register(req.query_id, &conn);
+        let result = exec::run_count(&mut conn, &select, &running)
+            .await
+            .map_err(strip_position);
+        let clean = matches!(result, Ok(_) | Err(Error::Query { .. } | Error::Cancelled));
+        self.end_request(&mut conn, &running, clean).await;
+        result
     }
 
     async fn close(&self) -> Result<()> {
-        let tokens: Vec<CancelToken> = self
+        let active: Vec<(Arc<Running>, CancelToken)> = self
             .running
             .lock()
-            .map(|m| m.values().map(|r| r.token.clone()).collect())
+            .map(|m| {
+                m.values()
+                    .map(|r| (r.running.clone(), r.token.clone()))
+                    .collect()
+            })
             .unwrap_or_default();
+        // Flag every running request first so that they all end as `Cancelled`.
+        for (running, _) in &active {
+            running
+                .cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         self.shared.close();
-        for token in tokens {
-            let _ = self.shared.cancel_token(&token).await;
+        for (running, token) in &active {
+            let _ = running.send_cancel(&self.shared, token).await;
         }
         Ok(())
     }

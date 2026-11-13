@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_SCROLL_HEIGHT,
+  anchoredScrollTop,
   computeScale,
   rowTop,
   scrollTopToRevealRow,
@@ -51,5 +52,27 @@ describe('gridScale', () => {
     const real = 4_000_000;
     const up = scrollTopToRevealRow(10, ROW, real, VIEW, s)!;
     expect(toVirtualOffset(up, s)).toBeCloseTo(10 * ROW, 3);
+  });
+});
+
+describe('scroll anchoring when the ratio changes', () => {
+  it('keeps the first visible row when a page is appended near 400k rows', () => {
+    const before = computeScale(400_000, ROW, VIEW);
+    expect(before.ratio).toBeGreaterThan(1);
+    // The user sits at the very end.
+    const realBefore = before.realHeight - VIEW;
+    const virtualOffset = toVirtualOffset(realBefore, before);
+    const firstRow = Math.floor(virtualOffset / ROW);
+
+    const after = computeScale(405_000, ROW, VIEW);
+    expect(after.ratio).not.toBe(before.ratio);
+
+    // Without anchoring the same real scrollTop lands on a different row (the reported jump)...
+    const jumped = Math.floor(toVirtualOffset(realBefore, after) / ROW);
+    expect(Math.abs(jumped - firstRow)).toBeGreaterThan(500);
+
+    // ...with anchoring the first visible row is unchanged.
+    const real = anchoredScrollTop(virtualOffset, after.ratio);
+    expect(Math.floor(toVirtualOffset(real, after) / ROW)).toBe(firstRow);
   });
 });

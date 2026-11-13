@@ -470,7 +470,8 @@ async fn second_database(port: u16) {
         s.count_table(TableCountRequest {
             table: t[0].path.clone(),
             filters: vec![],
-            raw_where: None
+            raw_where: None,
+            query_id: None
         })
         .await
         .unwrap(),
@@ -878,13 +879,10 @@ fn check_values(rec: &Rec) {
         g(r1, "c_uuid"),
         Value::Uuid("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11".into())
     );
-    assert_eq!(
-        g(r1, "c_json"),
-        Value::Json(serde_json::json!({"a": [1, 2]}))
-    );
+    assert_eq!(g(r1, "c_json"), Value::Json("{\"a\": [1, 2]}".into()));
     assert_eq!(
         g(r1, "c_jsonb"),
-        Value::Json(serde_json::json!({"b": {"c": null}}))
+        Value::Json("{\"b\": {\"c\": null}}".into())
     );
     assert_eq!(
         g(r1, "a_i4"),
@@ -939,8 +937,8 @@ fn check_values(rec: &Rec) {
     assert_eq!(g(r2, "c_date"), text("infinity"));
     assert_eq!(g(r2, "c_ts"), Value::DateTime("0001-01-01T00:00:00".into()));
     assert_eq!(g(r2, "c_tstz"), text("infinity"));
-    assert_eq!(g(r2, "c_json"), Value::Json(serde_json::json!([])));
-    assert_eq!(g(r2, "c_jsonb"), Value::Json(serde_json::Value::Null));
+    assert_eq!(g(r2, "c_json"), Value::Json("[]".into()));
+    assert_eq!(g(r2, "c_jsonb"), Value::Json("null".into()));
     assert_eq!(g(r2, "a_i4"), Value::Array(vec![]));
     assert_eq!(g(r2, "a_text"), Value::Array(vec![text(""), text("NULL")]));
 
@@ -1079,6 +1077,7 @@ async fn ids(s: &dyn Session, mut r: TableDataRequest, filters: Vec<ColumnFilter
         table: r.table.clone(),
         filters: r.filters.clone(),
         raw_where: r.raw_where.clone(),
+        query_id: None,
     };
     let whole_table = r.offset == 0 && r.limit >= 1000;
     s.fetch_table(r, &mut rec)
@@ -1276,7 +1275,17 @@ async fn sort_paging_raw(port: u16) {
     let mut rec = Rec::default();
     assert!(matches!(
         s.fetch_table(w.clone(), &mut rec).await,
-        Err(Error::Query { .. })
+        Err(Error::Query { position: None, .. })
+    ));
+    assert!(matches!(
+        s.count_table(TableCountRequest {
+            table: w.table.clone(),
+            filters: vec![],
+            raw_where: w.raw_where.clone(),
+            query_id: None
+        })
+        .await,
+        Err(Error::Query { position: None, .. })
     ));
     // A second statement is not accepted, and writes are impossible (READ ONLY transaction).
     w.raw_where = Some("true; DELETE FROM dbs_it.people".into());
@@ -1349,6 +1358,97 @@ on_both!(sort_paging_raw, sort_paging_raw_pg16, sort_paging_raw_pg12);
 // Streaming, cancellation, concurrency
 // ------------------------------------------------------------------------------------------
 
+/// Page through a whole table with OFFSET paging and return the (sort column, key) pairs.
+async fn page_all(
+    s: &dyn Session,
+    schema: &str,
+    table: &str,
+    sort: Vec<SortKey>,
+    page: u64,
+) -> Vec<(Value, Value)> {
+    let mut out = Vec::new();
+    let mut offset = 0;
+    loop {
+        let mut r = req(table);
+        r.table = table_path(schema, ObjectKind::Table, table);
+        r.sort = sort.clone();
+        r.offset = offset;
+        r.limit = page;
+        let mut rec = Rec::default();
+        s.fetch_table(r, &mut rec).await.unwrap();
+        if rec.rows.is_empty() {
+            return out;
+        }
+        for i in 0..rec.rows.len() {
+            out.push((rec.get(i, "grp").clone(), rec.get(i, "k").clone()));
+        }
+        offset += page;
+    }
+}
+
+async fn deterministic_paging(port: u16) {
+    let s = fixture(port).await;
+    let s = &*s;
+    let grp_sort = vec![SortKey {
+        column: "grp".into(),
+        descending: false,
+    }];
+    for (table, key_is_pk) in [("dupes", true), ("ukey", false)] {
+        for sort in [
+            grp_sort.clone(),
+            vec![],
+            vec![SortKey {
+                column: "grp".into(),
+                descending: true,
+            }],
+        ] {
+            let rows = page_all(s, SCHEMA, table, sort.clone(), 37).await;
+            assert_eq!(rows.len(), 1000, "{table}");
+            let mut keys: Vec<_> = rows.iter().map(|r| format!("{:?}", r.1)).collect();
+            keys.sort();
+            keys.dedup();
+            assert_eq!(keys.len(), 1000, "{table}: duplicate or missing rows");
+            // Ordered by the requested column, then by the key.
+            let int_of = |v: &Value| match v {
+                Value::Int(i) => *i,
+                o => panic!("{o:?}"),
+            };
+            let desc = sort.first().is_some_and(|k| k.descending);
+            for w in rows.windows(2) {
+                let (g0, k0, g1, k1) = (
+                    int_of(&w[0].0),
+                    int_of(&w[0].1),
+                    int_of(&w[1].0),
+                    int_of(&w[1].1),
+                );
+                if sort.is_empty() {
+                    assert!(k0 < k1, "{table}");
+                } else if desc {
+                    assert!(g0 > g1 || (g0 == g1 && k0 < k1), "{table}");
+                } else {
+                    assert!(g0 < g1 || (g0 == g1 && k0 < k1), "{table}");
+                }
+            }
+        }
+        let _ = key_is_pk;
+    }
+    // No key at all (and views): still works, nothing is appended.
+    let mut r = req("nokey");
+    r.sort = vec![];
+    let mut rec = Rec::default();
+    s.fetch_table(r, &mut rec).await.unwrap();
+    assert_eq!(rec.rows.len(), 3);
+    let mut v = req("v_children");
+    v.table = table_path(SCHEMA, ObjectKind::View, "v_children");
+    v.sort = vec![];
+    s.fetch_table(v, &mut Rec::default()).await.unwrap();
+}
+on_both!(
+    deterministic_paging,
+    deterministic_paging_pg16,
+    deterministic_paging_pg12
+);
+
 async fn stream_big(port: u16) {
     let s = fixture(port).await;
     let mut r = req("big");
@@ -1387,6 +1487,7 @@ async fn stream_big(port: u16) {
             table: table_path(SCHEMA, ObjectKind::Table, "big"),
             filters: vec![filt("grp", FilterOp::Eq, &["3"])],
             raw_where: Some("id <= 100000".into()),
+            query_id: None,
         })
         .await
         .unwrap();
@@ -1395,7 +1496,8 @@ async fn stream_big(port: u16) {
         s.count_table(TableCountRequest {
             table: table_path(SCHEMA, ObjectKind::Table, "big"),
             filters: vec![],
-            raw_where: None
+            raw_where: None,
+            query_id: None
         })
         .await
         .unwrap(),
@@ -1500,14 +1602,56 @@ on_both!(
     sink_stops_stream_pg12
 );
 
+/// Poll `pg_stat_activity` (through `observer`, a different session) until at least `n` active
+/// backends match `condition`, a SQL boolean expression over `query` / `application_name`.
+async fn wait_active(observer: &dyn Session, condition: &str, n: i64) {
+    let sql = format!(
+        "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND pid <> pg_backend_pid() AND ({condition})"
+    );
+    for _ in 0..400 {
+        if matches!(scalar(observer, &sql).await, Value::Int(c) if c >= n) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("no active backend matching {condition}");
+}
+
+/// Await `work` while cancelling `id` repeatedly until it ends (robust against the request not
+/// having started yet).
+async fn cancel_until_done<T>(
+    s: &dyn Session,
+    id: Uuid,
+    work: impl std::future::Future<Output = T>,
+) -> T {
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            r = &mut work => return r,
+            _ = tokio::time::sleep(Duration::from_millis(50)) => { s.cancel(id).await.unwrap(); }
+        }
+    }
+}
+
 async fn cancel_running(port: u16) {
-    let s = fixture(port).await;
+    let _ = fixture(port).await;
+    let observer = connect(port).await;
+    let tag = Uuid::new_v4().simple().to_string();
+    let mut cfg = config(port, TlsMode::Prefer);
+    cfg.options.insert("application_name".into(), tag.clone());
+    let s = try_connect(&cfg, PASSWORD).await.unwrap();
     let q = QueryRequest::new("SELECT pg_sleep(60)");
     let id = q.query_id;
     let mut rec = Rec::default();
     let started = Instant::now();
     let (res, cancelled) = tokio::join!(s.execute(q, &mut rec), async {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Queries run through a cursor, so the running statement shows up as a FETCH.
+        wait_active(
+            &*observer,
+            &format!("application_name = '{tag}' AND query LIKE 'FETCH%'"),
+            1,
+        )
+        .await;
         s.cancel(id).await
     });
     cancelled.unwrap();
@@ -1519,11 +1663,9 @@ async fn cancel_running(port: u16) {
     );
     assert_connection_clean(&*s).await;
 
-    // Cancelling an id that is not running is NotFound.
-    assert!(matches!(
-        s.cancel(Uuid::new_v4()).await,
-        Err(Error::NotFound(_))
-    ));
+    // Cancelling an id that is not running (or already finished) is a no-op.
+    s.cancel(Uuid::new_v4()).await.unwrap();
+    s.cancel(id).await.unwrap();
 
     // A long-running table fetch can be cancelled as well.
     let mut r = req("big");
@@ -1532,16 +1674,23 @@ async fn cancel_running(port: u16) {
     let id = r.query_id;
     let mut rec = Rec::default();
     let started = Instant::now();
-    let (res, _) = tokio::join!(s.fetch_table(r, &mut rec), async {
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        s.cancel(id).await
-    });
+    let res = cancel_until_done(&*s, id, s.fetch_table(r, &mut rec)).await;
     assert!(matches!(res, Err(Error::Cancelled)), "{res:?}");
-    assert!(
-        started.elapsed() < Duration::from_secs(3),
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_connection_clean(&*s).await;
+
+    // So can a slow count.
+    let id = Uuid::new_v4();
+    let count = TableCountRequest {
+        table: table_path(SCHEMA, ObjectKind::Table, "big"),
+        filters: vec![],
+        raw_where: Some("pg_sleep(0.001) IS NOT NULL".into()),
+        query_id: Some(id),
+    };
+    let started = Instant::now();
+    let res = cancel_until_done(&*s, id, s.count_table(count)).await;
+    assert!(matches!(res, Err(Error::Cancelled)), "{res:?}");
+    assert!(started.elapsed() < Duration::from_secs(3));
     assert_connection_clean(&*s).await;
 
     // Cancel in the middle of a multi-statement script: the remaining statements do not run.
@@ -1550,10 +1699,7 @@ async fn cancel_running(port: u16) {
     );
     let id = q.query_id;
     let mut rec = Rec::default();
-    let (res, _) = tokio::join!(s.execute(q, &mut rec), async {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        s.cancel(id).await
-    });
+    let res = cancel_until_done(&*s, id, s.execute(q, &mut rec)).await;
     assert!(matches!(res, Err(Error::Cancelled)));
     assert_eq!(
         scalar(
@@ -1565,6 +1711,136 @@ async fn cancel_running(port: u16) {
     );
 }
 on_both!(cancel_running, cancel_running_pg16, cancel_running_pg12);
+
+/// A cancel that arrives just as its query finishes must never abort a later statement that
+/// reuses the same pooled connection.
+async fn cancel_race(port: u16) {
+    let s = fixture(port).await;
+    let mut cancelled = 0;
+    for i in 0..200u64 {
+        let q = QueryRequest::new("SELECT 1");
+        let id = q.query_id;
+        let mut rec = Rec::default();
+        let (r1, r2) = tokio::join!(s.execute(q, &mut rec), async {
+            if i % 2 == 0 {
+                for _ in 0..(i % 11) {
+                    tokio::task::yield_now().await;
+                }
+            } else {
+                tokio::time::sleep(Duration::from_micros(i * 15)).await;
+            }
+            s.cancel(id).await
+        });
+        r2.unwrap();
+        match r1 {
+            Ok(_) => {}
+            Err(Error::Cancelled) => cancelled += 1,
+            Err(e) => panic!("iteration {i}: {e:?}"),
+        }
+        // The next statement runs on the same (or a fresh) connection and must not be hit.
+        let next = execute_collect(&*s, QueryRequest::new("SELECT pg_sleep(0.02), 7")).await;
+        assert!(
+            next.is_ok(),
+            "iteration {i}: next statement failed: {next:?}"
+        );
+    }
+    eprintln!("cancel_race: {cancelled}/200 first statements were cancelled");
+}
+on_both!(cancel_race, cancel_race_pg16, cancel_race_pg12);
+
+async fn close_cancels_running(port: u16) {
+    let observer = connect(port).await;
+    let _ = fixture(port).await;
+    let tag = Uuid::new_v4().simple().to_string();
+    let mut cfg = config(port, TlsMode::Prefer);
+    cfg.options.insert("application_name".into(), tag.clone());
+    let s = try_connect(&cfg, PASSWORD).await.unwrap();
+    let q = QueryRequest::new("SELECT pg_sleep(60)");
+    let mut r = req("big");
+    r.limit = 1_000_000;
+    r.raw_where = Some("pg_sleep(0.01) IS NOT NULL".into());
+    let (mut rec1, mut rec2) = (Rec::default(), Rec::default());
+    let started = Instant::now();
+    let (a, b, _) = tokio::join!(
+        s.execute(q, &mut rec1),
+        s.fetch_table(r, &mut rec2),
+        async {
+            wait_active(
+                &*observer,
+                &format!("application_name = '{tag}' AND query LIKE 'FETCH%'"),
+                2,
+            )
+            .await;
+            s.close().await.unwrap();
+        }
+    );
+    assert!(matches!(a, Err(Error::Cancelled)), "{a:?}");
+    assert!(matches!(b, Err(Error::Cancelled)), "{b:?}");
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+on_both!(
+    close_cancels_running,
+    close_cancels_pg16,
+    close_cancels_pg12
+);
+
+async fn catalog_not_starved(port: u16) {
+    let _ = fixture(port).await;
+    let observer = connect(port).await;
+    let tag = Uuid::new_v4().simple().to_string();
+    let mut cfg = config(port, TlsMode::Prefer);
+    cfg.connect_timeout_ms = Some(800);
+    cfg.options.insert("application_name".into(), tag.clone());
+    let s = try_connect(&cfg, PASSWORD).await.unwrap();
+    let s = &*s;
+    let sleepers = futures_join_all((0..4).map(|_| async {
+        let mut rec = Rec::default();
+        s.execute(QueryRequest::new("SELECT pg_sleep(3.5)"), &mut rec)
+            .await
+    }));
+    let probe = async {
+        wait_active(
+            &*observer,
+            &format!("application_name = '{tag}' AND query LIKE 'FETCH%'"),
+            4,
+        )
+        .await;
+        let started = Instant::now();
+        // Catalog work still goes through while every data slot is busy.
+        s.ping().await.unwrap();
+        let root = s
+            .list_children(&dbstudio_core::ObjectPath::root())
+            .await
+            .unwrap();
+        assert!(!root.is_empty());
+        s.table_details(&table_path(SCHEMA, ObjectKind::Table, "people"))
+            .await
+            .unwrap();
+        s.object_ddl(&table_path(SCHEMA, ObjectKind::Table, "people"))
+            .await
+            .unwrap();
+        s.server_info().await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        // A fifth data request cannot get a connection: it times out instead of waiting forever.
+        let t = Instant::now();
+        let err = execute_collect(s, QueryRequest::new("SELECT 1"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Timeout), "{err:?}");
+        assert!(t.elapsed() < Duration::from_secs(2));
+    };
+    let (results, ()) = tokio::join!(sleepers, probe);
+    assert!(results.iter().all(|r| r.is_ok()));
+}
+on_both!(
+    catalog_not_starved,
+    catalog_not_starved_pg16,
+    catalog_not_starved_pg12
+);
 
 async fn concurrency(port: u16) {
     let s = fixture(port).await;
@@ -1588,7 +1864,8 @@ async fn concurrency(port: u16) {
         s.count_table(TableCountRequest {
             table: big.clone(),
             filters: vec![],
-            raw_where: None
+            raw_where: None,
+            query_id: None
         }),
     );
     a.unwrap();

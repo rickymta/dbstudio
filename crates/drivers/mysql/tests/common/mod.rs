@@ -146,6 +146,8 @@ pub struct CountingSink {
     pub ends: usize,
     pub fail_after: Option<(usize, Option<String>)>,
     pub delay_ms: u64,
+    /// Incremented on every batch (lets a test wait until streaming is under way).
+    pub progress: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl ResultSink for CountingSink {
@@ -155,6 +157,9 @@ impl ResultSink for CountingSink {
     }
     fn on_rows(&mut self, rows: Vec<Vec<Value>>) -> Result<()> {
         self.batches += 1;
+        if let Some(p) = &self.progress {
+            p.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         self.rows += rows.len();
         if self.delay_ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
@@ -301,4 +306,39 @@ pub fn describe<T>(r: &Result<T>) -> String {
         Ok(_) => "Ok(..)".to_string(),
         Err(e) => format!("Err({e:?})"),
     }
+}
+
+/// Wait until a statement containing `marker` shows up in the server's process list, so cancel
+/// tests do not depend on fixed sleeps.
+pub async fn wait_running(t: Target, marker: &str) {
+    let root = root_session(t).await;
+    let sql = format!(
+        "SELECT COUNT(*) FROM information_schema.PROCESSLIST \
+         WHERE INFO LIKE '%{marker}%' AND INFO NOT LIKE '%PROCESSLIST%'"
+    );
+    for _ in 0..200 {
+        let rs = query(&*root, &sql).await;
+        if matches!(rs.rows[0][0], Value::Int(n) if n > 0) {
+            root.close().await.unwrap();
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("[{}] statement `{marker}` never started running", t.name);
+}
+
+/// Unique SQL-comment marker.
+pub fn marker() -> String {
+    format!("m{}", Uuid::new_v4().simple())
+}
+
+/// Wait until `progress` reaches `n`.
+pub async fn wait_progress(progress: &std::sync::atomic::AtomicUsize, n: usize) {
+    for _ in 0..400 {
+        if progress.load(std::sync::atomic::Ordering::SeqCst) >= n {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("streaming never reached batch {n}");
 }

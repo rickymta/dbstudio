@@ -1,32 +1,32 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
+import { RawNumber } from './format';
+import {
+  MAX_CHILDREN,
+  MAX_EXPANDED_NODES,
+  childEntries,
+  collectExpandPaths,
+  isContainer,
+} from './treeModel';
 
 export type TreeMode = 'default' | 'all' | 'none';
-
-const MAX_CHILDREN = 500;
-
-function isContainer(v: unknown): v is Record<string, unknown> | unknown[] {
-  return typeof v === 'object' && v !== null;
-}
-
-function childEntries(v: Record<string, unknown> | unknown[]): [string, unknown][] {
-  return Array.isArray(v)
-    ? v.map((x, i) => [String(i), x] as [string, unknown])
-    : Object.entries(v);
-}
 
 interface NodeProps {
   name: string | null;
   value: unknown;
   depth: number;
+  path: string;
   mode: TreeMode;
+  expanded: Set<string> | null;
 }
 
-function TreeNode({ name, value, depth, mode }: NodeProps) {
+function TreeNode({ name, value, depth, path, mode, expanded }: NodeProps) {
   const { t } = useTranslation('data');
-  const [open, setOpen] = useState(mode === 'all' ? true : mode === 'none' ? false : depth < 2);
+  const [open, setOpen] = useState(
+    mode === 'all' ? (expanded?.has(path) ?? false) : mode === 'none' ? false : depth < 2,
+  );
   const label =
     name !== null ? (
       <span className="text-foreground">
@@ -36,17 +36,22 @@ function TreeNode({ name, value, depth, mode }: NodeProps) {
     ) : null;
 
   if (!isContainer(value)) {
+    // Numbers (RawNumber) show their original text, without quotes.
     const tone =
       typeof value === 'string'
         ? 'text-success'
-        : typeof value === 'number'
+        : value instanceof RawNumber
           ? 'text-warning'
           : 'text-accent';
     return (
       <div className="flex pl-4 break-all">
         {label}
         <span className={cn(tone, value === null && 'italic')}>
-          {typeof value === 'string' ? JSON.stringify(value) : String(value)}
+          {typeof value === 'string'
+            ? JSON.stringify(value)
+            : value instanceof RawNumber
+              ? value.raw
+              : String(value)}
         </span>
       </div>
     );
@@ -75,7 +80,15 @@ function TreeNode({ name, value, depth, mode }: NodeProps) {
       {open && entries.length > 0 && (
         <div className="ml-2 border-l border-border pl-2">
           {entries.slice(0, MAX_CHILDREN).map(([k, v]) => (
-            <TreeNode key={k} name={k} value={v} depth={depth + 1} mode={mode} />
+            <TreeNode
+              key={k}
+              name={k}
+              value={v}
+              depth={depth + 1}
+              path={`${path}\u0000${k}`}
+              mode={mode}
+              expanded={expanded}
+            />
           ))}
           {entries.length > MAX_CHILDREN && (
             <div className="pl-4 text-muted-foreground">
@@ -98,9 +111,27 @@ export function JsonTree({
   mode?: TreeMode;
   epoch?: number;
 }) {
+  const { t } = useTranslation('data');
+  const expand = useMemo(
+    () => (mode === 'all' ? collectExpandPaths(value) : null),
+    [value, mode, epoch], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   return (
-    <div className="font-mono text-xs leading-5" role="tree">
-      <TreeNode key={epoch} name={null} value={value} depth={0} mode={mode} />
+    <div className="font-mono text-xs leading-5">
+      {expand?.truncated && (
+        <div className="mb-1 text-warning">
+          {t('viewer.expandLimit', { count: MAX_EXPANDED_NODES })}
+        </div>
+      )}
+      <TreeNode
+        key={epoch}
+        name={null}
+        value={value}
+        depth={0}
+        path=""
+        mode={mode}
+        expanded={expand?.paths ?? null}
+      />
     </div>
   );
 }

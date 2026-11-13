@@ -93,6 +93,30 @@ describe('TableTab (mock IPC)', () => {
     );
   });
 
+  it('clears the selection on reload and exposes row/active-cell semantics', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<TableTab {...payload()} />);
+    await waitFor(() => expect(screen.getByText('1,000 rows loaded')).toBeInTheDocument(), {
+      timeout: 5000,
+    });
+    const grid = screen.getByRole('grid');
+    expect(grid).toHaveAttribute('aria-rowcount', '1001'); // data rows + header row
+    expect(screen.getAllByRole('row')[0]).toHaveAttribute('aria-rowindex', '1');
+    expect(screen.getAllByRole('row')[1]).toHaveAttribute('aria-rowindex', '2');
+    expect(grid).not.toHaveAttribute('aria-activedescendant');
+
+    const cell = screen.getAllByRole('gridcell')[2]!;
+    await user.click(cell);
+    expect(grid.getAttribute('aria-activedescendant')).toBe(cell.id);
+
+    await user.click(screen.getByRole('columnheader', { name: /^id/ }));
+    await waitFor(() => expect(screen.getByText('1,000 rows loaded')).toBeInTheDocument(), {
+      timeout: 5000,
+    });
+    expect(screen.getByRole('grid')).not.toHaveAttribute('aria-activedescendant');
+    expect(screen.queryByRole('gridcell', { selected: true })).toBeNull();
+  });
+
   it('counts on demand only', async () => {
     const countSpy = vi.spyOn(ipc, 'tableCount');
     const user = userEvent.setup();
@@ -134,8 +158,9 @@ describe('TableTab (mock IPC)', () => {
         payload: payload(),
       });
     });
-    renderWithProviders(<TableTab {...payload()} />);
+    const view = renderWithProviders(<TableTab {...payload()} />);
     await waitFor(() => expect(peekGridModel(id)).toBeDefined());
+    view.unmount(); // the app unmounts a closed tab's component
     act(() => useTabsStore.getState().closeTab(id));
     expect(peekGridModel(id)).toBeUndefined();
   });

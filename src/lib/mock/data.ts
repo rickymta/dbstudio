@@ -80,11 +80,12 @@ export function cellAt(table: MockTable, col: MockColumn, ci: number, i: number)
     case 'json':
       return {
         t: 'json',
-        v: {
+        // Text, not a parsed object: the real backend sends the server's JSON text verbatim.
+        v: JSON.stringify({
           n: i,
           ok: h % 2 === 0,
           tags: [KINDS[h % KINDS.length], KINDS[(h >>> 4) % KINDS.length]],
-        },
+        }),
       };
     case 'bytes':
       return { t: 'bytes', v: bytesBase64(h) };
@@ -122,6 +123,7 @@ function valueText(v: Value): string | null {
     case 'null':
       return null;
     case 'json':
+      return v.v;
     case 'array':
     case 'document':
       return JSON.stringify(v.v);
@@ -212,16 +214,46 @@ function resolve(sessionId: Uuid, path: TableCountRequest['table']) {
 
 const key = (table: string, req: TableCountRequest) => JSON.stringify([table, req.filters]);
 
-/** Count of rows matching the filters (`rawWhere` is ignored by the mock). */
-export async function tableCount(sessionId: Uuid, req: TableCountRequest): Promise<number> {
-  await sleep();
-  const table = resolve(sessionId, req.table);
-  const rows = matchingRows(table, req.filters, key(lastSegment(req.table)!.name, req));
-  return rows ? rows.length : table.rows;
-}
-
 const running = new Set<Uuid>();
 const cancelled = new Set<Uuid>();
+
+/**
+ * Count of rows matching the filters (`rawWhere` is ignored by the mock). With a `queryId` the
+ * count takes a little while (long enough to cancel) and `queryCancel` rejects it `cancelled`.
+ */
+export async function tableCount(sessionId: Uuid, req: TableCountRequest): Promise<number> {
+  const id = req.queryId;
+  if (id) running.add(id); // registered immediately so an early cancel is not lost
+  try {
+    await sleep();
+    const table = resolve(sessionId, req.table);
+    if (id) {
+      for (let i = 0; i < 5; i++) {
+        if (cancelled.has(id)) throw ipcError('cancelled', 'operation cancelled');
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      if (cancelled.has(id)) throw ipcError('cancelled', 'operation cancelled');
+    }
+    const rows = matchingRows(table, req.filters, key(lastSegment(req.table)!.name, req));
+    return rows ? rows.length : table.rows;
+  } finally {
+    if (id) {
+      running.delete(id);
+      cancelled.delete(id);
+    }
+  }
+}
+
+export type FetchMode = 'inline' | 'late';
+let fetchMode: FetchMode = 'inline';
+
+/**
+ * `late` emulates Tauri: row batches and `statementEnd` are delivered after the fetch promise has
+ * resolved (large Channel payloads travel on a separate async IPC round trip).
+ */
+export function setFetchMode(mode: FetchMode): void {
+  fetchMode = mode;
+}
 
 /** Ask a running fetch to stop; unknown ids are ignored (the fetch may have just finished). */
 export async function queryCancel(sessionId: Uuid, queryId: Uuid): Promise<void> {
@@ -244,6 +276,11 @@ export async function tableFetch(
   onEvent: (e: QueryEvent) => void,
 ): Promise<ExecSummary> {
   const started = performance.now();
+  const deferred: QueryEvent[] = [];
+  const emit = (e: QueryEvent) => {
+    if (fetchMode === 'late' && e.type !== 'columns') deferred.push(e);
+    else onEvent(e);
+  };
   await sleep();
   const table = resolve(sessionId, req.table);
   running.add(req.queryId);
@@ -260,7 +297,7 @@ export async function tableFetch(
       valueKind: c.valueKind,
       nullable: c.nullable,
     }));
-    onEvent({ type: 'columns', columns });
+    emit({ type: 'columns', columns });
 
     let sent = 0;
     for (let pos = req.offset; pos < end; pos += batch) {
@@ -271,16 +308,17 @@ export async function tableFetch(
         const i = rows ? rows[ordered]! : ordered;
         chunk.push(table.columns.map((c, ci) => cellAt(table, c, ci, i)));
       }
-      onEvent({ type: 'rows', rows: chunk });
+      emit({ type: 'rows', rows: chunk });
       sent += chunk.length;
       await yieldToLoop();
     }
     if (cancelled.has(req.queryId)) throw ipcError('cancelled', 'operation cancelled');
     const elapsedMs = Math.round(performance.now() - started);
-    onEvent({
+    emit({
       type: 'statementEnd',
       end: { outcome: { kind: 'rows', rowCount: sent, truncated: false }, elapsedMs },
     });
+    if (deferred.length > 0) setTimeout(() => deferred.forEach(onEvent), 15);
     return { statements: 1, elapsedMs };
   } finally {
     running.delete(req.queryId);
