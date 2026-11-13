@@ -433,6 +433,20 @@ mod tests {
             JobStatus::Succeeded
         );
         assert_eq!(dbsize(&state, session).await, 1);
+        // The pseudo command is internal: the job runs it on the session directly, so it never
+        // reaches the query history.
+        let history = state
+            .connections
+            .store()
+            .history_list(&dbstudio_store::HistoryQuery {
+                connection_id: None,
+                search: Some("DELPATTERN".into()),
+                status: None,
+                before_id: None,
+                limit: 100,
+            })
+            .unwrap();
+        assert!(history.is_empty(), "{history:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

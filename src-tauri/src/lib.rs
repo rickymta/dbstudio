@@ -67,8 +67,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // The opener plugin is only used from Rust; no capability grants it to the webview.
         .plugin(tauri_plugin_opener::init())
-        // The notification and autostart plugins are only used from Rust (see `background`);
-        // registering them is side-effect free: nothing is shown and autostart stays off.
         // A page (re)load discards the editor tabs that held the leases: close them so no
         // connection keeps a transaction open for a tab that no longer exists.
         .on_page_load(|webview, payload| {
@@ -81,6 +79,8 @@ pub fn run() {
                 }
             }
         })
+        // The notification and autostart plugins are only used from Rust (see `background`);
+        // registering them is side-effect free: nothing is shown and autostart stays off.
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
