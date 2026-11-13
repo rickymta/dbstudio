@@ -78,7 +78,7 @@ describe('ExportWizard', () => {
     await user.click(screen.getByLabelText('Choose tables'));
     expect(screen.getByRole('button', { name: /Next/ })).toBeDisabled();
     const list = await screen.findByTestId('export-tables');
-    await user.click(await within(list).findByLabelText(/actor$/));
+    await user.click(await within(list).findByLabelText('public.actor'));
     await next(user);
     await user.click(screen.getByRole('combobox', { name: 'Format' }));
     await user.click(await screen.findByRole('option', { name: 'Excel (XLSX)' }));
@@ -159,17 +159,18 @@ describe('ExportWizard', () => {
     renderWithProviders(<JobsIndicator />);
     await screen.findByTestId('jobs-indicator');
     openExport({ session, path: pgPath('actor') });
+    await screen.findByRole('button', { name: /Next/ });
     await next(user);
     await next(user);
     await user.click(await screen.findByRole('button', { name: /Browse/ }));
     await user.click(screen.getByRole('button', { name: 'Start export' }));
     // The panel opens and the job runs to its result.
-    const row = await screen.findByTestId(/^job-/, {}, { timeout: 3000 });
+    const row = await screen.findByTestId(/^job-[0-9a-f-]{36}$/, {}, { timeout: 3000 });
     await waitFor(() => expect(within(row).getByTestId('job-status')).toHaveTextContent('Done'), {
       timeout: 3000,
     });
     expect(row).toHaveTextContent('2,550 rows'.replace(',', ''));
     expect(row).toHaveTextContent('/tmp/e2e.sql');
-    expect(useWizardStore.getState().exportOrigin).not.toBeNull();
+    expect(useWizardStore.getState().exportOrigin).toBeNull();
   });
 });
