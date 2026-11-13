@@ -40,6 +40,7 @@ import {
   TLS_VERIFYING,
 } from './kindConfig';
 import { needsTlsWarning } from './tlsWarning';
+import { OptionsEditor } from '@/features/document/OptionsEditor';
 import { UriPaste } from '@/features/document/UriPaste';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
 
@@ -460,6 +461,9 @@ function ConnectionDialogBody({
               onChange={(e) => update({ timeoutSec: e.target.value })}
             />
           </Field>
+          {form.kind === 'mongodb' && (
+            <OptionsEditor value={form.options} onChange={(options) => update({ options })} />
+          )}
         </Section>
       </form>
     </DialogContent>

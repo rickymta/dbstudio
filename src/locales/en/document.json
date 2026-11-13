@@ -88,5 +88,12 @@
     "parse": "Fill from URI",
     "applied": "Fields filled in from the URI.",
     "appliedPassword": "Fields filled in from the URI. Type the password again below."
+  },
+  "options": {
+    "hint": "Driver options (key = value), kept when you save.",
+    "key": "Option name",
+    "value": "Option value",
+    "remove": "Remove option",
+    "add": "Add option"
   }
 }

@@ -462,9 +462,13 @@ export async function mockParseMongoUri(uri: string): Promise<ParsedConnectionUr
   }
   const tls = url.searchParams.get('tls') === 'true' || !!m[1];
   const stamp = new Date().toISOString();
+  // Like the backend: URI query parameters and the SRV flag become profile options.
+  const options: Record<string, string> = {};
+  if (m[1]) options.srv = 'true';
+  for (const [k, v] of url.searchParams) if (k !== 'tls' && k !== 'ssl') options[k] = v;
   return {
     hasPassword: url.password !== '',
-    pendingSecretId: url.password !== '' ? crypto.randomUUID() : null,
+    pendingSecretId: null,
     profile: {
       id: crypto.randomUUID(),
       name: url.hostname,
@@ -477,7 +481,7 @@ export async function mockParseMongoUri(uri: string): Promise<ParsedConnectionUr
       connectTimeoutMs: null,
       readOnly: false,
       environment: null,
-      options: {},
+      options,
       groupId: null,
       color: null,
       savePassword: true,

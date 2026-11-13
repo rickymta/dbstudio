@@ -34,6 +34,8 @@ export interface ConnectionForm {
   clientKeyPath: string;
   /** Connect timeout in seconds; empty = driver default. */
   timeoutSec: string;
+  /** Driver-specific options (e.g. MongoDB `authSource`); kept as is unless edited. */
+  options: Record<string, string>;
 }
 
 export type FormErrors = Partial<Record<'name' | 'host' | 'port' | 'timeout', string>>;
@@ -66,6 +68,7 @@ export function initialForm(
       clientCertPath: '',
       clientKeyPath: '',
       timeoutSec: '',
+      options: {},
     };
   }
   return {
@@ -88,6 +91,7 @@ export function initialForm(
     clientCertPath: profile.tls.clientCertPath ?? '',
     clientKeyPath: profile.tls.clientKeyPath ?? '',
     timeoutSec: profile.connectTimeoutMs ? String(Math.round(profile.connectTimeoutMs / 1000)) : '',
+    options: { ...profile.options },
   };
 }
 
@@ -131,7 +135,7 @@ export function profileFromForm(
     connectTimeoutMs: form.timeoutSec.trim() ? Number(form.timeoutSec) * 1000 : null,
     readOnly: form.readOnly,
     environment: form.environment || null,
-    options: existing?.options ?? {},
+    options: { ...form.options },
     groupId: form.groupId || null,
     color: safeColor(form.color),
     savePassword: form.savePassword,

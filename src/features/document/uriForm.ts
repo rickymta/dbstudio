@@ -16,5 +16,7 @@ export function uriFormPatch(parsed: ParsedConnectionUri): Partial<ConnectionFor
     clientCertPath: f.clientCertPath,
     clientKeyPath: f.clientKeyPath,
     timeoutSec: f.timeoutSec,
+    // Every parsed option (srv, hosts, authSource, replicaSet ...) replaces the previous ones.
+    options: f.options,
   };
 }

@@ -88,5 +88,12 @@
     "parse": "Điền từ URI",
     "applied": "Đã điền các trường từ URI.",
     "appliedPassword": "Đã điền các trường từ URI. Hãy nhập lại mật khẩu bên dưới."
+  },
+  "options": {
+    "hint": "Tuỳ chọn driver (khoá = giá trị), được giữ lại khi lưu.",
+    "key": "Tên tuỳ chọn",
+    "value": "Giá trị tuỳ chọn",
+    "remove": "Xoá tuỳ chọn",
+    "add": "Thêm tuỳ chọn"
   }
 }
