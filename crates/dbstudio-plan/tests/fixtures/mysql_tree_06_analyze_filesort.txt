@@ -1,0 +1,5 @@
+-> Limit: 5000 row(s)  (cost=20111 rows=5000) (actual time=47.9..48.3 rows=5000 loops=1)
+    -> Sort: plan_fx_items.sku, limit input to 5000 row(s) per chunk  (cost=20111 rows=199752) (actual time=47.9..48.1 rows=5000 loops=1)
+        -> Filter: (plan_fx_items.qty = 1)  (cost=20111 rows=199752) (actual time=0.105..40.4 rows=40000 loops=1)
+            -> Table scan on plan_fx_items  (cost=20111 rows=199752) (actual time=0.102..32.3 rows=200000 loops=1)
+

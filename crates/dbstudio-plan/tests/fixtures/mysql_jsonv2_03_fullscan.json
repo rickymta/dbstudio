@@ -1,0 +1,26 @@
+{
+  "query": "/* select#1 */ select `dbstudio`.`plan_fx_orders`.`id` AS `id`,`dbstudio`.`plan_fx_orders`.`customer_id` AS `customer_id`,`dbstudio`.`plan_fx_orders`.`status` AS `status`,`dbstudio`.`plan_fx_orders`.`amount` AS `amount`,`dbstudio`.`plan_fx_orders`.`created` AS `created` from `dbstudio`.`plan_fx_orders` where (`dbstudio`.`plan_fx_orders`.`status` = 'void')",
+  "inputs": [
+    {
+      "operation": "Table scan on plan_fx_orders",
+      "table_name": "plan_fx_orders",
+      "access_type": "table",
+      "schema_name": "dbstudio",
+      "used_columns": [
+        "id",
+        "customer_id",
+        "status",
+        "amount",
+        "created"
+      ],
+      "estimated_rows": 100270.0,
+      "estimated_total_cost": 10099.25
+    }
+  ],
+  "condition": "(plan_fx_orders.`status` = 'void')",
+  "operation": "Filter: (plan_fx_orders.`status` = 'void')",
+  "query_type": "select",
+  "access_type": "filter",
+  "estimated_rows": 10027.000149413943,
+  "estimated_total_cost": 10099.25
+}

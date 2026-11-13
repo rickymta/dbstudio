@@ -1,0 +1,87 @@
+<?xml version="1.0" ?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.6" Build="16.0.1000.6">
+  
+
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        
+
+        <StmtSimple StatementText="SELECT TOP (1000) o.OrderID, c.Name FROM dbo.Orders o JOIN dbo.Customers c ON c.CustomerID=o.CustomerID" StatementId="1" StatementCompId="1" StatementType="SELECT" StatementSubTreeCost="82.7" StatementEstRows="1000" StatementOptmLevel="FULL" CardinalityEstimationModelVersion="150">
+          <QueryPlan DegreeOfParallelism="1" CachedPlanSize="32" CompileTime="4" CompileCPU="4" CompileMemory="256">
+            <QueryTimeStats CpuTime="120" ElapsedTime="121"/>
+            <RelOp NodeId="1" PhysicalOp="Compute Scalar" LogicalOp="Compute Scalar" EstimateRows="1000" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="4.1" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+              <OutputList/>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="1000" ActualRowsRead="1000" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="119" ActualCPUms="118" ActualScans="1" ActualLogicalReads="23" ActualPhysicalReads="0"/>
+              </RunTimeInformation>
+              <ComputeScalar>
+                <DefinedValues/>
+                <RelOp NodeId="2" PhysicalOp="Top" LogicalOp="Top" EstimateRows="1000" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="4.1" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                  <OutputList/>
+                  <RunTimeInformation>
+                    <RunTimeCountersPerThread Thread="0" ActualRows="1000" ActualRowsRead="1000" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="119" ActualCPUms="118" ActualScans="1" ActualLogicalReads="23" ActualPhysicalReads="0"/>
+                  </RunTimeInformation>
+                  <Top RowCount="0" IsPercent="0" WithTies="0">
+                    <TopExpression>
+                      <ScalarOperator ScalarString="(1000)">
+                        <Const ConstValue="(1000)"/>
+                      </ScalarOperator>
+                    </TopExpression>
+                    <RelOp NodeId="3" PhysicalOp="Nested Loops" LogicalOp="Inner Join" EstimateRows="25000" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="82.7" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                      <OutputList/>
+                      <RunTimeInformation>
+                        <RunTimeCountersPerThread Thread="0" ActualRows="25000" ActualRowsRead="25000" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="118" ActualCPUms="117" ActualScans="1" ActualLogicalReads="503" ActualPhysicalReads="0"/>
+                      </RunTimeInformation>
+                      <NestedLoops Optimized="0">
+                        <OuterReferences>
+                          <ColumnReference Column="CustomerID"/>
+                        </OuterReferences>
+                        <RelOp NodeId="4" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="25000" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="0.18" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                          <OutputList/>
+                          <RunTimeInformation>
+                            <RunTimeCountersPerThread Thread="0" ActualRows="25000" ActualRowsRead="25000" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualElapsedms="12" ActualCPUms="12" ActualScans="1" ActualLogicalReads="503" ActualPhysicalReads="0"/>
+                          </RunTimeInformation>
+                          <IndexScan Ordered="0" ForcedIndex="0" ForceScan="0" NoExpandHint="0" Storage="RowStore">
+                            <Object Database="[AdventureWorks]" Schema="[dbo]" Table="[Orders]" Index="[PK_Orders]" Alias="[o]" IndexKind="Clustered" Storage="RowStore"/>
+                          </IndexScan>
+                        </RelOp>
+                        <RelOp NodeId="5" PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="1" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="0.0033" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                          <OutputList/>
+                          <RunTimeInformation>
+                            <RunTimeCountersPerThread Thread="0" ActualRows="25000" ActualRowsRead="25000" Batches="0" ActualEndOfScans="25000" ActualExecutions="25000" ActualElapsedms="95" ActualCPUms="94" ActualScans="25000" ActualLogicalReads="503" ActualPhysicalReads="0"/>
+                          </RunTimeInformation>
+                          <IndexScan Ordered="1" ScanDirection="FORWARD" ForcedIndex="0" ForceSeek="0" NoExpandHint="0" Storage="RowStore">
+                            <Object Database="[AdventureWorks]" Schema="[dbo]" Table="[Customers]" Index="[PK_Customers]" Alias="[c]" IndexKind="Clustered" Storage="RowStore"/>
+                            <SeekPredicates>
+                              <SeekPredicateNew>
+                                <SeekKeys>
+                                  <Prefix ScanType="EQ">
+                                    <RangeColumns/>
+                                    <RangeExpressions>
+                                      <ScalarOperator ScalarString="[o].[CustomerID]">
+                                        <Identifier/>
+                                      </ScalarOperator>
+                                    </RangeExpressions>
+                                  </Prefix>
+                                </SeekKeys>
+                              </SeekPredicateNew>
+                            </SeekPredicates>
+                          </IndexScan>
+                        </RelOp>
+                      </NestedLoops>
+                    </RelOp>
+                  </Top>
+                </RelOp>
+              </ComputeScalar>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+        
+
+      </Statements>
+    </Batch>
+  </BatchSequence>
+  
+
+</ShowPlanXML>

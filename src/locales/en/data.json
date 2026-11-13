@@ -166,5 +166,90 @@
     "reset": "Reset layout",
     "pin": "Pin left",
     "unpin": "Unpin"
+  },
+  "edit": {
+    "toggle": "Edit data",
+    "addRow": "Add row",
+    "duplicateRow": "Duplicate row",
+    "deleteRow": "Delete row",
+    "undoDelete": "Undo delete",
+    "preview": "Preview",
+    "apply": "Apply",
+    "applying": "Applying...",
+    "discard": "Discard",
+    "pending": "{{count}} pending changes",
+    "pendingOne": "1 pending change",
+    "noPending": "No pending changes",
+    "readOnly": "Read-only: {{reason}}",
+    "reason": {
+      "noUniqueKey": "this table has no primary key or unique NOT NULL index, so rows cannot be told apart",
+      "notATable": "only tables can be edited, not views or other objects",
+      "readOnlyConnection": "the connection is read-only",
+      "unsupported": "the driver does not support editing this object"
+    },
+    "editabilityError": "Could not check whether the table is editable: {{message}}",
+    "generatedColumn": "Generated column, it cannot be edited",
+    "default": "DEFAULT",
+    "setNull": "NULL",
+    "setNullTitle": "Set the value to NULL",
+    "setDefault": "DEFAULT",
+    "setDefaultTitle": "Use the column default",
+    "inputLabel": "Value of {{column}}",
+    "editor": {
+      "title": "Edit {{column}}",
+      "nullLabel": "Set to NULL",
+      "nullHint": "NULL and an empty text are different values.",
+      "save": "Save",
+      "binaryOnlyNull": "Binary values cannot be typed here. You can set the value to NULL.",
+      "valid": "Valid"
+    },
+    "error": {
+      "invalidNumber": "Not a valid number",
+      "invalidJson": "Not valid JSON",
+      "invalidBool": "Use true or false"
+    },
+    "bool": {
+      "true": "true",
+      "false": "false"
+    },
+    "marker": {
+      "inserted": "New row",
+      "deleted": "Marked for deletion",
+      "updated": "Edited"
+    },
+    "previewDialog": {
+      "title": "Pending changes",
+      "description": "These statements run in one transaction, in this order. If one fails, nothing is saved.",
+      "loading": "Preparing statements...",
+      "empty": "There is nothing to apply.",
+      "statement": "Statement {{n}}",
+      "failedAt": "Statement {{n}} failed: {{message}}",
+      "errorTitle": "Could not prepare the statements",
+      "close": "Close",
+      "keyOrderNote": "Updates run one at a time, in this order. Changing key values (for example swapping them between two rows) can fail on a unique constraint; save such changes in separate steps."
+    },
+    "failure": "Change {{n}} failed and nothing was saved: {{message}}",
+    "applied": "{{count}} changes saved",
+    "appliedOne": "1 change saved",
+    "applyError": "Could not save the changes: {{message}}",
+    "nonAtomic": "This connection does not apply changes atomically.",
+    "discardConfirm": "Discard all pending changes of this table?",
+    "closeConfirm": "This table has unsaved changes. Close it and lose them?",
+    "copy": {
+      "row": "Copy row as",
+      "all": "Copy all loaded rows as",
+      "done": "Copied",
+      "noRow": "Select a row first",
+      "tooMany": "Too many rows to copy at once ({{count}}). Add a filter first.",
+      "error": "Could not copy: {{message}}",
+      "format": {
+        "tsv": "TSV",
+        "csv": "CSV",
+        "json": "JSON",
+        "markdown": "Markdown",
+        "in": "IN (...) list",
+        "insert": "SQL INSERT"
+      }
+    }
   }
 }

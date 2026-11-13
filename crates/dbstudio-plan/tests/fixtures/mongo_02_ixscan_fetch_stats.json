@@ -1,0 +1,186 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "shop.orders",
+    "parsedQuery": {},
+    "indexFilterSet": false,
+    "queryHash": "3F4A9C21",
+    "planCacheKey": "7B1D2E90",
+    "optimizationTimeMillis": {
+      "$numberInt": "0"
+    },
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "FETCH",
+      "filter": {
+        "total": {
+          "$gt": 100
+        }
+      },
+      "inputStage": {
+        "stage": "IXSCAN",
+        "keyPattern": {
+          "customerId": 1
+        },
+        "indexName": "customerId_1",
+        "isMultiKey": false,
+        "multiKeyPaths": {
+          "customerId": []
+        },
+        "isUnique": false,
+        "isSparse": false,
+        "isPartial": false,
+        "indexVersion": {
+          "$numberInt": "2"
+        },
+        "direction": "forward",
+        "indexBounds": {
+          "customerId": [
+            "[42, 42]"
+          ]
+        }
+      }
+    },
+    "rejectedPlans": [
+      {
+        "stage": "COLLSCAN",
+        "filter": {
+          "customerId": {
+            "$eq": 42
+          }
+        },
+        "direction": "forward"
+      }
+    ]
+  },
+  "executionStats": {
+    "executionSuccess": true,
+    "nReturned": {
+      "$numberInt": "37"
+    },
+    "executionTimeMillis": {
+      "$numberInt": "3"
+    },
+    "totalKeysExamined": {
+      "$numberInt": "120"
+    },
+    "totalDocsExamined": {
+      "$numberInt": "120"
+    },
+    "executionStages": {
+      "stage": "FETCH",
+      "filter": {
+        "total": {
+          "$gt": 100
+        }
+      },
+      "nReturned": {
+        "$numberInt": "37"
+      },
+      "executionTimeMillisEstimate": {
+        "$numberInt": "2"
+      },
+      "works": {
+        "$numberInt": "121"
+      },
+      "advanced": {
+        "$numberInt": "37"
+      },
+      "needTime": {
+        "$numberInt": "83"
+      },
+      "needYield": {
+        "$numberInt": "0"
+      },
+      "saveState": {
+        "$numberInt": "0"
+      },
+      "restoreState": {
+        "$numberInt": "0"
+      },
+      "isEOF": {
+        "$numberInt": "1"
+      },
+      "docsExamined": {
+        "$numberInt": "120"
+      },
+      "alreadyHasObj": {
+        "$numberInt": "0"
+      },
+      "inputStage": {
+        "stage": "IXSCAN",
+        "nReturned": {
+          "$numberInt": "120"
+        },
+        "executionTimeMillisEstimate": {
+          "$numberInt": "1"
+        },
+        "works": {
+          "$numberInt": "121"
+        },
+        "advanced": {
+          "$numberInt": "120"
+        },
+        "needTime": {
+          "$numberInt": "0"
+        },
+        "needYield": {
+          "$numberInt": "0"
+        },
+        "saveState": {
+          "$numberInt": "0"
+        },
+        "restoreState": {
+          "$numberInt": "0"
+        },
+        "isEOF": {
+          "$numberInt": "1"
+        },
+        "keyPattern": {
+          "customerId": 1
+        },
+        "indexName": "customerId_1",
+        "isMultiKey": false,
+        "direction": "forward",
+        "indexBounds": {
+          "customerId": [
+            "[42, 42]"
+          ]
+        },
+        "keysExamined": {
+          "$numberInt": "120"
+        },
+        "seeks": {
+          "$numberInt": "1"
+        },
+        "dupsTested": {
+          "$numberInt": "0"
+        },
+        "dupsDropped": {
+          "$numberInt": "0"
+        }
+      }
+    }
+  },
+  "command": {
+    "find": "orders",
+    "filter": {
+      "customerId": 42,
+      "total": {
+        "$gt": 100
+      }
+    },
+    "$db": "shop"
+  },
+  "serverInfo": {
+    "host": "mongo7",
+    "port": {
+      "$numberInt": "27017"
+    },
+    "version": "7.0.14",
+    "gitVersion": "ee6d8a1ac9f9ee5c5e1c8c4e5d3d5a0c3d2a1b0f"
+  },
+  "ok": 1.0
+}

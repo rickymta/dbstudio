@@ -1,0 +1,34 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 36.326,
+    "read_sorted_file": {
+      "r_rows": 5000,
+      "filesort": {
+        "sort_key": "plan_fx_items.sku",
+        "r_loops": 1,
+        "r_total_time_ms": 36.15,
+        "r_limit": 5000,
+        "r_used_priority_queue": true,
+        "r_output_rows": 5001,
+        "r_sort_mode": "sort_key,addon_fields",
+        "table": {
+          "table_name": "plan_fx_items",
+          "access_type": "ALL",
+          "r_loops": 1,
+          "rows": 199752,
+          "r_rows": 200000,
+          "r_table_time_ms": 21.322,
+          "r_other_time_ms": 14.801,
+          "r_engine_stats": {
+            "pages_accessed": 493
+          },
+          "filtered": 100,
+          "r_filtered": 20,
+          "attached_condition": "plan_fx_items.qty = 1"
+        }
+      }
+    }
+  }
+}

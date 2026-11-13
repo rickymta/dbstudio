@@ -1,0 +1,32 @@
+<?xml version="1.0" ?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.6" Build="16.0.1000.6">
+  
+
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        
+
+        <StmtSimple StatementText="SELECT * FROM Sales.SalesOrderHeader soh WHERE soh.OrderDate &gt;= '2013-01-01'" StatementId="1" StatementCompId="1" StatementType="SELECT" StatementSubTreeCost="1.4412" StatementEstRows="3820.4" StatementOptmLevel="FULL" CardinalityEstimationModelVersion="150">
+          <QueryPlan DegreeOfParallelism="1" CachedPlanSize="32" CompileTime="4" CompileCPU="4" CompileMemory="256">
+            <RelOp NodeId="0" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="3820.4" EstimateIO="0.01" EstimateCPU="0.0001" AvgRowSize="64" EstimatedTotalSubtreeCost="1.4412" TableCardinality="0" Parallel="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+              <OutputList/>
+              <IndexScan Ordered="0" ForcedIndex="0" ForceScan="0" NoExpandHint="0" Storage="RowStore">
+                <Object Database="[AdventureWorks]" Schema="[Sales]" Table="[SalesOrderHeader]" Index="[PK_SalesOrderHeader_SalesOrderID]" Alias="[soh]" IndexKind="Clustered" Storage="RowStore"/>
+                <Predicate>
+                  <ScalarOperator ScalarString="[AdventureWorks].[Sales].[SalesOrderHeader].[OrderDate] as [soh].[OrderDate]&gt;='2013-01-01'">
+                    <Compare/>
+                  </ScalarOperator>
+                </Predicate>
+              </IndexScan>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+        
+
+      </Statements>
+    </Batch>
+  </BatchSequence>
+  
+
+</ShowPlanXML>

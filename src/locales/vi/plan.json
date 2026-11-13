@@ -2,8 +2,153 @@
   "tab": {
     "title": "Kế hoạch truy vấn"
   },
-  "placeholder": {
-    "title": "Kế hoạch truy vấn",
-    "description": "Phân tích kế hoạch truy vấn chưa khả dụng."
+  "toolbar": {
+    "analyze": "Chạy với ANALYZE",
+    "estimate": "Chỉ ước lượng",
+    "rerun": "Chạy lại",
+    "save": "Lưu tệp kế hoạch",
+    "open": "Mở tệp kế hoạch",
+    "copyRaw": "Sao chép kế hoạch gốc",
+    "zoomIn": "Phóng to",
+    "zoomOut": "Thu nhỏ",
+    "fit": "Vừa khung nhìn",
+    "expandAll": "Mở rộng tất cả",
+    "collapseAll": "Thu gọn tất cả",
+    "saved": "Đã lưu kế hoạch vào {{path}}",
+    "copied": "Đã sao chép kế hoạch",
+    "exportSvg": "Xuất sơ đồ SVG",
+    "exportPng": "Xuất sơ đồ PNG",
+    "exported": "Đã lưu sơ đồ vào {{path}}",
+    "cancel": "Huỷ"
+  },
+  "views": {
+    "label": "Kiểu xem kế hoạch",
+    "graph": "Sơ đồ",
+    "table": "Bảng",
+    "raw": "Văn bản gốc"
+  },
+  "status": {
+    "loading": "Đang phân tích câu lệnh...",
+    "failed": "Không thể phân tích câu lệnh",
+    "parseError": "Không đọc được kế hoạch: {{message}}. Vẫn xem được kế hoạch gốc.",
+    "noPlan": "Chưa có kế hoạch",
+    "analyzed": "Số liệu thực tế",
+    "estimated": "Chỉ ước lượng",
+    "rolledBack": "Đã chạy và hoàn tác",
+    "hotPath": "Đường nóng",
+    "format": "Định dạng",
+    "capturedAt": "Chụp lúc {{time}}",
+    "server": "Máy chủ {{version}}",
+    "layoutFailed": "Không dàn được sơ đồ: {{message}}"
+  },
+  "summary": {
+    "totalCost": "Tổng chi phí",
+    "planning": "Lập kế hoạch",
+    "execution": "Thực thi",
+    "rows": "Số dòng",
+    "nodes": "Số toán tử",
+    "warnings": "Cảnh báo: {{count}}",
+    "noWarnings": "Không có cảnh báo"
+  },
+  "columns": {
+    "operation": "Toán tử",
+    "object": "Đối tượng",
+    "estRows": "Dòng ước lượng",
+    "actualRows": "Dòng thực tế",
+    "loops": "Số vòng",
+    "selfTime": "Thời gian riêng",
+    "time": "Thời gian",
+    "cost": "Chi phí",
+    "share": "Tỉ trọng",
+    "warnings": "Cảnh báo"
+  },
+  "node": {
+    "title": "Toán tử",
+    "none": "Chọn một toán tử để xem chi tiết.",
+    "object": "Đối tượng",
+    "index": "Chỉ mục",
+    "condition": "Điều kiện",
+    "estCost": "Chi phí ước lượng",
+    "startupCost": "Chi phí khởi động",
+    "selfCost": "Chi phí riêng",
+    "estRows": "Dòng ước lượng",
+    "actualRows": "Dòng thực tế mỗi vòng",
+    "actualRowsTotal": "Tổng dòng thực tế",
+    "time": "Thời gian (gồm con)",
+    "selfTime": "Thời gian riêng",
+    "loops": "Số vòng",
+    "attributes": "Thuộc tính",
+    "warnings": "Cảnh báo",
+    "onHotPath": "Nằm trên đường nóng",
+    "copy": "Sao chép chi tiết",
+    "expand": "Mở các toán tử con",
+    "collapse": "Thu gọn các toán tử con"
+  },
+  "warning": {
+    "fullScanLargeTable": "Quét toàn bộ, đọc khoảng {{rows}} dòng",
+    "misestimateUnder": "Bộ lập kế hoạch dự kiến {{estimated}} dòng nhưng thực tế ra {{actual}} dòng (nhiều hơn {{factor}} lần)",
+    "misestimateOver": "Bộ lập kế hoạch dự kiến {{estimated}} dòng nhưng thực tế chỉ ra {{actual}} dòng (ít hơn {{factor}} lần)",
+    "spillToDisk": "Tràn xuống đĩa ({{detail}})",
+    "nestedLoopManyRows": "Vế trong chạy {{loops}} lần"
+  },
+  "severity": {
+    "info": "Thông tin",
+    "warning": "Cảnh báo",
+    "critical": "Nghiêm trọng"
+  },
+  "format": {
+    "postgresJson": "PostgreSQL JSON",
+    "mySqlJson": "MySQL JSON",
+    "mySqlJsonV2": "MySQL JSON v2",
+    "mySqlTree": "MySQL dạng cây",
+    "mariaDbJson": "MariaDB JSON",
+    "msSqlShowplanXml": "SQL Server showplan XML",
+    "oraclePlanRows": "Oracle plan rows",
+    "mongoExplain": "MongoDB explain"
+  },
+  "analyzeConfirm": {
+    "title": "Chạy câu lệnh với ANALYZE?",
+    "read": "ANALYZE thực thi câu lệnh để đo. Câu lệnh chạy trong một giao dịch rồi hoàn tác.",
+    "write": "Câu lệnh này thay đổi dữ liệu. ANALYZE thực thi nó trong một giao dịch rồi hoàn tác nên dữ liệu giữ nguyên, nhưng những tác động ngoài giao dịch (sequence, trigger gọi sang hệ thống khác) không thể hoàn tác.",
+    "confirm": "Chạy với ANALYZE"
+  },
+  "errors": {
+    "unsupported": "Máy chủ này không hỗ trợ: {{what}}",
+    "analyzeWrites": "Máy chủ này không hỗ trợ EXPLAIN ANALYZE cho câu lệnh thay đổi dữ liệu.",
+    "analyzeDdl": "Không thể ANALYZE câu lệnh thay đổi cấu trúc.",
+    "analyzeVersion": "Phiên bản máy chủ này không có EXPLAIN ANALYZE."
+  },
+  "file": {
+    "openFailed": "Không mở được tệp kế hoạch: {{message}}"
+  },
+  "compare": {
+    "title": "So sánh kế hoạch",
+    "description": "Các toán tử được ghép theo loại và đối tượng. Thay đổi lớn nhất xếp trước.",
+    "none": "Hãy mở một kế hoạch khác để so sánh với kế hoạch này.",
+    "with": "So sánh với",
+    "current": "Kế hoạch này",
+    "other": "Kế hoạch kia",
+    "change": "Thay đổi",
+    "status": "Trạng thái",
+    "both": "Có ở cả hai",
+    "onlyCurrent": "Chỉ có ở kế hoạch này",
+    "onlyOther": "Chỉ có ở kế hoạch kia",
+    "close": "Đóng",
+    "open": "So sánh kế hoạch",
+    "totals": {
+      "totalCost": "Tổng chi phí",
+      "planningTimeMs": "Thời gian lập kế hoạch",
+      "executionTimeMs": "Thời gian thực thi",
+      "rows": "Số dòng",
+      "nodeCount": "Số toán tử",
+      "warnings": "Cảnh báo"
+    }
+  },
+  "production": {
+    "title": "Chạy câu lệnh này với ANALYZE trên production?",
+    "description": "ANALYZE thực thi câu lệnh (trong một giao dịch rồi hoàn tác). Kết nối này được đánh dấu là production.",
+    "type": "Gõ {{text}} để xác nhận",
+    "run": "Chạy với ANALYZE",
+    "cancel": "Huỷ"
   }
 }

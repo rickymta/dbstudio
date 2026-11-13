@@ -1,0 +1,27 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "table": {
+      "table_name": "c",
+      "access_type": "range",
+      "possible_keys": ["PRIMARY"],
+      "key": "PRIMARY",
+      "key_length": "4",
+      "used_key_parts": ["id"],
+      "rows": 49,
+      "filtered": 100,
+      "attached_condition": "c.`id` < 50"
+    },
+    "table": {
+      "table_name": "o",
+      "access_type": "ref",
+      "possible_keys": ["customer_id"],
+      "key": "customer_id",
+      "key_length": "5",
+      "used_key_parts": ["customer_id"],
+      "ref": ["dbstudio.c.id"],
+      "rows": 25,
+      "filtered": 100
+    }
+  }
+}

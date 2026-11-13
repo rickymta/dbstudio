@@ -1,0 +1,61 @@
+{
+  "query": "/* select#1 */ select `c`.`id` AS `id`,`c`.`name` AS `name`,`c`.`country` AS `country`,`o`.`id` AS `id`,`o`.`customer_id` AS `customer_id`,`o`.`status` AS `status`,`o`.`amount` AS `amount`,`o`.`created` AS `created` from `dbstudio`.`plan_fx_customers` `c` join `dbstudio`.`plan_fx_orders` `o` where ((`o`.`customer_id` = `c`.`id`) and (`c`.`id` < 50))",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "alias": "c",
+          "ranges": [
+            "(id < 50)"
+          ],
+          "covering": false,
+          "operation": "Index range scan on c using PRIMARY over (id < 50)",
+          "index_name": "PRIMARY",
+          "table_name": "plan_fx_customers",
+          "access_type": "index",
+          "schema_name": "dbstudio",
+          "used_columns": [
+            "id",
+            "name",
+            "country"
+          ],
+          "estimated_rows": 49.0,
+          "index_access_type": "index_range_scan",
+          "estimated_total_cost": 10.07134109244809
+        }
+      ],
+      "condition": "(c.id < 50)",
+      "operation": "Filter: (c.id < 50)",
+      "access_type": "filter",
+      "estimated_rows": 49.0,
+      "estimated_total_cost": 10.07134109244809
+    },
+    {
+      "alias": "o",
+      "covering": false,
+      "operation": "Index lookup on o using customer_id (customer_id=c.id)",
+      "index_name": "customer_id",
+      "table_name": "plan_fx_orders",
+      "access_type": "index",
+      "schema_name": "dbstudio",
+      "used_columns": [
+        "id",
+        "customer_id",
+        "status",
+        "amount",
+        "created"
+      ],
+      "estimated_rows": 50.53931427001953,
+      "lookup_condition": "customer_id=c.id",
+      "index_access_type": "index_lookup",
+      "estimated_total_cost": 12.7379700251988
+    }
+  ],
+  "join_type": "inner join",
+  "operation": "Nested loop inner join",
+  "query_type": "select",
+  "access_type": "join",
+  "estimated_rows": 2476.426399230957,
+  "join_algorithm": "nested_loop",
+  "estimated_total_cost": 876.8205808232831
+}

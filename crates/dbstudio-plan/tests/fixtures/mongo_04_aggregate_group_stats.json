@@ -1,0 +1,199 @@
+{
+  "explainVersion": "1",
+  "stages": [
+    {
+      "$cursor": {
+        "queryPlanner": {
+          "namespace": "shop.orders",
+          "parsedQuery": {},
+          "indexFilterSet": false,
+          "queryHash": "3F4A9C21",
+          "planCacheKey": "7B1D2E90",
+          "optimizationTimeMillis": {
+            "$numberInt": "0"
+          },
+          "maxIndexedOrSolutionsReached": false,
+          "maxIndexedAndSolutionsReached": false,
+          "maxScansToExplodeReached": false,
+          "winningPlan": {
+            "stage": "PROJECTION_COVERED",
+            "transformBy": {
+              "customerId": 1,
+              "total": 1,
+              "_id": 0
+            },
+            "inputStage": {
+              "stage": "IXSCAN",
+              "keyPattern": {
+                "customerId": 1,
+                "total": 1
+              },
+              "indexName": "customerId_1_total_1",
+              "isMultiKey": false,
+              "direction": "forward",
+              "indexBounds": {
+                "customerId": [
+                  "[MinKey, MaxKey]"
+                ],
+                "total": [
+                  "[MinKey, MaxKey]"
+                ]
+              }
+            }
+          },
+          "rejectedPlans": []
+        },
+        "executionStats": {
+          "executionSuccess": true,
+          "nReturned": {
+            "$numberInt": "95000"
+          },
+          "executionTimeMillis": {
+            "$numberInt": "61"
+          },
+          "totalKeysExamined": {
+            "$numberInt": "95000"
+          },
+          "totalDocsExamined": {
+            "$numberInt": "0"
+          },
+          "executionStages": {
+            "stage": "PROJECTION_COVERED",
+            "nReturned": {
+              "$numberInt": "95000"
+            },
+            "executionTimeMillisEstimate": {
+              "$numberInt": "40"
+            },
+            "works": {
+              "$numberInt": "95001"
+            },
+            "advanced": {
+              "$numberInt": "95000"
+            },
+            "needTime": {
+              "$numberInt": "0"
+            },
+            "needYield": {
+              "$numberInt": "0"
+            },
+            "saveState": {
+              "$numberInt": "95"
+            },
+            "restoreState": {
+              "$numberInt": "95"
+            },
+            "isEOF": {
+              "$numberInt": "1"
+            },
+            "transformBy": {
+              "customerId": 1,
+              "total": 1,
+              "_id": 0
+            },
+            "inputStage": {
+              "stage": "IXSCAN",
+              "nReturned": {
+                "$numberInt": "95000"
+              },
+              "executionTimeMillisEstimate": {
+                "$numberInt": "22"
+              },
+              "works": {
+                "$numberInt": "95001"
+              },
+              "advanced": {
+                "$numberInt": "95000"
+              },
+              "needTime": {
+                "$numberInt": "0"
+              },
+              "needYield": {
+                "$numberInt": "0"
+              },
+              "isEOF": {
+                "$numberInt": "1"
+              },
+              "keyPattern": {
+                "customerId": 1,
+                "total": 1
+              },
+              "indexName": "customerId_1_total_1",
+              "direction": "forward",
+              "keysExamined": {
+                "$numberInt": "95000"
+              },
+              "seeks": {
+                "$numberInt": "1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$group": {
+        "_id": "$customerId",
+        "sum": {
+          "$sum": "$total"
+        }
+      },
+      "maxAccumulatorMemoryUsageBytes": {
+        "sum": {
+          "$numberLong": "1900000"
+        }
+      },
+      "totalOutputDataSizeBytes": {
+        "$numberLong": "2800000"
+      },
+      "usedDisk": false,
+      "spills": {
+        "$numberLong": "0"
+      },
+      "numBytesSpilledEstimate": {
+        "$numberLong": "0"
+      },
+      "spilledRecords": {
+        "$numberLong": "0"
+      },
+      "nReturned": {
+        "$numberLong": "40000"
+      },
+      "executionTimeMillisEstimate": {
+        "$numberLong": "82"
+      }
+    },
+    {
+      "$sort": {
+        "sortKey": {
+          "sum": -1
+        },
+        "limit": {
+          "$numberLong": "10"
+        }
+      },
+      "totalDataSizeSortedBytesEstimate": {
+        "$numberLong": "1800"
+      },
+      "usedDisk": false,
+      "spills": {
+        "$numberLong": "0"
+      },
+      "nReturned": {
+        "$numberLong": "10"
+      },
+      "executionTimeMillisEstimate": {
+        "$numberLong": "83"
+      }
+    }
+  ],
+  "serverInfo": {
+    "host": "mongo7",
+    "port": {
+      "$numberInt": "27017"
+    },
+    "version": "7.0.14",
+    "gitVersion": "ee6d8a1ac9f9ee5c5e1c8c4e5d3d5a0c3d2a1b0f"
+  },
+  "ok": 1.0
+}

@@ -1,0 +1,126 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 29095.46,
+      "Total Cost": 29095.49,
+      "Plan Rows": 10,
+      "Plan Width": 12,
+      "Actual Startup Time": 124.557,
+      "Actual Total Time": 124.559,
+      "Actual Rows": 10,
+      "Actual Loops": 1,
+      "Output": ["o.id", "(count(i.id))"],
+      "Plans": [
+        {
+          "Node Type": "Sort",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 29095.46,
+          "Total Cost": 29477.63,
+          "Plan Rows": 152867,
+          "Plan Width": 12,
+          "Actual Startup Time": 124.556,
+          "Actual Total Time": 124.557,
+          "Actual Rows": 10,
+          "Actual Loops": 1,
+          "Output": ["o.id", "(count(i.id))"],
+          "Sort Key": ["(count(i.id)) DESC"],
+          "Sort Method": "top-N heapsort",
+          "Sort Space Used": 25,
+          "Sort Space Type": "Memory",
+          "Plans": [
+            {
+              "Node Type": "Aggregate",
+              "Strategy": "Sorted",
+              "Partial Mode": "Simple",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 1.42,
+              "Total Cost": 25792.06,
+              "Plan Rows": 152867,
+              "Plan Width": 12,
+              "Actual Startup Time": 0.039,
+              "Actual Total Time": 121.476,
+              "Actual Rows": 50000,
+              "Actual Loops": 1,
+              "Output": ["o.id", "count(i.id)"],
+              "Group Key": ["o.id"],
+              "Plans": [
+                {
+                  "Node Type": "Merge Join",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Join Type": "Inner",
+                  "Startup Cost": 1.42,
+                  "Total Cost": 22763.39,
+                  "Plan Rows": 300000,
+                  "Plan Width": 8,
+                  "Actual Startup Time": 0.013,
+                  "Actual Total Time": 99.560,
+                  "Actual Rows": 300000,
+                  "Actual Loops": 1,
+                  "Output": ["o.id", "i.id"],
+                  "Inner Unique": false,
+                  "Merge Cond": "(o.id = i.order_id)",
+                  "Plans": [
+                    {
+                      "Node Type": "Index Only Scan",
+                      "Parent Relationship": "Outer",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Scan Direction": "Forward",
+                      "Index Name": "orders_pkey",
+                      "Relation Name": "orders",
+                      "Schema": "plan_fx",
+                      "Alias": "o",
+                      "Startup Cost": 0.42,
+                      "Total Cost": 5001.43,
+                      "Plan Rows": 152867,
+                      "Plan Width": 4,
+                      "Actual Startup Time": 0.004,
+                      "Actual Total Time": 16.797,
+                      "Actual Rows": 149999,
+                      "Actual Loops": 1,
+                      "Output": ["o.id"],
+                      "Heap Fetches": 152065
+                    },
+                    {
+                      "Node Type": "Index Scan",
+                      "Parent Relationship": "Inner",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Scan Direction": "Forward",
+                      "Index Name": "items_order_idx",
+                      "Relation Name": "items",
+                      "Schema": "plan_fx",
+                      "Alias": "i",
+                      "Startup Cost": 0.42,
+                      "Total Cost": 13629.98,
+                      "Plan Rows": 300000,
+                      "Plan Width": 8,
+                      "Actual Startup Time": 0.006,
+                      "Actual Total Time": 52.694,
+                      "Actual Rows": 300000,
+                      "Actual Loops": 1,
+                      "Output": ["i.id", "i.order_id", "i.sku", "i.qty"]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Planning Time": 0.482,
+    "Triggers": [
+    ],
+    "Execution Time": 124.613
+  }
+]

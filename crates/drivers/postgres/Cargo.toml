@@ -19,6 +19,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 rustls-native-certs = "0.8.5"
 
 [dev-dependencies]
+dbstudio-plan.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [lints]

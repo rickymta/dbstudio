@@ -118,9 +118,10 @@ describe('mock stores and stubs', () => {
     await expect(
       ipc.changesApply(s.sessionId, { model: 'rows', table, keyColumns: [], changes: [] }),
     ).rejects.toMatchObject({ kind: 'unsupported' });
-    await expect(
-      ipc.planExplain(s.sessionId, null, { queryId: 'q', text: 'select 1' }),
-    ).rejects.toMatchObject({ kind: 'unsupported' });
+    // Plans are answered with captured fixtures since package E.
+    expect(
+      (await ipc.planExplain(s.sessionId, null, { queryId: 'q', text: 'select 1' })).raw.format,
+    ).toBe('postgresJson');
     expect((await ipc.schemaModel(s.sessionId, { scope: ROOT_PATH })).tables).toEqual([]);
     expect(await ipc.ddlGenerate(s.sessionId, { scope: ROOT_PATH })).toEqual([]);
     expect(await ipc.jobsList()).toEqual([]);

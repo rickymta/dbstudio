@@ -1,0 +1,63 @@
+{
+  "query_block": {
+    "union_result": {
+      "query_specifications": [
+        {
+          "query_block": {
+            "select_id": 1,
+            "r_loops": 1,
+            "r_total_time_ms": 0.029,
+            "table": {
+              "table_name": "plan_fx_orders",
+              "access_type": "range",
+              "possible_keys": ["PRIMARY"],
+              "key": "PRIMARY",
+              "key_length": "4",
+              "used_key_parts": ["id"],
+              "r_loops": 1,
+              "rows": 9,
+              "r_rows": 9,
+              "r_table_time_ms": 0.009,
+              "r_other_time_ms": 0.007,
+              "r_engine_stats": {
+                "pages_accessed": 2
+              },
+              "filtered": 100,
+              "r_filtered": 100,
+              "attached_condition": "plan_fx_orders.`id` < 10",
+              "using_index": true
+            }
+          }
+        },
+        {
+          "query_block": {
+            "select_id": 2,
+            "operation": "UNION",
+            "r_loops": 1,
+            "r_total_time_ms": 0.005,
+            "table": {
+              "table_name": "plan_fx_customers",
+              "access_type": "range",
+              "possible_keys": ["PRIMARY"],
+              "key": "PRIMARY",
+              "key_length": "4",
+              "used_key_parts": ["id"],
+              "r_loops": 1,
+              "rows": 9,
+              "r_rows": 9,
+              "r_table_time_ms": 0.003,
+              "r_other_time_ms": 0.001,
+              "r_engine_stats": {
+                "pages_accessed": 2
+              },
+              "filtered": 100,
+              "r_filtered": 100,
+              "attached_condition": "plan_fx_customers.`id` < 10",
+              "using_index": true
+            }
+          }
+        }
+      ]
+    }
+  }
+}

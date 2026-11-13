@@ -20,6 +20,7 @@ mysql_async = { version = "0.37.1", default-features = false, features = ["defau
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [dev-dependencies]
+dbstudio-plan.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [lints]
