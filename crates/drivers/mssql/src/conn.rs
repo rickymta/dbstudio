@@ -56,7 +56,10 @@ impl Conn {
         let addr = config.get_addr();
         let attempt = async {
             let tcp = TcpStream::connect(addr).await.map_err(|e| {
-                Error::Connection(format!("cannot connect to {}:{}: {e}", settings.host, settings.port))
+                Error::Connection(format!(
+                    "cannot connect to {}:{}: {e}",
+                    settings.host, settings.port
+                ))
             })?;
             let _ = tcp.set_nodelay(true);
             Client::connect(config, tcp.compat_write())
@@ -99,7 +102,10 @@ impl Conn {
         }
     }
 
-    async fn sets_once(&mut self, sql: &str) -> std::result::Result<Vec<Rows>, (Error, Option<u32>)> {
+    async fn sets_once(
+        &mut self,
+        sql: &str,
+    ) -> std::result::Result<Vec<Rows>, (Error, Option<u32>)> {
         let lob = self.lob_limit;
         tracing::debug!(target: "dbstudio_mssql::query", len = sql.len(), head = %sql.chars().take(40).collect::<String>());
         let mut stream = match self.client.simple_query(sql).await {
@@ -210,13 +216,17 @@ impl std::fmt::Debug for Pooled {
 impl Deref for Pooled {
     type Target = Conn;
     fn deref(&self) -> &Conn {
-        self.conn.as_ref().expect("connection present until release")
+        self.conn
+            .as_ref()
+            .expect("connection present until release")
     }
 }
 
 impl DerefMut for Pooled {
     fn deref_mut(&mut self) -> &mut Conn {
-        self.conn.as_mut().expect("connection present until release")
+        self.conn
+            .as_mut()
+            .expect("connection present until release")
     }
 }
 
@@ -242,7 +252,9 @@ pub struct Shared {
 
 impl std::fmt::Debug for Shared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Shared").field("settings", &self.settings).finish()
+        f.debug_struct("Shared")
+            .field("settings", &self.settings)
+            .finish()
     }
 }
 
@@ -280,13 +292,12 @@ impl Shared {
     }
 
     async fn acquire_slot(&self, slot: Arc<Slot>, db: &str) -> Result<Pooled> {
-        let permit = match tokio::time::timeout(ACQUIRE_TIMEOUT, slot.sem.clone().acquire_owned())
-            .await
-        {
-            Ok(Ok(p)) => p,
-            Ok(Err(_)) => return Err(Error::Other("connection pool closed".into())),
-            Err(_) => return Err(Error::Busy("all connections are in use".into())),
-        };
+        let permit =
+            match tokio::time::timeout(ACQUIRE_TIMEOUT, slot.sem.clone().acquire_owned()).await {
+                Ok(Ok(p)) => p,
+                Ok(Err(_)) => return Err(Error::Other("connection pool closed".into())),
+                Err(_) => return Err(Error::Busy("all connections are in use".into())),
+            };
         loop {
             let candidate = slot.idle.lock().ok().and_then(|mut v| v.pop());
             let Some(mut conn) = candidate else { break };

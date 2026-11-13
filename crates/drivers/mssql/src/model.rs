@@ -161,7 +161,11 @@ pub async fn schema_model(sess: &MssqlSession, req: SchemaModelRequest) -> Resul
             kind: *kind,
             schema: Some(key.0.clone()),
             name: key.1.clone(),
-            comment: if req.include_comments { comment.clone() } else { None },
+            comment: if req.include_comments {
+                comment.clone()
+            } else {
+                None
+            },
             columns,
             primary_key: pk,
             unique_keys: uniques,
@@ -199,7 +203,6 @@ mod tests {
 
     fn col(name: &str, nullable: bool) -> Col {
         Col {
-            id: 1,
             name: name.into(),
             display_type: "int".into(),
             ddl_type: "INT".into(),

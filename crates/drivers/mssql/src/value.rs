@@ -117,9 +117,9 @@ pub fn decode(data: ColumnData<'static>, lob_limit: usize) -> Value {
         ColumnData::Numeric(v) => v.map_or(Value::Null, |n| Value::Decimal(decimal_text(n))),
         ColumnData::Xml(v) => v.map_or(Value::Null, |x| text(x.to_string(), lob_limit)),
         ColumnData::DateTime(v) => v.map_or(Value::Null, |d| Value::DateTime(datetime_text(d))),
-        ColumnData::SmallDateTime(v) => v.map_or(Value::Null, |d| {
-            Value::DateTime(smalldatetime_text(d))
-        }),
+        ColumnData::SmallDateTime(v) => {
+            v.map_or(Value::Null, |d| Value::DateTime(smalldatetime_text(d)))
+        }
         ColumnData::Time(v) => v.map_or(Value::Null, |t| Value::Time(time_text(t))),
         ColumnData::Date(v) => v.map_or(Value::Null, |d| Value::Date(date_text(d))),
         ColumnData::DateTime2(v) => v.map_or(Value::Null, |d| Value::DateTime(datetime2_text(d))),
@@ -202,7 +202,12 @@ fn date_text(d: Date) -> String {
 }
 
 fn hms(secs: u64) -> String {
-    format!("{:02}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60)
+    format!(
+        "{:02}:{:02}:{:02}",
+        secs / 3600,
+        (secs / 60) % 60,
+        secs % 60
+    )
 }
 
 /// `increments` of 10^-scale seconds since midnight to `hh:mm:ss[.fffffff]` with exactly
@@ -213,7 +218,11 @@ fn time_parts(increments: u64, scale: u8) -> String {
     let secs = increments / unit;
     let mut s = hms(secs);
     if scale > 0 {
-        s.push_str(&format!(".{:0width$}", increments % unit, width = scale as usize));
+        s.push_str(&format!(
+            ".{:0width$}",
+            increments % unit,
+            width = scale as usize
+        ));
     }
     s
 }
@@ -276,74 +285,6 @@ fn datetimeoffset_text(d: DateTimeOffset) -> String {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decimal_text_keeps_scale_and_sign() {
-        let d = |v: i128, s: u8| decimal_text(Numeric::new_with_scale(v, s));
-        assert_eq!(d(123_400, 4), "12.3400");
-        assert_eq!(d(-5, 2), "-0.05");
-        assert_eq!(d(7, 0), "7");
-        assert_eq!(d(0, 3), "0.000");
-        assert_eq!(d(-100, 2), "-1.00");
-        assert_eq!(
-            d(99_999_999_999_999_999_999_999_999_999_999_999_999, 38),
-            "0.99999999999999999999999999999999999999"
-        );
-    }
-
-    #[test]
-    fn dates_and_times() {
-        // 2024-05-31 is day 739_037 since 0001-01-01.
-        assert_eq!(date_text(Date::new(739_037)), "2024-05-31");
-        assert_eq!(date_text(Date::new(0)), "0001-01-01");
-        assert_eq!(time_text(Time::new(123_456_789, 7)), "00:00:12.3456789");
-        assert_eq!(time_text(Time::new(45, 0)), "00:00:45");
-        assert_eq!(time_text(Time::new(5, 3)), "00:00:00.005");
-        let dt = DateTime::new(0, 300 * 3600 + 1);
-        assert_eq!(datetime_text(dt), "1900-01-01T01:00:00.003");
-        assert_eq!(smalldatetime_text(SmallDateTime::new(1, 61)), "1900-01-02T01:01:00");
-    }
-
-    #[test]
-    fn datetimeoffset_keeps_offset() {
-        // 13:45:00 UTC on 2024-05-31 shown at +07:00 is 20:45.
-        let dt2 = DateTime2::new(Date::new(739_037), Time::new(13 * 3600 + 45 * 60, 0));
-        assert_eq!(
-            datetimeoffset_text(DateTimeOffset::new(dt2, 420)),
-            "2024-05-31T20:45:00+07:00"
-        );
-        // Crossing midnight backwards.
-        let dt2 = DateTime2::new(Date::new(739_037), Time::new(60, 0));
-        assert_eq!(
-            datetimeoffset_text(DateTimeOffset::new(dt2, -90)),
-            "2024-05-30T22:31:00-01:30"
-        );
-    }
-
-    #[test]
-    fn lob_limit_truncates_on_char_boundary() {
-        match text("héllo".to_string(), 2) {
-            Value::Ext(e) => {
-                assert_eq!(e.ty, "truncatedText");
-                assert_eq!(e.text, "h");
-            }
-            other => panic!("{other:?}"),
-        }
-        assert!(matches!(bytes(vec![1, 2, 3], 2), Value::Ext(e) if e.ty == "truncatedBytes"));
-        assert_eq!(bytes(vec![1], 2), Value::Bytes(vec![1]));
-    }
-
-    #[test]
-    fn real_keeps_short_form() {
-        assert_eq!(decode(ColumnData::F32(Some(0.1)), 100), Value::Float(0.1));
-        assert_eq!(decode(ColumnData::I64(Some(i64::MIN)), 100), Value::Int(i64::MIN));
-        assert_eq!(decode(ColumnData::Bit(None), 100), Value::Null);
-    }
-}
-
 /// Text of cell `i` (empty for NULL / out of range / non-text).
 pub fn str_at(row: &[Value], i: usize) -> String {
     opt_str_at(row, i).unwrap_or_default()
@@ -376,7 +317,11 @@ pub fn int_at(row: &[Value], i: usize) -> i64 {
         Some(Value::Int(n)) => *n,
         Some(Value::UInt(n)) => i64::try_from(*n).unwrap_or(i64::MAX),
         Some(Value::Bool(b)) => i64::from(*b),
-        Some(Value::Decimal(s) | Value::Text(s)) => s.split('.').next().and_then(|x| x.parse().ok()).unwrap_or(0),
+        Some(Value::Decimal(s) | Value::Text(s)) => s
+            .split('.')
+            .next()
+            .and_then(|x| x.parse().ok())
+            .unwrap_or(0),
         Some(Value::Float(f)) => *f as i64,
         _ => 0,
     }
@@ -398,8 +343,8 @@ pub fn kind_of_type_name(name: &str) -> ValueKind {
         "tinyint" | "smallint" | "int" | "bigint" => ValueKind::Int,
         "decimal" | "numeric" | "money" | "smallmoney" => ValueKind::Decimal,
         "real" | "float" => ValueKind::Float,
-        "binary" | "varbinary" | "image" | "timestamp" | "rowversion" | "geography" | "geometry"
-        | "hierarchyid" => ValueKind::Bytes,
+        "binary" | "varbinary" | "image" | "timestamp" | "rowversion" | "geography"
+        | "geometry" | "hierarchyid" => ValueKind::Bytes,
         "uniqueidentifier" => ValueKind::Uuid,
         "date" => ValueKind::Date,
         "time" => ValueKind::Time,
@@ -407,5 +352,79 @@ pub fn kind_of_type_name(name: &str) -> ValueKind {
         "datetimeoffset" => ValueKind::Timestamp,
         "json" => ValueKind::Json,
         _ => ValueKind::Text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decimal_text_keeps_scale_and_sign() {
+        let d = |v: i128, s: u8| decimal_text(Numeric::new_with_scale(v, s));
+        assert_eq!(d(123_400, 4), "12.3400");
+        assert_eq!(d(-5, 2), "-0.05");
+        assert_eq!(d(7, 0), "7");
+        assert_eq!(d(0, 3), "0.000");
+        assert_eq!(d(-100, 2), "-1.00");
+        assert_eq!(
+            d(99_999_999_999_999_999_999_999_999_999_999_999_999, 38),
+            "0.99999999999999999999999999999999999999"
+        );
+    }
+
+    #[test]
+    fn dates_and_times() {
+        // 2024-05-31 is day 739_036 since 0001-01-01.
+        assert_eq!(date_text(Date::new(739_036)), "2024-05-31");
+        assert_eq!(date_text(Date::new(0)), "0001-01-01");
+        assert_eq!(time_text(Time::new(123_456_789, 7)), "00:00:12.3456789");
+        assert_eq!(time_text(Time::new(45, 0)), "00:00:45");
+        assert_eq!(time_text(Time::new(5, 3)), "00:00:00.005");
+        let dt = DateTime::new(0, 300 * 3600 + 1);
+        assert_eq!(datetime_text(dt), "1900-01-01T01:00:00.003");
+        assert_eq!(
+            smalldatetime_text(SmallDateTime::new(1, 61)),
+            "1900-01-02T01:01:00"
+        );
+    }
+
+    #[test]
+    fn datetimeoffset_keeps_offset() {
+        // 13:45:00 UTC on 2024-05-31 shown at +07:00 is 20:45.
+        let dt2 = DateTime2::new(Date::new(739_036), Time::new(13 * 3600 + 45 * 60, 0));
+        assert_eq!(
+            datetimeoffset_text(DateTimeOffset::new(dt2, 420)),
+            "2024-05-31T20:45:00+07:00"
+        );
+        // Crossing midnight backwards.
+        let dt2 = DateTime2::new(Date::new(739_036), Time::new(60, 0));
+        assert_eq!(
+            datetimeoffset_text(DateTimeOffset::new(dt2, -90)),
+            "2024-05-30T22:31:00-01:30"
+        );
+    }
+
+    #[test]
+    fn lob_limit_truncates_on_char_boundary() {
+        match text("héllo".to_string(), 2) {
+            Value::Ext(e) => {
+                assert_eq!(e.ty, "truncatedText");
+                assert_eq!(e.text, "h");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(bytes(vec![1, 2, 3], 2), Value::Ext(e) if e.ty == "truncatedBytes"));
+        assert_eq!(bytes(vec![1], 2), Value::Bytes(vec![1]));
+    }
+
+    #[test]
+    fn real_keeps_short_form() {
+        assert_eq!(decode(ColumnData::F32(Some(0.1)), 100), Value::Float(0.1));
+        assert_eq!(
+            decode(ColumnData::I64(Some(i64::MIN)), 100),
+            Value::Int(i64::MIN)
+        );
+        assert_eq!(decode(ColumnData::Bit(None), 100), Value::Null);
     }
 }

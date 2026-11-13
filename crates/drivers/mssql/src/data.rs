@@ -10,9 +10,7 @@ use crate::catalog;
 use crate::conn::Conn;
 use crate::exec::RunParams;
 use crate::session::{DEFAULT_BATCH, MssqlSession};
-use crate::sql::{
-    ObjRef, lit, object_path, order_by, parse_object, quote, schema_path, where_clause,
-};
+use crate::sql::{ObjRef, lit, object_path, order_by, parse_object, quote, where_clause};
 use crate::value::str_at;
 
 /// Check that `raw` parses as a `WHERE` expression of `table` (syntax only, nothing runs).
@@ -40,12 +38,22 @@ pub(crate) async fn check_raw_where(conn: &mut Conn, table: &str, raw: &str) -> 
 pub(crate) async fn key_columns(conn: &mut Conn, obj: &ObjRef) -> Result<Vec<String>> {
     let filter = catalog::one(&obj.schema, &obj.name);
     let key = (obj.schema.clone(), obj.name.clone());
-    let idx = catalog::indexes(conn, &filter).await?.remove(&key).unwrap_or_default();
+    let idx = catalog::indexes(conn, &filter)
+        .await?
+        .remove(&key)
+        .unwrap_or_default();
     if let Some(pk) = idx.iter().find(|i| i.primary) {
         return Ok(pk.keys.iter().map(|(c, _)| c.clone()).collect());
     }
-    let cols = catalog::columns(conn, &filter).await?.remove(&key).unwrap_or_default();
-    let nullable = |name: &str| cols.iter().find(|c| c.name == name).is_none_or(|c| c.nullable);
+    let cols = catalog::columns(conn, &filter)
+        .await?
+        .remove(&key)
+        .unwrap_or_default();
+    let nullable = |name: &str| {
+        cols.iter()
+            .find(|c| c.name == name)
+            .is_none_or(|c| c.nullable)
+    };
     Ok(idx
         .iter()
         .find(|i| {
@@ -116,7 +124,12 @@ pub async fn fetch_table(
     let key = table_key(sess, &mut conn, &db, &obj).await;
     let prepared = async {
         let where_ = where_clause(&req.filters, req.raw_where.as_deref())?;
-        if let Some(raw) = req.raw_where.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        if let Some(raw) = req
+            .raw_where
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        {
             check_raw_where(&mut conn, &table, raw).await?;
         }
         Ok::<_, Error>(where_)
@@ -188,7 +201,12 @@ pub async fn count_table(sess: &MssqlSession, req: TableCountRequest) -> Result<
             return Err(e);
         }
     };
-    if let Some(raw) = req.raw_where.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+    if let Some(raw) = req
+        .raw_where
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
         if let Err(e) = check_raw_where(&mut conn, &table, raw).await {
             conn.release();
             return Err(e);
@@ -219,7 +237,11 @@ pub(crate) fn stream_sql(obj: &ObjRef, req: &TableStreamRequest, key: &[String])
     let cols = if req.columns.is_empty() {
         "*".to_string()
     } else {
-        req.columns.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", ")
+        req.columns
+            .iter()
+            .map(|c| quote(c))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     let where_ = where_clause(&req.filters, req.raw_where.as_deref())?;
     let order = if req.order_by_key && !key.is_empty() {
@@ -227,7 +249,10 @@ pub(crate) fn stream_sql(obj: &ObjRef, req: &TableStreamRequest, key: &[String])
     } else {
         String::new()
     };
-    Ok(format!("SELECT {cols} FROM {}{where_}{order}", obj.qualified()))
+    Ok(format!(
+        "SELECT {cols} FROM {}{where_}{order}",
+        obj.qualified()
+    ))
 }
 
 /// Default kinds of an object search.
@@ -247,7 +272,6 @@ fn type_codes(k: ObjectKind) -> Option<&'static str> {
         ObjectKind::Procedure => "'P','PC','RF','X'",
         ObjectKind::Sequence => "'SO'",
         ObjectKind::Synonym => "'SN'",
-        ObjectKind::Trigger => "'TR'",
         _ => return None,
     })
 }
@@ -259,7 +283,6 @@ fn kind_of_code(code: &str) -> ObjectKind {
         "P" | "PC" | "RF" | "X" => ObjectKind::Procedure,
         "SO" => ObjectKind::Sequence,
         "SN" => ObjectKind::Synonym,
-        "TR" => ObjectKind::Trigger,
         _ => ObjectKind::Function,
     }
 }
@@ -344,34 +367,26 @@ pub async fn search_objects(
     let show_db = req.scope.is_root();
     Ok(rows
         .iter()
-        .filter_map(|r| {
+        .map(|r| {
             let s = str_at(r, 0);
             let name = str_at(r, 1);
             let code = str_at(r, 2);
             let (kind, path) = if code.trim() == "TY" {
-                (ObjectKind::Type, object_path(&db, &s, ObjectKind::Type, &name))
+                (
+                    ObjectKind::Type,
+                    object_path(&db, &s, ObjectKind::Type, &name),
+                )
             } else {
                 let kind = kind_of_code(&code);
-                if kind == ObjectKind::Trigger {
-                    // Triggers are found by name but live below their table: skip the table lookup
-                    // cost and point at the schema.
-                    return Some(ObjectNode {
-                        path: schema_path(&db, &s).child(ObjectKind::Trigger, name.clone()),
-                        kind,
-                        name,
-                        has_children: false,
-                        detail: Some(if show_db { format!("{db}.{s}") } else { s }),
-                    });
-                }
                 (kind, object_path(&db, &s, kind, &name))
             };
-            Some(ObjectNode {
+            ObjectNode {
                 path,
                 kind,
                 name,
                 has_children: matches!(kind, ObjectKind::Table | ObjectKind::View),
                 detail: Some(if show_db { format!("{db}.{s}") } else { s }),
-            })
+            }
         })
         .collect())
 }

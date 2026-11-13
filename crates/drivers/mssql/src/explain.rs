@@ -9,8 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dbstudio_core::{
-    ColumnMeta, Error, ExplainRequest, PlanFormat, RawPlan, Result, ResultSink, StatementEnd,
-    Value,
+    ColumnMeta, Error, ExplainRequest, PlanFormat, RawPlan, Result, ResultSink, StatementEnd, Value,
 };
 
 use crate::conn::Conn;
@@ -76,7 +75,15 @@ fn first_keyword(text: &str) -> String {
 fn is_ddl(text: &str) -> bool {
     matches!(
         first_keyword(text).as_str(),
-        "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "BACKUP" | "RESTORE" | "DBCC" | "GRANT" | "REVOKE"
+        "CREATE"
+            | "ALTER"
+            | "DROP"
+            | "TRUNCATE"
+            | "BACKUP"
+            | "RESTORE"
+            | "DBCC"
+            | "GRANT"
+            | "REVOKE"
             | "DENY"
     )
 }

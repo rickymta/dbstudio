@@ -42,7 +42,10 @@ async fn every_type_maps_without_loss() {
     assert_eq!(v("c_smallint"), Value::Int(-32768));
     assert_eq!(v("c_int"), Value::Int(2_147_483_647));
     assert_eq!(v("c_bigint"), Value::Int(i64::MIN));
-    assert_eq!(v("c_decimal"), Value::Decimal("1234567890123456789012345678.1234567890".into()));
+    assert_eq!(
+        v("c_decimal"),
+        Value::Decimal("1234567890123456789012345678.1234567890".into())
+    );
     assert_eq!(v("c_numeric"), Value::Decimal("9999999999".into()));
     assert_eq!(v("c_money"), Value::Decimal("922337203685477.5807".into()));
     assert_eq!(v("c_smallmoney"), Value::Decimal("-214748.3648".into()));
@@ -59,13 +62,28 @@ async fn every_type_maps_without_loss() {
     assert_eq!(v("c_varbinary"), Value::Bytes(vec![0xde, 0xad, 0xbe, 0xef]));
     assert_eq!(v("c_image"), Value::Bytes(vec![0x00, 0xff]));
     assert!(matches!(v("c_rowversion"), Value::Bytes(b) if b.len() == 8));
-    assert_eq!(v("c_guid"), Value::Uuid("6f9619ff-8b86-d011-b42d-00c04fc964ff".into()));
+    assert_eq!(
+        v("c_guid"),
+        Value::Uuid("6f9619ff-8b86-d011-b42d-00c04fc964ff".into())
+    );
     assert_eq!(v("c_date"), Value::Date("9999-12-31".into()));
     assert_eq!(v("c_time"), Value::Time("23:59:59.9999999".into()));
-    assert_eq!(v("c_smalldatetime"), Value::DateTime("2079-06-06T23:59:00".into()));
-    assert_eq!(v("c_datetime"), Value::DateTime("1753-01-01T00:00:00.003".into()));
-    assert_eq!(v("c_datetime2"), Value::DateTime("0001-01-01T00:00:00.0000001".into()));
-    assert_eq!(v("c_dto"), Value::Timestamp("2024-05-31T13:45:00.1234567+07:00".into()));
+    assert_eq!(
+        v("c_smalldatetime"),
+        Value::DateTime("2079-06-06T23:59:00".into())
+    );
+    assert_eq!(
+        v("c_datetime"),
+        Value::DateTime("1753-01-01T00:00:00.003".into())
+    );
+    assert_eq!(
+        v("c_datetime2"),
+        Value::DateTime("0001-01-01T00:00:00.0000001".into())
+    );
+    assert_eq!(
+        v("c_dto"),
+        Value::Timestamp("2024-05-31T13:45:00.1234567+07:00".into())
+    );
     assert_eq!(v("c_variant"), Value::Text("variant text".into()));
     assert!(matches!(v("c_geography"), Value::Bytes(b) if !b.is_empty()));
     assert!(matches!(v("c_hierarchyid"), Value::Bytes(b) if !b.is_empty()));
@@ -79,7 +97,10 @@ async fn every_type_maps_without_loss() {
     // Column metadata.
     assert_eq!(rs.columns[col("c_money")].type_name, "money");
     assert_eq!(rs.columns[col("c_dto")].type_name, "datetimeoffset");
-    assert_eq!(rs.columns[col("c_guid")].value_kind, dbstudio_core::ValueKind::Uuid);
+    assert_eq!(
+        rs.columns[col("c_guid")].value_kind,
+        dbstudio_core::ValueKind::Uuid
+    );
 }
 
 #[tokio::test]
@@ -98,7 +119,10 @@ async fn text_and_numbers_round_trip_through_literals() {
     assert_eq!(row[1], Value::Int(123_456_789_012_345_678));
     assert_eq!(row[2], Value::Decimal("-0.05".into()));
     assert_eq!(row[3], Value::Text("a😀".into()));
-    assert_eq!(row[4], Value::DateTime("2024-02-29T23:59:59.9999999".into()));
+    assert_eq!(
+        row[4],
+        Value::DateTime("2024-02-29T23:59:59.9999999".into())
+    );
     assert_eq!(row[5], Value::Time("12:00:00.5".into()));
 }
 
@@ -113,7 +137,10 @@ async fn make_table(s: &dyn dbstudio_core::Session, name: &str) {
 }
 
 fn cell(c: &str, v: EditValue) -> CellEdit {
-    CellEdit { column: c.into(), value: v }
+    CellEdit {
+        column: c.into(),
+        value: v,
+    }
 }
 
 fn rowset(name: &str, changes: Vec<RowChange>) -> ChangeSet {
@@ -125,15 +152,28 @@ fn rowset(name: &str, changes: Vec<RowChange>) -> ChangeSet {
 }
 
 async fn dump(s: &dyn dbstudio_core::Session, name: &str) -> Vec<(i64, Option<String>, i64)> {
-    let r = run(s, &format!("SELECT id, name, qty FROM dbo.{name} ORDER BY id")).await;
+    let r = run(
+        s,
+        &format!("SELECT id, name, qty FROM dbo.{name} ORDER BY id"),
+    )
+    .await;
     rows_of(&r[0])
         .rows
         .iter()
         .map(|r| {
             (
-                match r[0] { Value::Int(i) => i, _ => panic!() },
-                match &r[1] { Value::Text(t) => Some(t.clone()), _ => None },
-                match r[2] { Value::Int(i) => i, _ => panic!() },
+                match r[0] {
+                    Value::Int(i) => i,
+                    _ => panic!(),
+                },
+                match &r[1] {
+                    Value::Text(t) => Some(t.clone()),
+                    _ => None,
+                },
+                match r[2] {
+                    Value::Int(i) => i,
+                    _ => panic!(),
+                },
             )
         })
         .collect()
@@ -160,15 +200,29 @@ async fn editability_rules() {
         .child(ObjectKind::Database, IT_DB)
         .child(ObjectKind::Schema, "sales")
         .child(ObjectKind::View, "big_orders");
-    assert_eq!(s.editability(&view).await.unwrap().reason, Some(NotEditableReason::NotATable));
-    assert_eq!(err_kind(s.editability(&tpath("dbo", "missing")).await), "notFound");
+    assert_eq!(
+        s.editability(&view).await.unwrap().reason,
+        Some(NotEditableReason::NotATable)
+    );
+    assert_eq!(
+        err_kind(s.editability(&tpath("dbo", "missing")).await),
+        "notFound"
+    );
     // Read-only connection.
     let mut cfg = config(Some(IT_DB), TlsMode::Require);
     cfg.read_only = true;
     let ro = connect_cfg(&cfg).await.unwrap();
     let e = ro.editability(&tpath("sales", "customers")).await.unwrap();
     assert_eq!(e.reason, Some(NotEditableReason::ReadOnlyConnection));
-    let err = ro.apply_changes(rowset("simple", vec![RowChange::Delete { key: vec![Value::Int(1)] }])).await.unwrap_err();
+    let err = ro
+        .apply_changes(rowset(
+            "simple",
+            vec![RowChange::Delete {
+                key: vec![Value::Int(1)],
+            }],
+        ))
+        .await
+        .unwrap_err();
     assert_eq!(err.kind(), "readOnly");
 }
 
@@ -180,23 +234,56 @@ async fn preview_and_apply_in_one_transaction() {
     let cs = rowset(
         "edit_a",
         vec![
-            RowChange::Update { key: vec![Value::Int(1)], set: vec![cell("name", EditValue::Text("A'1".into()))] },
-            RowChange::Update { key: vec![Value::Int(2)], set: vec![cell("qty", EditValue::Value(Value::Int(9))), cell("name", EditValue::Value(Value::Null))] },
-            RowChange::Update { key: vec![Value::Int(3)], set: vec![cell("qty", EditValue::Default)] },
-            RowChange::Insert { values: vec![cell("id", EditValue::Value(Value::Int(10))), cell("name", EditValue::Text("new".into()))] },
-            RowChange::Delete { key: vec![Value::Int(4)] },
+            RowChange::Update {
+                key: vec![Value::Int(1)],
+                set: vec![cell("name", EditValue::Text("A'1".into()))],
+            },
+            RowChange::Update {
+                key: vec![Value::Int(2)],
+                set: vec![
+                    cell("qty", EditValue::Value(Value::Int(9))),
+                    cell("name", EditValue::Value(Value::Null)),
+                ],
+            },
+            RowChange::Update {
+                key: vec![Value::Int(3)],
+                set: vec![cell("qty", EditValue::Default)],
+            },
+            RowChange::Insert {
+                values: vec![
+                    cell("id", EditValue::Value(Value::Int(10))),
+                    cell("name", EditValue::Text("new".into())),
+                ],
+            },
+            RowChange::Delete {
+                key: vec![Value::Int(4)],
+            },
         ],
     );
     let preview = s.preview_changes(&cs).await.unwrap();
     assert_eq!(preview.len(), 5);
-    assert_eq!(preview[0], "UPDATE [dbo].[edit_a] SET [name] = N'A''1' WHERE [id] = 1;");
-    assert_eq!(preview[2], "UPDATE [dbo].[edit_a] SET [qty] = DEFAULT WHERE [id] = 3;");
+    assert_eq!(
+        preview[0],
+        "UPDATE [dbo].[edit_a] SET [name] = N'A''1' WHERE [id] = 1;"
+    );
+    assert_eq!(
+        preview[2],
+        "UPDATE [dbo].[edit_a] SET [qty] = DEFAULT WHERE [id] = 3;"
+    );
     assert_eq!(preview[4], "DELETE FROM [dbo].[edit_a] WHERE [id] = 4;");
     let res = s.apply_changes(cs).await.unwrap();
-    assert_eq!((res.applied, res.affected.clone(), res.atomic), (5, vec![1, 1, 1, 1, 1], true));
+    assert_eq!(
+        (res.applied, res.affected.clone(), res.atomic),
+        (5, vec![1, 1, 1, 1, 1], true)
+    );
     assert_eq!(
         dump(&*s, "edit_a").await,
-        vec![(1, Some("A'1".into()), 5), (2, None, 9), (3, Some("c".into()), 5), (10, Some("new".into()), 5)]
+        vec![
+            (1, Some("A'1".into()), 5),
+            (2, None, 9),
+            (3, Some("c".into()), 5),
+            (10, Some("new".into()), 5)
+        ]
     );
 }
 
@@ -210,13 +297,24 @@ async fn failure_rolls_everything_back() {
     let cs = rowset(
         "edit_b",
         vec![
-            RowChange::Update { key: vec![Value::Int(1)], set: vec![cell("name", EditValue::Text("changed".into()))] },
-            RowChange::Insert { values: vec![cell("id", EditValue::Value(Value::Int(2)))] },
-            RowChange::Delete { key: vec![Value::Int(3)] },
+            RowChange::Update {
+                key: vec![Value::Int(1)],
+                set: vec![cell("name", EditValue::Text("changed".into()))],
+            },
+            RowChange::Insert {
+                values: vec![cell("id", EditValue::Value(Value::Int(2)))],
+            },
+            RowChange::Delete {
+                key: vec![Value::Int(3)],
+            },
         ],
     );
     match s.apply_changes(cs).await.unwrap_err() {
-        Error::ChangeFailed { index, applied, message } => {
+        Error::ChangeFailed {
+            index,
+            applied,
+            message,
+        } => {
             assert_eq!((index, applied), (1, 0));
             assert!(message.to_lowercase().contains("primary key"), "{message}");
         }
@@ -227,8 +325,13 @@ async fn failure_rolls_everything_back() {
     let cs = rowset(
         "edit_b",
         vec![
-            RowChange::Delete { key: vec![Value::Int(4)] },
-            RowChange::Update { key: vec![Value::Int(99)], set: vec![cell("name", EditValue::Text("x".into()))] },
+            RowChange::Delete {
+                key: vec![Value::Int(4)],
+            },
+            RowChange::Update {
+                key: vec![Value::Int(99)],
+                set: vec![cell("name", EditValue::Text("x".into()))],
+            },
         ],
     );
     match s.apply_changes(cs).await.unwrap_err() {
@@ -237,6 +340,9 @@ async fn failure_rolls_everything_back() {
     }
     assert_eq!(dump(&*s, "edit_b").await, before);
     // Other model kinds are not supported.
-    let keys = ChangeSet::Keys(dbstudio_core::KeyChangeSet { database: ObjectPath::root(), changes: vec![] });
+    let keys = ChangeSet::Keys(dbstudio_core::KeyChangeSet {
+        database: ObjectPath::root(),
+        changes: vec![],
+    });
     assert_eq!(err_kind(s.preview_changes(&keys).await), "unsupported");
 }

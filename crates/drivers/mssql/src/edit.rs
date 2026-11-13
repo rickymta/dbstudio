@@ -1,8 +1,9 @@
 //! Data editing: editability, preview and atomic apply of a [`ChangeSet`].
 
 use dbstudio_core::{
-    ApplyResult, CellEdit, ChangeSet, CollectingSink, EditValue, Editability, Error, ObjectKind,
-    ObjectPath, NotEditableReason, Result, RowChange, RowChangeSet, StatementOutcome, Value,
+    ApplyResult, CellEdit, ChangeSet, CollectingSink, EditValue, Editability, Error,
+    NotEditableReason, ObjectKind, ObjectPath, Result, RowChange, RowChangeSet, StatementOutcome,
+    Value,
 };
 
 use crate::catalog;
@@ -15,7 +16,10 @@ use crate::value::str_at;
 /// Editability of the table at `path`.
 pub async fn editability(sess: &MssqlSession, path: &ObjectPath) -> Result<Editability> {
     let obj = parse_object(path)?;
-    let db = obj.db.clone().unwrap_or_else(|| sess.login_db().to_string());
+    let db = obj
+        .db
+        .clone()
+        .unwrap_or_else(|| sess.login_db().to_string());
     let not_editable = |reason| Editability {
         editable: false,
         key_columns: Vec::new(),
@@ -58,7 +62,9 @@ pub async fn editability(sess: &MssqlSession, path: &ObjectPath) -> Result<Edita
         .unwrap_or_default();
     let read_only_columns: Vec<String> = cols
         .iter()
-        .filter(|c| c.identity.is_some() || c.computed.is_some() || c.rowversion || c.generated != 0)
+        .filter(|c| {
+            c.identity.is_some() || c.computed.is_some() || c.rowversion || c.generated != 0
+        })
         .map(|c| c.name.clone())
         .collect();
     if sess.read_only {
@@ -205,7 +211,10 @@ pub async fn apply(sess: &MssqlSession, changes: ChangeSet) -> Result<ApplyResul
     let cs = rows_changes(&changes)?;
     let stmts = statements(cs)?;
     let obj: ObjRef = parse_object(&cs.table)?;
-    let db = obj.db.clone().unwrap_or_else(|| sess.login_db().to_string());
+    let db = obj
+        .db
+        .clone()
+        .unwrap_or_else(|| sess.login_db().to_string());
     let mut conn = sess.shared.acquire(&db).await?;
     conn.run("BEGIN TRANSACTION").await?;
     let mut affected = Vec::with_capacity(stmts.len());
@@ -213,16 +222,21 @@ pub async fn apply(sess: &MssqlSession, changes: ChangeSet) -> Result<ApplyResul
         let outcome = run_change(&mut conn, sql).await;
         let failure = match (&cs.changes[index], outcome) {
             (_, Err(e)) => Some(e.to_string()),
-            (RowChange::Update { .. } | RowChange::Delete { .. }, Ok(0)) => {
-                Some("no row matched the key (0 rows affected); it may have been changed or deleted".to_string())
-            }
+            (RowChange::Update { .. } | RowChange::Delete { .. }, Ok(0)) => Some(
+                "no row matched the key (0 rows affected); it may have been changed or deleted"
+                    .to_string(),
+            ),
             (_, Ok(n)) => {
                 affected.push(n);
                 None
             }
         };
         if let Some(message) = failure {
-            if conn.run("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await.is_err() {
+            if conn
+                .run("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION")
+                .await
+                .is_err()
+            {
                 conn.broken = true;
             }
             if !conn.broken {
@@ -300,19 +314,36 @@ mod tests {
             ],
         );
         let s = statements(&cs).unwrap();
-        assert_eq!(s[0], "UPDATE [s].[t] SET [name] = N'O''Hara', [n] = NULL, [d] = DEFAULT, [b] = 1 WHERE [id] = 1 AND [line] = 2;");
+        assert_eq!(
+            s[0],
+            "UPDATE [s].[t] SET [name] = N'O''Hara', [n] = NULL, [d] = DEFAULT, [b] = 1 WHERE [id] = 1 AND [line] = 2;"
+        );
         assert_eq!(s[1], "INSERT INTO [s].[t] ([x]) VALUES (1.50);");
         assert_eq!(s[2], "INSERT INTO [s].[t] DEFAULT VALUES;");
-        assert_eq!(s[3], "DELETE FROM [s].[t] WHERE [id] = N'a' AND [line] IS NULL;");
+        assert_eq!(
+            s[3],
+            "DELETE FROM [s].[t] WHERE [id] = N'a' AND [line] IS NULL;"
+        );
     }
 
     #[test]
     fn key_problems_are_errors() {
         let cs = set(&["id"], vec![RowChange::Delete { key: vec![] }]);
         assert!(statements(&cs).is_err());
-        let cs = set(&[], vec![RowChange::Delete { key: vec![Value::Int(1)] }]);
+        let cs = set(
+            &[],
+            vec![RowChange::Delete {
+                key: vec![Value::Int(1)],
+            }],
+        );
         assert!(statements(&cs).is_err());
-        let cs = set(&["id"], vec![RowChange::Update { key: vec![Value::Int(1)], set: vec![] }]);
+        let cs = set(
+            &["id"],
+            vec![RowChange::Update {
+                key: vec![Value::Int(1)],
+                set: vec![],
+            }],
+        );
         assert!(statements(&cs).is_err());
     }
 }

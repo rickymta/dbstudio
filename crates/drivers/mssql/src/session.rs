@@ -6,11 +6,10 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dbstudio_core::{
-    ApplyResult, ChangeSet, Lease, LeaseOptions, DdlItem, DdlRequest, Editability, ExplainRequest, RawPlan,
-    SchemaModel, SchemaModelRequest,
-    ExecSummary, ObjectKind, ObjectNode, ObjectPath, ObjectSearchRequest, QueryRequest, Result,
-    ResultSink, ScriptDialect, ServerInfo, Session, TableCountRequest, TableDataRequest,
-    TableDetails, Value,
+    ApplyResult, ChangeSet, DdlItem, DdlRequest, Editability, ExecSummary, ExplainRequest, Lease,
+    LeaseOptions, ObjectKind, ObjectNode, ObjectPath, ObjectSearchRequest, QueryRequest, RawPlan,
+    Result, ResultSink, SchemaModel, SchemaModelRequest, ScriptDialect, ServerInfo, Session,
+    TableCountRequest, TableDataRequest, TableDetails, Value,
 };
 use regex::Regex;
 use tiberius::CancelHandle;
@@ -173,12 +172,6 @@ impl MssqlSession {
     pub(crate) fn cache_key(&self, id: (String, String, String), cols: Vec<String>) {
         if let Ok(mut map) = self.keys.lock() {
             map.insert(id, (Instant::now(), cols));
-        }
-    }
-
-    pub(crate) fn forget_key(&self, id: &(String, String, String)) {
-        if let Ok(mut map) = self.keys.lock() {
-            map.remove(id);
         }
     }
 }

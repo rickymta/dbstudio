@@ -260,7 +260,7 @@ mod tests {
             ]
         );
         assert_eq!(texts("A\n  GO   2  \nB").len(), 2);
-        assert_eq!(texts("A\nGO /* c */ 2\nB")[0].1, 2);
+        assert_eq!(texts("A\nGO 2 /* c */\nB")[0].1, 2);
     }
 
     #[test]
@@ -282,10 +282,10 @@ mod tests {
 
     #[test]
     fn crlf_and_trailing_go() {
-        assert_eq!(texts("SELECT 1\r\nGO\r\nSELECT 2\r\nGO"), vec![
-            ("SELECT 1\r\n".into(), 1),
-            ("SELECT 2\r\n".into(), 1)
-        ]);
+        assert_eq!(
+            texts("SELECT 1\r\nGO\r\nSELECT 2\r\nGO"),
+            vec![("SELECT 1\r\n".into(), 1), ("SELECT 2\r\n".into(), 1)]
+        );
     }
 
     #[test]

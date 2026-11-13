@@ -62,7 +62,9 @@ pub fn statements(
         ));
     }
     for k in &conflict {
-        if req.on_conflict != OnConflict::Error && !req.columns.iter().any(|c| c.eq_ignore_ascii_case(k)) {
+        if req.on_conflict != OnConflict::Error
+            && !req.columns.iter().any(|c| c.eq_ignore_ascii_case(k))
+        {
             return Err(Error::Other(format!(
                 "conflict column `{k}` is not among the inserted columns"
             )));
@@ -85,7 +87,11 @@ pub fn statements(
                     .map(|r| format!("({})", r.iter().map(cell).collect::<Vec<_>>().join(", ")))
                     .collect();
                 out.push((
-                    format!("INSERT INTO {table} ({}) VALUES\n{};", cols.join(", "), rows.join(",\n")),
+                    format!(
+                        "INSERT INTO {table} ({}) VALUES\n{};",
+                        cols.join(", "),
+                        rows.join(",\n")
+                    ),
                     Reports::Inserted { rows: n },
                 ));
             }
@@ -95,7 +101,11 @@ pub fn statements(
                     .map(|r| {
                         format!(
                             "({})",
-                            r.iter().enumerate().map(|(i, v)| typed(v, i)).collect::<Vec<_>>().join(", ")
+                            r.iter()
+                                .enumerate()
+                                .map(|(i, v)| typed(v, i))
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         )
                     })
                     .collect();
@@ -126,7 +136,11 @@ pub fn statements(
                     } else {
                         format!("WHEN MATCHED THEN UPDATE SET {}\n", set.join(", "))
                     };
-                    let v_cols: Vec<String> = req.columns.iter().map(|c| format!("v.{}", quote(c))).collect();
+                    let v_cols: Vec<String> = req
+                        .columns
+                        .iter()
+                        .map(|c| format!("v.{}", quote(c)))
+                        .collect();
                     out.push((
                         format!(
                             "MERGE {table} AS t USING (VALUES\n{}\n) AS v ({src_cols}) ON {on}\n{matched}\
@@ -185,7 +199,9 @@ mod tests {
         assert_eq!(s.len(), 5);
         assert_eq!(s[0].1, Reports::Inserted { rows: 500 });
         assert_eq!(s[4].1, Reports::Inserted { rows: 500 });
-        assert!(s[0].0.starts_with("INSERT INTO [d].[s].[t] ([id], [name]) VALUES\n(0, NULL),\n(1, N'x''y')"));
+        assert!(s[0].0.starts_with(
+            "INSERT INTO [d].[s].[t] ([id], [name]) VALUES\n(0, NULL),\n(1, N'x''y')"
+        ));
     }
 
     #[test]
@@ -193,11 +209,21 @@ mod tests {
         let types = vec!["INT".to_string(), "NVARCHAR(20)".to_string()];
         let s = statements(&obj(), &req(OnConflict::Skip, 2), &types, &["id".into()]).unwrap();
         assert!(s[0].0.contains("(0, CAST(NULL AS NVARCHAR(20)))"));
-        assert!(s[0].0.contains("WHERE NOT EXISTS (SELECT 1 FROM [d].[s].[t] AS t WHERE t.[id] = v.[id])"));
+        assert!(
+            s[0].0.contains(
+                "WHERE NOT EXISTS (SELECT 1 FROM [d].[s].[t] AS t WHERE t.[id] = v.[id])"
+            )
+        );
         let s = statements(&obj(), &req(OnConflict::Update, 2), &types, &["id".into()]).unwrap();
         assert!(s[0].0.starts_with("MERGE [d].[s].[t] AS t USING (VALUES"));
-        assert!(s[0].0.contains("WHEN MATCHED THEN UPDATE SET t.[name] = v.[name]"));
-        assert!(s[0].0.contains("WHEN NOT MATCHED THEN INSERT ([id], [name]) VALUES (v.[id], v.[name])"));
+        assert!(
+            s[0].0
+                .contains("WHEN MATCHED THEN UPDATE SET t.[name] = v.[name]")
+        );
+        assert!(
+            s[0].0
+                .contains("WHEN NOT MATCHED THEN INSERT ([id], [name]) VALUES (v.[id], v.[name])")
+        );
         assert!(s[0].0.ends_with("OUTPUT $action;"));
         assert_eq!(s[0].1, Reports::Actions { rows: 2 });
     }

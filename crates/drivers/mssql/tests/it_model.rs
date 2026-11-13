@@ -58,7 +58,11 @@ async fn estimated_plan_is_showplan_xml() {
         .await
         .unwrap();
     assert_eq!(p.format, PlanFormat::MsSqlShowplanXml);
-    assert!(p.text.contains("<ShowPlanXML"), "{}", &p.text[..p.text.len().min(200)]);
+    assert!(
+        p.text.contains("<ShowPlanXML"),
+        "{}",
+        &p.text[..p.text.len().min(200)]
+    );
     assert!(p.text.contains("<RelOp"));
     assert!(!p.analyzed && !p.rolled_back);
     assert!(p.server_version.starts_with("16."), "{}", p.server_version);
@@ -74,22 +78,41 @@ async fn analyze_runs_and_always_rolls_back() {
     it!();
     let s = work().await;
     run(&*s, "DROP TABLE IF EXISTS dbo.explain_t;\nGO\nCREATE TABLE dbo.explain_t (id INT PRIMARY KEY, v INT);\nGO\nINSERT INTO dbo.explain_t VALUES (1, 1), (2, 2);").await;
-    let p = s.explain(explain_req("UPDATE dbo.explain_t SET v = 100", true)).await.unwrap();
+    let p = s
+        .explain(explain_req("UPDATE dbo.explain_t SET v = 100", true))
+        .await
+        .unwrap();
     assert!(p.analyzed && p.rolled_back);
-    assert!(p.text.contains("<RunTimeInformation"), "actual statistics are present");
+    assert!(
+        p.text.contains("<RunTimeInformation"),
+        "actual statistics are present"
+    );
     assert_well_formed(&p.text);
     let r = run(&*s, "SELECT SUM(v) FROM dbo.explain_t").await;
-    assert_eq!(rows_of(&r[0]).rows[0][0], Value::Int(3), "the update was rolled back");
+    assert_eq!(
+        rows_of(&r[0]).rows[0][0],
+        Value::Int(3),
+        "the update was rolled back"
+    );
     // Analyze of a SELECT is also wrapped and rolled back.
-    let p = s.explain(explain_req("SELECT * FROM dbo.explain_t", true)).await.unwrap();
+    let p = s
+        .explain(explain_req("SELECT * FROM dbo.explain_t", true))
+        .await
+        .unwrap();
     assert!(p.rolled_back);
     // DDL cannot be rolled back reliably.
     assert_eq!(
-        err_kind(s.explain(explain_req("DROP TABLE dbo.explain_t", true)).await),
+        err_kind(
+            s.explain(explain_req("DROP TABLE dbo.explain_t", true))
+                .await
+        ),
         "unsupported"
     );
     // Errors carry a position.
-    let e = s.explain(explain_req("SELECT * FROM dbo.does_not_exist", false)).await.unwrap_err();
+    let e = s
+        .explain(explain_req("SELECT * FROM dbo.does_not_exist", false))
+        .await
+        .unwrap_err();
     assert!(matches!(e, dbstudio_core::Error::Query { .. }), "{e}");
 }
 
@@ -109,8 +132,15 @@ async fn schema_model_is_four_queries() {
         })
         .await
         .unwrap();
-    assert!(n.load(Ordering::SeqCst) <= 4, "queries: {}", n.load(Ordering::SeqCst));
-    assert_eq!(m.tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["customers", "orders"]);
+    assert!(
+        n.load(Ordering::SeqCst) <= 4,
+        "queries: {}",
+        n.load(Ordering::SeqCst)
+    );
+    assert_eq!(
+        m.tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        vec!["customers", "orders"]
+    );
     assert!(!m.truncated && !m.inferred);
     let c = &m.tables[0];
     assert_eq!(c.comment.as_deref(), Some("Customer master"));
@@ -144,14 +174,20 @@ async fn schema_model_is_four_queries() {
     let names: Vec<_> = orders.columns.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, vec!["id", "line", "customer_id"]);
     assert!(orders.comment.is_none());
-    assert!(m.tables.iter().any(|t| t.kind == ObjectKind::View && t.name == "big_orders"));
+    assert!(
+        m.tables
+            .iter()
+            .any(|t| t.kind == ObjectKind::View && t.name == "big_orders")
+    );
     // Restricting to chosen tables.
     let only = s
         .schema_model(SchemaModelRequest {
             scope: db(IT_DB),
-            tables: vec![schema(IT_DB, "sales")
-                .child(ObjectKind::Folder, folder::TABLES)
-                .child(ObjectKind::Table, "orders")],
+            tables: vec![
+                schema(IT_DB, "sales")
+                    .child(ObjectKind::Folder, folder::TABLES)
+                    .child(ObjectKind::Table, "orders"),
+            ],
             include_views: false,
             include_comments: false,
             detail: ModelDetail::Full,
@@ -160,7 +196,10 @@ async fn schema_model_is_four_queries() {
         .await
         .unwrap();
     assert_eq!(only.tables.len(), 1);
-    assert!(only.relations.is_empty(), "the referenced table is outside the model");
+    assert!(
+        only.relations.is_empty(),
+        "the referenced table is outside the model"
+    );
 }
 
 #[tokio::test]
@@ -186,7 +225,11 @@ async fn hundred_tables_in_four_queries() {
         .unwrap();
     assert_eq!(model.tables.len(), 100);
     assert_eq!(model.relations.len(), 99);
-    assert!(n.load(Ordering::SeqCst) <= 4, "queries: {}", n.load(Ordering::SeqCst));
+    assert!(
+        n.load(Ordering::SeqCst) <= 4,
+        "queries: {}",
+        n.load(Ordering::SeqCst)
+    );
     drop(_guard);
     s.close().await.ok();
     run(&*m, "ALTER DATABASE [dbstudio_it_wide] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [dbstudio_it_wide]").await;
@@ -214,14 +257,29 @@ async fn generated_ddl_recreates_the_database() {
     it!();
     let src = fixture().await;
     let items = src
-        .generate_ddl(DdlRequest { scope: db(IT_DB), objects: vec![], options: DdlOptions::default() })
+        .generate_ddl(DdlRequest {
+            scope: db(IT_DB),
+            objects: vec![],
+            options: DdlOptions::default(),
+        })
         .await
         .unwrap();
     assert!(!items.is_empty());
     // Sections: every PostData item comes after every PreData item.
-    let first_post = items.iter().position(|i| i.section == DdlSection::PostData).unwrap();
-    assert!(items[first_post..].iter().all(|i| i.section == DdlSection::PostData));
-    assert!(items[..first_post].iter().all(|i| i.section == DdlSection::PreData));
+    let first_post = items
+        .iter()
+        .position(|i| i.section == DdlSection::PostData)
+        .unwrap();
+    assert!(
+        items[first_post..]
+            .iter()
+            .all(|i| i.section == DdlSection::PostData)
+    );
+    assert!(
+        items[..first_post]
+            .iter()
+            .all(|i| i.section == DdlSection::PreData)
+    );
     // Dependencies: a table precedes the view on it, schemas and types come first.
     let pos = |kind: ObjectKind, name: &str| {
         items
@@ -233,7 +291,11 @@ async fn generated_ddl_recreates_the_database() {
     assert!(pos(ObjectKind::Type, "Email") < pos(ObjectKind::Table, "customers"));
     assert!(pos(ObjectKind::Table, "orders") < pos(ObjectKind::View, "big_orders"));
     assert!(pos(ObjectKind::Function, "fn_double") < first_post);
-    assert!(items.iter().all(|i| !i.sql.contains("\nGO\n") && !i.sql.trim_start().starts_with("GO")));
+    assert!(
+        items
+            .iter()
+            .all(|i| !i.sql.contains("\nGO\n") && !i.sql.trim_start().starts_with("GO"))
+    );
 
     // Re-run in an empty database.
     let master = master().await;
@@ -259,8 +321,10 @@ async fn generated_ddl_recreates_the_database() {
             t.path = ObjectPath::root();
         }
         for r in &mut m.relations {
-            r.from_table = ObjectPath::root().child(ObjectKind::Table, r.from_table.last().unwrap().name.clone());
-            r.to_table = ObjectPath::root().child(ObjectKind::Table, r.to_table.last().unwrap().name.clone());
+            r.from_table = ObjectPath::root()
+                .child(ObjectKind::Table, r.from_table.last().unwrap().name.clone());
+            r.to_table = ObjectPath::root()
+                .child(ObjectKind::Table, r.to_table.last().unwrap().name.clone());
         }
         m.scope = ObjectPath::root();
         m
@@ -277,7 +341,10 @@ async fn generated_ddl_recreates_the_database() {
         .generate_ddl(DdlRequest {
             scope: db(IT_DB),
             objects: vec![],
-            options: DdlOptions { if_not_exists: true, ..Default::default() },
+            options: DdlOptions {
+                if_not_exists: true,
+                ..Default::default()
+            },
         })
         .await
         .unwrap();
@@ -286,7 +353,10 @@ async fn generated_ddl_recreates_the_database() {
         .generate_ddl(DdlRequest {
             scope: db(IT_DB),
             objects: vec![],
-            options: DdlOptions { include_drop: true, ..Default::default() },
+            options: DdlOptions {
+                include_drop: true,
+                ..Default::default()
+            },
         })
         .await
         .unwrap();
@@ -307,12 +377,20 @@ async fn ddl_of_chosen_objects_and_options() {
         .generate_ddl(DdlRequest {
             scope: db(IT_DB),
             objects: vec![orders.clone()],
-            options: DdlOptions { include_foreign_keys: true, qualify_schema: false, ..Default::default() },
+            options: DdlOptions {
+                include_foreign_keys: true,
+                qualify_schema: false,
+                ..Default::default()
+            },
         })
         .await
         .unwrap();
     // Only the chosen table (its FK target is not selected, so the key is left out).
-    assert!(items.iter().any(|i| i.kind == ObjectKind::Table && i.sql.starts_with("CREATE TABLE [orders]")));
+    assert!(
+        items
+            .iter()
+            .any(|i| i.kind == ObjectKind::Table && i.sql.starts_with("CREATE TABLE [orders]"))
+    );
     assert!(!items.iter().any(|i| i.sql.contains("FOREIGN KEY")));
     assert!(items.iter().any(|i| i.kind == ObjectKind::Index));
     let none = s
@@ -332,6 +410,9 @@ async fn ddl_of_chosen_objects_and_options() {
         })
         .await
         .unwrap();
-    assert!(none.iter().all(|i| matches!(i.kind, ObjectKind::Table | ObjectKind::Schema | ObjectKind::Type | ObjectKind::Synonym)));
+    assert!(none.iter().all(|i| matches!(
+        i.kind,
+        ObjectKind::Table | ObjectKind::Schema | ObjectKind::Type | ObjectKind::Synonym
+    )));
     assert!(none.iter().all(|i| i.section == DdlSection::PreData));
 }

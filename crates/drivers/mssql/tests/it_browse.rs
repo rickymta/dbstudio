@@ -4,8 +4,8 @@ mod common;
 
 use common::*;
 use dbstudio_core::{
-    ColumnFilter, FilterOp, ObjectKind, ObjectPath, ObjectSearchRequest, SortKey, TableCountRequest,
-    TableDataRequest, Value, folder,
+    ColumnFilter, FilterOp, ObjectKind, ObjectPath, ObjectSearchRequest, SortKey,
+    TableCountRequest, TableDataRequest, Value, folder,
 };
 
 macro_rules! it {
@@ -39,12 +39,19 @@ async fn tree_levels() {
     let master = root.iter().find(|n| n.name == "master").unwrap();
     assert_eq!(master.detail.as_deref(), Some("system"));
     assert_eq!(master.kind, ObjectKind::Database);
-    assert!(root.iter().any(|n| n.kind == ObjectKind::Folder && n.name == folder::ROLES));
+    assert!(
+        root.iter()
+            .any(|n| n.kind == ObjectKind::Folder && n.name == folder::ROLES)
+    );
     let roles = s
         .list_children(&ObjectPath::root().child(ObjectKind::Folder, folder::ROLES))
         .await
         .unwrap();
-    assert!(roles.iter().any(|r| r.name == "sa" && r.kind == ObjectKind::Role));
+    assert!(
+        roles
+            .iter()
+            .any(|r| r.name == "sa" && r.kind == ObjectKind::Role)
+    );
 
     let d = s.list_children(&db()).await.unwrap();
     assert_eq!(d.len(), 1);
@@ -58,7 +65,15 @@ async fn tree_levels() {
     let keys: Vec<&str> = folders.iter().map(|n| n.name.as_str()).collect();
     assert_eq!(
         keys,
-        vec!["tables", "views", "functions", "procedures", "sequences", "synonyms", "types"]
+        vec![
+            "tables",
+            "views",
+            "functions",
+            "procedures",
+            "sequences",
+            "synonyms",
+            "types"
+        ]
     );
     let count = |k: &str| {
         folders
@@ -94,7 +109,10 @@ async fn tree_levels() {
     assert_eq!(syn[0].name, "cust");
     assert!(syn[0].detail.as_deref().unwrap().contains("customers"));
     let types = s.list_children(&folders[6].path).await.unwrap();
-    assert_eq!((types[0].name.as_str(), types[0].detail.as_deref()), ("LineList", Some("table type")));
+    assert_eq!(
+        (types[0].name.as_str(), types[0].detail.as_deref()),
+        ("LineList", Some("table type"))
+    );
 }
 
 #[tokio::test]
@@ -104,8 +122,15 @@ async fn table_children_and_paths_without_folders() {
     let t = table("sales", "customers");
     let folders = s.list_children(&t).await.unwrap();
     assert_eq!(
-        folders.iter().map(|n| (n.name.as_str(), n.detail.as_deref())).collect::<Vec<_>>(),
-        vec![("columns", Some("6")), ("indexes", Some("2")), ("triggers", Some("1"))]
+        folders
+            .iter()
+            .map(|n| (n.name.as_str(), n.detail.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("columns", Some("6")),
+            ("indexes", Some("2")),
+            ("triggers", Some("1"))
+        ]
     );
     let cols = s.list_children(&folders[0].path).await.unwrap();
     assert_eq!(cols[0].name, "id");
@@ -113,11 +138,14 @@ async fn table_children_and_paths_without_folders() {
     assert_eq!(cols[2].detail.as_deref(), Some("dbo.Email"));
     assert_eq!(
         cols[0].path,
-        t.child(ObjectKind::Folder, folder::COLUMNS).child(ObjectKind::Column, "id")
+        t.child(ObjectKind::Folder, folder::COLUMNS)
+            .child(ObjectKind::Column, "id")
     );
     let idx = s.list_children(&folders[1].path).await.unwrap();
     assert_eq!(idx.len(), 2);
-    assert!(idx.iter().any(|i| i.name == "PK_customers" && i.detail.as_deref().unwrap().starts_with("PRIMARY KEY")));
+    assert!(idx.iter().any(
+        |i| i.name == "PK_customers" && i.detail.as_deref().unwrap().starts_with("PRIMARY KEY")
+    ));
     let trg = s.list_children(&folders[2].path).await.unwrap();
     assert_eq!(trg[0].name, "trg_customers_ins");
     assert_eq!(trg[0].detail.as_deref(), Some("AFTER INSERT"));
@@ -131,7 +159,10 @@ async fn table_children_and_paths_without_folders() {
     let d = s.table_details(&bare).await.unwrap();
     assert_eq!(d.path, t);
     assert_eq!(
-        err_kind(s.list_children(&table("sales", "nope").child(ObjectKind::Folder, folder::COLUMNS)).await),
+        err_kind(
+            s.list_children(&table("sales", "nope").child(ObjectKind::Folder, folder::COLUMNS))
+                .await
+        ),
         "notFound"
     );
 }
@@ -158,8 +189,16 @@ async fn details_of_a_table() {
     assert_eq!(d.columns[3].default.as_deref(), Some("((0))"));
     assert_eq!(d.columns[4].type_name, "datetime2(3)");
     assert_eq!(d.columns[5].type_name, "nvarchar(max)");
-    assert!(d.indexes.iter().any(|i| i.primary && i.columns == vec!["id"]));
-    assert!(d.indexes.iter().any(|i| i.name == "UQ_customers_name" && i.unique && !i.primary));
+    assert!(
+        d.indexes
+            .iter()
+            .any(|i| i.primary && i.columns == vec!["id"])
+    );
+    assert!(
+        d.indexes
+            .iter()
+            .any(|i| i.name == "UQ_customers_name" && i.unique && !i.primary)
+    );
 
     let o = s.table_details(&table("sales", "orders")).await.unwrap();
     assert_eq!(o.foreign_keys.len(), 1);
@@ -172,11 +211,28 @@ async fn details_of_a_table() {
     assert_eq!(total.extra.as_deref(), Some("computed persisted"));
     let ver = o.columns.iter().find(|c| c.name == "ver").unwrap();
     assert_eq!(ver.extra.as_deref(), Some("rowversion"));
-    let ix = o.indexes.iter().find(|i| i.name == "IX_orders_customer").unwrap();
+    let ix = o
+        .indexes
+        .iter()
+        .find(|i| i.name == "IX_orders_customer")
+        .unwrap();
     assert_eq!(ix.columns, vec!["customer_id DESC"]);
-    assert!(ix.definition.as_deref().unwrap().contains("INCLUDE ([qty])"));
-    assert!(ix.definition.as_deref().unwrap().contains("WHERE ([qty]>(0))"));
-    assert_eq!(err_kind(s.table_details(&table("sales", "nope")).await), "notFound");
+    assert!(
+        ix.definition
+            .as_deref()
+            .unwrap()
+            .contains("INCLUDE ([qty])")
+    );
+    assert!(
+        ix.definition
+            .as_deref()
+            .unwrap()
+            .contains("WHERE ([qty]>(0))")
+    );
+    assert_eq!(
+        err_kind(s.table_details(&table("sales", "nope")).await),
+        "notFound"
+    );
 
     let v = db()
         .child(ObjectKind::Folder, folder::SCHEMAS)
@@ -200,7 +256,10 @@ async fn object_ddl_per_kind() {
     assert!(t.contains("CONSTRAINT [PK_customers] PRIMARY KEY CLUSTERED ([id] ASC)"));
     assert!(t.contains("CONSTRAINT [UQ_customers_name] UNIQUE NONCLUSTERED ([name] ASC)"));
     assert!(t.contains("CHECK ([credit]>=(0))"));
-    assert!(t.contains("CREATE TRIGGER [sales].[trg_customers_ins]") || t.contains("CREATE TRIGGER sales.trg_customers_ins"));
+    assert!(
+        t.contains("CREATE TRIGGER [sales].[trg_customers_ins]")
+            || t.contains("CREATE TRIGGER sales.trg_customers_ins")
+    );
     assert!(t.contains("sp_addextendedproperty"));
     let o = s.object_ddl(&table("sales", "orders")).await.unwrap();
     assert!(o.contains("[total] AS ([qty]*[price]) PERSISTED"));
@@ -209,30 +268,78 @@ async fn object_ddl_per_kind() {
     assert!(o.contains("ADD CONSTRAINT [FK_orders_customer] FOREIGN KEY ([customer_id]) REFERENCES [sales].[customers] ([id]) ON DELETE CASCADE ON UPDATE NO ACTION"));
 
     let sc = schema("sales");
-    let view = sc.child(ObjectKind::Folder, folder::VIEWS).child(ObjectKind::View, "big_orders");
-    assert!(s.object_ddl(&view).await.unwrap().contains("CREATE VIEW sales.big_orders"));
-    let func = sc.child(ObjectKind::Folder, folder::FUNCTIONS).child(ObjectKind::Function, "fn_double");
+    let view = sc
+        .child(ObjectKind::Folder, folder::VIEWS)
+        .child(ObjectKind::View, "big_orders");
+    assert!(
+        s.object_ddl(&view)
+            .await
+            .unwrap()
+            .contains("CREATE VIEW sales.big_orders")
+    );
+    let func = sc
+        .child(ObjectKind::Folder, folder::FUNCTIONS)
+        .child(ObjectKind::Function, "fn_double");
     assert!(s.object_ddl(&func).await.unwrap().contains("RETURN @x * 2"));
-    let proc_ = sc.child(ObjectKind::Folder, folder::PROCEDURES).child(ObjectKind::Procedure, "sp_customer_count");
+    let proc_ = sc
+        .child(ObjectKind::Folder, folder::PROCEDURES)
+        .child(ObjectKind::Procedure, "sp_customer_count");
     assert!(s.object_ddl(&proc_).await.unwrap().contains("COUNT(*)"));
-    let seq = sc.child(ObjectKind::Folder, folder::SEQUENCES).child(ObjectKind::Sequence, "order_seq");
+    let seq = sc
+        .child(ObjectKind::Folder, folder::SEQUENCES)
+        .child(ObjectKind::Sequence, "order_seq");
     assert_eq!(
         s.object_ddl(&seq).await.unwrap(),
         "CREATE SEQUENCE [sales].[order_seq] AS bigint START WITH 1000 INCREMENT BY 5 MINVALUE -9223372036854775808 MAXVALUE 9223372036854775807 NO CYCLE CACHE;"
     );
-    let syn = schema("dbo").child(ObjectKind::Folder, folder::SYNONYMS).child(ObjectKind::Synonym, "cust");
-    assert_eq!(s.object_ddl(&syn).await.unwrap(), "CREATE SYNONYM [dbo].[cust] FOR [sales].[customers];");
-    let ty = sc.child(ObjectKind::Folder, folder::TYPES).child(ObjectKind::Type, "LineList");
-    assert!(s.object_ddl(&ty).await.unwrap().starts_with("CREATE TYPE [sales].[LineList] AS TABLE ("));
-    let alias = schema("dbo").child(ObjectKind::Folder, folder::TYPES).child(ObjectKind::Type, "Email");
-    assert_eq!(s.object_ddl(&alias).await.unwrap(), "CREATE TYPE [dbo].[Email] FROM NVARCHAR(100) NOT NULL;");
+    let syn = schema("dbo")
+        .child(ObjectKind::Folder, folder::SYNONYMS)
+        .child(ObjectKind::Synonym, "cust");
+    assert_eq!(
+        s.object_ddl(&syn).await.unwrap(),
+        "CREATE SYNONYM [dbo].[cust] FOR [sales].[customers];"
+    );
+    let ty = sc
+        .child(ObjectKind::Folder, folder::TYPES)
+        .child(ObjectKind::Type, "LineList");
+    assert!(
+        s.object_ddl(&ty)
+            .await
+            .unwrap()
+            .starts_with("CREATE TYPE [sales].[LineList] AS TABLE (")
+    );
+    let alias = schema("dbo")
+        .child(ObjectKind::Folder, folder::TYPES)
+        .child(ObjectKind::Type, "Email");
+    assert_eq!(
+        s.object_ddl(&alias).await.unwrap(),
+        "CREATE TYPE [dbo].[Email] FROM NVARCHAR(100) NOT NULL;"
+    );
     let idx = table("sales", "orders")
         .child(ObjectKind::Folder, folder::INDEXES)
         .child(ObjectKind::Index, "IX_orders_customer");
-    assert!(s.object_ddl(&idx).await.unwrap().starts_with("CREATE NONCLUSTERED INDEX"));
-    assert!(s.object_ddl(&sc).await.unwrap().starts_with("CREATE SCHEMA [sales] AUTHORIZATION [dbo]"));
-    assert!(s.object_ddl(&db()).await.unwrap().starts_with("CREATE DATABASE [dbstudio_it]"));
-    assert_eq!(err_kind(s.object_ddl(&table("sales", "nope")).await), "notFound");
+    assert!(
+        s.object_ddl(&idx)
+            .await
+            .unwrap()
+            .starts_with("CREATE NONCLUSTERED INDEX")
+    );
+    assert!(
+        s.object_ddl(&sc)
+            .await
+            .unwrap()
+            .starts_with("CREATE SCHEMA [sales] AUTHORIZATION [dbo]")
+    );
+    assert!(
+        s.object_ddl(&db())
+            .await
+            .unwrap()
+            .starts_with("CREATE DATABASE [dbstudio_it]")
+    );
+    assert_eq!(
+        err_kind(s.object_ddl(&table("sales", "nope")).await),
+        "notFound"
+    );
 }
 
 fn req(t: ObjectPath, limit: u64) -> TableDataRequest {
@@ -255,7 +362,11 @@ async fn fetch(
     let mut sink = dbstudio_core::CollectingSink::new();
     s.fetch_table(r, &mut sink).await?;
     let res = sink.into_results();
-    assert_eq!(res.len(), 1, "fetch_table must produce exactly one statement");
+    assert_eq!(
+        res.len(),
+        1,
+        "fetch_table must produce exactly one statement"
+    );
     Ok(rows_of(&res[0]).clone())
 }
 
@@ -268,17 +379,28 @@ async fn paging_is_deterministic_and_complete() {
     for page in 0..5 {
         let mut r = req(t.clone(), 500);
         r.offset = page * 500;
-        r.sort = vec![SortKey { column: "grp".into(), descending: false }];
+        r.sort = vec![SortKey {
+            column: "grp".into(),
+            descending: false,
+        }];
         let rs = fetch(&*s, r).await.unwrap();
         assert_eq!(rs.rows.len(), 500);
         seen.extend(rs.rows.iter().map(|r| r[0].clone()));
     }
-    let mut ids: Vec<i64> = seen.iter().map(|v| if let Value::Int(i) = v { *i } else { 0 }).collect();
+    let mut ids: Vec<i64> = seen
+        .iter()
+        .map(|v| if let Value::Int(i) = v { *i } else { 0 })
+        .collect();
     ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), 2500, "every row exactly once across pages");
     let n = s
-        .count_table(TableCountRequest { table: t.clone(), filters: vec![], raw_where: None, query_id: None })
+        .count_table(TableCountRequest {
+            table: t.clone(),
+            filters: vec![],
+            raw_where: None,
+            query_id: None,
+        })
         .await
         .unwrap();
     assert_eq!(n, 2500);
@@ -295,7 +417,11 @@ async fn filters_and_raw_where() {
     it!();
     let s = fixture().await;
     let t = table("sales", "customers");
-    let f = |op, v: &[&str]| ColumnFilter { column: "name".into(), op, values: v.iter().map(|x| x.to_string()).collect() };
+    let f = |op, v: &[&str]| ColumnFilter {
+        column: "name".into(),
+        op,
+        values: v.iter().map(|x| x.to_string()).collect(),
+    };
     let names = |rs: &dbstudio_core::ResultSet| -> Vec<String> {
         rs.rows.iter().map(|r| text(&r[1])).collect()
     };
@@ -304,9 +430,13 @@ async fn filters_and_raw_where() {
     assert_eq!(names(&fetch(&*s, r).await.unwrap()), vec!["Linus 100% _x_"]);
     let mut r = req(t.clone(), 100);
     r.filters = vec![f(FilterOp::Contains, &["ADA"])];
-    assert_eq!(names(&fetch(&*s, r).await.unwrap()), vec!["Ada Lovelace"], "case-insensitive");
+    assert_eq!(
+        names(&fetch(&*s, r).await.unwrap()),
+        vec!["Ada Lovelace"],
+        "case-insensitive"
+    );
     let mut r = req(t.clone(), 100);
-    r.filters = vec![f(FilterOp::StartsWith, &["gr"]), ];
+    r.filters = vec![f(FilterOp::StartsWith, &["gr"])];
     assert_eq!(names(&fetch(&*s, r).await.unwrap()), vec!["Grace Hopper"]);
     let mut r = req(t.clone(), 100);
     r.filters = vec![f(FilterOp::EndsWith, &["😀"])];
@@ -315,19 +445,40 @@ async fn filters_and_raw_where() {
     r.filters = vec![f(FilterOp::In, &["Ada Lovelace", "Grace Hopper"])];
     assert_eq!(fetch(&*s, r).await.unwrap().rows.len(), 2);
     let mut r = req(t.clone(), 100);
-    r.filters = vec![ColumnFilter { column: "email".into(), op: FilterOp::IsNull, values: vec![] }];
+    r.filters = vec![ColumnFilter {
+        column: "email".into(),
+        op: FilterOp::IsNull,
+        values: vec![],
+    }];
     assert_eq!(fetch(&*s, r).await.unwrap().rows.len(), 2);
     let mut r = req(t.clone(), 100);
-    r.filters = vec![ColumnFilter { column: "email".into(), op: FilterOp::NotContains, values: vec!["example".into()] }];
-    assert_eq!(fetch(&*s, r).await.unwrap().rows.len(), 1, "NULL emails are excluded by NOT LIKE");
+    r.filters = vec![ColumnFilter {
+        column: "email".into(),
+        op: FilterOp::NotContains,
+        values: vec!["example".into()],
+    }];
+    assert_eq!(
+        fetch(&*s, r).await.unwrap().rows.len(),
+        1,
+        "NULL emails are excluded by NOT LIKE"
+    );
     let mut r = req(t.clone(), 100);
-    r.filters = vec![ColumnFilter { column: "id".into(), op: FilterOp::Ge, values: vec!["3".into()] }];
+    r.filters = vec![ColumnFilter {
+        column: "id".into(),
+        op: FilterOp::Ge,
+        values: vec!["3".into()],
+    }];
     assert_eq!(fetch(&*s, r).await.unwrap().rows.len(), 2);
     let mut r = req(t.clone(), 100);
     r.raw_where = Some("credit > 5 AND name LIKE '%a%' -- trailing".into());
     assert_eq!(fetch(&*s, r).await.unwrap().rows.len(), 1);
     // Raw WHERE: syntax errors and smuggled statements are rejected before running.
-    for bad in ["credit >", "1 = 1; DROP TABLE sales.customers", "1 = 1) UNION SELECT 1 --", "(credit > 1"] {
+    for bad in [
+        "credit >",
+        "1 = 1; DROP TABLE sales.customers",
+        "1 = 1) UNION SELECT 1 --",
+        "(credit > 1",
+    ] {
         let mut r = req(t.clone(), 100);
         r.raw_where = Some(bad.into());
         let e = fetch(&*s, r).await.unwrap_err();
@@ -347,7 +498,10 @@ async fn filters_and_raw_where() {
         .unwrap();
     assert_eq!(n, 2);
     // The table survived.
-    assert_eq!(rows_of(&run(&*s, "SELECT COUNT(*) FROM sales.customers").await[0]).rows[0][0], Value::Int(4));
+    assert_eq!(
+        rows_of(&run(&*s, "SELECT COUNT(*) FROM sales.customers").await[0]).rows[0][0],
+        Value::Int(4)
+    );
 }
 
 #[tokio::test]
@@ -361,23 +515,60 @@ async fn search_objects_ranking_and_scope() {
         limit: 50,
     };
     // Root scope searches the session's database; `cust` finds the synonym only when asked.
-    let r = s.search_objects(q("CUSTOM", ObjectPath::root(), vec![])).await.unwrap();
-    assert_eq!(r.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), vec!["customers", "sp_customer_count"]);
+    let r = s
+        .search_objects(q("CUSTOM", ObjectPath::root(), vec![]))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(),
+        vec!["customers", "sp_customer_count"]
+    );
     assert_eq!(r[0].path, table("sales", "customers"));
-    assert_eq!(r[0].detail.as_deref(), Some("dbstudio_it.sales"), "root scope shows database.schema");
-    let r = s.search_objects(q("o", schema("sales"), vec![])).await.unwrap();
+    assert_eq!(
+        r[0].detail.as_deref(),
+        Some("dbstudio_it.sales"),
+        "root scope shows database.schema"
+    );
+    let r = s
+        .search_objects(q("o", schema("sales"), vec![]))
+        .await
+        .unwrap();
     let names: Vec<_> = r.iter().map(|n| n.name.as_str()).collect();
     // prefix matches (orders, order_seq) before substring matches, each by name.
     assert_eq!(&names[..2], &["order_seq", "orders"]);
     assert!(names.contains(&"sp_customer_count"));
-    let r = s.search_objects(q("cust", db(), vec![ObjectKind::Synonym])).await.unwrap();
+    let r = s
+        .search_objects(q("cust", db(), vec![ObjectKind::Synonym]))
+        .await
+        .unwrap();
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].kind, ObjectKind::Synonym);
-    assert_eq!(r[0].path, schema("dbo").child(ObjectKind::Folder, folder::SYNONYMS).child(ObjectKind::Synonym, "cust"));
-    assert!(s.search_objects(q("  ", db(), vec![])).await.unwrap().is_empty());
+    assert_eq!(
+        r[0].path,
+        schema("dbo")
+            .child(ObjectKind::Folder, folder::SYNONYMS)
+            .child(ObjectKind::Synonym, "cust")
+    );
+    assert!(
+        s.search_objects(q("  ", db(), vec![]))
+            .await
+            .unwrap()
+            .is_empty()
+    );
     // `%` and `_` are literal.
-    assert!(s.search_objects(q("%", db(), vec![])).await.unwrap().is_empty());
-    assert!(s.search_objects(q("order_s", db(), vec![])).await.unwrap().len() == 1);
+    assert!(
+        s.search_objects(q("%", db(), vec![]))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        s.search_objects(q("order_s", db(), vec![]))
+            .await
+            .unwrap()
+            .len()
+            == 1
+    );
     let mut lim = q("o", db(), vec![]);
     lim.limit = 2;
     assert_eq!(s.search_objects(lim).await.unwrap().len(), 2);

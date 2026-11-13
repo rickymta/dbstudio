@@ -181,9 +181,11 @@ impl MssqlLease {
 
     /// Stop a paused result set and take the connection back.
     async fn discard_pending(&self, inner: &mut Inner) {
-        let Some(p) = inner.pending.take() else { return };
+        let Some(p) = inner.pending.take() else {
+            return;
+        };
         let _ = p.gate.send(GateMsg::Discard).await;
-        self.finish(inner, p).await;
+        let _ = self.finish(inner, p).await;
         self.shared.update(|s| s.pending_result = None);
     }
 
@@ -201,7 +203,9 @@ impl MssqlLease {
             }
             Err(_) => {
                 self.shared.update(|s| s.broken = true);
-                Err(Error::Connection("the connection of this lease was lost".into()))
+                Err(Error::Connection(
+                    "the connection of this lease was lost".into(),
+                ))
             }
         }
     }
@@ -225,7 +229,15 @@ impl MssqlLease {
         let task = tokio::spawn(async move {
             let mut gate = Gate { rx: gate_rx };
             let mut out = ChanOut(tx);
-            let r = run_script(&mut conn, &text, &params, &task_ctl, Some(&mut gate), &mut out).await;
+            let r = run_script(
+                &mut conn,
+                &text,
+                &params,
+                &task_ctl,
+                Some(&mut gate),
+                &mut out,
+            )
+            .await;
             (conn, r)
         });
         if let Ok(mut a) = self.shared.abort.lock() {
@@ -305,7 +317,9 @@ impl MssqlLease {
 
     /// Read the transaction state from the server.
     async fn refresh_tx(&self, inner: &mut Inner) {
-        let Some(conn) = inner.conn.as_mut() else { return };
+        let Some(conn) = inner.conn.as_mut() else {
+            return;
+        };
         if conn.broken {
             self.shared.update(|s| {
                 s.broken = true;
@@ -415,12 +429,13 @@ impl Lease for MssqlLease {
             Some(p) if p.id == query_id => p,
             other => {
                 inner.pending = other;
-                return Err(Error::NotFound(format!("no pending result for query {query_id}")));
+                return Err(Error::NotFound(format!(
+                    "no pending result for query {query_id}"
+                )));
             }
         };
         let batch = batch_size.map(|b| (b as usize).clamp(1, 100_000));
-        if p
-            .gate
+        if p.gate
             .send(GateMsg::Continue {
                 rows: max_rows.max(1),
                 batch,
@@ -450,12 +465,11 @@ impl Lease for MssqlLease {
     }
 
     async fn cancel(&self, query_id: Uuid) -> Result<()> {
-        let target = self
-            .shared
-            .running
-            .lock()
-            .ok()
-            .and_then(|r| r.as_ref().filter(|(id, _)| *id == query_id).map(|(_, c)| c.clone()));
+        let target = self.shared.running.lock().ok().and_then(|r| {
+            r.as_ref()
+                .filter(|(id, _)| *id == query_id)
+                .map(|(_, c)| c.clone())
+        });
         if let Some(ctl) = target {
             ctl.cancel();
             self.shared.handle.cancel();
@@ -476,11 +490,13 @@ impl Lease for MssqlLease {
     }
 
     async fn commit(&self) -> Result<()> {
-        self.control("WHILE @@TRANCOUNT > 0 COMMIT TRANSACTION").await
+        self.control("WHILE @@TRANCOUNT > 0 COMMIT TRANSACTION")
+            .await
     }
 
     async fn rollback(&self) -> Result<()> {
-        self.control("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await
+        self.control("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION")
+            .await
     }
 
     async fn set_auto_commit(&self, on: bool) -> Result<()> {
@@ -570,7 +586,9 @@ impl Lease for MssqlLease {
         let mut inner = self.inner.try_lock().map_err(|_| Self::busy())?;
         let conn = self.idle(&mut inner).await?;
         let key = if req.order_by_key {
-            crate::data::key_columns(conn, &obj).await.unwrap_or_default()
+            crate::data::key_columns(conn, &obj)
+                .await
+                .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -584,7 +602,8 @@ impl Lease for MssqlLease {
                 .clamp(1, 100_000),
             timeout: None,
         };
-        self.start_run(&mut inner, req.query_id, sql, params, sink).await
+        self.start_run(&mut inner, req.query_id, sql, params, sink)
+            .await
     }
 
     async fn bulk_insert(&self, req: BulkInsertRequest) -> Result<BulkInsertResult> {
@@ -672,12 +691,19 @@ impl Lease for MssqlLease {
             s.running = None;
             s.pending_result = None;
         });
-        Ok(LeaseCloseReport { rolled_back, forced })
+        Ok(LeaseCloseReport {
+            rolled_back,
+            forced,
+        })
     }
 }
 
 /// Run the statements of a bulk insert on `conn`.
-async fn bulk_on(conn: &mut Conn, obj: &crate::sql::ObjRef, req: &BulkInsertRequest) -> Result<BulkInsertResult> {
+async fn bulk_on(
+    conn: &mut Conn,
+    obj: &crate::sql::ObjRef,
+    req: &BulkInsertRequest,
+) -> Result<BulkInsertResult> {
     // Column types (for casting NULL), key and identity column.
     let filter = crate::catalog::one(&obj.schema, &obj.name);
     let key = (obj.schema.clone(), obj.name.clone());
@@ -706,9 +732,9 @@ async fn bulk_on(conn: &mut Conn, obj: &crate::sql::ObjRef, req: &BulkInsertRequ
             });
         }
     }
-    let identity = cols
-        .iter()
-        .any(|c| c.identity.is_some() && req.columns.iter().any(|r| r.eq_ignore_ascii_case(&c.name)));
+    let identity = cols.iter().any(|c| {
+        c.identity.is_some() && req.columns.iter().any(|r| r.eq_ignore_ascii_case(&c.name))
+    });
     let key_columns = if req.on_conflict == dbstudio_core::OnConflict::Error {
         Vec::new()
     } else if req.conflict_columns.is_empty() {
@@ -742,7 +768,15 @@ async fn bulk_on(conn: &mut Conn, obj: &crate::sql::ObjRef, req: &BulkInsertRequ
         };
         for (sql, reports) in &stmts {
             let mut sink = dbstudio_core::CollectingSink::new();
-            run_script(conn, sql, &params, &ctl, None, &mut crate::exec::SinkOut(&mut sink)).await?;
+            run_script(
+                conn,
+                sql,
+                &params,
+                &ctl,
+                None,
+                &mut crate::exec::SinkOut(&mut sink),
+            )
+            .await?;
             let results = sink.into_results();
             match reports {
                 Reports::Inserted { rows } => {

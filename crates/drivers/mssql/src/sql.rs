@@ -99,7 +99,9 @@ pub fn parse_object(path: &ObjectPath) -> Result<ObjRef> {
                 child = Some((k, seg.name.clone()));
             }
             // A trigger is listed below its table but belongs to the schema; allow it alone too.
-            ObjectKind::Trigger if obj.is_none() => obj = Some((ObjectKind::Trigger, seg.name.clone())),
+            ObjectKind::Trigger if obj.is_none() => {
+                obj = Some((ObjectKind::Trigger, seg.name.clone()))
+            }
             other => {
                 return Err(Error::NotFound(format!(
                     "unexpected `{other:?}` segment in the object path"
@@ -200,7 +202,10 @@ pub fn filter_sql(f: &ColumnFilter) -> String {
 
 /// `WHERE` clause from structured filters and a raw expression; empty when there is none.
 pub fn where_clause(filters: &[ColumnFilter], raw: Option<&str>) -> Result<String> {
-    let mut parts: Vec<String> = filters.iter().map(|f| format!("({})", filter_sql(f))).collect();
+    let mut parts: Vec<String> = filters
+        .iter()
+        .map(|f| format!("({})", filter_sql(f)))
+        .collect();
     if let Some(raw) = raw.map(str::trim).filter(|r| !r.is_empty()) {
         check_expression(raw)?;
         // The line breaks keep a trailing `--` comment from swallowing the closing parenthesis.
@@ -218,7 +223,13 @@ pub fn where_clause(filters: &[ColumnFilter], raw: Option<&str>) -> Result<Strin
 pub fn order_by(sort: &[SortKey], key: &[String]) -> String {
     let mut parts: Vec<String> = sort
         .iter()
-        .map(|s| format!("{}{}", quote(&s.column), if s.descending { " DESC" } else { "" }))
+        .map(|s| {
+            format!(
+                "{}{}",
+                quote(&s.column),
+                if s.descending { " DESC" } else { "" }
+            )
+        })
         .collect();
     for k in key {
         if !sort.iter().any(|s| s.column.eq_ignore_ascii_case(k)) {
@@ -344,7 +355,8 @@ mod tests {
         assert_eq!(lit("it's"), "N'it''s'");
         assert_eq!(value_lit(&Value::Bool(true)), "1");
         assert_eq!(value_lit(&Value::Decimal("12.50".into())), "12.50");
-        assert_eq!(value_lit(&Value::Decimal("1e5".into())), "N'1e5'");
+        assert_eq!(value_lit(&Value::Decimal("1e5".into())), "1e5");
+        assert_eq!(value_lit(&Value::Decimal("NaN".into())), "N'NaN'");
         assert_eq!(value_lit(&Value::Bytes(vec![])), "0x");
         assert_eq!(value_lit(&Value::Bytes(vec![0xde, 0xad])), "0xdead");
     }
@@ -369,8 +381,13 @@ mod tests {
             ],
         };
         assert_eq!(parse_object(&bare).unwrap().qualified(), "[dbo].[t]");
-        let col = full.child(ObjectKind::Folder, "columns").child(ObjectKind::Column, "id");
-        assert_eq!(parse_object(&col).unwrap().child, Some((ObjectKind::Column, "id".into())));
+        let col = full
+            .child(ObjectKind::Folder, "columns")
+            .child(ObjectKind::Column, "id");
+        assert_eq!(
+            parse_object(&col).unwrap().child,
+            Some((ObjectKind::Column, "id".into()))
+        );
         assert!(parse_object(&ObjectPath::root()).is_err());
     }
 
@@ -384,8 +401,14 @@ mod tests {
         assert_eq!(filter_sql(&f(FilterOp::Eq, &["a'b"])), "[na]]me] = N'a''b'");
         assert!(filter_sql(&f(FilterOp::Contains, &["50%_[x"])).contains("N'%50\\%\\_\\[x%'"));
         assert_eq!(filter_sql(&f(FilterOp::In, &[])), "1 = 0");
-        assert_eq!(filter_sql(&f(FilterOp::In, &["1", "2"])), "[na]]me] IN (N'1', N'2')");
-        assert!(filter_sql(&f(FilterOp::NotContains, &["x"])).starts_with("[na]]me] IS NOT NULL AND NOT"));
+        assert_eq!(
+            filter_sql(&f(FilterOp::In, &["1", "2"])),
+            "[na]]me] IN (N'1', N'2')"
+        );
+        assert!(
+            filter_sql(&f(FilterOp::NotContains, &["x"]))
+                .starts_with("[na]]me] IS NOT NULL AND NOT")
+        );
         assert_eq!(filter_sql(&f(FilterOp::IsNull, &[])), "[na]]me] IS NULL");
     }
 

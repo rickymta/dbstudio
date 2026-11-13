@@ -16,7 +16,6 @@ pub type TableKey = (String, String);
 /// A column.
 #[derive(Debug, Clone)]
 pub struct Col {
-    pub id: i64,
     pub name: String,
     /// Type name for display (`nvarchar(50)`, `dbo.MyAlias`).
     pub display_type: String,
@@ -75,14 +74,10 @@ pub struct Fk {
 pub struct Check {
     pub name: String,
     pub definition: String,
-    pub disabled: bool,
 }
 
 /// Tables selected by `filter` (`WHERE` fragment over `sys.objects o`; use `o.type IN ('U','V')`).
-pub async fn columns(
-    conn: &mut Conn,
-    filter: &str,
-) -> Result<BTreeMap<TableKey, Vec<Col>>> {
+pub async fn columns(conn: &mut Conn, filter: &str) -> Result<BTreeMap<TableKey, Vec<Col>>> {
     let sql = format!(
         "SELECT SCHEMA_NAME(o.schema_id), o.name, c.column_id, c.name, t.name, \
          SCHEMA_NAME(t.schema_id), t.is_user_defined, bt.name, c.max_length, c.precision, c.scale, \
@@ -133,7 +128,6 @@ pub async fn columns(
         };
         let default = opt_str_at(&r, 15).map(|d| (str_at(&r, 14), d));
         let col = Col {
-            id: int_at(&r, 2),
             name: str_at(&r, 3),
             display_type: display,
             ddl_type: ddl,
@@ -148,7 +142,9 @@ pub async fn columns(
             generated: int_at(&r, 23),
             rowversion: sys_name.eq_ignore_ascii_case("timestamp"),
         };
-        out.entry((str_at(&r, 0), str_at(&r, 1))).or_default().push(col);
+        out.entry((str_at(&r, 0), str_at(&r, 1)))
+            .or_default()
+            .push(col);
     }
     Ok(out)
 }
@@ -243,26 +239,24 @@ pub async fn foreign_keys(conn: &mut Conn, filter: &str) -> Result<BTreeMap<Tabl
 /// Check constraints of the tables selected by `filter`.
 pub async fn checks(conn: &mut Conn, filter: &str) -> Result<BTreeMap<TableKey, Vec<Check>>> {
     let sql = format!(
-        "SELECT SCHEMA_NAME(o.schema_id), o.name, k.name, k.definition, k.is_disabled \
+        "SELECT SCHEMA_NAME(o.schema_id), o.name, k.name, k.definition \
          FROM sys.objects o JOIN sys.check_constraints k ON k.parent_object_id = o.object_id \
          WHERE {filter} ORDER BY 1, 2, k.name"
     );
     let mut out: BTreeMap<TableKey, Vec<Check>> = BTreeMap::new();
     for r in conn.rows(&sql).await? {
-        out.entry((str_at(&r, 0), str_at(&r, 1))).or_default().push(Check {
-            name: str_at(&r, 2),
-            definition: str_at(&r, 3),
-            disabled: bool_at(&r, 4),
-        });
+        out.entry((str_at(&r, 0), str_at(&r, 1)))
+            .or_default()
+            .push(Check {
+                name: str_at(&r, 2),
+                definition: str_at(&r, 3),
+            });
     }
     Ok(out)
 }
 
 /// Table-level `MS_Description` comments.
-pub async fn table_comments(
-    conn: &mut Conn,
-    filter: &str,
-) -> Result<BTreeMap<TableKey, String>> {
+pub async fn table_comments(conn: &mut Conn, filter: &str) -> Result<BTreeMap<TableKey, String>> {
     let sql = format!(
         "SELECT SCHEMA_NAME(o.schema_id), o.name, CAST(ep.value AS NVARCHAR(MAX)) \
          FROM sys.objects o JOIN sys.extended_properties ep \

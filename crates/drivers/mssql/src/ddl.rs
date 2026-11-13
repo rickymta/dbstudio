@@ -72,7 +72,11 @@ fn key_list(keys: &[(String, bool)]) -> String {
 }
 
 fn clustered(i: &Idx) -> &'static str {
-    if i.type_id == 1 { "CLUSTERED" } else { "NONCLUSTERED" }
+    if i.type_id == 1 {
+        "CLUSTERED"
+    } else {
+        "NONCLUSTERED"
+    }
 }
 
 /// `CREATE TABLE` with columns, primary key, unique and check constraints.
@@ -99,7 +103,11 @@ pub fn create_table(
         ));
     }
     for k in checks {
-        lines.push(format!("    CONSTRAINT {} CHECK {}", quote(&k.name), k.definition));
+        lines.push(format!(
+            "    CONSTRAINT {} CHECK {}",
+            quote(&k.name),
+            k.definition
+        ));
     }
     format!(
         "CREATE TABLE {} (\n{}\n);",
@@ -162,7 +170,11 @@ pub fn add_foreign_key(names: Names, schema: &str, table: &str, f: &Fk) -> Strin
     let mut s = format!(
         "ALTER TABLE {} WITH {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}) ON DELETE {} ON UPDATE {};",
         names.obj(schema, table),
-        if f.not_trusted || f.disabled { "NOCHECK" } else { "CHECK" },
+        if f.not_trusted || f.disabled {
+            "NOCHECK"
+        } else {
+            "CHECK"
+        },
         quote(&f.name),
         cols.join(", "),
         names.obj(&f.ref_schema, &f.ref_table),
@@ -198,7 +210,10 @@ pub fn comment_sql(
             lit(table)
         );
         if let Some(c) = column {
-            s.push_str(&format!(", @level2type = N'COLUMN', @level2name = {}", lit(c)));
+            s.push_str(&format!(
+                ", @level2type = N'COLUMN', @level2name = {}",
+                lit(c)
+            ));
         }
         s.push(';');
         s
@@ -226,9 +241,13 @@ pub fn create_or_alter(definition: &str) -> String {
     loop {
         i += definition[i..].len() - definition[i..].trim_start().len();
         if definition[i..].starts_with("--") {
-            i += definition[i..].find('\n').map_or(definition.len() - i, |n| n + 1);
+            i += definition[i..]
+                .find('\n')
+                .map_or(definition.len() - i, |n| n + 1);
         } else if definition[i..].starts_with("/*") {
-            i += definition[i..].find("*/").map_or(definition.len() - i, |n| n + 2);
+            i += definition[i..]
+                .find("*/")
+                .map_or(definition.len() - i, |n| n + 2);
         } else {
             break;
         }
@@ -238,7 +257,11 @@ pub fn create_or_alter(definition: &str) -> String {
     if upper.starts_with("CREATE OR ALTER") || !upper.starts_with("CREATE") {
         return definition.to_string();
     }
-    format!("{}CREATE OR ALTER{}", &definition[..i], &rest["CREATE".len()..])
+    format!(
+        "{}CREATE OR ALTER{}",
+        &definition[..i],
+        &rest["CREATE".len()..]
+    )
 }
 
 #[cfg(test)]
@@ -247,7 +270,6 @@ mod tests {
 
     fn col(name: &str, ty: &str, nullable: bool) -> Col {
         Col {
-            id: 1,
             name: name.into(),
             display_type: ty.to_lowercase(),
             ddl_type: ty.into(),
@@ -287,9 +309,16 @@ mod tests {
         let ck = Check {
             name: "CK_t".into(),
             definition: "([qty]>=(0))".into(),
-            disabled: false,
         };
-        let sql = create_table(Names { qualify: true }, "dbo", "t", &[id, qty, calc], &[pk], &[ck], "x");
+        let sql = create_table(
+            Names { qualify: true },
+            "dbo",
+            "t",
+            &[id, qty, calc],
+            &[pk],
+            &[ck],
+            "x",
+        );
         assert!(sql.starts_with("CREATE TABLE [dbo].[t] ("));
         assert!(sql.contains("[id] INT IDENTITY(1,1) NOT NULL"));
         assert!(sql.contains("[qty] INT NULL CONSTRAINT [DF_t_qty] DEFAULT ((0))"));
@@ -348,13 +377,22 @@ mod tests {
 
     #[test]
     fn create_or_alter_rewrites_first_create() {
-        assert_eq!(create_or_alter("CREATE VIEW v AS SELECT 1"), "CREATE OR ALTER VIEW v AS SELECT 1");
+        assert_eq!(
+            create_or_alter("CREATE VIEW v AS SELECT 1"),
+            "CREATE OR ALTER VIEW v AS SELECT 1"
+        );
         assert_eq!(
             create_or_alter("-- c\n/* x */\n  create procedure p as select 1"),
             "-- c\n/* x */\n  CREATE OR ALTER procedure p as select 1"
         );
-        assert_eq!(create_or_alter("CREATE OR ALTER VIEW v AS SELECT 1"), "CREATE OR ALTER VIEW v AS SELECT 1");
-        assert_eq!(create_or_alter("ALTER VIEW v AS SELECT 1"), "ALTER VIEW v AS SELECT 1");
+        assert_eq!(
+            create_or_alter("CREATE OR ALTER VIEW v AS SELECT 1"),
+            "CREATE OR ALTER VIEW v AS SELECT 1"
+        );
+        assert_eq!(
+            create_or_alter("ALTER VIEW v AS SELECT 1"),
+            "ALTER VIEW v AS SELECT 1"
+        );
     }
 
     #[test]
@@ -363,6 +401,9 @@ mod tests {
         assert!(s.contains("@value = N'it''s'") && s.ends_with("@level2name = N'c';"));
         let s = comment_sql("dbo", "t", None, "TABLE", "x", true);
         assert!(s.starts_with("IF EXISTS (SELECT 1 FROM sys.fn_listextendedproperty(N'MS_Description', N'SCHEMA', N'dbo', N'TABLE', N't', NULL, NULL))"));
-        assert!(s.contains("sp_updateextendedproperty") && s.contains("ELSE\nEXEC sys.sp_addextendedproperty"));
+        assert!(
+            s.contains("sp_updateextendedproperty")
+                && s.contains("ELSE\nEXEC sys.sp_addextendedproperty")
+        );
     }
 }

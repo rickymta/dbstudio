@@ -110,9 +110,7 @@ pub async fn list_children(sess: &MssqlSession, parent: &ObjectPath) -> Result<V
 }
 
 fn db_of(sess: &MssqlSession, cx: &Ctx) -> String {
-    cx.db
-        .clone()
-        .unwrap_or_else(|| sess.login_db().to_string())
+    cx.db.clone().unwrap_or_else(|| sess.login_db().to_string())
 }
 
 fn schema_of(cx: &Ctx) -> Result<String> {
@@ -321,7 +319,12 @@ async fn schema_folder(
                     } else if bool_at(r, 2) {
                         "CLR".to_string()
                     } else {
-                        crate::sql::format_type(&str_at(r, 3), int_at(r, 4), int_at(r, 5), int_at(r, 6))
+                        crate::sql::format_type(
+                            &str_at(r, 3),
+                            int_at(r, 4),
+                            int_at(r, 5),
+                            int_at(r, 6),
+                        )
                     };
                     node(
                         parent.child(ObjectKind::Type, name.clone()),
@@ -333,12 +336,22 @@ async fn schema_folder(
                 })
                 .collect()
         }
-        folder::TABLES | folder::VIEWS | folder::FUNCTIONS | folder::PROCEDURES
-        | folder::SEQUENCES | folder::SYNONYMS => {
+        folder::TABLES
+        | folder::VIEWS
+        | folder::FUNCTIONS
+        | folder::PROCEDURES
+        | folder::SEQUENCES
+        | folder::SYNONYMS => {
             let extra = match key {
-                folder::SEQUENCES => "(SELECT TYPE_NAME(sq.user_type_id) FROM sys.sequences sq WHERE sq.object_id = o.object_id)",
-                folder::SYNONYMS => "(SELECT sn.base_object_name FROM sys.synonyms sn WHERE sn.object_id = o.object_id)",
-                folder::TABLES => "(SELECT CASE WHEN tb.is_memory_optimized = 1 THEN 'memory-optimized' WHEN tb.temporal_type = 2 THEN 'temporal' WHEN tb.is_external = 1 THEN 'external' END FROM sys.tables tb WHERE tb.object_id = o.object_id)",
+                folder::SEQUENCES => {
+                    "(SELECT TYPE_NAME(sq.user_type_id) FROM sys.sequences sq WHERE sq.object_id = o.object_id)"
+                }
+                folder::SYNONYMS => {
+                    "(SELECT sn.base_object_name FROM sys.synonyms sn WHERE sn.object_id = o.object_id)"
+                }
+                folder::TABLES => {
+                    "(SELECT CASE WHEN tb.is_memory_optimized = 1 THEN 'memory-optimized' WHEN tb.temporal_type = 2 THEN 'temporal' WHEN tb.is_external = 1 THEN 'external' END FROM sys.tables tb WHERE tb.object_id = o.object_id)"
+                }
                 _ => "NULL",
             };
             let rows = conn
@@ -388,7 +401,10 @@ async fn object_folders(
     parent: &ObjectPath,
     obj: &ObjRef,
 ) -> Result<Vec<ObjectNode>> {
-    let db = obj.db.clone().unwrap_or_else(|| sess.login_db().to_string());
+    let db = obj
+        .db
+        .clone()
+        .unwrap_or_else(|| sess.login_db().to_string());
     let mut conn = sess.shared.acquire_catalog(&db).await?;
     let oid = format!("OBJECT_ID({})", lit(&obj.qualified()));
     let rows = conn
@@ -430,7 +446,10 @@ async fn object_folder(
 ) -> Result<Vec<ObjectNode>> {
     // `parent` ends with the folder; children hang below the table path (without the folder
     // segment), matching `[Table t, Folder columns, Column c]` exactly: parent already holds it.
-    let db = obj.db.clone().unwrap_or_else(|| sess.login_db().to_string());
+    let db = obj
+        .db
+        .clone()
+        .unwrap_or_else(|| sess.login_db().to_string());
     let mut conn = sess.shared.acquire_catalog(&db).await?;
     let filter = catalog::one(&obj.schema, &obj.name);
     let out = match key {
@@ -538,7 +557,10 @@ async fn ensure_exists(conn: &mut Conn, obj: &ObjRef) -> Result<()> {
 /// `table_details` of a table or view.
 pub async fn table_details(sess: &MssqlSession, path: &ObjectPath) -> Result<TableDetails> {
     let obj = parse_object(path)?;
-    let db = obj.db.clone().unwrap_or_else(|| sess.login_db().to_string());
+    let db = obj
+        .db
+        .clone()
+        .unwrap_or_else(|| sess.login_db().to_string());
     let mut conn = sess.shared.acquire_catalog(&db).await?;
     let filter = catalog::one(&obj.schema, &obj.name);
     let key = (obj.schema.clone(), obj.name.clone());
@@ -641,7 +663,14 @@ pub(crate) fn column_detail(n: usize, c: &Col, primary_key: bool) -> ColumnDetai
         extra.push(format!("identity({seed},{inc})"));
     }
     if let Some((_, persisted)) = &c.computed {
-        extra.push(if *persisted { "computed persisted" } else { "computed" }.to_string());
+        extra.push(
+            if *persisted {
+                "computed persisted"
+            } else {
+                "computed"
+            }
+            .to_string(),
+        );
     }
     if c.rowversion {
         extra.push("rowversion".into());
@@ -693,7 +722,10 @@ pub async fn object_ddl(sess: &MssqlSession, path: &ObjectPath) -> Result<String
         }
     }
     let obj = parse_object(path)?;
-    let db = obj.db.clone().unwrap_or_else(|| sess.login_db().to_string());
+    let db = obj
+        .db
+        .clone()
+        .unwrap_or_else(|| sess.login_db().to_string());
     let mut conn = sess.shared.acquire_catalog(&db).await?;
     let result = object_ddl_on(&mut conn, &obj, &db).await;
     conn.release();
@@ -768,21 +800,26 @@ async fn object_ddl_on(conn: &mut Conn, obj: &ObjRef, db: &str) -> Result<String
             let filter = catalog::one(&obj.schema, &obj.name);
             let key = (obj.schema.clone(), obj.name.clone());
             if let Some((ObjectKind::Index, idx_name)) = &obj.child {
-                let idx = catalog::indexes(conn, &filter).await?.remove(&key).unwrap_or_default();
+                let idx = catalog::indexes(conn, &filter)
+                    .await?
+                    .remove(&key)
+                    .unwrap_or_default();
                 let i = idx
                     .iter()
                     .find(|i| &i.name == idx_name)
                     .ok_or_else(|| Error::NotFound(format!("index {idx_name}")))?;
-                return ddl::create_index(names, &obj.schema, &obj.name, i).ok_or_else(|| {
-                    Error::Unsupported("DDL of XML and spatial indexes".into())
-                });
+                return ddl::create_index(names, &obj.schema, &obj.name, i)
+                    .ok_or_else(|| Error::Unsupported("DDL of XML and spatial indexes".into()));
             }
             if let Some((ObjectKind::Trigger, trg)) = &obj.child {
                 return trigger_definition(conn, &obj.schema, trg).await;
             }
             if obj.kind == ObjectKind::View {
                 let mut out = vec![module_definition(conn, obj).await?];
-                let idx = catalog::indexes(conn, &filter).await?.remove(&key).unwrap_or_default();
+                let idx = catalog::indexes(conn, &filter)
+                    .await?
+                    .remove(&key)
+                    .unwrap_or_default();
                 for i in &idx {
                     if let Some(s) = ddl::create_index(names, &obj.schema, &obj.name, i) {
                         out.push(s);
@@ -790,7 +827,10 @@ async fn object_ddl_on(conn: &mut Conn, obj: &ObjRef, db: &str) -> Result<String
                 }
                 return Ok(out.join("\nGO\n"));
             }
-            let cols = catalog::columns(conn, &filter).await?.remove(&key).unwrap_or_default();
+            let cols = catalog::columns(conn, &filter)
+                .await?
+                .remove(&key)
+                .unwrap_or_default();
             if cols.is_empty() {
                 ensure_exists(conn, obj).await?;
             }
@@ -805,13 +845,28 @@ async fn object_ddl_on(conn: &mut Conn, obj: &ObjRef, db: &str) -> Result<String
                     ddl::column_definition(col, "")
                 ));
             }
-            let idx = catalog::indexes(conn, &filter).await?.remove(&key).unwrap_or_default();
-            let checks = catalog::checks(conn, &filter).await?.remove(&key).unwrap_or_default();
-            let fks = catalog::foreign_keys(conn, &filter).await?.remove(&key).unwrap_or_default();
+            let idx = catalog::indexes(conn, &filter)
+                .await?
+                .remove(&key)
+                .unwrap_or_default();
+            let checks = catalog::checks(conn, &filter)
+                .await?
+                .remove(&key)
+                .unwrap_or_default();
+            let fks = catalog::foreign_keys(conn, &filter)
+                .await?
+                .remove(&key)
+                .unwrap_or_default();
             let comment = catalog::table_comments(conn, &filter).await?.remove(&key);
             let collation = database_collation(conn).await?;
             let mut out = vec![ddl::create_table(
-                names, &obj.schema, &obj.name, &cols, &idx, &checks, &collation,
+                names,
+                &obj.schema,
+                &obj.name,
+                &cols,
+                &idx,
+                &checks,
+                &collation,
             )];
             for i in idx.iter().filter(|i| !i.primary && !i.unique_constraint) {
                 if let Some(s) = ddl::create_index(names, &obj.schema, &obj.name, i) {
@@ -825,7 +880,14 @@ async fn object_ddl_on(conn: &mut Conn, obj: &ObjRef, db: &str) -> Result<String
                 out.push(format!("GO\n{t}"));
             }
             if let Some(c) = comment {
-                out.push(ddl::comment_sql(&obj.schema, &obj.name, None, "TABLE", &c, false));
+                out.push(ddl::comment_sql(
+                    &obj.schema,
+                    &obj.name,
+                    None,
+                    "TABLE",
+                    &c,
+                    false,
+                ));
             }
             for c in cols.iter().filter(|c| c.comment.is_some()) {
                 out.push(ddl::comment_sql(
@@ -883,7 +945,11 @@ async fn trigger_definition(conn: &mut Conn, schema: &str, name: &str) -> Result
 }
 
 /// Definitions of the triggers of a table.
-pub(crate) async fn table_triggers(conn: &mut Conn, schema: &str, table: &str) -> Result<Vec<String>> {
+pub(crate) async fn table_triggers(
+    conn: &mut Conn,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<String>> {
     let rows = conn
         .rows(&format!(
             "SELECT OBJECT_DEFINITION(tr.object_id), tr.is_disabled, SCHEMA_NAME(o.schema_id), tr.name \
@@ -1016,7 +1082,10 @@ mod tests {
             trigger_detail(&["INSERT".into(), "UPDATE".into()], false, true),
             "AFTER INSERT, UPDATE, disabled"
         );
-        assert_eq!(trigger_detail(&["DELETE".into()], true, false), "INSTEAD OF DELETE");
+        assert_eq!(
+            trigger_detail(&["DELETE".into()], true, false),
+            "INSTEAD OF DELETE"
+        );
     }
 
     #[test]

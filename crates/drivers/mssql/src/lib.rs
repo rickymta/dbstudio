@@ -30,8 +30,8 @@
 //!   enforces read-only connections).
 
 mod batch;
-mod bulk;
 mod browse;
+mod bulk;
 mod catalog;
 mod conn;
 mod data;
@@ -43,8 +43,8 @@ mod exec;
 mod explain;
 mod lease;
 mod model;
-mod settings;
 mod session;
+mod settings;
 mod sql;
 mod value;
 

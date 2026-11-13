@@ -116,8 +116,13 @@ pub fn rows_of(r: &StatementResult) -> &ResultSet {
 
 pub fn text(v: &Value) -> String {
     match v {
-        Value::Text(s) | Value::Decimal(s) | Value::Uuid(s) | Value::Date(s) | Value::Time(s)
-        | Value::DateTime(s) | Value::Timestamp(s) => s.clone(),
+        Value::Text(s)
+        | Value::Decimal(s)
+        | Value::Uuid(s)
+        | Value::Date(s)
+        | Value::Time(s)
+        | Value::DateTime(s)
+        | Value::Timestamp(s) => s.clone(),
         Value::Int(i) => i.to_string(),
         other => panic!("not text: {other:?}"),
     }
@@ -146,7 +151,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for QueryCounter {
 }
 
 /// Install a counting subscriber for the current thread (tests use the current-thread runtime).
-pub fn count_queries() -> (std::sync::Arc<std::sync::atomic::AtomicUsize>, tracing::subscriber::DefaultGuard) {
+pub fn count_queries() -> (
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    tracing::subscriber::DefaultGuard,
+) {
     use tracing_subscriber::layer::SubscriberExt;
     let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let sub = tracing_subscriber::registry().with(QueryCounter(n.clone()));

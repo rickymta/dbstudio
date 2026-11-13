@@ -60,7 +60,12 @@ impl std::fmt::Debug for Settings {
 impl Settings {
     /// Read the settings of `cfg`; `secret` is the password.
     pub fn from_config(cfg: &ConnectionConfig, secret: Option<&Secret>) -> Result<Self> {
-        let opt = |k: &str| cfg.options.get(k).map(|v| v.trim()).filter(|v| !v.is_empty());
+        let opt = |k: &str| {
+            cfg.options
+                .get(k)
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+        };
         let auth = match opt("auth").map(str::to_ascii_lowercase).as_deref() {
             None | Some("sql") | Some("sql_server") => AuthKind::Sql,
             Some("windows") | Some("ntlm") => AuthKind::Windows,

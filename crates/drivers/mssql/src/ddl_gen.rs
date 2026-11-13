@@ -43,7 +43,13 @@ impl Node {
     }
 }
 
-fn item(path: ObjectPath, kind: ObjectKind, section: DdlSection, sql: String, deps: Vec<ObjectPath>) -> DdlItem {
+fn item(
+    path: ObjectPath,
+    kind: ObjectKind,
+    section: DdlSection,
+    sql: String,
+    deps: Vec<ObjectPath>,
+) -> DdlItem {
     DdlItem {
         path,
         kind,
@@ -91,7 +97,10 @@ struct Selection {
 
 impl Selection {
     fn wants(&self, schema: &str, name: &str) -> bool {
-        self.objects.is_empty() || self.objects.contains(&(schema.to_string(), name.to_string()))
+        self.objects.is_empty()
+            || self
+                .objects
+                .contains(&(schema.to_string(), name.to_string()))
     }
 }
 
@@ -129,9 +138,16 @@ pub async fn generate(sess: &MssqlSession, req: DdlRequest) -> Result<Vec<DdlIte
 }
 
 #[allow(clippy::too_many_lines)]
-async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> Result<Vec<DdlItem>> {
+async fn build(
+    conn: &mut Conn,
+    db: &str,
+    sel: &Selection,
+    req: &DdlRequest,
+) -> Result<Vec<DdlItem>> {
     let o = &req.options;
-    let names = Names { qualify: o.qualify_schema };
+    let names = Names {
+        qualify: o.qualify_schema,
+    };
     let collation = database_collation(conn).await?;
     let scope_filter = schema_filter("o.schema_id", sel.schema.as_deref());
 
@@ -143,7 +159,11 @@ async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> 
         ))
         .await?;
     let cols = catalog::columns(conn, &table_filter).await?;
-    let idx = catalog::indexes(conn, &format!("o.type IN ('U','V') AND o.is_ms_shipped = 0{scope_filter}")).await?;
+    let idx = catalog::indexes(
+        conn,
+        &format!("o.type IN ('U','V') AND o.is_ms_shipped = 0{scope_filter}"),
+    )
+    .await?;
     let checks = catalog::checks(conn, &table_filter).await?;
     let fks = catalog::foreign_keys(conn, &table_filter).await?;
     let comments = if o.include_comments {
@@ -242,7 +262,12 @@ async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> 
                     ObjectKind::Table,
                     DdlSection::PostData,
                     sql,
-                    vec![object_path(db, &f.ref_schema, ObjectKind::Table, &f.ref_table)],
+                    vec![object_path(
+                        db,
+                        &f.ref_schema,
+                        ObjectKind::Table,
+                        &f.ref_table,
+                    )],
                 ));
                 if o.include_drop {
                     fk_drops.push(item(
@@ -295,7 +320,9 @@ async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> 
                 ))
                 .await?;
             for tr in &rows {
-                let Some(def) = opt_str_at(tr, 0) else { continue };
+                let Some(def) = opt_str_at(tr, 0) else {
+                    continue;
+                };
                 let tname = str_at(tr, 3);
                 let tschema = str_at(tr, 2);
                 let tp = tpath
@@ -305,7 +332,11 @@ async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> 
                     tp.clone(),
                     ObjectKind::Trigger,
                     DdlSection::PostData,
-                    if o.if_not_exists { create_or_alter(&def) } else { def },
+                    if o.if_not_exists {
+                        create_or_alter(&def)
+                    } else {
+                        def
+                    },
                     vec![tpath.clone()],
                 ));
                 if bool_at(tr, 1) {
@@ -361,7 +392,11 @@ async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> 
                 kind,
                 schema: schema.clone(),
                 name: name.clone(),
-                sql: if o.if_not_exists { create_or_alter(&def) } else { def },
+                sql: if o.if_not_exists {
+                    create_or_alter(&def)
+                } else {
+                    def
+                },
                 drop: format!("DROP {word} IF EXISTS {};", names.obj(&schema, &name)),
             });
             // Indexes of indexed views.
@@ -459,7 +494,11 @@ async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> 
                     "OBJECT_ID({}, N'SN') IS NULL",
                     lit(&format!("{}.{}", quote(&schema), quote(&name)))
                 ),
-                format!("CREATE SYNONYM {} FOR {};", names.obj(&schema, &name), str_at(r, 3)),
+                format!(
+                    "CREATE SYNONYM {} FOR {};",
+                    names.obj(&schema, &name),
+                    str_at(r, 3)
+                ),
             );
             nodes.push(Node {
                 id,
@@ -508,8 +547,13 @@ async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> 
                 format!(
                     "CREATE TYPE {} FROM {}{};",
                     names.obj(&schema, &name),
-                    crate::sql::format_type(&str_at(r, 4), int_at(r, 5), int_at(r, 6), int_at(r, 7))
-                        .to_ascii_uppercase(),
+                    crate::sql::format_type(
+                        &str_at(r, 4),
+                        int_at(r, 5),
+                        int_at(r, 6),
+                        int_at(r, 7)
+                    )
+                    .to_ascii_uppercase(),
                     if bool_at(r, 8) { " NULL" } else { " NOT NULL" }
                 )
             };
@@ -544,7 +588,10 @@ async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> 
              WHERE referencing_class = 1 AND referenced_id IS NOT NULL AND referenced_database_name IS NULL",
         )
         .await?;
-    let edges: Vec<(i64, i64)> = edge_rows.iter().map(|r| (int_at(r, 0), int_at(r, 1))).collect();
+    let edges: Vec<(i64, i64)> = edge_rows
+        .iter()
+        .map(|r| (int_at(r, 0), int_at(r, 1)))
+        .collect();
     let by_id: BTreeMap<i64, (ObjectKind, String, String)> = nodes
         .iter()
         .map(|n| (n.id, (n.kind, n.schema.clone(), n.name.clone())))
@@ -559,14 +606,29 @@ async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> 
             .map(|(k, s, nm)| object_path(db, s, *k, nm))
             .collect();
         let path = object_path(db, &n.schema, n.kind, &n.name);
-        pre.push(item(path.clone(), n.kind, DdlSection::PreData, n.sql.clone(), deps));
-        node_drops.push(item(path, n.kind, DdlSection::PreData, n.drop.clone(), vec![]));
+        pre.push(item(
+            path.clone(),
+            n.kind,
+            DdlSection::PreData,
+            n.sql.clone(),
+            deps,
+        ));
+        node_drops.push(item(
+            path,
+            n.kind,
+            DdlSection::PreData,
+            n.drop.clone(),
+            vec![],
+        ));
     }
     node_drops.reverse();
 
     // ---- schemas -------------------------------------------------------------------------
     let mut schema_items: Vec<DdlItem> = Vec::new();
-    for s in used_schemas.iter().filter(|s| !s.eq_ignore_ascii_case("dbo")) {
+    for s in used_schemas
+        .iter()
+        .filter(|s| !s.eq_ignore_ascii_case("dbo"))
+    {
         // Schemas are never dropped, so a re-run with drops must tolerate existing ones.
         let create = if o.if_not_exists || o.include_drop {
             format!(
@@ -598,7 +660,9 @@ async fn build(conn: &mut Conn, db: &str, sel: &Selection, req: &DdlRequest) -> 
     out.extend(pre);
     out.extend(post);
     if out.is_empty() && !req.objects.is_empty() {
-        return Err(Error::NotFound("none of the requested objects exist".into()));
+        return Err(Error::NotFound(
+            "none of the requested objects exist".into(),
+        ));
     }
     Ok(out)
 }
@@ -635,7 +699,10 @@ mod tests {
 
     #[test]
     fn selection_filters() {
-        let all = Selection { schema: None, objects: BTreeSet::new() };
+        let all = Selection {
+            schema: None,
+            objects: BTreeSet::new(),
+        };
         assert!(all.wants("s", "t"));
         let one = Selection {
             schema: None,

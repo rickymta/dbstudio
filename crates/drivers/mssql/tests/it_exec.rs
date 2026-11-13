@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use dbstudio_core::{
-    Driver,
-    CollectingSink, ColumnMeta, EndOutcome, Error, QueryRequest, ResultSink, StatementEnd,
+    CollectingSink, ColumnMeta, Driver, EndOutcome, Error, QueryRequest, ResultSink, StatementEnd,
     StatementOutcome, TlsMode, Value, execute_collect,
 };
 
@@ -30,7 +29,13 @@ async fn smoke_select_and_metadata() {
     assert_eq!(rs.rows.len(), 3);
     assert_eq!(rs.rows[0], vec![Value::Int(1), Value::Text("one".into())]);
     assert_eq!(rs.rows[2][1], Value::Null);
-    assert_eq!((rs.columns[0].type_name.as_str(), rs.columns[1].type_name.as_str()), ("int", "nvarchar"));
+    assert_eq!(
+        (
+            rs.columns[0].type_name.as_str(),
+            rs.columns[1].type_name.as_str()
+        ),
+        ("int", "nvarchar")
+    );
     let info = s.server_info().await.unwrap();
     assert_eq!(info.product, "Microsoft SQL Server");
     assert!(info.version.starts_with("16."), "{}", info.version);
@@ -43,17 +48,33 @@ async fn smoke_select_and_metadata() {
 async fn script_of_several_statements_gives_one_result_each() {
     it!();
     let s = work().await;
-    run(&*s, "DROP TABLE IF EXISTS dbo.exec_a;\nGO\nCREATE TABLE dbo.exec_a (a INT);").await;
+    run(
+        &*s,
+        "DROP TABLE IF EXISTS dbo.exec_a;\nGO\nCREATE TABLE dbo.exec_a (a INT);",
+    )
+    .await;
     let r = run(
         &*s,
         "INSERT INTO dbo.exec_a VALUES (1),(2),(3); UPDATE dbo.exec_a SET a = a + 1 WHERE a > 1; \
          SELECT a FROM dbo.exec_a ORDER BY a; PRINT N'done é'; DELETE FROM dbo.exec_a",
     )
     .await;
-    assert_eq!(r.len(), 5, "{:#?}", r.iter().map(|x| &x.outcome).collect::<Vec<_>>());
+    assert_eq!(
+        r.len(),
+        5,
+        "{:#?}",
+        r.iter().map(|x| &x.outcome).collect::<Vec<_>>()
+    );
     assert_eq!(r[0].outcome, StatementOutcome::Affected { rows: 3 });
     assert_eq!(r[1].outcome, StatementOutcome::Affected { rows: 2 });
-    assert_eq!(rows_of(&r[2]).rows, vec![vec![Value::Int(1)], vec![Value::Int(3)], vec![Value::Int(4)]]);
+    assert_eq!(
+        rows_of(&r[2]).rows,
+        vec![
+            vec![Value::Int(1)],
+            vec![Value::Int(3)],
+            vec![Value::Int(4)]
+        ]
+    );
     // PRINT is a statement of its own; its message is attached to its end.
     assert_eq!(r[3].messages, vec!["done é".to_string()]);
     assert_eq!(r[4].outcome, StatementOutcome::Affected { rows: 3 });
@@ -68,11 +89,17 @@ async fn multiple_result_sets_and_messages_from_one_batch() {
         "SELECT 1 AS a; RAISERROR(N'low severity', 5, 1) WITH NOWAIT; SELECT 2 AS b, N'x' AS c; EXEC sales.sp_customer_count",
     )
     .await;
-    let sets: Vec<_> = r.iter().filter(|x| matches!(x.outcome, StatementOutcome::Rows(_))).collect();
+    let sets: Vec<_> = r
+        .iter()
+        .filter(|x| matches!(x.outcome, StatementOutcome::Rows(_)))
+        .collect();
     assert_eq!(sets.len(), 3);
     assert_eq!(rows_of(sets[1]).columns.len(), 2);
     assert_eq!(rows_of(sets[2]).rows[0][0], Value::Int(4));
-    assert!(r.iter().any(|x| x.messages.iter().any(|m| m == "low severity")));
+    assert!(
+        r.iter()
+            .any(|x| x.messages.iter().any(|m| m == "low severity"))
+    );
 }
 
 #[tokio::test]
@@ -81,12 +108,24 @@ async fn go_separates_batches_and_repeats() {
     let s = work().await;
     run(&*s, "DROP TABLE IF EXISTS dbo.exec_go;\nGO\nCREATE TABLE dbo.exec_go (id INT IDENTITY, v NVARCHAR(10));").await;
     let r = run(&*s, "INSERT INTO dbo.exec_go (v) VALUES (N'x')\nGO 3\nSELECT COUNT(*) FROM dbo.exec_go\ngo\nSELECT 'GO inside string:\nGO\nstill text' AS t").await;
-    let affected: Vec<_> = r.iter().filter(|x| matches!(x.outcome, StatementOutcome::Affected { .. })).collect();
+    let affected: Vec<_> = r
+        .iter()
+        .filter(|x| matches!(x.outcome, StatementOutcome::Affected { .. }))
+        .collect();
     assert_eq!(affected.len(), 3, "GO 3 runs the batch three times");
-    let sets: Vec<_> = r.iter().filter_map(|x| match &x.outcome { StatementOutcome::Rows(rs) => Some(rs), _ => None }).collect();
+    let sets: Vec<_> = r
+        .iter()
+        .filter_map(|x| match &x.outcome {
+            StatementOutcome::Rows(rs) => Some(rs),
+            _ => None,
+        })
+        .collect();
     assert_eq!(sets.len(), 2);
     assert_eq!(sets[0].rows[0][0], Value::Int(3));
-    assert_eq!(text(&sets[1].rows[0][0]), "GO inside string:\nGO\nstill text");
+    assert_eq!(
+        text(&sets[1].rows[0][0]),
+        "GO inside string:\nGO\nstill text"
+    );
     // Without GO the same statements are one batch and CREATE VIEW fails; with GO it works.
     let r = try_run(&*s, "CREATE VIEW dbo.exec_v AS SELECT 1 AS x\nGO\nSELECT * FROM dbo.exec_v\nGO\nDROP VIEW dbo.exec_v").await.unwrap();
     assert_eq!(rows_of(&r[1]).rows[0][0], Value::Int(1));
@@ -115,9 +154,22 @@ async fn error_positions_are_character_offsets_into_the_whole_text() {
     }
     // A syntax error in a single line batch points at the start of that line.
     let e = try_run(&*s, "SELECT 1 +").await.unwrap_err();
-    assert!(matches!(e, Error::Query { position: Some(0), .. }), "{e:?}");
+    assert!(
+        matches!(
+            e,
+            Error::Query {
+                position: Some(0),
+                ..
+            }
+        ),
+        "{e:?}"
+    );
     // Errors inside a procedure carry no position (their line numbers are the procedure's).
-    run(&*s, "CREATE OR ALTER PROCEDURE dbo.p_err AS BEGIN SELECT 1/0; END").await;
+    run(
+        &*s,
+        "CREATE OR ALTER PROCEDURE dbo.p_err AS BEGIN SELECT 1/0; END",
+    )
+    .await;
     let e = try_run(&*s, "EXEC dbo.p_err").await.unwrap_err();
     assert!(matches!(e, Error::Query { position: None, .. }), "{e:?}");
     run(&*s, "DROP PROCEDURE dbo.p_err").await;
@@ -127,7 +179,7 @@ async fn error_positions_are_character_offsets_into_the_whole_text() {
 async fn cancel_stops_a_long_wait_quickly() {
     it!();
     let s = fixture().await;
-    let req = QueryRequest::new("WAITFOR DELAY '00:01:00'; SELECT 1");
+    let req = QueryRequest::new("WAITFOR DELAY '00:01:07'; SELECT 1");
     let id = req.query_id;
     let sess = s.clone();
     let started = Instant::now();
@@ -138,9 +190,13 @@ async fn cancel_stops_a_long_wait_quickly() {
     let r = execute_collect(&*s, req).await;
     canceller.await.unwrap().unwrap();
     assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
-    assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "took {:?}",
+        started.elapsed()
+    );
     // The server really stopped waiting, and the driver keeps working.
-    let r = run(&*s, "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE wait_type = 'WAITFOR' AND session_id <> @@SPID").await;
+    let r = run(&*s, "SELECT COUNT(*) FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE r.wait_type = 'WAITFOR' AND t.text LIKE '%00:01:07%' AND r.session_id <> @@SPID").await;
     assert_eq!(rows_of(&r[0]).rows[0][0], Value::Int(0));
     run(&*s, "SELECT 1").await;
     // Cancelling an unknown or finished id is fine.
@@ -175,7 +231,10 @@ async fn max_rows_truncates_and_the_connection_survives() {
     let mut req = QueryRequest::new("SELECT id FROM dbo.paging WHERE id <= 10");
     req.max_rows = Some(10);
     let r = execute_collect(&*s, req).await.unwrap();
-    assert!(!rows_of(&r[0]).truncated, "exactly max_rows rows is not truncated");
+    assert!(
+        !rows_of(&r[0]).truncated,
+        "exactly max_rows rows is not truncated"
+    );
     run(&*s, "SELECT 1").await;
 }
 
@@ -202,7 +261,9 @@ async fn a_stopping_sink_stops_the_server_work() {
     it!();
     let s = fixture().await;
     let mut sink = StopAfterFirst(0);
-    let mut req = QueryRequest::new("SELECT a.object_id FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN sys.all_objects c");
+    let mut req = QueryRequest::new(
+        "SELECT a.object_id FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN sys.all_objects c",
+    );
     req.batch_size = Some(100);
     let started = Instant::now();
     let e = s.execute(req, &mut sink).await.unwrap_err();
@@ -238,7 +299,12 @@ async fn concurrent_queries_share_the_pool() {
     for i in 0..8 {
         let s = s.clone();
         tasks.push(tokio::spawn(async move {
-            let r = execute_collect(&*s, QueryRequest::new(format!("WAITFOR DELAY '00:00:01'; SELECT {i}"))).await.unwrap();
+            let r = execute_collect(
+                &*s,
+                QueryRequest::new(format!("WAITFOR DELAY '00:00:01'; SELECT {i}")),
+            )
+            .await
+            .unwrap();
             rows_of(r.last().unwrap()).rows[0][0].clone()
         }));
     }
@@ -249,7 +315,11 @@ async fn concurrent_queries_share_the_pool() {
     got.sort_by_key(|v| if let Value::Int(i) = v { *i } else { -1 });
     assert_eq!(got, (0..8).map(Value::Int).collect::<Vec<_>>());
     // Pool of 4: two waves of one second.
-    assert!(started.elapsed() >= Duration::from_millis(1900), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() >= Duration::from_millis(1900),
+        "{:?}",
+        started.elapsed()
+    );
     let _ = Arc::strong_count(&s);
 }
 
@@ -271,7 +341,10 @@ async fn login_and_tls_modes() {
     let e = connect_cfg(&cfg).await.err().unwrap();
     assert!(matches!(e.kind(), "connection" | "timeout"), "{e}");
     // Unknown database.
-    let e = connect_cfg(&config(Some("no_such_db_zz"), TlsMode::Require)).await.err().unwrap();
+    let e = connect_cfg(&config(Some("no_such_db_zz"), TlsMode::Require))
+        .await
+        .err()
+        .unwrap();
     assert!(matches!(e.kind(), "connection" | "authentication"), "{e}");
 
     let encrypted = |mode: TlsMode| async move {
@@ -284,7 +357,10 @@ async fn login_and_tls_modes() {
     assert_eq!(encrypted(TlsMode::Disable).await, "FALSE");
     // Verifying modes reject the server's self-signed certificate.
     for mode in [TlsMode::VerifyCa, TlsMode::VerifyFull] {
-        let e = connect_cfg(&config(Some("master"), mode)).await.err().unwrap();
+        let e = connect_cfg(&config(Some("master"), mode))
+            .await
+            .err()
+            .unwrap();
         assert_eq!(e.kind(), "tls", "{mode:?}: {e}");
         // A CA file that is not the server's CA does not help either.
         let mut cfg = config(Some("master"), mode);

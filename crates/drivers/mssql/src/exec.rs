@@ -310,8 +310,8 @@ async fn run_batch(
         let item = match item {
             Ok(i) => i,
             Err(e) => {
-                let line_pos = error_line(&e)
-                    .map(|l| batch.start + line_start_offset(&batch.text, l));
+                let line_pos =
+                    error_line(&e).map(|l| batch.start + line_start_offset(&batch.text, l));
                 // Deliver what was read before the error, then report it.
                 if let Some(set) = open.take() {
                     if reason.is_none() && sink_error.is_none() {
@@ -427,7 +427,9 @@ async fn run_batch(
                         // is `Affected`, without one (DDL, `SET`, `PRINT`, ...) it is `Done`.
                         let outcome = match (d.kind, d.error) {
                             (DoneKind::Proc, _) | (_, true) => None,
-                            (_, false) if d.has_count => Some(EndOutcome::Affected { rows: d.rows }),
+                            (_, false) if d.has_count => {
+                                Some(EndOutcome::Affected { rows: d.rows })
+                            }
                             _ => Some(EndOutcome::Done),
                         };
                         if let Some(outcome) = outcome {

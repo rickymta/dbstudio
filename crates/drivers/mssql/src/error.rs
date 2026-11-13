@@ -22,7 +22,9 @@ pub fn map_connect(e: Tds) -> Error {
             } else {
                 // A failed TLS handshake surfaces as an I/O error mentioning the certificate.
                 let lower = message.to_ascii_lowercase();
-                if lower.contains("certificate") || lower.contains("tls") || lower.contains("handshake")
+                if lower.contains("certificate")
+                    || lower.contains("tls")
+                    || lower.contains("handshake")
                 {
                     Error::Tls(message)
                 } else {
@@ -44,7 +46,11 @@ pub fn map_query(e: Tds, position: Option<u32>) -> Error {
             if PERMISSION.contains(&s.code()) {
                 return Error::Permission(s.message().to_string());
             }
-            let position = if s.procedure().is_empty() { position } else { None };
+            let position = if s.procedure().is_empty() {
+                position
+            } else {
+                None
+            };
             Error::Query {
                 message: s.message().to_string(),
                 position,
@@ -73,7 +79,10 @@ pub fn error_line(e: &Tds) -> Option<u32> {
 
 /// True when the error means the connection can no longer be used.
 pub fn is_fatal(e: &Tds) -> bool {
-    matches!(e, Tds::Io { .. } | Tds::Protocol(_) | Tds::Tls(_) | Tds::Encoding(_))
+    matches!(
+        e,
+        Tds::Io { .. } | Tds::Protocol(_) | Tds::Tls(_) | Tds::Encoding(_)
+    )
 }
 
 #[cfg(test)]
@@ -102,7 +111,10 @@ mod tests {
     #[test]
     fn protocol_error_is_connection_problem() {
         assert!(is_fatal(&Tds::Protocol("x".into())));
-        assert_eq!(map_query(Tds::Protocol("x".into()), None).kind(), "connection");
+        assert_eq!(
+            map_query(Tds::Protocol("x".into()), None).kind(),
+            "connection"
+        );
         assert!(!is_fatal(&Tds::Utf8));
     }
 }
