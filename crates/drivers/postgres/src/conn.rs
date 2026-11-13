@@ -33,6 +33,8 @@ pub struct Conn {
     notices: mpsc::UnboundedReceiver<DbError>,
     /// The user's script opened a transaction block that is still open (best effort tracking).
     pub in_txn: bool,
+    /// The open transaction block is aborted (an error occurred; only ROLLBACK works).
+    pub failed: bool,
     cursor_seq: u32,
 }
 
@@ -298,6 +300,15 @@ impl Shared {
         })
     }
 
+    /// Open a connection outside the pool for a lease: not counted against the pool limits and
+    /// never returned to it. The caller owns it and closing it is just dropping it.
+    pub async fn open_dedicated(&self, db: &str) -> Result<Conn> {
+        if self.is_closed() {
+            return Err(Error::Connection("session is closed".to_string()));
+        }
+        self.connect(db).await
+    }
+
     /// Open a new connection to `db`, honouring the TLS mode and connect timeout.
     async fn connect(&self, db: &str) -> Result<Conn> {
         let attempt = async {
@@ -372,6 +383,7 @@ where
         cancel,
         notices: rx,
         in_txn: false,
+        failed: false,
         cursor_seq: 0,
     })
 }
