@@ -360,7 +360,7 @@ mod tests {
         let cfg = saved_connection(&state).await;
         let mut settings = state.connections.settings().unwrap();
         settings.history_enabled = false;
-        state.connections.set_settings(settings.clone()).unwrap();
+        state.connections.set_settings(settings).unwrap();
         assert!(
             Tracker::start(
                 &state,
@@ -374,7 +374,7 @@ mod tests {
             .is_none()
         );
         settings.history_enabled = true;
-        state.connections.set_settings(settings.clone()).unwrap();
+        state.connections.set_settings(settings).unwrap();
         let unsaved = ConnectionConfig::new(DbKind::Postgres, "tmp", "localhost");
         assert!(
             Tracker::start(
