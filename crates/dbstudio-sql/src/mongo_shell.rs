@@ -709,10 +709,29 @@ fn num_text(v: &ShellValue) -> Option<String> {
     }
 }
 
+/// A fresh ObjectId (`ObjectId()` in mongosh): 4 bytes of seconds, 5 bytes derived from the
+/// clock and process, 3 bytes of counter.
+fn new_object_id() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut h = u64::from(std::process::id())
+        ^ now.subsec_nanos() as u64
+        ^ (&COUNTER as *const _ as usize as u64);
+    h = h.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (h >> 29);
+    let secs = now.as_secs() as u32;
+    format!("{secs:08x}{:010x}{:06x}", h & 0xff_ffff_ffff, n & 0xff_ffff)
+}
+
 fn construct(name: &str, args: Vec<ShellValue>, at: usize) -> Result<ShellValue> {
     let bad = |m: &str| err(format!("{name}: {m}"), at);
     match name {
         "ObjectId" => match args.as_slice() {
+            [] => Ok(ShellValue::ObjectId(new_object_id())),
             [ShellValue::String(s)]
                 if s.len() == 24 && s.chars().all(|c| c.is_ascii_hexdigit()) =>
             {
@@ -1209,6 +1228,27 @@ mod tests {
             })
         );
         assert_eq!(a.get("p"), Some(&ShellValue::Date(String::new())));
+    }
+
+    #[test]
+    fn empty_constructors_generate_values() {
+        let s = one("db.a.insertOne({_id: ObjectId(), t: new Date(), u: ISODate()})");
+        let a = &s.args[0];
+        let Some(ShellValue::ObjectId(id)) = a.get("_id") else {
+            panic!("{a:?}")
+        };
+        assert_eq!(id.len(), 24);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(a.get("t"), Some(&ShellValue::Date(String::new())));
+        assert_eq!(a.get("u"), Some(&ShellValue::Date(String::new())));
+        // every call makes a new id
+        let s = one("db.a.insertMany([{_id: ObjectId()}, {_id: ObjectId()}])");
+        let ShellValue::Array(v) = &s.args[0] else {
+            panic!()
+        };
+        assert_ne!(v[0], v[1]);
+        // the explicit form is still validated
+        assert!(parse("db.a.find({_id: ObjectId(\"zz\")})").is_err());
     }
 
     #[test]

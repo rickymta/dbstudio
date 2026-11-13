@@ -1,0 +1,50 @@
+{
+  "section": "SSH tunnel",
+  "enable": "Connect through an SSH tunnel",
+  "enableHint": "The database is reached from the SSH server (bastion) instead of directly.",
+  "host": "SSH host",
+  "port": "SSH port",
+  "username": "SSH user",
+  "auth": {
+    "label": "Authentication",
+    "password": "Password",
+    "privateKey": "Private key",
+    "agent": "SSH agent"
+  },
+  "password": "SSH password",
+  "passphrase": "Key passphrase",
+  "secretKeep": "Stored in the keychain",
+  "secretRemoved": "Will be removed",
+  "clearSecret": "Remove stored secret",
+  "undoClearSecret": "Keep stored secret",
+  "showSecret": "Show secret",
+  "hideSecret": "Hide secret",
+  "keyPath": "Private key file",
+  "browseKey": "Browse for the private key file",
+  "hasPassphrase": "The key is protected by a passphrase",
+  "agentHint": "Uses the keys of the running SSH agent (SSH_AUTH_SOCK, or the Windows OpenSSH pipe).",
+  "keepalive": "Keep-alive (seconds)",
+  "keepaliveHint": "Leave empty to disable.",
+  "testNote": "The test uses the SSH secret that is already saved; save the connection first to test a new SSH password.",
+  "validation": {
+    "hostRequired": "Enter the SSH host.",
+    "portRange": "The SSH port must be between 1 and 65535.",
+    "usernameRequired": "Enter the SSH user.",
+    "keyRequired": "Choose the private key file.",
+    "keepalivePositive": "Enter a whole number of seconds greater than 0."
+  },
+  "hostKey": {
+    "titleNew": "Trust this SSH server?",
+    "titleChanged": "SSH host key has changed",
+    "descriptionNew": "{{host}}:{{port}} has not been seen before. Check the fingerprint with the server administrator before trusting it.",
+    "descriptionChanged": "The key presented by {{host}}:{{port}} is different from the one you trusted before. This can mean the server was reinstalled, or that someone is intercepting the connection.",
+    "warningChanged": "Only continue if you expect the key of this server to have changed.",
+    "server": "Server",
+    "keyType": "Key type",
+    "fingerprint": "Fingerprint (SHA-256)",
+    "trust": "Trust and continue",
+    "trustChanged": "Replace the trusted key",
+    "cancel": "Cancel",
+    "failed": "Could not save the key: {{message}}"
+  }
+}
