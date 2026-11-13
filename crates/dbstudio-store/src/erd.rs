@@ -7,6 +7,9 @@ use uuid::Uuid;
 
 use crate::db::{Store, db_err, now_iso, parse_uuid};
 
+/// Prefix of the error message of a save that lost an optimistic-concurrency check.
+pub const ERD_CONFLICT: &str = "layout-conflict";
+
 /// A saved diagram layout. The JSON columns are opaque to the store.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,7 +146,9 @@ impl Store {
     }
 
     /// Insert or update (by id); a duplicate name on the connection is an error. The creation
-    /// time of an existing layout is kept, `updated_at` is set to now.
+    /// time of an existing layout is kept, `updated_at` is set to now. Updating requires the
+    /// `updated_at` of the version being replaced, else the error message starts with
+    /// [`ERD_CONFLICT`].
     pub fn erd_save(&self, layout: &ErdLayout) -> Result<ErdLayout> {
         let name = layout.name.trim();
         if name.is_empty() {
@@ -151,14 +156,23 @@ impl Store {
         }
         let now = now_iso();
         let conn = self.lock();
-        let existing_created: Option<String> = conn
+        let existing: Option<(String, String)> = conn
             .query_row(
-                "SELECT created_at FROM erd_layouts WHERE id = ?1",
+                "SELECT created_at, updated_at FROM erd_layouts WHERE id = ?1",
                 params![layout.id.to_string()],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .map_err(db_err)?;
+        // Optimistic concurrency: the caller must have read the version it overwrites.
+        if let Some((_, updated)) = &existing {
+            if *updated != layout.updated_at {
+                return Err(Error::Other(format!(
+                    "{ERD_CONFLICT}: the layout was changed elsewhere since it was loaded"
+                )));
+            }
+        }
+        let existing_created = existing.map(|(created, _)| created);
         let created_at = existing_created.clone().unwrap_or_else(|| {
             if layout.created_at.is_empty() {
                 now.clone()
@@ -301,12 +315,32 @@ mod tests {
         edited.name = "Renamed".into();
         edited.created_at = "tampered".into();
         let second = s.erd_save(&edited).unwrap();
+        assert_ne!(second.updated_at, String::new());
         assert_eq!(second.created_at, first.created_at);
         let got = s.erd_get(first.id).unwrap();
         assert_eq!(got.name, "Renamed");
         assert!(got.viewport.is_none());
         assert_eq!(s.erd_list(c).unwrap()[0].table_count, 0);
         assert_eq!(s.erd_list(c).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stale_updates_are_refused() {
+        let s = Store::open_in_memory().unwrap();
+        let c = conn(&s, "pg");
+        let first = s.erd_save(&layout(c, "Main")).unwrap();
+        let mut stale = first.clone();
+        stale.updated_at = "2000-01-01T00:00:00Z".into();
+        let err = s.erd_save(&stale).unwrap_err();
+        assert!(
+            matches!(&err, Error::Other(m) if m.starts_with(ERD_CONFLICT)),
+            "{err:?}"
+        );
+        // The current version is accepted and yields a new version.
+        let second = s.erd_save(&first).unwrap();
+        assert_ne!(second.updated_at, "");
+        // `first` is now stale.
+        assert!(s.erd_save(&first).is_err());
     }
 
     #[test]

@@ -242,7 +242,7 @@ async fn build(
     // 3. primary and unique keys (key order, which `COLUMN_KEY` does not give)
     let rows = catalog_rows(
         conn,
-        "SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME \
+        "SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART \
          FROM information_schema.STATISTICS \
          WHERE TABLE_SCHEMA = ? AND (INDEX_NAME = 'PRIMARY' OR NON_UNIQUE = 0) \
          ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX",
@@ -260,11 +260,13 @@ async fn build(
             .last()
             .is_none_or(|(ti, ix, _)| *ti != i || *ix != index)
         {
-            keys.push((i, index, Some(Vec::new())));
+            keys.push((i, index.clone(), Some(Vec::new())));
         }
         if let Some((_, _, cols)) = keys.last_mut() {
+            // A prefix index (`col(10)`) does not make the column unique.
+            let prefix = cell(r, 5).is_some() && index != "PRIMARY";
             match (cell(r, 4), cols.as_mut()) {
-                (Some(c), Some(v)) => v.push(c),
+                (Some(c), Some(v)) if !prefix => v.push(c),
                 _ => *cols = None,
             }
         }
@@ -289,9 +291,10 @@ async fn build(
          JOIN information_schema.REFERENTIAL_CONSTRAINTS rc \
            ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
           AND rc.TABLE_NAME = kcu.TABLE_NAME \
-         WHERE kcu.TABLE_SCHEMA = ? AND kcu.REFERENCED_TABLE_NAME IS NOT NULL \
+         WHERE kcu.TABLE_SCHEMA = ? AND rc.CONSTRAINT_SCHEMA = ? \
+           AND kcu.REFERENCED_TABLE_NAME IS NOT NULL \
          ORDER BY kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION",
-        (db,),
+        (db, db),
     )
     .await?;
     let mut fks: Vec<RawFk> = Vec::new();

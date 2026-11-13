@@ -256,6 +256,21 @@ CREATE TABLE audit_log (
   CONSTRAINT fk_audit_customer FOREIGN KEY (customer_id) REFERENCES customer (customer_id)
 ) ENGINE=InnoDB;
 
+-- A key whose first column is AUTO_INCREMENT must stay inside CREATE TABLE.
+CREATE TABLE tally (
+  grp int NOT NULL,
+  n int NOT NULL AUTO_INCREMENT,
+  PRIMARY KEY (grp, n),
+  KEY idx_tally_n (n)
+) ENGINE=InnoDB;
+
+CREATE FUNCTION fn_double(x int) RETURNS int DETERMINISTIC RETURN x * 2;
+CREATE VIEW v_doubled AS SELECT film_id, fn_double(film_id) AS doubled FROM film;
+SET SESSION sql_mode = CONCAT(@@sql_mode, ',ANSI_QUOTES');
+CREATE FUNCTION fn_ansi(p int) RETURNS int READS SQL DATA
+  RETURN (SELECT COUNT(*) FROM "film" WHERE "film_id" = p);
+SET SESSION sql_mode = DEFAULT;
+
 CREATE VIEW film_list AS
   SELECT f.film_id, f.title, c.name AS category
   FROM film f JOIN film_category fc ON fc.film_id = f.film_id JOIN category c ON c.category_id = fc.category_id;

@@ -178,11 +178,11 @@ async fn model_pagila(port: u16) {
         .count();
     assert_eq!(
         tables,
-        25,
+        28,
         "tables: {:?}",
         m.tables.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
-    assert_eq!(m.tables.len(), 29, "tables + 3 views + 1 matview");
+    assert_eq!(m.tables.len(), 33, "tables + 3 views + 2 matviews");
     assert_eq!(m.relations.len(), 32);
 
     let film = m.tables.iter().find(|t| t.name == "film").unwrap();
@@ -270,14 +270,14 @@ async fn model_pagila(port: u16) {
         .schema_model(request(schema_scope("erd_it", "public")))
         .await
         .unwrap();
-    assert_eq!(m2.tables.len(), 28);
+    assert_eq!(m2.tables.len(), 32);
     assert_eq!(m2.relations.len(), 31);
     // Without views.
     let mut req = request(db_path("erd_it"));
     req.include_views = false;
     req.include_comments = false;
     let m3 = s.schema_model(req).await.unwrap();
-    assert_eq!(m3.tables.len(), 25);
+    assert_eq!(m3.tables.len(), 28);
     assert!(m3.tables.iter().all(|t| t.comment.is_none()));
     assert!(
         m3.tables
@@ -454,7 +454,99 @@ async fn ddl_replays_into_empty_database(port: u16) {
     let (tb, rb) = summary(&b);
     assert_eq!(ta, tb);
     assert_eq!(ra, rb);
-    assert_eq!(a.tables.len(), 29);
+    assert_eq!(a.tables.len(), 33);
+
+    // Review fixes: indexes of partitioned tables, identity options, INHERITS, extension, range.
+    let count = |sql: &str| {
+        let admin = &admin;
+        let sql = sql.to_string();
+        async move {
+            let mut q = QueryRequest::new(sql);
+            q.database = Some("erd_it_copy".into());
+            let r = execute_collect(&**admin, q).await.unwrap();
+            match &r[0].outcome {
+                dbstudio_core::StatementOutcome::Rows(rs) => match &rs.rows[0][0] {
+                    dbstudio_core::Value::Int(i) => *i,
+                    other => panic!("not an int: {other:?}"),
+                },
+                other => panic!("expected rows: {other:?}"),
+            }
+        }
+    };
+    assert_eq!(
+        count("SELECT count(*) FROM pg_indexes WHERE tablename = 'rental_archive_2023' AND indexdef LIKE '%customer_id%'").await,
+        1,
+        "partition index created from the parent"
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM pg_index WHERE indrelid = 'public.rental_archive'::regclass AND NOT indisvalid").await,
+        0
+    );
+    assert_eq!(
+        count("SELECT seqincrement FROM pg_sequence WHERE seqrelid = pg_get_serial_sequence('public.ticket', 'ticket_id')::regclass").await,
+        10
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM pg_constraint WHERE conrelid = 'public.legacy_child'::regclass AND contype = 'c'").await,
+        1,
+        "inherited CHECK"
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM pg_inherits WHERE inhrelid = 'public.legacy_child'::regclass")
+            .await,
+        1
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM pg_extension WHERE extname = 'pg_trgm'").await,
+        1
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM pg_type WHERE typname = 'floatrange' AND typtype = 'r'").await,
+        1
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM pg_constraint WHERE conname = 'actor_name_chk' AND NOT convalidated").await,
+        1
+    );
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM pg_constraint WHERE conname = 'year_nonzero' AND NOT convalidated"
+        )
+        .await,
+        1
+    );
+    // The header and the refreshes are in place.
+    assert!(items[0].sql.starts_with("SET check_function_bodies"));
+    assert!(items.iter().any(
+        |i| i.sql.starts_with("REFRESH MATERIALIZED VIEW") && i.section == DdlSection::PostData
+    ));
+    assert!(
+        items
+            .iter()
+            .filter(|i| i.sql.contains("CREATE MATERIALIZED VIEW"))
+            .all(|i| i.sql.ends_with("WITH NO DATA;"))
+    );
+    assert!(!items.iter().any(|i| i.sql.contains(" ON ONLY ")));
+    assert!(items.iter().any(|i| i.sql.contains("INHERITS (")));
+    assert!(items.iter().any(|i| {
+        i.sql
+            .contains("GENERATED ALWAYS AS IDENTITY (START WITH 100 INCREMENT BY 10")
+    }));
+    assert!(
+        items
+            .iter()
+            .any(|i| i.sql.contains("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\""))
+    );
+    assert!(
+        items
+            .iter()
+            .any(|i| i.sql.contains("AS RANGE (SUBTYPE = double precision"))
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|i| i.sql.contains("gtrgm") || i.sql.contains("similarity"))
+    );
 
     // The copy yields the same DDL again.
     let again = s
@@ -474,10 +566,10 @@ async fn ddl_replays_into_empty_database(port: u16) {
     run_in(
         &*admin,
         "erd_it_copy",
-        "INSERT INTO language (name) VALUES ('Klingon')",
+        "INSERT INTO public.language (name) VALUES ('Klingon')",
     )
     .await;
-    let mut q = QueryRequest::new("SELECT currval('language_language_id_seq')");
+    let mut q = QueryRequest::new("SELECT currval('public.language_language_id_seq')");
     q.database = Some("erd_it_copy".into());
     let r = execute_collect(&*admin, q).await.unwrap();
     assert_eq!(r.len(), 1);
@@ -615,6 +707,66 @@ async fn ddl_options_and_selection(port: u16) {
     s.close().await.unwrap();
 }
 
+/// PreData, then data that would break "eager" DDL, then PostData.
+async fn ddl_restore_with_data_between_phases(port: u16) {
+    let s = fixture(port).await;
+    let items = s
+        .generate_ddl(DdlRequest {
+            scope: db_path("erd_it"),
+            objects: vec![],
+            options: DdlOptions::default(),
+        })
+        .await
+        .unwrap();
+    let admin = connect(port).await;
+    recreate_db(&*admin, "erd_it_data").await;
+    for i in items.iter().filter(|i| i.section == DdlSection::PreData) {
+        run_in(&*admin, "erd_it_data", &i.sql).await;
+    }
+    // A row that violates the NOT VALID check, identity rows, rows for the materialized view.
+    run_in(
+        &*admin,
+        "erd_it_data",
+        "INSERT INTO public.actor (first_name, last_name) VALUES ('BAD', 'x');
+         INSERT INTO public.ticket (title) VALUES ('restored');",
+    )
+    .await;
+    for i in items.iter().filter(|i| i.section == DdlSection::PostData) {
+        run_in(&*admin, "erd_it_data", &i.sql).await;
+    }
+    let value = |sql: &'static str| {
+        let admin = &admin;
+        async move {
+            let mut q = QueryRequest::new(sql);
+            q.database = Some("erd_it_data".into());
+            let r = execute_collect(&**admin, q).await.unwrap();
+            match &r[0].outcome {
+                dbstudio_core::StatementOutcome::Rows(rs) => rs.rows[0][0].clone(),
+                other => panic!("expected rows: {other:?}"),
+            }
+        }
+    };
+    use dbstudio_core::Value;
+    // The materialized view was refreshed after the data arrived.
+    assert_eq!(
+        value("SELECT count(*) FROM public.actor_names").await,
+        Value::Int(1)
+    );
+    // The identity continues after the value of the source (110) with its increment.
+    run_in(
+        &*admin,
+        "erd_it_data",
+        "INSERT INTO public.ticket (title) VALUES ('next')",
+    )
+    .await;
+    assert_eq!(
+        value("SELECT max(ticket_id) FROM public.ticket").await,
+        Value::Int(120)
+    );
+    admin.close().await.unwrap();
+    s.close().await.unwrap();
+}
+
 macro_rules! on_both {
     ($f:ident, $n16:ident, $n12:ident) => {
         #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -647,4 +799,9 @@ on_both!(
     ddl_options_and_selection,
     ddl_options_pg16,
     ddl_options_pg12
+);
+on_both!(
+    ddl_restore_with_data_between_phases,
+    ddl_data_pg16,
+    ddl_data_pg12
 );

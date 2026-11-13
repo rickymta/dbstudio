@@ -261,6 +261,7 @@ async fn build(
             ("a", _) => Some("identity always".to_string()),
             ("d", _) => Some("identity by default".to_string()),
             (_, "s") => Some("generated stored".to_string()),
+            (_, "v") => Some("generated virtual".to_string()),
             _ => None,
         };
         let type_oid: u32 = r.get(10);

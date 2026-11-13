@@ -323,7 +323,28 @@ fn parse_table(ddl: &str) -> Option<TableParts> {
             parts.body.push(line);
         }
     }
+    // A key whose first column is AUTO_INCREMENT must be defined together with the column
+    // (error 1075 otherwise).
+    let auto: Vec<String> = parts
+        .body
+        .iter()
+        .filter(|l| l.contains(" AUTO_INCREMENT"))
+        .filter_map(|l| parse_quoted(l, '`').map(|(n, _)| n))
+        .collect();
+    if !auto.is_empty() {
+        let (keep, move_back): (Vec<_>, Vec<_>) = std::mem::take(&mut parts.keys)
+            .into_iter()
+            .partition(|(_, clause)| first_key_column(clause).is_none_or(|c| !auto.contains(&c)));
+        parts.keys = keep;
+        parts.body.extend(move_back.into_iter().map(|(_, c)| c));
+    }
     Some(parts)
+}
+
+/// First column of a `KEY `n` (`a`, `b`)` clause.
+fn first_key_column(clause: &str) -> Option<String> {
+    let open = clause.find('(')?;
+    parse_quoted(&clause[open + 1..], '`').map(|(n, _)| n)
 }
 
 /// Table referenced by a `... REFERENCES [`db`.]`t` (...)` clause: `(database, table)`.
@@ -367,6 +388,52 @@ fn item(
     }
 }
 
+/// Session settings a stored object was created under (as `mysqldump` restores them).
+#[derive(Debug, Default, Clone)]
+struct CreatedUnder {
+    sql_mode: Option<String>,
+    charset: Option<String>,
+    collation: Option<String>,
+}
+
+fn is_plain_token(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `sql` wrapped so that it runs under the original sql_mode / client charset, which are put
+/// back afterwards. Unchanged when nothing is known.
+fn wrap_session(created: &CreatedUnder, sql: &str) -> String {
+    let charset = created.charset.as_deref().filter(|c| is_plain_token(c));
+    let collation = created.collation.as_deref().filter(|c| is_plain_token(c));
+    if created.sql_mode.is_none() && charset.is_none() && collation.is_none() {
+        return sql.to_string();
+    }
+    let mut out = vec![
+        "SET @dbstudio_mode = @@SESSION.sql_mode, @dbstudio_cs = @@SESSION.character_set_client, \
+         @dbstudio_cl = @@SESSION.collation_connection;"
+            .to_string(),
+    ];
+    if let Some(m) = &created.sql_mode {
+        out.push(format!(
+            "SET SESSION sql_mode = {};",
+            crate::sql::quote_literal(m, false)
+        ));
+    }
+    if let Some(c) = charset {
+        out.push(format!("SET SESSION character_set_client = {c};"));
+    }
+    if let Some(c) = collation {
+        out.push(format!("SET SESSION collation_connection = {c};"));
+    }
+    out.push(with_semicolon(sql));
+    out.push(
+        "SET SESSION sql_mode = @dbstudio_mode, character_set_client = @dbstudio_cs, \
+         collation_connection = @dbstudio_cl;"
+            .to_string(),
+    );
+    out.join("\n")
+}
+
 async fn show_create(
     conn: &mut mysql_async::Conn,
     what: &str,
@@ -374,6 +441,16 @@ async fn show_create(
     name: &str,
     column: &str,
 ) -> Result<String> {
+    Ok(show_create_ex(conn, what, db, name, column).await?.0)
+}
+
+async fn show_create_ex(
+    conn: &mut mysql_async::Conn,
+    what: &str,
+    db: &str,
+    name: &str,
+    column: &str,
+) -> Result<(String, CreatedUnder)> {
     let sql = format!(
         "SHOW CREATE {what} {}.{}",
         quote_ident(db),
@@ -385,14 +462,19 @@ async fn show_create(
         }
         _ => map_query_error(e),
     })?;
-    rows.first()
-        .and_then(|r| cell_named(r, column))
-        .ok_or_else(|| {
-            Error::query(format!(
-                "insufficient privileges to view the definition of {} `{name}`",
-                what.to_lowercase()
-            ))
-        })
+    let row = rows.first();
+    let text = row.and_then(|r| cell_named(r, column)).ok_or_else(|| {
+        Error::query(format!(
+            "insufficient privileges to view the definition of {} `{name}`",
+            what.to_lowercase()
+        ))
+    })?;
+    let created = CreatedUnder {
+        sql_mode: row.and_then(|r| cell_named(r, "sql_mode")),
+        charset: row.and_then(|r| cell_named(r, "character_set_client")),
+        collation: row.and_then(|r| cell_named(r, "collation_connection")),
+    };
+    Ok((text, created))
 }
 
 async fn build(
@@ -401,6 +483,11 @@ async fn build(
     opts: &dbstudio_core::DdlOptions,
 ) -> Result<Vec<DdlItem>> {
     let db = target.db.as_str();
+    // ANSI_QUOTES and friends change how SHOW CREATE quotes identifiers: read with a plain mode
+    // (the connection is reset when it goes back to the pool).
+    conn.query_drop("SET SESSION sql_mode = ''")
+        .await
+        .map_err(map_query_error)?;
     let qualify = opts.qualify_schema;
     let ine = if opts.if_not_exists {
         "IF NOT EXISTS "
@@ -563,11 +650,72 @@ async fn build(
     // Indexes come before foreign keys (a foreign key reuses a matching index).
     post.sort_by_key(|i| i.kind != ObjectKind::Index);
 
+    // Routines come before the views: a view may call a stored function.
+    if opts.include_routines {
+        let rows = catalog_rows(
+            conn,
+            "SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES \
+             WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_TYPE, ROUTINE_NAME",
+            (db,),
+        )
+        .await?;
+        for r in &rows {
+            let name = crate::session::cell(r, 0).unwrap_or_default();
+            let is_proc = crate::session::cell(r, 1).as_deref() == Some("PROCEDURE");
+            let (what, column, cat, kind, f) = if is_proc {
+                (
+                    "PROCEDURE",
+                    "Create Procedure",
+                    Cat::Procedure,
+                    ObjectKind::Procedure,
+                    folder::PROCEDURES,
+                )
+            } else {
+                (
+                    "FUNCTION",
+                    "Create Function",
+                    Cat::Function,
+                    ObjectKind::Function,
+                    folder::FUNCTIONS,
+                )
+            };
+            if !target.wants(cat, &name) {
+                continue;
+            }
+            let (raw, env) = show_create_ex(conn, what, db, &name, column).await?;
+            let mut sql = strip_definer(&raw);
+            if qualify {
+                sql = qualify_head(&sql, what, &name, db);
+            }
+            let path = db_path
+                .child(ObjectKind::Folder, f)
+                .child(kind, name.as_str());
+            if opts.include_drop {
+                pre.push(item(
+                    path.clone(),
+                    kind,
+                    DdlSection::PreData,
+                    format!("DROP {what} IF EXISTS {};", q(&name)),
+                    vec![],
+                ));
+            }
+            pre.push(item(
+                path,
+                kind,
+                DdlSection::PreData,
+                wrap_session(&env, &with_semicolon(&sql)),
+                vec![],
+            ));
+        }
+    }
+
     // Views in dependency order (a view mentions the views it reads from).
     let mut view_sql: HashMap<String, String> = HashMap::new();
+    let mut view_env: HashMap<String, CreatedUnder> = HashMap::new();
     for name in &views {
-        let raw = show_create(conn, "VIEW", db, name, "Create View").await?;
+        let (raw, env) = show_create_ex(conn, "VIEW", db, name, "Create View").await?;
         view_sql.insert(name.clone(), raw);
+        view_env.insert(name.clone(), env);
     }
     let mut ordered: Vec<&String> = Vec::new();
     let mut remaining: Vec<&String> = views.iter().collect();
@@ -623,68 +771,9 @@ async fn build(
             path,
             ObjectKind::View,
             DdlSection::PreData,
-            with_semicolon(&sql),
+            wrap_session(&view_env[name], &with_semicolon(&sql)),
             deps,
         ));
-    }
-
-    // Routines.
-    if opts.include_routines {
-        let rows = catalog_rows(
-            conn,
-            "SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES \
-             WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_TYPE, ROUTINE_NAME",
-            (db,),
-        )
-        .await?;
-        for r in &rows {
-            let name = crate::session::cell(r, 0).unwrap_or_default();
-            let is_proc = crate::session::cell(r, 1).as_deref() == Some("PROCEDURE");
-            let (what, column, cat, kind, f) = if is_proc {
-                (
-                    "PROCEDURE",
-                    "Create Procedure",
-                    Cat::Procedure,
-                    ObjectKind::Procedure,
-                    folder::PROCEDURES,
-                )
-            } else {
-                (
-                    "FUNCTION",
-                    "Create Function",
-                    Cat::Function,
-                    ObjectKind::Function,
-                    folder::FUNCTIONS,
-                )
-            };
-            if !target.wants(cat, &name) {
-                continue;
-            }
-            let raw = show_create(conn, what, db, &name, column).await?;
-            let mut sql = strip_definer(&raw);
-            if qualify {
-                sql = qualify_head(&sql, what, &name, db);
-            }
-            let path = db_path
-                .child(ObjectKind::Folder, f)
-                .child(kind, name.as_str());
-            if opts.include_drop {
-                pre.push(item(
-                    path.clone(),
-                    kind,
-                    DdlSection::PreData,
-                    format!("DROP {what} IF EXISTS {};", q(&name)),
-                    vec![],
-                ));
-            }
-            pre.push(item(
-                path,
-                kind,
-                DdlSection::PreData,
-                with_semicolon(&sql),
-                vec![],
-            ));
-        }
     }
 
     // Triggers.
@@ -711,7 +800,8 @@ async fn build(
             if !wanted {
                 continue;
             }
-            let raw = show_create(conn, "TRIGGER", db, &name, "SQL Original Statement").await?;
+            let (raw, env) =
+                show_create_ex(conn, "TRIGGER", db, &name, "SQL Original Statement").await?;
             let mut sql = strip_definer(&raw);
             if qualify {
                 sql = qualify_head(&sql, "TRIGGER", &name, db);
@@ -733,7 +823,7 @@ async fn build(
                 path,
                 ObjectKind::Trigger,
                 DdlSection::PostData,
-                with_semicolon(&sql),
+                wrap_session(&env, &with_semicolon(&sql)),
                 vec![table_path],
             ));
         }
@@ -802,6 +892,41 @@ mod tests {
             referenced_table("CONSTRAINT `x` FOREIGN KEY (`a`) REFERENCES `other`.`t` (`id`)"),
             Some((Some("other".into()), "t".into()))
         );
+    }
+
+    #[test]
+    fn auto_increment_keys_stay_in_the_table() {
+        let ddl = "CREATE TABLE `t` (\n  `grp` int NOT NULL,\n  `n` int NOT NULL AUTO_INCREMENT,\n  PRIMARY KEY (`grp`,`n`),\n  KEY `idx_n` (`n`),\n  KEY `idx_g` (`grp`,`n`)\n) ENGINE=InnoDB";
+        let p = parse_table(ddl).unwrap();
+        assert_eq!(p.keys.len(), 1);
+        assert_eq!(p.keys[0].0, "idx_g");
+        assert!(p.body.iter().any(|l| l.starts_with("KEY `idx_n`")));
+        assert_eq!(first_key_column("KEY `i` (`a`,`b`)").as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn wraps_with_original_session_settings() {
+        let created = CreatedUnder {
+            sql_mode: Some("ANSI_QUOTES,STRICT_TRANS_TABLES".into()),
+            charset: Some("utf8mb4".into()),
+            collation: Some("utf8mb4_0900_ai_ci".into()),
+        };
+        let sql = wrap_session(&created, "CREATE FUNCTION f() RETURNS int RETURN 1");
+        let lines: Vec<&str> = sql.lines().collect();
+        assert!(lines[0].starts_with("SET @dbstudio_mode"));
+        assert_eq!(
+            lines[1],
+            "SET SESSION sql_mode = 'ANSI_QUOTES,STRICT_TRANS_TABLES';"
+        );
+        assert_eq!(lines[2], "SET SESSION character_set_client = utf8mb4;");
+        assert_eq!(lines[4], "CREATE FUNCTION f() RETURNS int RETURN 1;");
+        assert!(lines[5].contains("@dbstudio_cs"));
+        // Hostile charset names are ignored; nothing known leaves the text alone.
+        let evil = CreatedUnder {
+            charset: Some("x; DROP".into()),
+            ..Default::default()
+        };
+        assert_eq!(wrap_session(&evil, "A"), "A");
     }
 
     #[test]

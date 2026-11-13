@@ -193,6 +193,8 @@ struct RelRow {
     populated: bool,
     server: Option<String>,
     fdw_options: Vec<String>,
+    /// Parents of a classic (non-partition) inheritance.
+    inherits: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -247,6 +249,8 @@ struct SeqRow {
     owner_dep: Option<String>,
     owner: Option<(String, String, String)>,
     last_value: Option<i64>,
+    /// The connected role may read the current value (`SELECT` on the sequence).
+    readable: bool,
     comment: Option<String>,
 }
 
@@ -262,6 +266,8 @@ struct TypeRow {
     not_null: bool,
     default: Option<String>,
     constraints: Vec<String>,
+    /// `SUBTYPE = ..., COLLATION = ...` of a range type.
+    range_opts: Option<String>,
 }
 
 #[derive(Debug)]
@@ -297,6 +303,8 @@ struct Catalog {
     /// `(owner relation oid, referenced oid, referenced is a routine)`.
     deps: Vec<(u32, u32, bool)>,
     grants: Vec<GrantRow>,
+    /// `(extension, schema)` of the installed extensions except plpgsql.
+    extensions: Vec<(String, String)>,
 }
 
 const NOT_EXTENSION: &str = "NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = {oid} \
@@ -343,7 +351,16 @@ impl Catalog {
                     CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END, \
                     c.reloptions::text[], \
                     CASE WHEN c.relkind = 'm' THEN c.relispopulated ELSE true END, \
-                    fs.srvname::text, ft.ftoptions::text[] \
+                    fs.srvname::text, ft.ftoptions::text[], \
+                    ARRAY(SELECT ihn.nspname::text FROM pg_inherits ih \
+                          JOIN pg_class ihc ON ihc.oid = ih.inhparent \
+                          JOIN pg_namespace ihn ON ihn.oid = ihc.relnamespace \
+                          WHERE ih.inhrelid = c.oid AND NOT c.relispartition \
+                          ORDER BY ih.inhseqno)::text[], \
+                    ARRAY(SELECT ihc.relname::text FROM pg_inherits ih \
+                          JOIN pg_class ihc ON ihc.oid = ih.inhparent \
+                          WHERE ih.inhrelid = c.oid AND NOT c.relispartition \
+                          ORDER BY ih.inhseqno)::text[] \
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
              LEFT JOIN pg_inherits i ON i.inhrelid = c.oid AND c.relispartition \
              LEFT JOIN pg_class pc ON pc.oid = i.inhparent \
@@ -374,6 +391,12 @@ impl Catalog {
                 populated: r.get(13),
                 server: r.get(14),
                 fdw_options: r.get::<_, Option<Vec<String>>>(15).unwrap_or_default(),
+                inherits: r
+                    .get::<_, Option<Vec<String>>>(16)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .zip(r.get::<_, Option<Vec<String>>>(17).unwrap_or_default())
+                    .collect(),
             });
         }
         let oids: Vec<u32> = cat.rels.iter().map(|r| r.oid).collect();
@@ -453,11 +476,19 @@ impl Catalog {
             }
         }
 
+        let sql = "SELECT e.extname::text, n.nspname::text FROM pg_extension e \
+                   JOIN pg_namespace n ON n.oid = e.extnamespace \
+                   WHERE e.extname <> 'plpgsql' ORDER BY e.oid";
+        for r in catalog_query(client, sql, &[]).await? {
+            cat.extensions.push((r.get(0), r.get(1)));
+        }
+
         let sql = format!(
             "SELECT c.oid, n.nspname::text, c.relname::text, format_type(s.seqtypid, NULL), \
                     s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle, \
                     od.deptype::text, tn.nspname::text, tc.relname::text, ta.attname::text, \
-                    pg_sequence_last_value(c.oid), obj_description(c.oid, 'pg_class') \
+                    CASE WHEN has_sequence_privilege(c.oid, 'SELECT') THEN pg_sequence_last_value(c.oid) END, \
+                    obj_description(c.oid, 'pg_class'), has_sequence_privilege(c.oid, 'SELECT') \
              FROM pg_sequence s \
              JOIN pg_class c ON c.oid = s.seqrelid \
              JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -493,6 +524,7 @@ impl Catalog {
                 owner,
                 last_value: r.get(14),
                 comment: r.get(15),
+                readable: r.get(16),
             });
         }
 
@@ -509,9 +541,17 @@ impl Catalog {
                     t.typnotnull, pg_get_expr(t.typdefaultbin, 0), \
                     CASE WHEN t.typtype = 'd' THEN ARRAY(SELECT 'CONSTRAINT ' \
                          || quote_ident(k.conname) || ' ' || pg_get_constraintdef(k.oid, true) \
-                         FROM pg_constraint k WHERE k.contypid = t.oid ORDER BY k.conname) END \
+                         FROM pg_constraint k WHERE k.contypid = t.oid ORDER BY k.conname) END, \
+                    CASE WHEN t.typtype = 'r' THEN (SELECT 'SUBTYPE = ' \
+                         || format_type(rg.rngsubtype, NULL) \
+                         || CASE WHEN rg.rngcollation <> 0 THEN ', COLLATION = ' \
+                              || (SELECT quote_ident(cn.nspname) || '.' || quote_ident(co.collname) \
+                                  FROM pg_collation co \
+                                  JOIN pg_namespace cn ON cn.oid = co.collnamespace \
+                                  WHERE co.oid = rg.rngcollation) ELSE '' END \
+                         FROM pg_range rg WHERE rg.rngtypid = t.oid) END \
              FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace \
-             WHERE t.typtype IN ('e', 'd', 'c') AND {} AND {} \
+             WHERE t.typtype IN ('e', 'd', 'c', 'r') AND {} AND {} \
                AND (t.typtype <> 'c' OR EXISTS (SELECT 1 FROM pg_class k \
                     WHERE k.oid = t.typrelid AND k.relkind = 'c')) \
              ORDER BY t.oid",
@@ -530,6 +570,7 @@ impl Catalog {
                 not_null: r.get(7),
                 default: r.get(8),
                 constraints: r.get::<_, Option<Vec<String>>>(9).unwrap_or_default(),
+                range_opts: r.get(10),
             });
         }
 
@@ -769,6 +810,22 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
         );
         schema_names.extend(funcs.iter().map(|f| f.schema.as_str()));
     }
+    // Session settings as pg_dump writes them: function bodies are not validated while
+    // objects are created in dependency order, and names resolve only through qualification.
+    {
+        let db_path = ObjectPath::root().child(ObjectKind::Database, database);
+        let mut header = vec![
+            "SET check_function_bodies = false;".to_string(),
+            "SET client_encoding = 'UTF8';".to_string(),
+            "SET standard_conforming_strings = on;".to_string(),
+        ];
+        if opts.qualify_schema {
+            header.push("SELECT pg_catalog.set_config('search_path', '', false);".to_string());
+        }
+        for sql in header {
+            out.pre(db_path.clone(), ObjectKind::Database, sql, vec![]);
+        }
+    }
     if opts.qualify_schema {
         for s in cat
             .schemas
@@ -792,6 +849,32 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
         }
     }
 
+    // Extensions (not their member objects) before the types and tables that use them.
+    if target.selection.is_none() {
+        let db_path = ObjectPath::root().child(ObjectKind::Database, database);
+        for (name, schema) in &cat.extensions {
+            let with_schema = if opts.qualify_schema
+                && (schema == "public" || schema_names.contains(schema.as_str()))
+            {
+                format!(" WITH SCHEMA {}", quote_ident(schema))
+            } else {
+                String::new()
+            };
+            out.pre(
+                db_path.clone(),
+                ObjectKind::Database,
+                format!(
+                    "CREATE EXTENSION IF NOT EXISTS {}{with_schema};",
+                    quote_ident(name)
+                ),
+                vec![],
+            );
+        }
+    }
+
+    // Domain constraints that are NOT VALID cannot be part of CREATE DOMAIN.
+    let mut domain_post: Vec<(ObjectPath, String)> = Vec::new();
+
     // Types (oid order keeps dependencies of composite/domain types on earlier types).
     for t in cat.types.iter().filter(|t| {
         target.selection.is_none()
@@ -814,6 +897,10 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
                 format!("CREATE TYPE {q} AS ENUM ({});", labels.join(", "))
             }
             "c" => format!("CREATE TYPE {q} AS ({});", t.attrs.join(", ")),
+            "r" => format!(
+                "CREATE TYPE {q} AS RANGE ({});",
+                t.range_opts.clone().unwrap_or_default()
+            ),
             _ => {
                 let mut s = format!(
                     "CREATE DOMAIN {q} AS {}",
@@ -826,7 +913,11 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
                     s.push_str(" NOT NULL");
                 }
                 for c in &t.constraints {
-                    s.push_str(&format!(" {c}"));
+                    if c.ends_with(" NOT VALID") {
+                        domain_post.push((path.clone(), format!("ALTER DOMAIN {q} ADD {c};")));
+                    } else {
+                        s.push_str(&format!(" {c}"));
+                    }
                 }
                 s.push(';');
                 s
@@ -895,23 +986,38 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
     for c in &cat.constraints {
         cons_by_rel.entry(c.rel).or_default().push(c);
     }
+    // Identity sequences by owning column: their options belong to the column definition.
+    let identity: HashMap<(String, String, String), &SeqRow> = cat
+        .seqs
+        .iter()
+        .filter(|s| s.owner_dep.as_deref() == Some("i"))
+        .filter_map(|s| s.owner.clone().map(|o| (o, s)))
+        .collect();
+    let mut not_valid_checks: Vec<(ObjectPath, String)> = Vec::new();
     let mut emitted_tables: HashSet<(String, String)> = HashSet::new();
     let mut pending: Vec<&RelRow> = table_rows.clone();
     while !pending.is_empty() {
         let before = pending.len();
         let mut next = Vec::new();
         for r in pending {
-            let parent_ready = match &r.parent {
-                Some(p) if r.is_partition => {
-                    emitted_tables.contains(p)
-                        || !table_rows
-                            .iter()
-                            .any(|t| (&t.schema, &t.name) == (&p.0, &p.1))
-                }
-                _ => true,
+            let parents: Vec<&(String, String)> = match &r.parent {
+                Some(p) if r.is_partition => vec![p],
+                _ => r.inherits.iter().collect(),
             };
+            let parent_ready = parents.iter().all(|p| {
+                emitted_tables.contains(*p)
+                    || !table_rows
+                        .iter()
+                        .any(|t| (&t.schema, &t.name) == (&p.0, &p.1))
+            });
             if parent_ready {
-                push_table(&mut out, r, &cols_by_rel, &cons_by_rel);
+                not_valid_checks.extend(push_table(
+                    &mut out,
+                    r,
+                    &cols_by_rel,
+                    &cons_by_rel,
+                    &identity,
+                ));
                 emitted_tables.insert((r.schema.clone(), r.name.clone()));
             } else {
                 next.push(r);
@@ -921,7 +1027,13 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
         if pending.len() == before {
             // Cycle (cannot happen with real partition trees): emit the rest as they are.
             for r in pending.drain(..) {
-                push_table(&mut out, r, &cols_by_rel, &cons_by_rel);
+                not_valid_checks.extend(push_table(
+                    &mut out,
+                    r,
+                    &cols_by_rel,
+                    &cons_by_rel,
+                    &identity,
+                ));
             }
         }
     }
@@ -961,8 +1073,18 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
             ordered.append(&mut remaining);
         }
     }
+    let mut refreshes: Vec<(ObjectPath, String)> = Vec::new();
     for v in ordered {
         push_view(&mut out, v, &view_deps, &rel_by_oid);
+        if v.relkind == "m" && v.populated {
+            refreshes.push((
+                object_path(database, &v.schema, ObjectKind::MaterializedView, &v.name),
+                format!(
+                    "REFRESH MATERIALIZED VIEW {};",
+                    out.name(&v.schema, &v.name)
+                ),
+            ));
+        }
     }
 
     // Remaining routines.
@@ -977,10 +1099,17 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
                 continue;
             };
             let tp = rel_path(rel);
-            let def = if opts.if_not_exists {
-                index_if_not_exists(&i.def)
+            // An index of a partitioned table is created on the parent without ONLY, so that
+            // PostgreSQL creates (and attaches) the matching index of every partition itself.
+            let base = if rel.relkind == "p" {
+                i.def.replacen(" ON ONLY ", " ON ", 1)
             } else {
                 i.def.clone()
+            };
+            let def = if opts.if_not_exists {
+                index_if_not_exists(&base)
+            } else {
+                base
             };
             out.post(
                 child_path(&tp, folder::INDEXES, ObjectKind::Index, &i.name),
@@ -1026,6 +1155,12 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
             );
         }
     }
+    for (path, sql) in domain_post {
+        out.post(path, ObjectKind::Type, sql, vec![]);
+    }
+    for (path, sql) in not_valid_checks {
+        out.post(path.clone(), ObjectKind::Table, sql, vec![path]);
+    }
     if opts.include_triggers {
         for t in &cat.triggers {
             let Some(rel) = rel_by_oid.get(&t.rel).filter(|r| rel_oids.contains(&r.oid)) else {
@@ -1049,10 +1184,11 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
                     qualify_pair(&out, sch, tbl),
                     quote_ident(col),
                     (sch.clone(), tbl.clone()),
+                    col.clone(),
                 )
             });
             match (s.owner_dep.as_deref(), &owner_table) {
-                (Some("a"), Some((tbl, col, key))) if emitted_table(&rels, key) => out.post(
+                (Some("a"), Some((tbl, col, key, _))) if emitted_table(&rels, key) => out.post(
                     path.clone(),
                     ObjectKind::Sequence,
                     format!("ALTER SEQUENCE {q} OWNED BY {tbl}.{col};"),
@@ -1060,12 +1196,22 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
                 ),
                 _ => {}
             }
+            if !s.readable {
+                out.post(
+                    path.clone(),
+                    ObjectKind::Sequence,
+                    format!(
+                        "-- Warning: no SELECT privilege on sequence {q}: its current value was not captured"
+                    ),
+                    vec![],
+                );
+            }
             if let Some(v) = s.last_value {
                 let sql = match (s.owner_dep.as_deref(), &owner_table) {
-                    (Some("i"), Some((tbl, col, key))) if emitted_table(&rels, key) => format!(
+                    (Some("i"), Some((tbl, _, key, raw))) if emitted_table(&rels, key) => format!(
                         "SELECT pg_catalog.setval(pg_catalog.pg_get_serial_sequence({}, {}), {v}, true);",
                         quote_literal(tbl),
-                        quote_literal(&col.trim_matches('"').replace("\"\"", "\""))
+                        quote_literal(raw)
                     ),
                     (Some("i"), _) => continue,
                     _ => format!(
@@ -1076,6 +1222,10 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
                 out.post(path, ObjectKind::Sequence, sql, vec![]);
             }
         }
+    }
+    // Materialized views are filled once the data is in.
+    for (path, sql) in refreshes {
+        out.post(path, ObjectKind::MaterializedView, sql, vec![]);
     }
     if opts.include_comments {
         push_comments(
@@ -1138,7 +1288,8 @@ fn push_table(
     r: &RelRow,
     cols_by_rel: &HashMap<u32, Vec<&ColRow>>,
     cons_by_rel: &HashMap<u32, Vec<&ConRow>>,
-) {
+    identity: &HashMap<(String, String, String), &SeqRow>,
+) -> Vec<(ObjectPath, String)> {
     let q = out.name(&r.schema, &r.name);
     let path = object_path(out.database, &r.schema, ObjectKind::Table, &r.name);
     let foreign = r.relkind == "f";
@@ -1156,16 +1307,28 @@ fn push_table(
     } else {
         ""
     };
-    // Constraints other than foreign keys.
-    let constraint_lines: Vec<String> = cons_by_rel
-        .get(&r.oid)
-        .map(|v| {
-            v.iter()
-                .filter(|c| c.contype != "f" && !(foreign && c.contype != "c"))
-                .map(|c| format!("    CONSTRAINT {} {}", quote_ident(&c.name), c.def))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Constraints other than foreign keys. A NOT VALID check would be validated against the
+    // data while it is loaded, so it is added after the data (PostData) instead.
+    let mut deferred: Vec<(ObjectPath, String)> = Vec::new();
+    let mut constraint_lines: Vec<String> = Vec::new();
+    for c in cons_by_rel.get(&r.oid).into_iter().flatten() {
+        if c.contype == "f" || (foreign && c.contype != "c") {
+            continue;
+        }
+        if c.def.ends_with(" NOT VALID") {
+            let kw = if foreign { "FOREIGN TABLE" } else { "TABLE" };
+            deferred.push((
+                path.clone(),
+                format!(
+                    "ALTER {kw} {q} ADD CONSTRAINT {} {};",
+                    quote_ident(&c.name),
+                    c.def
+                ),
+            ));
+        } else {
+            constraint_lines.push(format!("    CONSTRAINT {} {}", quote_ident(&c.name), c.def));
+        }
+    }
     let mut sql;
     if let (true, Some((ps, pn))) = (r.is_partition, &r.parent) {
         sql = format!("CREATE TABLE {ine}{q} PARTITION OF {}", out.name(ps, pn));
@@ -1186,10 +1349,21 @@ fn push_table(
         };
         let mut lines: Vec<String> = cols_by_rel
             .get(&r.oid)
-            .map(|v| v.iter().map(|c| column_line(c)).collect())
+            .map(|v| {
+                v.iter()
+                    .map(|c| {
+                        let seq = identity.get(&(r.schema.clone(), r.name.clone(), c.name.clone()));
+                        column_line(c, seq.copied())
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         lines.extend(constraint_lines);
         sql = format!("{prefix} {ine}{q} (\n{}\n)", lines.join(",\n"));
+        if !r.inherits.is_empty() {
+            let parents: Vec<String> = r.inherits.iter().map(|(s, n)| out.name(s, n)).collect();
+            sql.push_str(&format!("\nINHERITS ({})", parents.join(", ")));
+        }
         if let Some(key) = &r.partkey {
             sql.push_str(&format!("\nPARTITION BY {key}"));
         }
@@ -1214,18 +1388,42 @@ fn push_table(
         sql.push_str(&with_options(&r.options));
     }
     sql.push(';');
-    out.pre(path, ObjectKind::Table, sql, vec![]);
+    let deps = r
+        .inherits
+        .iter()
+        .map(|(s, n)| object_path(out.database, s, ObjectKind::Table, n))
+        .collect();
+    out.pre(path, ObjectKind::Table, sql, deps);
+    deferred
 }
 
-fn column_line(c: &ColRow) -> String {
+fn column_line(c: &ColRow, identity_seq: Option<&SeqRow>) -> String {
     let mut line = format!("    {} {}", quote_ident(&c.name), c.type_name);
     if let Some(coll) = &c.collation {
         line.push_str(&format!(" COLLATE {coll}"));
     }
     match (c.identity.as_str(), c.generated.as_str(), &c.default) {
-        ("a", _, _) => line.push_str(" GENERATED ALWAYS AS IDENTITY"),
-        ("d", _, _) => line.push_str(" GENERATED BY DEFAULT AS IDENTITY"),
+        ("a" | "d", _, _) => {
+            let always = if c.identity == "a" {
+                "ALWAYS"
+            } else {
+                "BY DEFAULT"
+            };
+            line.push_str(&format!(" GENERATED {always} AS IDENTITY"));
+            if let Some(s) = identity_seq {
+                line.push_str(&format!(
+                    " (START WITH {} INCREMENT BY {} MINVALUE {} MAXVALUE {} CACHE {} {}CYCLE)",
+                    s.start,
+                    s.increment,
+                    s.min,
+                    s.max,
+                    s.cache,
+                    if s.cycle { "" } else { "NO " }
+                ));
+            }
+        }
         (_, "s", Some(expr)) => line.push_str(&format!(" GENERATED ALWAYS AS ({expr}) STORED")),
+        (_, "v", Some(expr)) => line.push_str(&format!(" GENERATED ALWAYS AS ({expr}) VIRTUAL")),
         (_, _, Some(expr)) => line.push_str(&format!(" DEFAULT {expr}")),
         _ => {}
     }
@@ -1282,8 +1480,8 @@ fn push_view(
         } else {
             ""
         };
-        let data = if v.populated { "" } else { "\nWITH NO DATA" };
-        format!("CREATE MATERIALIZED VIEW {ine}{q}{opts} AS\n{def}{data};")
+        // Always created empty; `REFRESH` in PostData fills it after the data load.
+        format!("CREATE MATERIALIZED VIEW {ine}{q}{opts} AS\n{def}\nWITH NO DATA;")
     } else {
         format!("CREATE OR REPLACE VIEW {q}{opts} AS\n{def};")
     };
@@ -1481,7 +1679,7 @@ mod tests {
             collation: None,
         };
         assert_eq!(
-            column_line(&c),
+            column_line(&c, None),
             "    \"id\" integer GENERATED BY DEFAULT AS IDENTITY NOT NULL"
         );
         let d = ColRow {
@@ -1493,7 +1691,7 @@ mod tests {
             ..c
         };
         assert_eq!(
-            column_line(&d),
+            column_line(&d, None),
             "    \"at\" timestamp with time zone DEFAULT now()"
         );
     }
