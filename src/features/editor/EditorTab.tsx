@@ -19,6 +19,7 @@ import { IconButton } from '@/components/ui/IconButton';
 import { Spinner } from '@/components/ui/Spinner';
 import { useToastStore } from '@/components/ui/toastStore';
 import { useConnectionProfile } from '@/features/connections/queries';
+import { useHostKeyPrompt } from '@/features/connections/useHostKeyPrompt';
 import { ipc, toIpcError } from '@/lib/ipc';
 import type { ParamRef, ParamValue } from '@/lib/types';
 import { useIsOpening, useSession, useSessionsStore } from '@/stores/sessions';
@@ -78,6 +79,8 @@ function EditorBody({
   const session = useSession(connectionId ?? '');
   const opening = useIsOpening(connectionId ?? '');
   const profile = useConnectionProfile(connectionId ?? '');
+  // An SSH tunnel to an unknown host stops with `sshHostKey`: ask, trust, then connect again.
+  const { run: runWithHostKey, dialog: hostKeyDialog } = useHostKeyPrompt();
   const toast = useToastStore.getState().push;
   const editor = useRef<SqlEditorHandle>(null);
   const [panel, setPanel] = useState(false);
@@ -294,6 +297,7 @@ function EditorBody({
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="editor-tab">
+      {hostKeyDialog}
       <div
         className="flex h-9 shrink-0 items-center gap-1 border-b border-border bg-surface px-2"
         role="toolbar"
@@ -412,10 +416,9 @@ function EditorBody({
               size="sm"
               disabled={opening}
               onClick={() =>
-                void useSessionsStore
-                  .getState()
-                  .open(connectionId)
-                  .catch((e: unknown) => toast('error', toIpcError(e).message))
+                void runWithHostKey(() => useSessionsStore.getState().open(connectionId)).catch(
+                  (e: unknown) => toast('error', toIpcError(e).message),
+                )
               }
             >
               {opening ? <Spinner size={12} /> : null}

@@ -684,3 +684,86 @@ async fn read_only_profile_stays_read_only(port: u16) {
     exec(&*admin, &format!("DROP TABLE {table}")).await;
 }
 on_both!(read_only_profile_stays_read_only, ro_16, ro_12);
+
+fn explain_req(text: &str, analyze: bool) -> dbstudio_core::ExplainRequest {
+    dbstudio_core::ExplainRequest {
+        query_id: Uuid::new_v4(),
+        text: text.into(),
+        database: None,
+        analyze,
+        options: dbstudio_core::ExplainOptions::default(),
+        timeout_ms: None,
+    }
+}
+
+async fn lease_explain(port: u16) {
+    let admin = connect(port).await;
+    let table = unique("it_lease_explain");
+    exec(
+        &*admin,
+        &format!("CREATE TABLE {table} (id int PRIMARY KEY, v int NOT NULL)"),
+    )
+    .await;
+    let lease = open(&*admin, true).await;
+    // Outside a transaction: plain and ANALYZE of a write (rolled back).
+    let plain = lease
+        .explain(explain_req(&format!("SELECT * FROM {table}"), false))
+        .await
+        .expect("plain");
+    assert!(!plain.analyzed);
+    let raw = lease
+        .explain(explain_req(
+            &format!("INSERT INTO {table} VALUES (1, 1)"),
+            true,
+        ))
+        .await
+        .expect("analyze outside tx");
+    assert!(raw.analyzed && raw.rolled_back);
+    assert_eq!(
+        count(&*admin, &format!("SELECT count(*) FROM {table}")).await,
+        0
+    );
+    assert_eq!(lease.state().transaction, TxStatus::Idle);
+    // A failing ANALYZE does not leave a transaction behind.
+    lease
+        .explain(explain_req("SELECT * FROM no_such_table_x", true))
+        .await
+        .unwrap_err();
+    assert_eq!(lease.state().transaction, TxStatus::Idle);
+    // Several statements are refused.
+    lease
+        .explain(explain_req("SELECT 1; SELECT 2", false))
+        .await
+        .unwrap_err();
+    // Inside a transaction: earlier work survives, the ANALYZE write is undone, and a failing
+    // explain does not abort the transaction.
+    lease.begin(TxOptions::default()).await.unwrap();
+    run(&*lease, &format!("INSERT INTO {table} VALUES (10, 10)")).await;
+    let raw = lease
+        .explain(explain_req(
+            &format!("INSERT INTO {table} VALUES (11, 11)"),
+            true,
+        ))
+        .await
+        .expect("analyze in tx");
+    assert!(raw.analyzed && raw.rolled_back);
+    lease
+        .explain(explain_req("SELECT * FROM no_such_table_x", false))
+        .await
+        .unwrap_err();
+    assert_eq!(lease.state().transaction, TxStatus::Active);
+    let rows = run(&*lease, &format!("SELECT id FROM {table} ORDER BY id")).await;
+    let ids = match &rows[0].outcome {
+        StatementOutcome::Rows(rs) => rs.rows.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(ids, vec![vec![Value::Int(10)]]);
+    lease.commit().await.unwrap();
+    assert_eq!(
+        count(&*admin, &format!("SELECT count(*) FROM {table}")).await,
+        1
+    );
+    lease.close().await.unwrap();
+    exec(&*admin, &format!("DROP TABLE {table}")).await;
+}
+on_both!(lease_explain, lease_explain_16, lease_explain_12);

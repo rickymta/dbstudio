@@ -1,7 +1,7 @@
 // Export / import (dbstudio-export) and file dialogs (`files` commands).
 
 import type { ObjectPath, Uuid, Value, ValueKind } from './core';
-import type { StatementInfo } from './script';
+import type { ScriptDialect, StatementInfo } from './script';
 import type { DdlOptions, OnConflict } from './model';
 
 export type ExportContent = 'schema' | 'data' | 'both';
@@ -125,6 +125,10 @@ export interface ImportPreviewRequest {
   format: ImportFormat;
   /** Default 50. */
   rows?: number;
+  /** Dialect of the target connection (splits `.sql` files); guessed when absent. */
+  dialect?: ScriptDialect | null;
+  /** Target connection; the host resolves its dialect when `dialect` is absent. */
+  connectionId?: Uuid | null;
 }
 
 export interface ImportPreview {

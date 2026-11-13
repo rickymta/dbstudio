@@ -638,7 +638,14 @@ export function ImportWizard({ open, onOpenChange, session, target, parent }: Im
   const preview = useQuery({
     queryKey: ['importPreview', raw.file, JSON.stringify(format)],
     enabled: raw.file !== '',
-    queryFn: () => ipc.importPreview({ file: raw.file, format, rows: 50 }),
+    queryFn: () =>
+      ipc.importPreview({
+        file: raw.file,
+        format,
+        rows: 50,
+        dialect: session.dialect,
+        connectionId: session.connectionId,
+      }),
   });
   const data = preview.data;
   const details = useQuery({

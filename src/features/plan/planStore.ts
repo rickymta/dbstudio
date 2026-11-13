@@ -103,9 +103,22 @@ export async function runPlan(planId: string, opts: { analyze?: boolean } = {}):
   });
   try {
     // A production ANALYZE of a write asks for the typed confirmation (`ConfirmDestructiveHost`).
-    const result = await guardedCall((confirm) =>
-      ipc.planExplain(entry.sessionId, entry.leaseId, request, null, confirm ?? null),
-    );
+    const explain = (leaseId: string | null) =>
+      guardedCall((confirm) =>
+        ipc.planExplain(entry.sessionId, leaseId, request, null, confirm ?? null),
+      );
+    let result;
+    try {
+      result = await explain(entry.leaseId);
+    } catch (e) {
+      // A driver without EXPLAIN on its dedicated connection: explain through the session.
+      const err = toIpcError(e);
+      if (entry.leaseId && err.kind === 'unsupported' && err.capability === 'explain') {
+        result = await explain(null);
+      } else {
+        throw e;
+      }
+    }
     const cur = usePlanStore.getState().entries[planId];
     if (!cur || cur.runId !== runId) return;
     usePlanStore.getState().patch(planId, {

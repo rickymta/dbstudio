@@ -812,3 +812,81 @@ async fn only_plain_selects_stay_open_for_fetch_more() {
         lease.close().await.unwrap();
     }
 }
+
+fn explain_req(text: &str, analyze: bool) -> dbstudio_core::ExplainRequest {
+    dbstudio_core::ExplainRequest {
+        query_id: uuid::Uuid::new_v4(),
+        text: text.into(),
+        database: None,
+        analyze,
+        options: dbstudio_core::ExplainOptions::default(),
+        timeout_ms: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lease_explain_inside_and_outside_transaction() {
+    if !it_enabled() {
+        return;
+    }
+    for t in lease_targets() {
+        let db = scratch_db(t, "lease_explain").await;
+        let s = user_session(t).await;
+        let lease = open(&*s, &db, true).await;
+        exec(
+            &*lease,
+            "CREATE TABLE t (id int PRIMARY KEY, v int NOT NULL) ENGINE=InnoDB",
+        )
+        .await;
+        exec(&*lease, "INSERT INTO t VALUES (1, 1), (2, 2)").await;
+        let n = t.name;
+        // Plain EXPLAIN of a read and of a write.
+        for sql in ["SELECT * FROM t WHERE id = 1", "UPDATE t SET v = 9"] {
+            let raw = lease
+                .explain(explain_req(sql, false))
+                .await
+                .unwrap_or_else(|e| panic!("[{n}] {sql}: {e}"));
+            assert!(!raw.analyzed, "[{n}]");
+        }
+        // ANALYZE of a read outside a transaction; a write is unsupported.
+        match lease.explain(explain_req("SELECT * FROM t", true)).await {
+            Ok(raw) => assert!(raw.analyzed && raw.rolled_back, "[{n}]"),
+            Err(Error::Unsupported(_)) => {}
+            Err(e) => panic!("[{n}] {e}"),
+        }
+        let e = lease
+            .explain(explain_req("UPDATE t SET v = 9", true))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&e, Error::Unsupported(m) if m == "explain_analyze_writes"),
+            "[{n}] {e:?}"
+        );
+        assert_eq!(lease.state().transaction, TxStatus::Idle, "[{n}]");
+        // Inside a transaction: nothing is committed or rolled back by explain.
+        lease.begin(TxOptions::default()).await.unwrap();
+        exec(&*lease, "INSERT INTO t VALUES (10, 10)").await;
+        lease
+            .explain(explain_req("SELECT * FROM t WHERE id = 10", false))
+            .await
+            .unwrap_or_else(|e| panic!("[{n}] {e}"));
+        match lease.explain(explain_req("SELECT * FROM t", true)).await {
+            Ok(_) | Err(Error::Unsupported(_)) => {}
+            Err(e) => panic!("[{n}] {e}"),
+        }
+        assert_eq!(lease.state().transaction, TxStatus::Active, "[{n}]");
+        assert_eq!(
+            first_int(&exec(&*lease, "SELECT count(*) FROM t").await),
+            3,
+            "[{n}]"
+        );
+        // The transaction is still open (not committed): rolling back removes the row.
+        lease.rollback().await.unwrap();
+        assert_eq!(
+            first_int(&exec(&*lease, "SELECT count(*) FROM t").await),
+            2,
+            "[{n}]"
+        );
+        lease.close().await.unwrap();
+    }
+}

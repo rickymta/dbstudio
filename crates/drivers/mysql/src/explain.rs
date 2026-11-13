@@ -44,12 +44,32 @@ pub(crate) async fn explain(session: &MySqlSession, req: ExplainRequest) -> Resu
 }
 
 async fn run(session: &MySqlSession, conn: &mut Conn, req: &ExplainRequest) -> Result<RawPlan> {
+    run_on(conn, req, session.inner.is_mariadb, false).await
+}
+
+/// Explain one statement on a dedicated (lease) connection. With `in_transaction` the user's
+/// transaction is open: `START TRANSACTION` would commit it, so the analysed read runs inside it
+/// as it is (reads change nothing, there is nothing to roll back).
+pub(crate) async fn explain_on_lease(
+    conn: &mut Conn,
+    req: &ExplainRequest,
+    mariadb: bool,
+    in_transaction: bool,
+) -> Result<RawPlan> {
+    run_on(conn, req, mariadb, in_transaction).await
+}
+
+async fn run_on(
+    conn: &mut Conn,
+    req: &ExplainRequest,
+    mariadb: bool,
+    in_transaction: bool,
+) -> Result<RawPlan> {
     let (raw_version, sql_mode): (String, String) = conn
         .query_first("SELECT VERSION(), @@SESSION.sql_mode")
         .await
         .map_err(map_query_error)?
         .unwrap_or_default();
-    let mariadb = session.inner.is_mariadb;
     let version = normalize_version(&raw_version);
     // The dialect follows this very connection's sql_mode (backslash escapes in strings).
     let dialect = ScriptDialect::MySql {
@@ -89,13 +109,13 @@ async fn run(session: &MySqlSession, conn: &mut Conn, req: &ExplainRequest) -> R
             PlanFormat::MySqlTree,
         ),
     };
-    let text = fetch(conn, &sql, req.analyze).await?;
+    let text = fetch(conn, &sql, req.analyze && !in_transaction).await?;
     Ok(RawPlan {
         format,
         text,
         statement: statement.to_string(),
         analyzed: req.analyze,
-        rolled_back: req.analyze,
+        rolled_back: req.analyze && !in_transaction,
         server_version: version,
         captured_at: rfc3339_now(),
         extra: Default::default(),
@@ -170,15 +190,15 @@ fn kind_of(class: StatementClass, statement: &str) -> Kind {
 /// Run the EXPLAIN statement as a *prepared* statement: `COM_STMT_PREPARE` takes exactly one
 /// statement, so even with multi-statement mode on nothing can follow it. In a read-only
 /// transaction when it executes the query.
-async fn fetch(conn: &mut Conn, sql: &str, analyze: bool) -> Result<String> {
+async fn fetch(conn: &mut Conn, sql: &str, own_tx: bool) -> Result<String> {
     let stmt = conn.prep(sql).await.map_err(map_query_error)?;
-    if analyze {
+    if own_tx {
         conn.query_drop("START TRANSACTION READ ONLY")
             .await
             .map_err(map_query_error)?;
     }
     let row: std::result::Result<Option<Row>, _> = conn.exec_first(&stmt, ()).await;
-    if analyze {
+    if own_tx {
         // Always end the transaction, whatever happened.
         let _ = conn.query_drop("ROLLBACK").await;
     }

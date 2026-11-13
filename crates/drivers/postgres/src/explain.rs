@@ -13,9 +13,13 @@ use dbstudio_core::{
 use tokio_postgres::SimpleQueryMessage;
 use tokio_postgres::types::{FromSql, Type};
 
-use crate::conn::PooledConn;
+use crate::conn::Conn;
 use crate::error::map_error;
 use crate::session::PostgresSession;
+
+const SAVEPOINT: &str = "SAVEPOINT dbstudio_explain";
+const UNDO_SAVEPOINT: &str =
+    "ROLLBACK TO SAVEPOINT dbstudio_explain; RELEASE SAVEPOINT dbstudio_explain";
 
 /// Explain one statement.
 pub(crate) async fn explain(session: &PostgresSession, req: ExplainRequest) -> Result<RawPlan> {
@@ -33,7 +37,7 @@ pub(crate) async fn explain(session: &PostgresSession, req: ExplainRequest) -> R
     // Registered under the query id, so `Session::cancel` reaches this statement.
     let (running, _unregister) = session.register(Some(req.query_id), &conn);
     let token = conn.cancel.clone();
-    let work = run(&mut conn, &req, &statement, offset);
+    let work = run(&mut conn, &req, &statement, offset, false);
     let result = match req.timeout_ms {
         Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), work).await {
             Ok(r) => r,
@@ -57,11 +61,34 @@ pub(crate) async fn explain(session: &PostgresSession, req: ExplainRequest) -> R
     result
 }
 
+/// Explain one statement on a dedicated (lease) connection. Inside a transaction block the work
+/// runs under a savepoint that is always rolled back, so the transaction keeps everything that
+/// came before and never ends up aborted by the explain itself; outside one, `ANALYZE` uses its
+/// own `BEGIN` .. `ROLLBACK`. Timeout and cancellation are the caller's job.
+pub(crate) async fn explain_on_lease(conn: &mut Conn, req: &ExplainRequest) -> Result<RawPlan> {
+    let (statement, offset) = single_statement(&req.text)?;
+    if req.analyze && !analyzable(&statement) {
+        return Err(Error::Unsupported("explain_analyze_ddl".into()));
+    }
+    let nested = conn.in_txn;
+    let result = run(conn, req, &statement, offset, nested).await;
+    if result.is_err() && !nested && conn.in_txn {
+        // A failed ANALYZE left its own `BEGIN` open: it is not the user's transaction.
+        let _ = conn.client.batch_execute("ROLLBACK").await;
+        conn.in_txn = false;
+        conn.failed = false;
+    }
+    result
+}
+
+/// Run the explain. `nested`: the connection is inside the user's transaction block, so a
+/// savepoint stands in for `BEGIN` / `ROLLBACK`.
 async fn run(
-    conn: &mut PooledConn,
+    conn: &mut Conn,
     req: &ExplainRequest,
     statement: &str,
     offset: u32,
+    nested: bool,
 ) -> Result<RawPlan> {
     let (version_num, version) = server_version(conn).await?;
     let mut options = vec!["FORMAT JSON".to_string()];
@@ -80,13 +107,21 @@ async fn run(
     let prefix = format!("EXPLAIN ({}) ", options.join(", "));
     let sql = format!("{prefix}{statement}");
 
-    if req.analyze {
+    if nested {
+        conn.client
+            .batch_execute(SAVEPOINT)
+            .await
+            .map_err(map_error)?;
+    } else if req.analyze {
         conn.client
             .batch_execute("BEGIN")
             .await
             .map_err(map_error)?;
         conn.in_txn = true;
+    }
+    if req.analyze {
         if let Some(ms) = req.timeout_ms {
+            // `SET LOCAL` is undone together with the savepoint / transaction.
             conn.client
                 .batch_execute(&format!(
                     "SET LOCAL statement_timeout = {}",
@@ -96,11 +131,22 @@ async fn run(
                 .map_err(map_error)?;
         }
     }
-    let text = match fetch_text(conn, &sql).await {
+    let fetched = fetch_text(conn, &sql).await;
+    if nested {
+        // Also after an error: the savepoint rollback revives a transaction the failed
+        // statement aborted.
+        let undo = conn.client.batch_execute(UNDO_SAVEPOINT).await;
+        if fetched.is_ok() {
+            undo.map_err(map_error)?;
+        } else if undo.is_err() {
+            conn.failed = true;
+        }
+    }
+    let text = match fetched {
         Ok(t) => t,
         Err(e) => return Err(shift_position(e, prefix.len(), offset)),
     };
-    if req.analyze {
+    if req.analyze && !nested {
         conn.client
             .batch_execute("ROLLBACK")
             .await
@@ -120,7 +166,7 @@ async fn run(
 }
 
 /// `(server_version_num, short server_version)`.
-async fn server_version(conn: &PooledConn) -> Result<(u32, String)> {
+async fn server_version(conn: &Conn) -> Result<(u32, String)> {
     let rows = conn
         .client
         .simple_query(
@@ -158,7 +204,7 @@ impl<'a> FromSql<'a> for PlanJson {
 /// Run `sql` and return the single JSON cell. The statement goes through the extended
 /// protocol (one Parse message), so the server itself refuses a text that holds several
 /// statements: nothing can ride along behind the statement that is being explained.
-async fn fetch_text(conn: &PooledConn, sql: &str) -> Result<String> {
+async fn fetch_text(conn: &Conn, sql: &str) -> Result<String> {
     let stmt = conn.client.prepare(sql).await.map_err(map_error)?;
     let rows = conn.client.query(&stmt, &[]).await.map_err(map_error)?;
     let row = rows

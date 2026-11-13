@@ -566,6 +566,12 @@ pub struct ImportPreviewRequest {
     /// Rows to return (default 50).
     #[serde(default = "default_preview_rows")]
     pub rows: u32,
+    /// Dialect of the target connection, used to split `.sql` files (guessed when absent).
+    #[serde(default)]
+    pub dialect: Option<ScriptDialect>,
+    /// Connection the file is going to be imported into; the host resolves it to `dialect`.
+    #[serde(default)]
+    pub connection_id: Option<Uuid>,
 }
 
 /// First rows of a file with detected properties.

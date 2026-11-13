@@ -368,6 +368,44 @@ impl LeaseBackend for PgBackend {
         crate::bulk::bulk_on_client(&conn.client, &req).await
     }
 
+    async fn explain(
+        &mut self,
+        req: dbstudio_core::ExplainRequest,
+    ) -> Result<dbstudio_core::RawPlan> {
+        self.drop_pending().await;
+        self.conn()?;
+        let running = self.begin_call(req.query_id);
+        let token = self.token.clone();
+        let timeout = req.timeout_ms;
+        let conn = self.conn.as_mut().ok_or_else(lost)?;
+        let work = crate::explain::explain_on_lease(conn, &req);
+        let result = match timeout {
+            Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), work).await {
+                Ok(r) => r,
+                Err(_) => {
+                    // Stop the statement on the server; the connection is then unusable.
+                    let _ = running.send_cancel(&self.shared, &token).await;
+                    Err(Error::Timeout)
+                }
+            },
+            None => work.await,
+        };
+        let result = match result {
+            Err(Error::Query { .. }) if running.is_cancelled() => Err(Error::Cancelled),
+            other => other,
+        };
+        self.end_call(&running).await;
+        if running.is_cancelled() {
+            // The cancelled statement may have aborted the transaction block.
+            if let Some(conn) = self.conn.as_mut() {
+                if conn.in_txn {
+                    conn.failed = exec::probe_aborted(conn).await;
+                }
+            }
+        }
+        result.map_err(|e| self.classify(e))
+    }
+
     async fn probe_tx(&mut self) -> Result<TxStatus> {
         let Some(conn) = self.conn.as_ref() else {
             return Ok(TxStatus::Idle);

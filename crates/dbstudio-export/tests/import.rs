@@ -368,6 +368,8 @@ async fn preview_csv_detects_delimiter_and_kinds() {
         file: file.to_string_lossy().into_owned(),
         format: csv_format(),
         rows: 10,
+        dialect: None,
+        connection_id: None,
     })
     .await
     .unwrap();
@@ -401,6 +403,8 @@ async fn preview_sql_lists_statements() {
             continue_on_error: false,
         },
         rows: 50,
+        dialect: None,
+        connection_id: None,
     })
     .await
     .unwrap();
@@ -433,6 +437,8 @@ async fn preview_xlsx_lists_sheets() {
             header: true,
         },
         rows: 50,
+        dialect: None,
+        connection_id: None,
     })
     .await
     .unwrap();

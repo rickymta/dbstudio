@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use dbstudio_core::{
-    ConfirmationGrant, ConfirmationRequest, ConnectionConfig, DestructiveStatement, Error, JobId,
-    JobKind, JobReporter, OnConflict, ScriptDialect, Session, TextRange,
+    ConfirmationGrant, ConfirmationRequest, ConnectionConfig, DbKind, DestructiveStatement, Error,
+    JobId, JobKind, JobReporter, OnConflict, ScriptDialect, Session, TextRange,
 };
 use dbstudio_export::{
     ExportContext, ExportFormat, ExportSpec, ImportFormat, ImportPreview, ImportPreviewRequest,
@@ -24,29 +24,33 @@ type Result<T> = std::result::Result<T, Error>;
 
 /// Session a job runs on, plus the profile settings of its connection.
 ///
-/// A job owns its session (it must outlive the tab that started it), opened from the saved
-/// profile. The session is closed when the job is done and also when the guard is merely
-/// dropped (the job was cancelled while queued, or its work panicked), so none leaks.
-/// Proposal: look up an already open session of the connection first, so that profiles whose
-/// password is not stored work too.
+/// A job reuses an already open session of the connection when there is one (so profiles whose
+/// password is not stored work too and the user's own session is never closed by the job);
+/// otherwise it owns a session of its own (it must outlive the tab that started it), opened from
+/// the saved profile. An owned session is closed when the job is done and also when the guard
+/// is merely dropped (the job was cancelled while queued, or its work panicked), so none leaks.
 struct JobSession {
     session_id: Uuid,
     session: Arc<dyn Session>,
     config: ConnectionConfig,
     sessions: Arc<SessionManager>,
+    /// The job opened the session itself and must close it.
+    owned: bool,
     closed: bool,
 }
 
 impl JobSession {
     async fn close(mut self) {
         self.closed = true;
-        let _ = self.sessions.close(self.session_id).await;
+        if self.owned {
+            let _ = self.sessions.close(self.session_id).await;
+        }
     }
 }
 
 impl Drop for JobSession {
     fn drop(&mut self) {
-        if self.closed {
+        if self.closed || !self.owned {
             return;
         }
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -59,6 +63,18 @@ impl Drop for JobSession {
 }
 
 async fn open_job_session(state: &AppState, connection_id: Uuid) -> Result<JobSession> {
+    if let Some((session_id, session)) = state.sessions.find_by_connection(connection_id) {
+        let svc = state.connections.clone();
+        let profile = blocking(move || svc.get_profile(connection_id)).await?;
+        return Ok(JobSession {
+            session_id,
+            session,
+            config: profile.config,
+            sessions: Arc::clone(&state.sessions),
+            owned: false,
+            closed: false,
+        });
+    }
     let svc = state.connections.clone();
     let (profile, secret) = blocking(move || svc.session_credentials(connection_id, None)).await?;
     let info = state
@@ -71,6 +87,7 @@ async fn open_job_session(state: &AppState, connection_id: Uuid) -> Result<JobSe
         session,
         config: profile.config,
         sessions: Arc::clone(&state.sessions),
+        owned: true,
         closed: false,
     })
 }
@@ -165,6 +182,28 @@ pub(crate) async fn preset_delete_impl(state: &AppState, id: Uuid) -> Result<()>
     blocking(move || svc.store().presets_delete(id)).await
 }
 
+/// SQL dialect of a connection for the import preview: the open session's own dialect, else the
+/// one its profile implies. `None` when the connection is unknown (the preview then guesses).
+async fn preview_dialect(state: &AppState, connection_id: Uuid) -> Option<ScriptDialect> {
+    if let Some((_, session)) = state.sessions.find_by_connection(connection_id) {
+        return Some(session.script_dialect());
+    }
+    let svc = state.connections.clone();
+    let profile = blocking(move || svc.get_profile(connection_id))
+        .await
+        .ok()?;
+    Some(match profile.config.kind {
+        DbKind::Postgres => ScriptDialect::Postgres,
+        DbKind::MySql => ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+        },
+        DbKind::SqlServer => ScriptDialect::MsSql,
+        DbKind::Oracle => ScriptDialect::Oracle,
+        _ => return None,
+    })
+}
+
 /// Only files the user picked in a dialog can be previewed.
 pub(crate) async fn import_preview_impl(
     state: &AppState,
@@ -173,6 +212,12 @@ pub(crate) async fn import_preview_impl(
     state
         .grants
         .check(Path::new(&request.file), Purpose::Read)?;
+    let mut request = request;
+    if request.dialect.is_none() {
+        if let Some(id) = request.connection_id {
+            request.dialect = preview_dialect(state, id).await;
+        }
+    }
     dbstudio_export::preview_import(request).await
 }
 
@@ -466,6 +511,8 @@ mod tests {
                 encoding: TextEncoding::Utf8,
             },
             rows: 10,
+            dialect: None,
+            connection_id: None,
         };
         assert!(matches!(
             import_preview_impl(&s, req.clone()).await.unwrap_err(),
@@ -658,5 +705,29 @@ mod tests {
         let job = open_job_session(&s, id).await.unwrap();
         job.close().await;
         assert!(s.sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_job_reuses_the_open_session_and_leaves_it_open() {
+        let s = state();
+        let id = saved_connection(&s).await;
+        let svc = s.connections.clone();
+        let (profile, secret) = blocking(move || svc.session_credentials(id, None))
+            .await
+            .unwrap();
+        let info = s
+            .sessions
+            .open(&profile.config, secret.as_ref())
+            .await
+            .unwrap();
+        let job = open_job_session(&s, id).await.unwrap();
+        assert_eq!(job.session_id, info.session_id);
+        assert_eq!(s.sessions.len(), 1);
+        job.close().await;
+        // The user's own session survives the job (also when the guard is only dropped).
+        assert_eq!(s.sessions.len(), 1);
+        drop(open_job_session(&s, id).await.unwrap());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(s.sessions.len(), 1);
     }
 }

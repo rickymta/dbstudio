@@ -160,15 +160,20 @@ fn estimate_lines(sample: &str, size: u64, header: bool) -> u64 {
 pub(crate) async fn preview(req: ImportPreviewRequest) -> Result<ImportPreview> {
     let path = std::path::PathBuf::from(&req.file);
     let limit = req.rows.clamp(1, MAX_PREVIEW_ROWS) as usize;
-    tokio::task::spawn_blocking(move || preview_blocking(&path, &req.format, limit))
+    tokio::task::spawn_blocking(move || preview_blocking(&path, &req.format, limit, req.dialect))
         .await
         .map_err(|e| Error::Other(format!("preview task failed: {e}")))?
 }
 
-fn preview_blocking(path: &Path, format: &ImportFormat, limit: usize) -> Result<ImportPreview> {
+fn preview_blocking(
+    path: &Path,
+    format: &ImportFormat,
+    limit: usize,
+    dialect: Option<ScriptDialect>,
+) -> Result<ImportPreview> {
     let mut out = ImportPreview::default();
     match format {
-        ImportFormat::Sql { .. } => return sql_preview(path),
+        ImportFormat::Sql { .. } => return sql_preview(path, dialect),
         ImportFormat::Csv {
             delimiter,
             quote,
@@ -233,7 +238,7 @@ fn preview_blocking(path: &Path, format: &ImportFormat, limit: usize) -> Result<
     Ok(out)
 }
 
-/// Dialect guess for a script (the preview request carries no connection): backticks or
+/// Dialect guess for a script when the preview request names no dialect: backticks or
 /// `DELIMITER` mean MySQL, everything else PostgreSQL.
 pub(crate) fn guess_dialect(sample: &str) -> ScriptDialect {
     if sample.contains('`') || sample.contains("DELIMITER ") {
@@ -246,9 +251,9 @@ pub(crate) fn guess_dialect(sample: &str) -> ScriptDialect {
     }
 }
 
-fn sql_preview(path: &Path) -> Result<ImportPreview> {
+fn sql_preview(path: &Path, dialect: Option<ScriptDialect>) -> Result<ImportPreview> {
     let (sample, _) = read_sample(path)?;
-    let dialect = guess_dialect(&sample);
+    let dialect = dialect.unwrap_or_else(|| guess_dialect(&sample));
     let file = File::open(path)
         .map_err(|e| Error::Other(format!("cannot read {}: {e}", path.display())))?;
     let mut reader = BufReader::new(file);

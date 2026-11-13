@@ -32,9 +32,10 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::{
-    BulkInsertRequest, BulkInsertResult, ColumnMeta, EndOutcome, Error, ExecSummary, Lease,
-    LeaseCloseReport, LeaseContext, LeaseOptions, LeaseState, QueryRequest, Result, ResultSink,
-    StatementEnd, StatementStart, TableStreamRequest, TxControl, TxOptions, TxStatus, Value,
+    BulkInsertRequest, BulkInsertResult, ColumnMeta, EndOutcome, Error, ExecSummary,
+    ExplainRequest, Lease, LeaseCloseReport, LeaseContext, LeaseOptions, LeaseState, QueryRequest,
+    RawPlan, Result, ResultSink, StatementEnd, StatementStart, TableStreamRequest, TxControl,
+    TxOptions, TxStatus, Value,
 };
 
 /// Default batch size passed to [`LeaseBackend::fetch_more`] when the caller gives none.
@@ -90,6 +91,12 @@ pub trait LeaseBackend: Send + 'static {
     async fn bulk_insert(&mut self, req: BulkInsertRequest) -> Result<BulkInsertResult> {
         let _ = req;
         Err(Error::Unsupported("bulk_insert".into()))
+    }
+    /// Explain one statement on this connection, inside its transaction (`ANALYZE` of a write
+    /// must leave the transaction's earlier work intact). Default: `Unsupported("explain")`.
+    async fn explain(&mut self, req: ExplainRequest) -> Result<RawPlan> {
+        let _ = req;
+        Err(Error::Unsupported("explain".into()))
     }
     /// Liveness check.
     async fn ping(&mut self) -> Result<()>;
@@ -291,6 +298,10 @@ enum Cmd {
     Bulk {
         req: BulkInsertRequest,
         reply: oneshot::Sender<Result<BulkInsertResult>>,
+    },
+    Explain {
+        req: ExplainRequest,
+        reply: oneshot::Sender<Result<RawPlan>>,
     },
     Close(oneshot::Sender<LeaseCloseReport>),
 }
@@ -691,6 +702,10 @@ impl<B: LeaseBackend> Lease for ActorLease<B> {
         self.simple(|reply| Cmd::Bulk { req, reply }).await
     }
 
+    async fn explain(&self, req: ExplainRequest) -> Result<RawPlan> {
+        self.simple(|reply| Cmd::Explain { req, reply }).await
+    }
+
     async fn ping(&self) -> Result<()> {
         {
             let g = self.shared.lock();
@@ -892,6 +907,11 @@ async fn run_actor<B: LeaseBackend>(
             }
             Cmd::Bulk { req, reply } => {
                 let result = backend.bulk_insert(req).await;
+                finish_simple(&mut backend, &shared, &result).await;
+                let _ = reply.send(result);
+            }
+            Cmd::Explain { req, reply } => {
+                let result = backend.explain(req).await;
                 finish_simple(&mut backend, &shared, &result).await;
                 let _ = reply.send(result);
             }

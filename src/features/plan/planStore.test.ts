@@ -48,6 +48,30 @@ describe('runPlan', () => {
     expect(e.error?.capability).toBe('explain_analyze_writes');
   });
 
+  it('falls back to the session when the lease driver cannot explain', async () => {
+    const spy = vi
+      .spyOn(ipc, 'planExplain')
+      .mockRejectedValueOnce({ kind: 'unsupported', message: 'x', capability: 'explain' })
+      .mockResolvedValueOnce(result());
+    const id = seedPlan({ leaseId: 'l1' });
+    await runPlan(id);
+    expect(spy.mock.calls[0]![1]).toBe('l1');
+    expect(spy.mock.calls[1]![1]).toBeNull();
+    expect(usePlanStore.getState().entries[id]!.status).toBe('ready');
+  });
+
+  it('does not fall back for other unsupported capabilities', async () => {
+    const spy = vi.spyOn(ipc, 'planExplain').mockRejectedValue({
+      kind: 'unsupported',
+      message: 'x',
+      capability: 'explain_analyze_ddl',
+    });
+    const id = seedPlan({ leaseId: 'l1' });
+    await runPlan(id);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(usePlanStore.getState().entries[id]!.status).toBe('error');
+  });
+
   it('ignores the answer of an older run', async () => {
     let first!: (r: PlanResult) => void;
     vi.spyOn(ipc, 'planExplain')

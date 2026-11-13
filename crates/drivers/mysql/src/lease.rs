@@ -1269,6 +1269,63 @@ impl LeaseBackend for MyBackend {
         Ok(())
     }
 
+    async fn explain(
+        &mut self,
+        req: dbstudio_core::ExplainRequest,
+    ) -> Result<dbstudio_core::RawPlan> {
+        self.drop_pending().await;
+        let ScriptDialect::MySql { mariadb, .. } = self.dialect else {
+            return Err(Error::Unsupported("explain".into()));
+        };
+        let call = ScriptCall::new(req.query_id);
+        self.set_current(Some(call.clone()));
+        let ctl = Arc::new(CallCtl::default());
+        call.set_stmt(Some(ctl.clone()));
+        if call.is_cancelled() {
+            call.set_stmt(None);
+            self.set_current(None);
+            return Err(Error::Cancelled);
+        }
+        let in_tx = self.in_tx;
+        let killer = self.killer.clone();
+        let timeout = req.timeout_ms.map(Duration::from_millis);
+        let mut timed_out = false;
+        let result = match self.conn.as_mut() {
+            None => Err(lost()),
+            Some(conn) => {
+                let work = crate::explain::explain_on_lease(conn, &req, mariadb, in_tx);
+                tokio::pin!(work);
+                let sleep =
+                    tokio::time::sleep(timeout.unwrap_or(Duration::from_secs(86_400 * 365)));
+                tokio::pin!(sleep);
+                let mut armed = timeout.is_some();
+                loop {
+                    tokio::select! {
+                        r = &mut work => break r,
+                        () = &mut sleep, if armed => {
+                            armed = false;
+                            timed_out = true;
+                            // Stop the statement; the work future then ends with its error.
+                            ctl.kill(&killer, KillReason::Abort).await;
+                        }
+                    }
+                }
+            }
+        };
+        ctl.finish().await;
+        call.set_stmt(None);
+        self.set_current(None);
+        let result = if timed_out && result.is_err() {
+            Err(Error::Timeout)
+        } else {
+            ctl.finalize(result)
+        };
+        if let Err(Error::Connection(_)) = &result {
+            self.conn = None;
+        }
+        result
+    }
+
     async fn table_select(&mut self, req: &dbstudio_core::TableStreamRequest) -> Result<String> {
         self.drop_pending().await;
         let nb = matches!(
