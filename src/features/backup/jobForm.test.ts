@@ -138,9 +138,20 @@ describe('building the payload', () => {
     expect(passphraseChange(validForm())).toEqual({ action: 'clear' });
   });
 
+  it('sends complete-backup options for the native tools', () => {
+    const my = buildSpec(validForm({ engineKind: 'native', nativeTool: 'mySqlDump' }));
+    expect(my.engine).toEqual({
+      kind: 'native',
+      tool: 'mySqlDump',
+      options: { singleTransaction: 'true', routines: 'true', triggers: 'true', events: 'true' },
+    });
+    const pg = buildSpec(validForm({ engineKind: 'native', nativeTool: 'pgDump' }));
+    expect(pg.engine).toEqual({ kind: 'native', tool: 'pgDump', options: { format: 'custom' } });
+  });
+
   it('writes native server-side tools to a server directory', () => {
     const spec = buildSpec(validForm({ engineKind: 'native', nativeTool: 'msSqlServerBackup' }));
-    expect(spec.engine).toEqual({ kind: 'native', tool: 'msSqlServerBackup' });
+    expect(spec.engine).toEqual({ kind: 'native', tool: 'msSqlServerBackup', options: {} });
     expect(spec.destination).toEqual({ kind: 'serverDir', path: '/backups' });
   });
 

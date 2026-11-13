@@ -58,6 +58,18 @@ pub fn next_after(schedule: &Schedule, after: DateTime<Utc>) -> Result<Option<Da
     })
 }
 
+/// Latest instant of `schedule` at or before `at` (no walk over the missed slots).
+pub fn previous_at_or_before(schedule: &Schedule, at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let cron = parse_cron(&schedule.cron).ok()?;
+    match schedule.timezone {
+        ScheduleTz::Utc => cron.find_previous_occurrence(&at, true).ok(),
+        ScheduleTz::Local => cron
+            .find_previous_occurrence(&at.with_timezone(&Local), true)
+            .ok()
+            .map(|d| d.with_timezone(&Utc)),
+    }
+}
+
 /// The next `count` (at most 50) run times of `cron` after `from`, RFC 3339 in UTC.
 pub fn preview_from(
     cron: &str,
@@ -119,19 +131,9 @@ impl<C: Clock> Scheduler<C> {
         job: &BackupJob,
         last_scheduled_for: DateTime<Utc>,
     ) -> Option<DateTime<Utc>> {
-        let now = self.clock.now();
-        let mut at = last_scheduled_for;
-        let mut found = None;
-        // Bounded walk: at most one slot per minute, one week of backlog is plenty.
-        for _ in 0..10_080 {
-            let next = self.next_due(job, Some(at))?;
-            if next > now {
-                break;
-            }
-            found = Some(next);
-            at = next;
-        }
-        found
+        let schedule = job.schedule.as_ref()?;
+        let slot = previous_at_or_before(schedule, self.clock.now())?;
+        (slot > last_scheduled_for).then_some(slot)
     }
 
     /// Ids of enabled jobs with a scheduled instant in `(last_scheduled_for, now]`. A job
@@ -293,6 +295,20 @@ mod tests {
         assert!(s.skipped(&jobs, &last).is_empty());
         clock.set(0, 25);
         assert_eq!(s.due_jobs(&jobs, &last).len(), 2);
+    }
+
+    #[test]
+    fn a_long_downtime_is_one_catch_up_and_costs_no_loop() {
+        // A job that runs every minute and an app that was off for a month.
+        let clock = Fake::at(0, 0);
+        let s = Scheduler::new(&clock);
+        let j = job(1, "* * * * *", MissedRunPolicy::RunOnce);
+        let month_ago = t(0, 0) - chrono::Duration::days(30);
+        let last = BTreeMap::from([(j.id, month_ago)]);
+        assert_eq!(s.catch_up(std::slice::from_ref(&j), &last), vec![j.id]);
+        // Exactly the latest slot, not a slot 10,080 minutes after the old mark.
+        assert_eq!(s.latest_slot(&j, month_ago), Some(t(0, 0)));
+        assert_eq!(s.latest_slot(&j, t(0, 0)), None);
     }
 
     #[test]

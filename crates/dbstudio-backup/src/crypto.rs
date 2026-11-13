@@ -48,6 +48,10 @@ pub struct EncryptionHeader {
 const DEFAULT_M: u32 = 65_536;
 const DEFAULT_T: u32 = 3;
 const DEFAULT_P: u32 = 1;
+/// Largest KDF cost accepted from a file header: 1 GiB, 10 passes, 16 lanes.
+const MAX_M: u32 = 1_048_576;
+const MAX_T: u32 = 10;
+const MAX_P: u32 = 16;
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -110,6 +114,13 @@ impl EncryptionHeader {
             .ok_or_else(|| Error::Integrity("bad nonce prefix".into()))?;
         if self.chunk_size == 0 || self.chunk_size > 64 * 1024 * 1024 {
             return Err(Error::Integrity("bad chunk size".into()));
+        }
+        // The header is not authenticated before the key exists: a hostile file must not make
+        // the key derivation allocate gigabytes or run for minutes.
+        if self.m > MAX_M || self.t > MAX_T || self.p > MAX_P {
+            return Err(Error::Integrity(
+                "the key derivation parameters of this file are out of range".into(),
+            ));
         }
         let params = Params::new(self.m, self.t, self.p, Some(32))
             .map_err(|e| Error::Integrity(format!("bad KDF parameters: {e}")))?;
@@ -396,6 +407,20 @@ mod tests {
         // Different AAD (header tamper).
         let mut r = DecryptReader::new(&ct[..], &h, &Secret::new("pw"), [8; 32]).unwrap();
         assert!(r.read_to_end(&mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn hostile_kdf_parameters_are_refused() {
+        let ok = |m, t, p| {
+            let mut h = EncryptionHeader::with_cost(8, 1, 1);
+            (h.m, h.t, h.p) = (m, t, p);
+            h.cipher(&Secret::new("x")).is_ok()
+        };
+        assert!(ok(8, 1, 1));
+        assert!(!ok(MAX_M + 1, 1, 1));
+        assert!(!ok(8, MAX_T + 1, 1));
+        assert!(!ok(8, 1, MAX_P + 1));
+        assert!(!ok(u32::MAX, u32::MAX, u32::MAX));
     }
 
     #[test]

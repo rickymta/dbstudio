@@ -285,18 +285,12 @@
     "productionWarning": "The target is a production connection: you will have to confirm the restore.",
     "createDatabase": "Create the database if it does not exist",
     "clean": "Drop existing objects first (clean)",
-    "cleanWarning": "Destructive: existing objects with the same names are dropped before restoring and their data is lost.",
+    "cleanWarning": "Destructive. PostgreSQL: every schema contained in the backup is dropped with CASCADE, together with ALL objects in it, including objects that are not in the backup; this runs inside the restore transaction, so a failed restore keeps the old data. MySQL/MariaDB: the whole database is dropped and created again (same character set and collation); this takes effect at once and cannot be rolled back.",
     "continueOnError": "Continue when an object fails",
     "verify": "Verify integrity",
-    "start": "Restore"
-  },
-  "confirm": {
-    "title": "Confirm restore",
-    "confirm": "Restore",
-    "typePrompt": "To continue, type:",
-    "inputLabel": "Confirmation text",
-    "cleanMessage": "This restore drops existing objects in the target database. This cannot be undone.",
-    "productionMessage": "The target is a production database. This restore changes its data."
+    "start": "Restore",
+    "targetRequired": "A restore into a production connection, or one that cleans the target, needs the target database to be typed in.",
+    "mysqlNotAtomic": "MySQL/MariaDB commits each statement as it goes (DDL cannot be rolled back): if the restore fails, the database can be left partly restored."
   },
   "background": {
     "description": "Scheduled backups only run while DBStudio is running. Keeping it in the system tray lets schedules run when the window is closed.",

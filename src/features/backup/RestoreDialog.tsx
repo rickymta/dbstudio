@@ -163,7 +163,10 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
   const verifyInfo = verifyJob ? jobs[verifyJob] : undefined;
   const restoreActive = restoreJob !== null && (!restoreInfo || isActive(restoreInfo));
   const busy = starting || restoreActive || restoreInfo?.status === 'succeeded';
+  // A production target or a clean restore must name the database it writes to.
+  const needsDatabase = (clean || target?.environment === 'production') && !database.trim();
   const canRestore =
+    !needsDatabase &&
     !!file &&
     !!info &&
     !!view &&
@@ -340,6 +343,11 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
                     value={database}
                     onChange={(e) => setDatabase(e.target.value)}
                   />
+                  {needsDatabase && (
+                    <p className="text-xs text-danger" data-testid="restore-database-required">
+                      {t('restore.targetRequired')}
+                    </p>
+                  )}
                 </div>
               </div>
               {target?.environment === 'production' && (
@@ -372,6 +380,11 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
                   className="rounded-md bg-danger-soft px-2 py-1.5 text-xs text-danger"
                 >
                   {t('restore.cleanWarning')}
+                </p>
+              )}
+              {view?.dialect === 'mysql' && (
+                <p className="text-xs text-muted-foreground" data-testid="restore-not-atomic">
+                  {t('restore.mysqlNotAtomic')}
                 </p>
               )}
               <label className="flex items-center gap-2 text-[13px]">

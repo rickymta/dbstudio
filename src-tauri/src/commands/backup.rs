@@ -9,7 +9,8 @@ use std::sync::Arc;
 use dbstudio_backup::chrono::{self, Utc};
 use dbstudio_backup::runner::{
     RunEnv, RunMeta, RunOutput, engine_label, execute_backup, execute_restore, job_to_row,
-    next_run_text, record_run, restore_confirmation_text, row_to_job, row_to_run, run_job,
+    next_run_text, record_run, record_skipped, restore_confirmation_text, restore_is_guarded,
+    restore_names_its_target, row_to_job, row_to_run, run_job,
 };
 use dbstudio_backup::{
     BackupEngine, BackupInspection, BackupJob, BackupRun, BackupSpec, Destination, NativeTool,
@@ -61,6 +62,7 @@ pub(crate) fn run_env(state: &AppState) -> RunEnv {
         secrets: state.secrets.clone(),
         registry: state.registry.clone(),
         locks_dir: state.locks_dir(),
+        work_dir: (*state.data_dir).clone(),
     }
 }
 
@@ -231,7 +233,18 @@ pub(crate) fn spawn_job_run(state: &AppState, job: BackupJob, trigger: RunTrigge
         Some(job.spec.connection_id),
         move |ctx| async move {
             let reporter: Arc<dyn JobReporter> = ctx;
-            let result = run_job(&env, &job, trigger, reporter).await;
+            let result = match run_job(&env, &job, trigger, reporter).await {
+                Ok(run) => Ok(run),
+                // The slot did not run (already running, lock or store failure): keep a record
+                // and tell the user instead of letting it pass unnoticed.
+                Err(e) => match record_skipped(&env, &job, trigger, &e) {
+                    Ok(run) => {
+                        crate::background::notify_run(host.as_ref(), &job, &run);
+                        Err(e)
+                    }
+                    Err(_) => Err(e),
+                },
+            };
             if let Ok(run) = &result {
                 crate::background::notify_run(host.as_ref(), &job, run);
             }
@@ -419,6 +432,56 @@ fn restore_payload(spec: &RestoreSpec) -> Vec<u8> {
     .unwrap_or_default()
 }
 
+/// What the confirmation dialog lists: the statements a `clean` restore runs before the script
+/// (read from the backup's preamble; an unreadable or still locked file lists nothing).
+async fn destructive_statements(
+    file: &Path,
+    passphrase: Option<&Secret>,
+    spec: &RestoreSpec,
+    database: &str,
+) -> Vec<dbstudio_core::DestructiveStatement> {
+    use dbstudio_core::{DestructiveReason, DestructiveStatement, TextRange};
+    if !spec.clean {
+        return Vec::new();
+    }
+    let Ok(info) = dbstudio_backup::inspect(file, passphrase).await else {
+        return Vec::new();
+    };
+    let Some(pre) = info.preamble else {
+        return Vec::new();
+    };
+    let dialect = pre["dialect"].as_str().unwrap_or("");
+    let Ok(pre_json) = serde_json::to_value(&pre) else {
+        return Vec::new();
+    };
+    let mut texts = dbstudio_backup::logical::clean_preview(&pre_json, dialect, database);
+    if texts.is_empty() {
+        texts.push(format!(
+            "pg_restore / mysql with clean into database {database}"
+        ));
+    }
+    texts
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let reason = if text.starts_with("DROP DATABASE") {
+                DestructiveReason::DropDatabase
+            } else {
+                DestructiveReason::Drop
+            };
+            DestructiveStatement {
+                index: i as u32,
+                range: TextRange {
+                    start: 0,
+                    end: text.chars().count() as u32,
+                },
+                text,
+                reason,
+            }
+        })
+        .collect()
+}
+
 pub(crate) async fn restore_start_impl(
     state: &AppState,
     mut spec: RestoreSpec,
@@ -431,6 +494,9 @@ pub(crate) async fn restore_start_impl(
     // The script comes from a file: a read-only connection never receives it, and a production
     // connection (or a `clean` restore) needs the typed confirmation of the guard.
     crate::guard::ensure_writable(&profile.config, "restore")?;
+    if restore_is_guarded(&profile.config, &spec) && !restore_names_its_target(&spec) {
+        return Err(dbstudio_backup::runner::explicit_target_required());
+    }
     if let Some(text) = restore_confirmation_text(&profile.config, &spec) {
         let target = format!("restore:{}", spec.target_connection_id);
         let payload = restore_payload(&spec);
@@ -439,10 +505,12 @@ pub(crate) async fn restore_start_impl(
             .is_some_and(|g| state.confirm.consume(g, &target, &payload).is_ok());
         if !accepted {
             let (token, expires_in_ms) = state.confirm.issue(&target, &payload, &text);
+            let statements =
+                destructive_statements(&granted, passphrase.as_ref(), &spec, &text).await;
             return Err(Error::ConfirmationRequired(Box::new(ConfirmationRequest {
                 token,
                 confirm_text: text,
-                statements: Vec::new(),
+                statements,
                 expires_in_ms,
             })));
         }
@@ -959,5 +1027,85 @@ mod tests {
                 .kind(),
             "confirmationRequired"
         );
+    }
+
+    /// A real (tiny) backup file whose preamble lists a table in schema `app`.
+    fn write_backup(dir: &Path) -> std::path::PathBuf {
+        use dbstudio_backup::Compression;
+        use dbstudio_backup::container::{ContainerOptions, SpoolWriter, write_container};
+        use std::io::Write;
+        let spool = dir.join("spool");
+        std::fs::create_dir_all(&spool).unwrap();
+        let mut w = SpoolWriter::create(&spool, 1, "data/dump.sql").unwrap();
+        w.write_all(b"SELECT 1;\n").unwrap();
+        let entries = vec![w.finish().unwrap()];
+        let opts = ContainerOptions {
+            compression: Compression::None,
+            passphrase: None,
+            native: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            kdf_cost: None,
+        };
+        let pre = serde_json::json!({
+            "formatVersion": 2, "engine": "logical", "database": "app", "dialect": "postgres",
+            "objects": [{"name": "app.t", "kind": "table"}], "dumpFile": "data/dump.sql",
+            "source": {"kind": "postgres", "host": "h", "database": "app", "serverVersion": "16"},
+            "createdAt": "2026-01-01T00:00:00Z", "unsupported": []
+        });
+        write_container(
+            &dir.join("b.dbsbak"),
+            &opts,
+            &pre,
+            &entries,
+            &spool,
+            &|_| true,
+        )
+        .unwrap()
+        .0
+    }
+
+    #[tokio::test]
+    async fn guarded_restores_must_name_their_target_and_list_what_clean_destroys() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_backup(dir.path());
+        let (state, conn) = state_with_connection(Some(Environment::Production), false);
+        state.grants.grant(&file, Purpose::Read).unwrap();
+        // Production without a named target database: refused before any token is issued.
+        let mut spec = restore_spec(&file, conn);
+        spec.target_database = None;
+        assert_eq!(
+            restore_start_impl(&state, spec.clone(), None, None)
+                .await
+                .unwrap_err()
+                .kind(),
+            "other"
+        );
+        assert_eq!(state.confirm.pending(), 0);
+        spec.target_database = Some(String::new());
+        assert!(restore_start_impl(&state, spec, None, None).await.is_err());
+        // A clean restore on a development connection has the same rule, and its confirmation
+        // spells out the statements that will run.
+        let (state, conn) = state_with_connection(Some(Environment::Development), false);
+        state.grants.grant(&file, Purpose::Read).unwrap();
+        let mut clean = restore_spec(&file, conn);
+        clean.clean = true;
+        clean.target_database = None;
+        assert!(
+            restore_start_impl(&state, clean.clone(), None, None)
+                .await
+                .is_err()
+        );
+        clean.target_database = Some("copy".into());
+        match restore_start_impl(&state, clean, None, None)
+            .await
+            .unwrap_err()
+        {
+            Error::ConfirmationRequired(r) => {
+                assert_eq!(r.confirm_text, "copy");
+                let texts: Vec<&str> = r.statements.iter().map(|s| s.text.as_str()).collect();
+                assert_eq!(texts, ["DROP SCHEMA IF EXISTS \"app\" CASCADE"]);
+            }
+            e => panic!("{e:?}"),
+        }
     }
 }

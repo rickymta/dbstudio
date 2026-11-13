@@ -118,6 +118,40 @@ describe('RestoreDialog', () => {
     );
   });
 
+  it('does not let a production or clean restore run without a named target database', async () => {
+    await addProduction();
+    const start = vi.spyOn(ipc, 'restoreStart');
+    const user = await setup('/backups/shop.dbsbak');
+    await screen.findByTestId('restore-header');
+    await pickTarget(user, 'Prod writable');
+    const db = screen.getByLabelText('Target database');
+    await user.clear(db);
+    expect(screen.getByTestId('restore-database-required')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeDisabled();
+    await user.type(db, 'shop_copy');
+    expect(screen.queryByTestId('restore-database-required')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeEnabled();
+    // `clean` has the same rule on any target.
+    await pickTarget(user, 'PostgreSQL dev');
+    await user.clear(db);
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeEnabled();
+    await user.click(screen.getByLabelText('Drop existing objects first (clean)'));
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeDisabled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('says what clean and a MySQL restore really do', async () => {
+    const user = await setup('/backups/shop.dbsbak');
+    await screen.findByTestId('restore-header');
+    expect(screen.getByTestId('restore-not-atomic')).toHaveTextContent(
+      /cannot be rolled back|partly restored/,
+    );
+    await user.click(screen.getByLabelText('Drop existing objects first (clean)'));
+    const note = screen.getByRole('note');
+    expect(note).toHaveTextContent(/CASCADE/);
+    expect(note).toHaveTextContent(/cannot be rolled back/);
+  });
+
   it('warns about the destructive clean option', async () => {
     const user = await setup('/backups/shop.dbsbak');
     await screen.findByTestId('restore-header');

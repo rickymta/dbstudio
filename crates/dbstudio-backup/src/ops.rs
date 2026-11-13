@@ -82,6 +82,34 @@ pub(crate) fn spool_entry_from_file(name: &str, path: &Path) -> Result<SpoolEntr
     })
 }
 
+/// Private scratch directory base: `<work_dir>/tmp` (0700), never the backup destination.
+pub(crate) fn scratch_base(work_dir: &Option<PathBuf>) -> Result<PathBuf> {
+    let base = match work_dir {
+        Some(d) => d.join("tmp"),
+        None => std::env::temp_dir().join("dbstudio-tmp"),
+    };
+    fs::create_dir_all(&base)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(base)
+}
+
+/// A fresh private (0700) directory inside [`scratch_base`].
+pub(crate) fn scratch_dir(work_dir: &Option<PathBuf>) -> Result<tempfile::TempDir> {
+    let dir = tempfile::Builder::new()
+        .prefix("run-")
+        .tempdir_in(scratch_base(work_dir)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
 fn clean_component(v: &str) -> String {
     let s: String = v
         .chars()
@@ -259,9 +287,9 @@ pub async fn run_backup(
         if reporter.cancel_token().is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let spool = tempfile::Builder::new()
-            .prefix(".dbstudio-spool-")
-            .tempdir_in(&dir)?;
+        // Plaintext never lands in the destination directory: the script is spooled in a
+        // private directory and only the finished (compressed, encrypted) file is published.
+        let spool = scratch_dir(&ctx.work_dir)?;
         let source = source_json(&ctx, &server_version, &database);
         let (mut entries, mut preamble, objects, rows, native_tool) = match &spec.engine {
             BackupEngine::Logical { content, ddl } => {
@@ -328,7 +356,7 @@ pub async fn run_backup(
         };
         let spool_path = spool.path().to_path_buf();
         let dest2 = dest.clone();
-        let size = blocking_with_progress(reporter.as_ref(), progress, move |tick| {
+        let (dest, size) = blocking_with_progress(reporter.as_ref(), progress, move |tick| {
             container::write_container(
                 &dest2,
                 &opts,
@@ -413,7 +441,7 @@ async fn native_dump(
         "native": {"tool": tool, "format": format, "version": info.version, "file": name},
         "options": options,
         "objects": [{"name": database, "kind": "database"}],
-        "unsupported": [],
+        "unsupported": native::native_unsupported(tool, options),
     });
     Ok((entry, preamble))
 }
@@ -506,10 +534,12 @@ pub async fn verify(
         ..Default::default()
     };
     reporter.progress(&progress);
-    blocking_with_progress(reporter, progress, move |tick| {
-        container::scan(&path, pass.as_ref(), None, tick).map(|_| ())
+    let scanned = blocking_with_progress(reporter, progress, move |tick| {
+        container::scan(&path, pass.as_ref(), None, tick)
     })
-    .await
+    .await?;
+    // Intact, but this version cannot use it: say so instead of reporting a plain success.
+    logical::check_supported(&scanned.preamble)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -523,8 +553,13 @@ pub async fn run_restore(
     passphrase: Option<&Secret>,
 ) -> Result<RestoreOutcome> {
     let reporter = ctx.reporter.clone();
+    if spec.clean && spec.target_database.as_deref().is_none_or(str::is_empty) {
+        return Err(Error::Other(
+            "a clean restore needs the target database to be named explicitly".into(),
+        ));
+    }
     let file = PathBuf::from(&spec.file);
-    let work = tempfile::tempdir()?;
+    let work = scratch_dir(&ctx.work_dir)?;
     // The whole file is read and checked before anything touches the target.
     let progress = JobProgress {
         phase: "verify".into(),
@@ -536,6 +571,7 @@ pub async fn run_restore(
         container::scan(&f2, p2.as_ref(), Some(&w2), tick)
     })
     .await?;
+    logical::check_supported(&scanned.preamble)?;
     match scanned.header.native {
         None => logical::restore(&ctx.session, &scanned, spec, reporter.as_ref()).await,
         Some(tool) => native_restore(&ctx, &scanned, tool, spec, work.path()).await,
@@ -558,6 +594,14 @@ async fn native_restore(
         .clone()
         .or_else(|| pre["database"].as_str().map(str::to_string))
         .ok_or_else(|| Error::Other("target database is not specified".into()))?;
+    if let Some(input) = scanned
+        .files
+        .get(pre["native"]["file"].as_str().unwrap_or_default())
+    {
+        if matches!(restore_tool, NativeTool::Psql | NativeTool::MySqlClient) {
+            native::scan_restore_script(restore_tool, input)?;
+        }
+    }
     if spec.create_database {
         let sql = match ctx.config.kind {
             dbstudio_core::DbKind::Postgres => {
@@ -650,6 +694,17 @@ impl dbstudio_core::ResultSink for NullSink {
 /// Files of `job` that retention says to delete. Only files recorded as successful backup runs
 /// of this job are considered (no globbing); the newest file is always kept.
 pub fn apply_retention(job: &BackupJob, runs: &[BackupRun], now: DateTime<Utc>) -> Vec<PathBuf> {
+    apply_retention_protecting(job, runs, now, &[])
+}
+
+/// [`apply_retention`] that never returns a path in `protect` (the file the run in progress
+/// just wrote) nor any path that a surviving run still points to.
+pub fn apply_retention_protecting(
+    job: &BackupJob,
+    runs: &[BackupRun],
+    now: DateTime<Utc>,
+    protect: &[&Path],
+) -> Vec<PathBuf> {
     let mut files: Vec<(DateTime<Utc>, PathBuf)> = runs
         .iter()
         .filter(|r| {
@@ -665,31 +720,33 @@ pub fn apply_retention(job: &BackupJob, runs: &[BackupRun], now: DateTime<Utc>) 
         })
         .collect();
     files.sort_by_key(|a| std::cmp::Reverse(a.0));
-    let mut doomed = BTreeSet::new();
+    let mut doomed = vec![false; files.len()];
     if let Some(keep) = job.retention.keep_last {
-        for (_, p) in files.iter().skip(keep.max(1) as usize) {
-            doomed.insert(p.clone());
+        for d in doomed.iter_mut().skip(keep.max(1) as usize) {
+            *d = true;
         }
     }
     if let Some(days) = job.retention.max_age_days {
         let limit = now - Duration::days(i64::from(days));
-        for (at, p) in files.iter().skip(1) {
+        for (i, (at, _)) in files.iter().enumerate().skip(1) {
             if *at < limit {
-                doomed.insert(p.clone());
+                doomed[i] = true;
             }
         }
     }
-    // A path shared with a kept run (same file recorded twice) is never deleted.
-    let kept: BTreeSet<&PathBuf> = files
+    let survivors: BTreeSet<&PathBuf> = files
         .iter()
-        .map(|(_, p)| p)
-        .filter(|p| !doomed.contains(*p))
+        .zip(&doomed)
+        .filter(|(_, d)| !**d)
+        .map(|((_, p), _)| p)
         .collect();
-    let _ = kept;
     files
-        .into_iter()
-        .map(|(_, p)| p)
-        .filter(|p| doomed.contains(p))
+        .iter()
+        .zip(&doomed)
+        .filter(|(_, d)| **d)
+        .map(|((_, p), _)| p)
+        .filter(|p| !survivors.contains(*p) && !protect.contains(&p.as_path()))
+        .cloned()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()

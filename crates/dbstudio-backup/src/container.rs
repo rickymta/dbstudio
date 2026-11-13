@@ -253,9 +253,67 @@ fn finalize(entries: &[SpoolEntry], preamble: &SpoolEntry) -> Manifest {
     }
 }
 
-/// Pack `preamble` + `entries` + a generated manifest into `dest` (written as `dest.part` and
-/// renamed, so a failed or cancelled pack leaves no file). `tick` is called with the bytes of
-/// each entry as it is packed.
+/// Create the temporary output next to `dest`: a name no other writer uses, mode 0600.
+fn create_part(dest: &Path) -> io::Result<(PathBuf, File)> {
+    let dir = dest
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let part = dir.join(format!(".{name}.{}.part", uuid::Uuid::new_v4().simple()));
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(&part)?;
+    Ok((part, file))
+}
+
+/// Move `part` to `dest` without ever replacing an existing file; when `dest` is taken a
+/// numeric suffix is added (`name-1.dbsbak`). Returns the path that was used.
+fn publish_noclobber(part: &Path, dest: &Path) -> io::Result<PathBuf> {
+    let stem = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let base = stem.strip_suffix(".dbsbak").unwrap_or(&stem).to_string();
+    let dir = dest
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    for n in 0..10_000u32 {
+        let candidate = if n == 0 {
+            dest.to_path_buf()
+        } else {
+            dir.join(format!("{base}-{n}.dbsbak"))
+        };
+        // A hard link fails when the target exists, unlike a rename.
+        match fs::hard_link(part, &candidate) {
+            Ok(()) => {
+                let _ = fs::remove_file(part);
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free file name",
+    ))
+}
+
+/// Pack `preamble` + `entries` + a generated manifest into `dest`. The data is written to a
+/// private temporary file (0600) in the same directory and then published without replacing
+/// anything (a taken name gets a numeric suffix), so a failed or cancelled pack leaves no file
+/// and two writers never share one. Returns the final path and its size. `tick` is called with
+/// the bytes of each entry as it is packed.
 pub fn write_container(
     dest: &Path,
     opts: &ContainerOptions,
@@ -263,7 +321,7 @@ pub fn write_container(
     entries: &[SpoolEntry],
     spool_dir: &Path,
     tick: &dyn Fn(u64) -> bool,
-) -> Result<u64> {
+) -> Result<(PathBuf, u64)> {
     let preamble_bytes =
         serde_json::to_vec_pretty(preamble).map_err(|e| Error::Other(e.to_string()))?;
     let mut pw = SpoolWriter::create(spool_dir, 99_998, PREAMBLE)?;
@@ -290,9 +348,9 @@ pub fn write_container(
     let header_bytes = serde_json::to_vec(&header).map_err(|e| Error::Other(e.to_string()))?;
     let aad: [u8; 32] = Sha256::digest(&header_bytes).into();
 
-    let part = dest.with_extension("dbsbak.part");
+    let (part, part_file) = create_part(dest)?;
     let result = (|| -> Result<()> {
-        let mut file = BufWriter::new(File::create(&part)?);
+        let mut file = BufWriter::new(part_file);
         file.write_all(MAGIC)?;
         file.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
         file.write_all(&header_bytes)?;
@@ -337,10 +395,16 @@ pub fn write_container(
         Ok(())
     })();
     match result {
-        Ok(()) => {
-            fs::rename(&part, dest)?;
-            Ok(fs::metadata(dest)?.len())
-        }
+        Ok(()) => match publish_noclobber(&part, dest) {
+            Ok(path) => {
+                let size = fs::metadata(&path)?.len();
+                Ok((path, size))
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&part);
+                Err(e.into())
+            }
+        },
         Err(e) => {
             let _ = fs::remove_file(&part);
             Err(e)
@@ -739,7 +803,37 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.kind(), "cancelled");
         assert!(!dest.exists());
-        assert!(!dest.with_extension("dbsbak.part").exists());
+        let left: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|f| f.file_name().to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[test]
+    fn a_taken_name_is_never_overwritten_and_files_are_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let spool = dir.path().join("spool");
+        fs::create_dir(&spool).unwrap();
+        let e = entries(&spool);
+        let dest = dir.path().join("x.dbsbak");
+        let o = opts(Compression::None, None);
+        let pre = json!({});
+        let (a, _) = write_container(&dest, &o, &pre, &e, &spool, &|_| true).unwrap();
+        let first = fs::read(&a).unwrap();
+        let (b, _) = write_container(&dest, &o, &pre, &e, &spool, &|_| true).unwrap();
+        assert_eq!(a, dest);
+        assert_ne!(a, b);
+        assert_eq!(b.file_name().unwrap(), "x-1.dbsbak");
+        assert_eq!(fs::read(&a).unwrap(), first, "the first file is untouched");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for f in [&a, &b] {
+                assert_eq!(fs::metadata(f).unwrap().permissions().mode() & 0o777, 0o600);
+            }
+        }
     }
 
     #[test]

@@ -351,6 +351,19 @@ impl TableWriter for SqlWriter {
         } else {
             String::new()
         };
+        // `GENERATED ALWAYS AS IDENTITY` refuses explicit values unless the statement says so.
+        let overriding = if matches!(self.dialect, ScriptDialect::Postgres)
+            && keep.iter().any(|&i| {
+                meta.details
+                    .as_ref()
+                    .and_then(|d| d.columns.iter().find(|x| x.name == meta.columns[i].name))
+                    .and_then(|d| d.extra.as_deref())
+                    .is_some_and(|e| e.to_ascii_lowercase().contains("identity always"))
+            }) {
+            " OVERRIDING SYSTEM VALUE"
+        } else {
+            ""
+        };
         let per_row = matches!(self.dialect, ScriptDialect::Oracle);
         let mut batch_rows = self.opts.insert_batch_rows.max(1) as usize;
         if matches!(self.dialect, ScriptDialect::MsSql) {
@@ -364,7 +377,7 @@ impl TableWriter for SqlWriter {
                 .collect::<String>()
         ));
         self.table = Some(TableState {
-            prefix: format!("INSERT INTO {name}{columns} VALUES"),
+            prefix: format!("INSERT INTO {name}{columns}{overriding} VALUES"),
             stmt: String::new(),
             rows_in_stmt: 0,
             per_row,

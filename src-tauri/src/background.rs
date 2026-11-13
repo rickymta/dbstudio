@@ -5,7 +5,7 @@
 //! ([`on_second_instance`]), the window event hook ([`on_window_event`]), [`setup`] (tray,
 //! scheduler, hidden start) and the autostart launch argument [`BACKGROUND_ARG`].
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 use dbstudio_backup::{BackupJob, BackupRun, RunStatus};
 use dbstudio_core::{Error, Result};
@@ -115,7 +115,95 @@ pub fn setup(app: &AppHandle, state: &AppState) {
             let _ = w.hide();
         }
     }
+    // Scratch directories and half-written files of a run that died with the app.
+    let env = crate::commands::backup::run_env(state);
+    tauri::async_runtime::spawn_blocking(move || {
+        let removed = dbstudio_backup::runner::cleanup_orphans(&env);
+        if removed > 0 {
+            tracing::info!(removed, "removed leftovers of interrupted backup runs");
+        }
+    });
     crate::scheduler::start(state.clone());
+}
+
+/// Seconds within which a second "Quit" confirms stopping the running jobs.
+const QUIT_CONFIRM_SECS: i64 = 30;
+static QUIT_ASKED_AT: AtomicI64 = AtomicI64::new(0);
+
+/// What a "Quit" request does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuitDecision {
+    /// Nothing is running: exit.
+    Exit,
+    /// Jobs are running: tell the user and wait for a second request.
+    Ask,
+    /// Confirmed: cancel the jobs, then exit.
+    CancelAndExit,
+}
+
+/// Pure decision: `active` running jobs, `now` and the time of the previous request (0 = none).
+pub fn quit_decision(active: usize, now: i64, asked_at: i64) -> QuitDecision {
+    if active == 0 {
+        QuitDecision::Exit
+    } else if asked_at > 0 && now - asked_at <= QUIT_CONFIRM_SECS {
+        QuitDecision::CancelAndExit
+    } else {
+        QuitDecision::Ask
+    }
+}
+
+fn active_jobs(state: &AppState) -> Vec<dbstudio_core::JobId> {
+    use dbstudio_core::JobStatus;
+    state
+        .jobs
+        .list()
+        .into_iter()
+        .filter(|j| matches!(j.status, JobStatus::Queued | JobStatus::Running))
+        .map(|j| j.id)
+        .collect()
+}
+
+/// Tray "Quit": never kills a running backup silently.
+pub fn request_quit(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        app.exit(0);
+        return;
+    };
+    let active = active_jobs(&state);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    match quit_decision(active.len(), now, QUIT_ASKED_AT.load(Ordering::SeqCst)) {
+        QuitDecision::Exit => app.exit(0),
+        QuitDecision::Ask => {
+            QUIT_ASKED_AT.store(now, Ordering::SeqCst);
+            show_main_window(app);
+            let body = format!(
+                "{} background job(s) are running. Choose Quit again within {QUIT_CONFIRM_SECS} s to stop them and exit.",
+                active.len()
+            );
+            if let Err(e) = state.host.notify("DBStudio is busy", &body) {
+                tracing::warn!(error = %e, "cannot show the quit warning");
+            }
+        }
+        QuitDecision::CancelAndExit => {
+            for id in &active {
+                let _ = state.jobs.cancel(*id);
+            }
+            let state = state.inner().clone();
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                // Give the jobs a moment to stop their tools and remove their temporary files.
+                for _ in 0..50 {
+                    if active_jobs(&state).is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                app.exit(0);
+            });
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -329,6 +417,19 @@ mod tests {
             on_failure: false,
         });
         assert!(notification_for(&quiet_fail, &run(RunStatus::Failed)).is_none());
+    }
+
+    #[test]
+    fn quitting_while_jobs_run_needs_a_second_request() {
+        assert_eq!(quit_decision(0, 100, 0), QuitDecision::Exit);
+        assert_eq!(quit_decision(2, 100, 0), QuitDecision::Ask);
+        assert_eq!(quit_decision(2, 110, 100), QuitDecision::CancelAndExit);
+        // The warning expired.
+        assert_eq!(
+            quit_decision(2, 100 + QUIT_CONFIRM_SECS + 1, 100),
+            QuitDecision::Ask
+        );
+        assert_eq!(quit_decision(0, 110, 100), QuitDecision::Exit);
     }
 
     #[test]

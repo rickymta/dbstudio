@@ -490,6 +490,10 @@ pub struct BackupContext {
     pub job_name: Option<String>,
     /// Configured native tool paths.
     pub tool_overrides: BTreeMap<NativeTool, String>,
+    /// Application data directory: private scratch space (`<work_dir>/tmp`, mode 0700) for the
+    /// plaintext script, native tool output and secret files of a run. `None` = the system
+    /// temporary directory.
+    pub work_dir: Option<std::path::PathBuf>,
 }
 
 impl fmt::Debug for BackupContext {
@@ -507,7 +511,10 @@ impl fmt::Debug for BackupContext {
 
 mod ops;
 
-pub use ops::{apply_retention, inspect, render_file_name, run_backup, run_restore, verify};
+pub use ops::{
+    apply_retention, apply_retention_protecting, inspect, render_file_name, run_backup,
+    run_restore, verify,
+};
 
 #[cfg(test)]
 mod tests;

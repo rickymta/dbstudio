@@ -328,6 +328,7 @@ fn fixture(environment: Option<Environment>) -> Fixture {
                 secrets,
                 registry: Arc::new(registry),
                 locks_dir: dir.path().join("locks"),
+                work_dir: dir.path().to_path_buf(),
             },
             passphrase: Box::new(|var| (var == "TEST_PASS").then(|| Secret::new("job passphrase"))),
             assume_yes: Some(true),
@@ -579,15 +580,35 @@ async fn verify_and_restore_with_confirmation_rules() {
     };
     f.executed.lock().unwrap().clear();
     assert_eq!(run(restore(&["--yes"])).await.0, EXIT_USAGE);
+    // Without a named target database the confirmation could not say what is at stake.
     assert_eq!(
-        run(restore(&["--yes", "--confirm-text", "wrong"])).await.0,
+        run(restore(&["--yes", "--confirm-text", "app"])).await.0,
+        EXIT_USAGE
+    );
+    assert_eq!(
+        run(restore(&[
+            "--yes",
+            "--database",
+            "app",
+            "--confirm-text",
+            "wrong"
+        ]))
+        .await
+        .0,
         EXIT_USAGE
     );
     assert!(
         f.executed.lock().unwrap().is_empty(),
         "nothing may run before confirmation"
     );
-    let (code, out) = run(restore(&["--yes", "--confirm-text", "app"])).await;
+    let (code, out) = run(restore(&[
+        "--yes",
+        "--database",
+        "app",
+        "--confirm-text",
+        "app",
+    ]))
+    .await;
     assert_eq!(code, EXIT_OK, "{out}");
     let sql: Vec<String> = f
         .executed
@@ -670,6 +691,8 @@ async fn verify_and_restore_with_confirmation_rules() {
                 &conn,
                 "--yes",
                 "--clean",
+                "--database",
+                "app",
                 "--confirm-text",
                 "app"
             ]

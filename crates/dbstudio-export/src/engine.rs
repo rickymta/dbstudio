@@ -106,7 +106,98 @@ pub(crate) fn scope_of(path: &ObjectPath) -> ObjectPath {
     ObjectPath { segments }
 }
 
-async fn plan(ctx: &ExportContext, spec: &ExportSpec, warnings: &mut Vec<String>) -> Result<Work> {
+fn too_many_tables() -> Error {
+    Error::Other(
+        "a schema has more tables than one export can list (2000): export it in parts \
+         (choose tables) or use a native backup tool"
+            .into(),
+    )
+}
+
+/// Every table of a database whose single model is truncated: one model per schema. Fails when
+/// a schema alone is still too big or the database cannot be split.
+async fn tables_by_schema(
+    session: &dyn dbstudio_core::Session,
+    scope: &ObjectPath,
+    request: &(dyn Fn(ObjectPath, Vec<ObjectPath>, bool) -> SchemaModelRequest + Sync),
+) -> Result<Vec<TableModel>> {
+    let mut schemas: Vec<ObjectPath> = Vec::new();
+    for node in session.list_children(scope).await? {
+        match node.kind {
+            ObjectKind::Schema => schemas.push(node.path),
+            ObjectKind::Folder if node.name == dbstudio_core::folder::SCHEMAS => {
+                for n in session.list_children(&node.path).await? {
+                    if n.kind == ObjectKind::Schema {
+                        schemas.push(n.path);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if schemas.is_empty() {
+        return Err(too_many_tables());
+    }
+    let mut out = Vec::new();
+    for schema in schemas {
+        let name = schema.last().map(|s| s.name.as_str()).unwrap_or_default();
+        if matches!(name, "pg_catalog" | "information_schema") || name.starts_with("pg_toast") {
+            continue;
+        }
+        let model = session
+            .schema_model(request(schema.clone(), Vec::new(), false))
+            .await?;
+        if model.truncated {
+            return Err(too_many_tables());
+        }
+        out.extend(model.tables);
+    }
+    Ok(out)
+}
+
+/// Partitions of PostgreSQL partitioned tables that are loaded through their parent because the
+/// parent is exported too (loading both would insert every row twice). Read from the catalog
+/// inside the export's snapshot.
+async fn partitions_loaded_through_parent(
+    ctx: &ExportContext,
+    conn: &Arc<Conn>,
+    work: &Work,
+) -> Result<std::collections::HashSet<(String, String)>> {
+    let mut skip = std::collections::HashSet::new();
+    if !matches!(ctx.dialect, ScriptDialect::Postgres) || work.content == ExportContent::Schema {
+        return Ok(skip);
+    }
+    let listed: std::collections::HashSet<(String, String)> = work
+        .tables
+        .iter()
+        .map(|t| (t.schema.clone().unwrap_or_default(), t.name.clone()))
+        .collect();
+    let sql = "SELECT cn.nspname::text, c.relname::text, pn.nspname::text, p.relname::text \
+               FROM pg_inherits i \
+               JOIN pg_class c ON c.oid = i.inhrelid JOIN pg_class p ON p.oid = i.inhparent \
+               JOIN pg_namespace cn ON cn.oid = c.relnamespace \
+               JOIN pg_namespace pn ON pn.oid = p.relnamespace \
+               WHERE c.relispartition";
+    let mut sink = dbstudio_core::CollectingSink::new();
+    conn.execute(QueryRequest::new(sql), &mut sink).await?;
+    for r in sink.into_results() {
+        if let dbstudio_core::StatementOutcome::Rows(rs) = r.outcome {
+            for row in rs.rows {
+                let text = |i: usize| match row.get(i) {
+                    Some(Value::Text(t)) => t.clone(),
+                    _ => String::new(),
+                };
+                let (child, parent) = ((text(0), text(1)), (text(2), text(3)));
+                if listed.contains(&child) && listed.contains(&parent) {
+                    skip.insert(child);
+                }
+            }
+        }
+    }
+    Ok(skip)
+}
+
+async fn plan(ctx: &ExportContext, spec: &ExportSpec, _warnings: &mut Vec<String>) -> Result<Work> {
     let session = &ctx.session;
     let request = |scope: ObjectPath, tables: Vec<ObjectPath>, views: bool| SchemaModelRequest {
         scope,
@@ -123,10 +214,14 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, warnings: &mut Vec<String>
             let model = session
                 .schema_model(request(path.clone(), Vec::new(), false))
                 .await?;
-            if model.truncated {
-                warnings.push("the schema has more tables than the export lists".into());
-            }
-            tables.extend(model.tables.into_iter().filter(|t| is_data_object(t.kind)));
+            let listed = if model.truncated {
+                // Too many tables for one model: list schema by schema. A table that is
+                // silently missing would make a backup that looks complete but is not.
+                tables_by_schema(session.as_ref(), path, &request).await?
+            } else {
+                model.tables
+            };
+            tables.extend(listed.into_iter().filter(|t| is_data_object(t.kind)));
             ddl_scopes.push((path.clone(), Vec::new()));
         }
         ExportSource::Tables { paths } => {
@@ -145,6 +240,9 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, warnings: &mut Vec<String>
                 let model = session
                     .schema_model(request(scope.clone(), objects.clone(), true))
                     .await?;
+                if model.truncated {
+                    return Err(too_many_tables());
+                }
                 for wanted in &objects {
                     match model.tables.iter().find(|t| t.path == *wanted) {
                         Some(t) => tables.push(t.clone()),
@@ -343,21 +441,13 @@ async fn run(
 
     // Structure first (SQL: the script's DDL; other formats collect it from the table models).
     let mut post: Vec<DdlItem> = Vec::new();
-    // Partitions are filled through their parent table: loading both would insert every row
-    // twice. Found from the DDL (`CREATE TABLE .. PARTITION OF ..`).
-    let mut partitions: std::collections::HashSet<Vec<(ObjectKind, String)>> =
-        std::collections::HashSet::new();
+    let partitions = partitions_loaded_through_parent(ctx, conn, work).await?;
     if is_sql && work.content != ExportContent::Data {
         progress.phase("schema", None);
         let ExportFormat::Sql(sql_opts) = &spec.format else {
             unreachable!()
         };
         let (pre, after) = generate_ddl(ctx, work, &sql_opts.ddl).await?;
-        partitions.extend(
-            pre.iter()
-                .filter(|i| i.kind == ObjectKind::Table && i.sql.contains(" PARTITION OF "))
-                .map(|i| path_key(&i.path)),
-        );
         writer.write_ddl(DdlSection::PreData, &pre)?;
         post = after;
     }
@@ -396,7 +486,9 @@ async fn run(
                 if cancel.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                if partitions.contains(&path_key(&table.path)) {
+                if partitions
+                    .contains(&(table.schema.clone().unwrap_or_default(), table.name.clone()))
+                {
                     objects += 1;
                     progress.object_done();
                     continue;
@@ -458,15 +550,6 @@ async fn run(
         bytes,
         warnings: std::mem::take(warnings),
     })
-}
-
-/// Path without `Folder` segments, comparable between tree paths and DDL item paths.
-fn path_key(p: &ObjectPath) -> Vec<(ObjectKind, String)> {
-    p.segments
-        .iter()
-        .filter(|s| s.kind != ObjectKind::Folder)
-        .map(|s| (s.kind, s.name.clone()))
-        .collect()
 }
 
 fn column_meta(c: &ColumnDetail) -> ColumnMeta {

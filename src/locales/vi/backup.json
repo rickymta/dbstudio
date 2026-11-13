@@ -285,18 +285,12 @@
     "productionWarning": "Đích là kết nối production: bạn sẽ phải xác nhận khi khôi phục.",
     "createDatabase": "Tạo database nếu chưa có",
     "clean": "Xoá đối tượng có sẵn trước (clean)",
-    "cleanWarning": "Phá huỷ: các đối tượng cùng tên bị xoá trước khi khôi phục và dữ liệu của chúng sẽ mất.",
+    "cleanWarning": "Phá huỷ. PostgreSQL: mọi schema có trong bản sao lưu bị xoá bằng CASCADE cùng TẤT CẢ đối tượng trong đó, kể cả đối tượng không có trong bản sao lưu; việc này nằm trong transaction của lần khôi phục nên nếu khôi phục lỗi thì dữ liệu cũ được giữ nguyên. MySQL/MariaDB: toàn bộ database bị xoá rồi tạo lại (giữ nguyên bộ ký tự và collation); có hiệu lực ngay và không thể hoàn tác.",
     "continueOnError": "Tiếp tục khi một đối tượng lỗi",
     "verify": "Xác minh toàn vẹn",
-    "start": "Khôi phục"
-  },
-  "confirm": {
-    "title": "Xác nhận khôi phục",
-    "confirm": "Khôi phục",
-    "typePrompt": "Để tiếp tục, hãy gõ:",
-    "inputLabel": "Chuỗi xác nhận",
-    "cleanMessage": "Lần khôi phục này xoá các đối tượng có sẵn trong database đích. Không thể hoàn tác.",
-    "productionMessage": "Đích là database production. Lần khôi phục này làm thay đổi dữ liệu của nó."
+    "start": "Khôi phục",
+    "targetRequired": "Khôi phục vào kết nối production, hoặc khôi phục có clean, bắt buộc phải gõ tên database đích.",
+    "mysqlNotAtomic": "MySQL/MariaDB commit từng câu lệnh (DDL không rollback được): nếu khôi phục lỗi, database có thể còn dở dang."
   },
   "background": {
     "description": "Sao lưu theo lịch chỉ chạy khi DBStudio đang chạy. Giữ ứng dụng ở khay hệ thống để lịch vẫn chạy khi đã đóng cửa sổ.",

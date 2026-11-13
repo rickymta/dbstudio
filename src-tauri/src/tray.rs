@@ -25,7 +25,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         .tooltip("DBStudio")
         .on_menu_event(|app, event| match event.id.as_ref() {
             MENU_OPEN => show_main_window(app),
-            MENU_QUIT => app.exit(0),
+            MENU_QUIT => crate::background::request_quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

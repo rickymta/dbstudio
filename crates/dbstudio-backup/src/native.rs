@@ -245,6 +245,8 @@ pub struct ToolRun {
     pub stdin: Option<PathBuf>,
     /// File receiving stdout.
     pub stdout: Option<PathBuf>,
+    /// Kill the tool after this long (`None` = no limit).
+    pub timeout: Option<Duration>,
 }
 
 /// Temporary file removed on drop.
@@ -325,10 +327,23 @@ pub async fn run_tool(run: ToolRun, reporter: &dyn JobReporter) -> Result<String
             }
             child.wait().await
         };
+        let limit = async {
+            match run.timeout {
+                Some(d) => tokio::time::sleep(d).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             r = reading => r.map_err(|e| Error::Other(format!("{name}: {e}")))?,
             () = cancel.cancelled() => {
                 return Err(Error::Cancelled);
+            }
+            () = limit => {
+                // Dropping the child kills it (`kill_on_drop`).
+                return Err(Error::Other(format!(
+                    "{name} did not finish within {} seconds and was stopped",
+                    run.timeout.map_or(0, |d| d.as_secs())
+                )));
             }
         }
     };
@@ -354,6 +369,23 @@ fn endpoint(config: &ConnectionConfig, tunnel: Option<std::net::SocketAddr>) -> 
     }
 }
 
+/// `timeoutSecs` option: how long a tool may run.
+fn tool_timeout(options: &BTreeMap<String, String>) -> Option<Duration> {
+    options
+        .get("timeoutSecs")
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .map(Duration::from_secs)
+}
+
+/// MySQL tools take the database as a bare argument: a name that looks like an option is refused.
+fn plain_db_name(database: &str) -> Result<()> {
+    if database.starts_with('-') || database.contains('\0') {
+        return Err(Error::Other(format!("invalid database name {database:?}")));
+    }
+    Ok(())
+}
+
 fn truthy(options: &BTreeMap<String, String>, key: &str) -> bool {
     options.get(key).is_some_and(|v| v == "true")
 }
@@ -368,6 +400,7 @@ pub fn validate_options(tool: NativeTool, options: &BTreeMap<String, String>) ->
                 "noOwner",
                 "noPrivileges",
                 "format",
+                "timeoutSecs",
             ],
             &[("format", &["custom", "plain"])],
         ),
@@ -379,13 +412,23 @@ pub fn validate_options(tool: NativeTool, options: &BTreeMap<String, String>) ->
                 "triggers",
                 "events",
                 "singleTransaction",
+                "timeoutSecs",
             ],
             &[],
         ),
-        NativeTool::MongoDump => (&["gzip"], &[]),
+        NativeTool::MongoDump => (&["gzip", "timeoutSecs"], &[]),
+        NativeTool::RedisCli => (&["timeoutSecs"], &[]),
         _ => (&[], &[]),
     };
     for (k, v) in options {
+        if k == "timeoutSecs" && allowed.contains(&"timeoutSecs") {
+            if v.parse::<u64>().is_ok() {
+                continue;
+            }
+            return Err(Error::Other(
+                "option timeoutSecs must be a number of seconds".into(),
+            ));
+        }
         if !allowed.contains(&k.as_str()) {
             return Err(Error::Other(format!(
                 "option {k:?} is not allowed for {tool:?}"
@@ -448,8 +491,8 @@ fn pg_conn_args(
         a.push(u.into());
     }
     a.push("-w".into());
-    a.push("-d".into());
-    a.push(database.into());
+    // `--dbname=` keeps a name that starts with `-` from being read as an option.
+    a.push(format!("--dbname={database}").into());
     a
 }
 
@@ -549,6 +592,7 @@ pub fn build_dump(
                     env: pg_env(config, secret),
                     stdin: None,
                     stdout: Some(out.to_path_buf()),
+                    timeout: tool_timeout(options),
                 },
                 guards: vec![],
                 extension: if plain { "sql" } else { "pgdump" },
@@ -564,15 +608,23 @@ pub fn build_dump(
             for (key, flag) in [
                 ("schemaOnly", "--no-data"),
                 ("dataOnly", "--no-create-info"),
-                ("routines", "--routines"),
-                ("triggers", "--triggers"),
-                ("events", "--events"),
             ] {
                 if truthy(options, key) {
                     args.push(flag.into());
                 }
             }
+            // Stored code and events are part of a database: included unless switched off.
+            for (key, flag) in [
+                ("routines", "--routines"),
+                ("triggers", "--triggers"),
+                ("events", "--events"),
+            ] {
+                if options.get(key).is_none_or(|v| v != "false") {
+                    args.push(flag.into());
+                }
+            }
             args.push("--default-character-set=utf8mb4".into());
+            plain_db_name(database)?;
             args.push(database.into());
             Ok(DumpCommand {
                 run: ToolRun {
@@ -581,6 +633,7 @@ pub fn build_dump(
                     env: vec![],
                     stdin: None,
                     stdout: Some(out.to_path_buf()),
+                    timeout: tool_timeout(options),
                 },
                 guards: vec![defaults],
                 extension: "sql",
@@ -630,6 +683,7 @@ pub fn build_dump(
                     env: vec![],
                     stdin: None,
                     stdout: Some(out.to_path_buf()),
+                    timeout: tool_timeout(options),
                 },
                 guards: vec![cfg],
                 extension: "archive",
@@ -660,6 +714,7 @@ pub fn build_dump(
                     env,
                     stdin: None,
                     stdout: None,
+                    timeout: tool_timeout(options),
                 },
                 guards: vec![],
                 extension: "rdb",
@@ -707,6 +762,7 @@ pub fn build_restore(
                     env: pg_env(config, secret),
                     stdin: Some(input.to_path_buf()),
                     stdout: None,
+                    timeout: None,
                 },
                 guards: vec![],
                 extension: "",
@@ -726,6 +782,7 @@ pub fn build_restore(
                     env: pg_env(config, secret),
                     stdin: Some(input.to_path_buf()),
                     stdout: None,
+                    timeout: None,
                 },
                 guards: vec![],
                 extension: "",
@@ -739,7 +796,8 @@ pub fn build_restore(
                 args.push("--force".into());
             }
             args.push("--default-character-set=utf8mb4".into());
-            args.push(database.into());
+            plain_db_name(database)?;
+            args.push(format!("--database={database}").into());
             Ok(DumpCommand {
                 run: ToolRun {
                     program,
@@ -747,6 +805,7 @@ pub fn build_restore(
                     env: vec![],
                     stdin: Some(input.to_path_buf()),
                     stdout: None,
+                    timeout: None,
                 },
                 guards: vec![defaults],
                 extension: "",
@@ -796,6 +855,7 @@ pub fn build_restore(
                     env: vec![],
                     stdin: Some(input.to_path_buf()),
                     stdout: None,
+                    timeout: None,
                 },
                 guards: vec![cfg],
                 extension: "",
@@ -806,6 +866,93 @@ pub fn build_restore(
             "{t:?} cannot restore a {f} dump into a {} connection",
             k.display_name()
         ))),
+    }
+}
+
+/// Refuse a plain-text restore script that would make the client run commands of its own:
+/// `psql` meta-commands that start programs or read files (`\!`, `\o |`, `\copy .. program`,
+/// `\i`), `mysql` client commands (`system`, `source`, `tee`, `\!`). The script comes from a
+/// file, so it is treated as untrusted.
+pub fn scan_restore_script(tool: NativeTool, path: &Path) -> Result<()> {
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(File::open(path)?);
+    let mut raw = Vec::new();
+    let mut n = 0u64;
+    loop {
+        raw.clear();
+        if reader.read_until(b'\n', &mut raw)? == 0 {
+            return Ok(());
+        }
+        n += 1;
+        let line = String::from_utf8_lossy(&raw);
+        let t = line.trim_start();
+        let lower = t.to_ascii_lowercase();
+        let bad = match tool {
+            NativeTool::Psql => psql_meta_is_dangerous(&lower),
+            NativeTool::MySqlClient => {
+                lower.starts_with("system ")
+                    || lower.starts_with("\\!")
+                    || lower.starts_with("source ")
+                    || lower.starts_with("\\. ")
+                    || lower.starts_with("tee ")
+                    || lower.starts_with("\\t ")
+                    || lower.starts_with("\\h ")
+            }
+            _ => false,
+        };
+        if bad {
+            return Err(Error::Other(format!(
+                "the script contains a client command that runs programs or reads files (line {n}); \
+                 it was not run"
+            )));
+        }
+    }
+}
+
+fn psql_meta_is_dangerous(lower_line: &str) -> bool {
+    let Some(rest) = lower_line.strip_prefix('\\') else {
+        return false;
+    };
+    let cmd: String = rest
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '|')
+        .collect();
+    let after = rest[cmd.len()..].trim_start();
+    match cmd.as_str() {
+        "!" | "i" | "ir" | "include" | "include_relative" | "setenv" | "cd" | "lo_import" | "e"
+        | "edit" | "ef" | "ev" => true,
+        // Output redirection into a pipe.
+        "o" | "out" | "w" | "write" | "g" | "gx" | "gexec" | "gset" | "t" | "tee" => {
+            after.starts_with('|') || cmd == "gexec" || cmd == "gset"
+        }
+        "copy" => after.contains("program"),
+        _ => cmd.starts_with('!'),
+    }
+}
+
+/// What a native backup does not contain (written into the preamble).
+pub fn native_unsupported(
+    tool: NativeTool,
+    options: &BTreeMap<String, String>,
+) -> Vec<&'static str> {
+    match tool {
+        NativeTool::PgDump => vec![
+            "roles and tablespaces (cluster-wide objects)",
+            "other databases of the server",
+        ],
+        NativeTool::MySqlDump => {
+            let mut v = vec!["users and grants", "other databases of the server"];
+            if options.get("events").is_some_and(|e| e == "false") {
+                v.push("events");
+            }
+            if options.get("routines").is_some_and(|e| e == "false") {
+                v.push("stored routines");
+            }
+            v
+        }
+        NativeTool::MongoDump => vec!["users and roles", "other databases of the server"],
+        NativeTool::RedisCli => vec!["a point-in-time guarantee (RDB is fetched by replication)"],
+        _ => Vec::new(),
     }
 }
 
@@ -904,6 +1051,207 @@ mod tests {
                 assert!(!file.exists(), "secret file removed on drop");
             }
         }
+    }
+
+    #[test]
+    fn database_names_are_never_positional_for_psql_and_mysql_clients() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hostile = "--help";
+        let c = build_restore(
+            NativeTool::Psql,
+            "plain",
+            &info(NativeTool::Psql),
+            &cfg(DbKind::Postgres),
+            None,
+            None,
+            hostile,
+            false,
+            false,
+            tmp.path(),
+            Path::new("/in"),
+        )
+        .unwrap();
+        assert!(
+            args_text(&c).contains("--dbname=--help"),
+            "{}",
+            args_text(&c)
+        );
+        assert!(args_text(&c).contains("ON_ERROR_STOP=1"));
+        let c = build_restore(
+            NativeTool::MySqlClient,
+            "plain",
+            &info(NativeTool::MySqlClient),
+            &cfg(DbKind::MySql),
+            None,
+            None,
+            "app",
+            false,
+            false,
+            tmp.path(),
+            Path::new("/in"),
+        )
+        .unwrap();
+        assert!(
+            args_text(&c).ends_with("--database=app"),
+            "{}",
+            args_text(&c)
+        );
+        // mysql tools without a named-option form refuse a name that looks like an option.
+        assert!(
+            build_restore(
+                NativeTool::MySqlClient,
+                "plain",
+                &info(NativeTool::MySqlClient),
+                &cfg(DbKind::MySql),
+                None,
+                None,
+                "-e",
+                false,
+                false,
+                tmp.path(),
+                Path::new("/in"),
+            )
+            .is_err()
+        );
+        assert!(
+            build_dump(
+                NativeTool::MySqlDump,
+                &info(NativeTool::MySqlDump),
+                &cfg(DbKind::MySql),
+                None,
+                None,
+                "--all-databases",
+                &BTreeMap::new(),
+                tmp.path(),
+                Path::new("/o"),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn mysqldump_includes_routines_events_and_triggers_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dump = |opts: &BTreeMap<String, String>| {
+            args_text(
+                &build_dump(
+                    NativeTool::MySqlDump,
+                    &info(NativeTool::MySqlDump),
+                    &cfg(DbKind::MySql),
+                    None,
+                    None,
+                    "app",
+                    opts,
+                    tmp.path(),
+                    Path::new("/o"),
+                )
+                .unwrap(),
+            )
+        };
+        let all = dump(&BTreeMap::new());
+        for flag in [
+            "--routines",
+            "--events",
+            "--triggers",
+            "--single-transaction",
+        ] {
+            assert!(all.contains(flag), "{all}");
+        }
+        let off = dump(&BTreeMap::from([(
+            "events".to_string(),
+            "false".to_string(),
+        )]));
+        assert!(!off.contains("--events") && off.contains("--routines"));
+        assert!(
+            native_unsupported(
+                NativeTool::MySqlDump,
+                &BTreeMap::from([("events".to_string(), "false".to_string())])
+            )
+            .contains(&"events")
+        );
+        assert!(
+            native_unsupported(NativeTool::PgDump, &BTreeMap::new())
+                .iter()
+                .any(|u| u.contains("roles"))
+        );
+    }
+
+    #[test]
+    fn restore_scripts_that_run_programs_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let check = |tool, text: &str| {
+            let p = dir.path().join("s.sql");
+            fs::write(&p, text).unwrap();
+            scan_restore_script(tool, &p)
+        };
+        let ok = "CREATE TABLE t (a int);\nCOPY t FROM stdin;\n1\n\\.\n\\connect app\nINSERT INTO t VALUES ('\\\\!');\n";
+        assert!(check(NativeTool::Psql, ok).is_ok());
+        for bad in [
+            "\\! touch /tmp/x",
+            "  \\! id",
+            "\\o | sh",
+            "\\copy t to program 'sh'",
+            "\\i /etc/passwd",
+            "\\setenv A b",
+            "SELECT 1;\n\\g |sh",
+            "\\gexec",
+        ] {
+            assert!(check(NativeTool::Psql, bad).is_err(), "{bad}");
+        }
+        assert!(check(NativeTool::Psql, "\\copy t to '/tmp/f'").is_ok());
+        assert!(
+            check(
+                NativeTool::MySqlClient,
+                "INSERT INTO t VALUES (1);\n/*!40101 SET x=1 */;"
+            )
+            .is_ok()
+        );
+        for bad in [
+            "system rm -rf x",
+            "\\! id",
+            "source /etc/passwd",
+            "tee /tmp/o",
+        ] {
+            assert!(check(NativeTool::MySqlClient, bad).is_err(), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_hangs_is_stopped_by_its_timeout() {
+        struct R(dbstudio_core::CancelToken);
+        impl JobReporter for R {
+            fn progress(&self, _: &dbstudio_core::JobProgress) {}
+            fn cancel_token(&self) -> &dbstudio_core::CancelToken {
+                &self.0
+            }
+        }
+        let rep = R(dbstudio_core::CancelToken::new());
+        let run = ToolRun {
+            program: PathBuf::from("sleep"),
+            args: vec!["30".into()],
+            env: vec![],
+            stdin: None,
+            stdout: None,
+            timeout: Some(Duration::from_millis(200)),
+        };
+        let t = std::time::Instant::now();
+        let e = run_tool(run, &rep).await.unwrap_err();
+        assert!(t.elapsed() < Duration::from_secs(5));
+        assert!(e.to_string().contains("did not finish"), "{e}");
+        assert!(
+            validate_options(
+                NativeTool::PgDump,
+                &BTreeMap::from([("timeoutSecs".to_string(), "60".to_string())])
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_options(
+                NativeTool::PgDump,
+                &BTreeMap::from([("timeoutSecs".to_string(), "soon".to_string())])
+            )
+            .is_err()
+        );
     }
 
     #[test]

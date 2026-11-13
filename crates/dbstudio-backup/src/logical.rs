@@ -30,10 +30,29 @@ use crate::container::{Scanned, SpoolEntry};
 pub const DUMP_ENTRY: &str = "data/dump.sql";
 
 /// Things a logical backup does not contain (shown in the preamble and the restore preview).
-pub const UNSUPPORTED_SCOPE: [&str; 2] = ["roles and grants", "server level settings"];
+pub const UNSUPPORTED_SCOPE: [&str; 5] = [
+    "roles and grants",
+    "server level settings",
+    "MySQL events",
+    "PostgreSQL large objects",
+    "users and passwords",
+];
 
 /// Errors kept in the restore outcome when the script is allowed to continue.
 const MAX_REPORTED_ERRORS: usize = 1000;
+
+/// Refuse backups written by an earlier layout (several `.sql` files, container preamble
+/// version 1): only the current single-script layout can be restored.
+pub(crate) fn check_supported(pre: &Json) -> Result<()> {
+    if pre["engine"] == "logical" && pre["formatVersion"].as_u64().unwrap_or(1) < 2 {
+        return Err(Error::Unsupported(
+            "this backup was written by an older DBStudio (integrated format 1) and cannot be \
+             restored or verified by this version; restore it with the version that made it"
+                .into(),
+        ));
+    }
+    Ok(())
+}
 
 /// Database name of a target path, when it has one.
 pub(crate) fn database_of(path: &ObjectPath) -> Option<String> {
@@ -311,8 +330,19 @@ fn same_family(a: &str, b: ScriptDialect) -> bool {
     )
 }
 
-/// Statements that empty the target before the script runs (`clean`).
-fn clean_statements(pre: &Json, sd: ScriptDialect, database: &str) -> Vec<String> {
+/// Statements that empty the target before the script runs (`clean`). `charset` is the
+/// character set and collation of the MySQL database being replaced, kept for the new one.
+///
+/// PostgreSQL drops every schema the backup contains with `CASCADE`: **all** objects in those
+/// schemas go, including ones that are not in the backup; it runs inside the restore
+/// transaction, so a failed restore keeps the old content. MySQL drops and re-creates the
+/// database: that commits at once and cannot be rolled back.
+pub fn clean_statements(
+    pre: &Json,
+    sd: ScriptDialect,
+    database: &str,
+    charset: Option<(String, String)>,
+) -> Vec<String> {
     let q = dbstudio_sql::Dialect::new(sd);
     match sd {
         ScriptDialect::Postgres => {
@@ -343,11 +373,58 @@ fn clean_statements(pre: &Json, sd: ScriptDialect, database: &str) -> Vec<String
                 })
                 .collect()
         }
-        ScriptDialect::MySql { .. } => vec![
-            format!("DROP DATABASE IF EXISTS {}", q.quote_ident(database)),
-            format!("CREATE DATABASE {}", q.quote_ident(database)),
-        ],
+        ScriptDialect::MySql { .. } => {
+            let create = match charset {
+                Some((cs, coll)) if is_word(&cs) && is_word(&coll) => format!(
+                    "CREATE DATABASE {} CHARACTER SET {cs} COLLATE {coll}",
+                    q.quote_ident(database)
+                ),
+                _ => format!("CREATE DATABASE {}", q.quote_ident(database)),
+            };
+            vec![
+                format!("DROP DATABASE IF EXISTS {}", q.quote_ident(database)),
+                create,
+            ]
+        }
         _ => Vec::new(),
+    }
+}
+
+fn is_word(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The statements a `clean` restore of a backup with `pre` would run on a `dialect` server
+/// (`postgres` | `mysql`); shown to the user before they confirm.
+pub fn clean_preview(pre: &Json, dialect: &str, database: &str) -> Vec<String> {
+    let sd = match dialect {
+        "postgres" => ScriptDialect::Postgres,
+        "mysql" => ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+        },
+        _ => return Vec::new(),
+    };
+    clean_statements(pre, sd, database, None)
+}
+
+/// Character set and collation of a MySQL database, when it exists.
+async fn mysql_charset(session: &Arc<dyn Session>, database: &str) -> Option<(String, String)> {
+    let q = dbstudio_sql::Dialect::new(session.script_dialect());
+    let sql = format!(
+        "SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA \
+         WHERE SCHEMA_NAME = {}",
+        q.literal_text(database)
+    );
+    let r = dbstudio_core::execute_collect(session.as_ref(), QueryRequest::new(sql))
+        .await
+        .ok()?;
+    match &r.first()?.outcome {
+        dbstudio_core::StatementOutcome::Rows(rs) => match rs.rows.first()?.as_slice() {
+            [Value::Text(a), Value::Text(b)] => Some((a.clone(), b.clone())),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -420,7 +497,17 @@ pub(crate) async fn restore(
     }
     // MySQL `clean` replaces the whole database: do it on the session, before the lease opens.
     let clean = if spec.clean {
-        clean_statements(pre, sd, &target_db)
+        if spec.target_database.as_deref().is_none_or(str::is_empty) {
+            return Err(Error::Other(
+                "a clean restore needs the target database to be named explicitly".into(),
+            ));
+        }
+        let charset = if matches!(sd, ScriptDialect::MySql { .. }) {
+            mysql_charset(session, &target_db).await
+        } else {
+            None
+        };
+        clean_statements(pre, sd, &target_db, charset)
     } else {
         Vec::new()
     };
@@ -613,7 +700,7 @@ mod tests {
     fn clean_replaces_schemas_or_the_database() {
         let pre =
             json!({"objects": [{"name": "app.users"}, {"name": "app.orders"}, {"name": "x.t"}]});
-        let pg = clean_statements(&pre, ScriptDialect::Postgres, "d");
+        let pg = clean_statements(&pre, ScriptDialect::Postgres, "d", None);
         assert_eq!(pg[0], "DROP SCHEMA IF EXISTS \"app\" CASCADE");
         assert_eq!(pg.len(), 2);
         let my = clean_statements(
@@ -623,10 +710,36 @@ mod tests {
                 backslash_escapes: true,
             },
             "d",
+            None,
         );
         assert_eq!(my, ["DROP DATABASE IF EXISTS `d`", "CREATE DATABASE `d`"]);
+        let kept = clean_statements(
+            &pre,
+            ScriptDialect::MySql {
+                mariadb: false,
+                backslash_escapes: true,
+            },
+            "d",
+            Some(("utf8mb4".into(), "utf8mb4_0900_ai_ci".into())),
+        );
         assert_eq!(
-            clean_statements(&json!({}), ScriptDialect::Postgres, "d"),
+            kept[1],
+            "CREATE DATABASE `d` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
+        );
+        // Anything that is not a plain name is not spliced into SQL.
+        let odd = clean_statements(
+            &pre,
+            ScriptDialect::MySql {
+                mariadb: false,
+                backslash_escapes: true,
+            },
+            "d",
+            Some(("x; DROP".into(), "y".into())),
+        );
+        assert_eq!(odd[1], "CREATE DATABASE `d`");
+        assert_eq!(clean_preview(&pre, "postgres", "d").len(), 2);
+        assert_eq!(
+            clean_statements(&json!({}), ScriptDialect::Postgres, "d", None),
             [
                 "DROP SCHEMA IF EXISTS \"public\" CASCADE",
                 "CREATE SCHEMA \"public\""

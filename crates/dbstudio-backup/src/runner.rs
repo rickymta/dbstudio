@@ -24,7 +24,7 @@ use crate::scheduler::next_after;
 use crate::{
     BackupContext, BackupEngine, BackupJob, BackupOutcome, BackupRun, BackupSpec, MissedRunPolicy,
     NativeTool, RestoreOutcome, RestoreSpec, RunKind, RunStatus, RunTrigger, Schedule, ScheduleTz,
-    apply_retention, run_backup, run_restore,
+    run_backup, run_restore,
 };
 
 /// Last bytes of the log kept in `backup_runs.log_tail`.
@@ -41,6 +41,8 @@ pub struct RunEnv {
     pub registry: Arc<DriverRegistry>,
     /// Directory of the per-job lock files.
     pub locks_dir: PathBuf,
+    /// Application data directory: scratch space (`<work_dir>/tmp`) for plaintext spools.
+    pub work_dir: PathBuf,
 }
 
 impl std::fmt::Debug for RunEnv {
@@ -343,7 +345,7 @@ where
         error: None,
         log_tail: None,
     };
-    env.service.store().backup_run_insert(&run_to_row(&run))?;
+    insert_run(env, &run)?;
     let logger = Arc::new(LogReporter {
         inner: reporter,
         tail: Mutex::new(String::new()),
@@ -523,6 +525,7 @@ pub async fn execute_backup(
         reporter,
         job_name,
         tool_overrides: tool_overrides(env)?,
+        work_dir: Some(env.work_dir.clone()),
     };
     let out = run_backup(ctx, spec, passphrase.as_ref()).await;
     if let Err(e) = session.close().await {
@@ -540,6 +543,10 @@ pub async fn execute_restore(
 ) -> Result<RestoreOutcome> {
     let conn = connect(env, spec.target_connection_id).await?;
     let session = conn.session.clone();
+    if restore_is_guarded(&conn.config, spec) && !restore_names_its_target(spec) {
+        let _ = session.close().await;
+        return Err(explicit_target_required());
+    }
     if conn.config.read_only {
         let _ = session.close().await;
         return Err(Error::ReadOnlyViolation {
@@ -555,6 +562,7 @@ pub async fn execute_restore(
         reporter,
         job_name: None,
         tool_overrides: tool_overrides(env)?,
+        work_dir: Some(env.work_dir.clone()),
     };
     let out = run_restore(ctx, spec, passphrase.as_ref()).await;
     if let Err(e) = session.close().await {
@@ -563,19 +571,36 @@ pub async fn execute_restore(
     out
 }
 
+/// A restore that needs a confirmation: the target connection is `production`, or the restore
+/// drops existing objects (`clean`).
+pub fn restore_is_guarded(config: &ConnectionConfig, spec: &RestoreSpec) -> bool {
+    config.environment == Some(Environment::Production) || spec.clean
+}
+
+/// A guarded restore must name the database it writes to: with the default (the database the
+/// backup came from) the confirmation text could not say which database is at stake.
+pub fn restore_names_its_target(spec: &RestoreSpec) -> bool {
+    spec.target_database
+        .as_deref()
+        .is_some_and(|d| !d.is_empty())
+}
+
+/// Error for a guarded restore without an explicit target database.
+pub fn explicit_target_required() -> Error {
+    Error::Other(
+        "a restore into a production connection, or one that cleans the target, needs the \
+         target database to be named explicitly"
+            .into(),
+    )
+}
+
 /// Text the user must type to restore into `config`, when a confirmation is needed: the target
-/// connection is `production`, or the restore drops existing objects (`clean`).
+/// database named in `spec` (the database that is actually written).
 pub fn restore_confirmation_text(config: &ConnectionConfig, spec: &RestoreSpec) -> Option<String> {
-    if config.environment != Some(Environment::Production) && !spec.clean {
+    if !restore_is_guarded(config, spec) {
         return None;
     }
-    Some(
-        spec.target_database
-            .clone()
-            .or_else(|| config.database.clone())
-            .filter(|d| !d.is_empty())
-            .unwrap_or_else(|| config.name.clone()),
-    )
+    spec.target_database.clone().filter(|d| !d.is_empty())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -633,21 +658,138 @@ pub async fn run_job(
     .await?;
 
     let finished = Utc::now();
-    if run.status == RunStatus::Succeeded {
-        apply_job_retention(env, job, finished);
-    }
+    // The job may have been edited (new schedule, retention) or deleted while it ran: the
+    // bookkeeping uses what is stored now, and a deleted job just leaves its run record.
     let store = env.service.store();
-    store.backup_job_set_schedule_state(
-        job.id,
-        None,
-        Some(&run.started_at),
-        next_run_text(job, finished).as_deref(),
-    )?;
+    let current = match store.backup_job_get(job.id)? {
+        Some(row) => row_to_job(&row).ok(),
+        None => None,
+    };
+    if let Some(current) = current {
+        if run.status == RunStatus::Succeeded {
+            let protect: Vec<PathBuf> = run.file_path.iter().map(PathBuf::from).collect();
+            apply_job_retention(env, &current, finished, &protect);
+        }
+        store.backup_job_set_schedule_state(
+            job.id,
+            None,
+            Some(&run.started_at),
+            next_run_text(&current, finished).as_deref(),
+        )?;
+    }
     Ok(run)
 }
 
+/// Record a run that did not happen (the job was already running, the lock or the store failed)
+/// so that the history and the notification say why instead of the slot silently passing.
+pub fn record_skipped(
+    env: &RunEnv,
+    job: &BackupJob,
+    trigger: RunTrigger,
+    why: &Error,
+) -> Result<BackupRun> {
+    let now = now_text();
+    let run = BackupRun {
+        id: Uuid::new_v4(),
+        job_id: Some(job.id),
+        job_name: job.name.clone(),
+        connection_id: Some(job.spec.connection_id),
+        kind: RunKind::Backup,
+        trigger,
+        engine: engine_label(&job.spec),
+        status: RunStatus::Failed,
+        started_at: now.clone(),
+        finished_at: Some(now),
+        duration_ms: Some(0),
+        file_path: None,
+        size_bytes: None,
+        checksum: None,
+        objects: None,
+        rows: None,
+        error: Some(JobError {
+            kind: why.kind().into(),
+            message: format!("not run: {}", why.message()),
+        }),
+        log_tail: None,
+    };
+    insert_run(env, &run)?;
+    Ok(run)
+}
+
+/// Insert a run row; a job or connection deleted in the meantime only loses its link.
+fn insert_run(env: &RunEnv, run: &BackupRun) -> Result<()> {
+    let store = env.service.store();
+    match store.backup_run_insert(&run_to_row(run)) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            let mut unlinked = run.clone();
+            unlinked.job_id = None;
+            unlinked.connection_id = None;
+            store.backup_run_insert(&run_to_row(&unlinked))
+        }
+    }
+}
+
+/// Age after which a scratch directory or temporary file is considered abandoned.
+const ORPHAN_AGE: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+
+/// Remove what a crashed run left behind: scratch directories in `<work_dir>/tmp` and
+/// half-written `.part` files in the job destinations, when older than [`ORPHAN_AGE`].
+/// Returns how many entries were removed.
+pub fn cleanup_orphans(env: &RunEnv) -> usize {
+    let mut removed = 0;
+    let old = |p: &Path| {
+        fs::metadata(p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= ORPHAN_AGE)
+    };
+    if let Ok(rd) = fs::read_dir(env.work_dir.join("tmp")) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if old(&p) {
+                let ok = if p.is_dir() {
+                    fs::remove_dir_all(&p).is_ok()
+                } else {
+                    fs::remove_file(&p).is_ok()
+                };
+                removed += usize::from(ok);
+            }
+        }
+    }
+    let dirs: std::collections::BTreeSet<PathBuf> = env
+        .service
+        .store()
+        .backup_jobs_list()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| serde_json::from_str::<BackupSpec>(&r.spec).ok())
+        .filter_map(|spec| match spec.destination {
+            crate::Destination::LocalDir { path, .. } => Some(PathBuf::from(path)),
+            _ => None,
+        })
+        .collect();
+    for dir in dirs {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let p = e.path();
+            if name.starts_with('.') && name.ends_with(".part") && old(&p) {
+                removed += usize::from(fs::remove_file(&p).is_ok());
+            }
+        }
+    }
+    removed
+}
+
 /// Delete the files retention selects (best effort; failures are logged).
-pub fn apply_job_retention(env: &RunEnv, job: &BackupJob, now: DateTime<Utc>) -> Vec<PathBuf> {
+pub fn apply_job_retention(
+    env: &RunEnv,
+    job: &BackupJob,
+    now: DateTime<Utc>,
+    protect: &[PathBuf],
+) -> Vec<PathBuf> {
     let runs = match env.service.store().backup_runs_list(Some(job.id), 10_000) {
         Ok(rows) => rows
             .iter()
@@ -658,7 +800,8 @@ pub fn apply_job_retention(env: &RunEnv, job: &BackupJob, now: DateTime<Utc>) ->
             return Vec::new();
         }
     };
-    let doomed = apply_retention(job, &runs, now);
+    let protect: Vec<&Path> = protect.iter().map(PathBuf::as_path).collect();
+    let doomed = crate::apply_retention_protecting(job, &runs, now, &protect);
     let mut deleted = Vec::new();
     for path in doomed {
         match fs::remove_file(&path) {
@@ -791,23 +934,78 @@ mod tests {
             continue_on_error: false,
         };
         assert_eq!(restore_confirmation_text(&c, &spec), None);
+        // Production: the text is the database that is written, which must be named.
         c.environment = Some(Environment::Production);
-        assert_eq!(
-            restore_confirmation_text(&c, &spec).as_deref(),
-            Some("main")
-        );
+        assert!(restore_is_guarded(&c, &spec));
+        assert!(!restore_names_its_target(&spec));
+        assert_eq!(restore_confirmation_text(&c, &spec), None);
         spec.target_database = Some("copy".into());
+        assert!(restore_names_its_target(&spec));
         assert_eq!(
             restore_confirmation_text(&c, &spec).as_deref(),
             Some("copy")
         );
+        spec.target_database = Some(String::new());
+        assert!(!restore_names_its_target(&spec));
         c.environment = Some(Environment::Development);
+        spec.target_database = Some("copy".into());
         assert_eq!(restore_confirmation_text(&c, &spec), None);
         spec.clean = true;
+        assert!(restore_is_guarded(&c, &spec));
         assert_eq!(
             restore_confirmation_text(&c, &spec).as_deref(),
             Some("copy")
         );
+    }
+
+    fn env_in(dir: &Path) -> RunEnv {
+        let secrets = Arc::new(dbstudio_store::MemorySecretStore::new());
+        RunEnv {
+            service: Arc::new(ConnectionService::new(
+                dbstudio_store::Store::open_in_memory().unwrap(),
+                secrets.clone(),
+            )),
+            secrets,
+            registry: Arc::new(DriverRegistry::new()),
+            locks_dir: dir.join("locks"),
+            work_dir: dir.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn a_slot_that_did_not_run_leaves_a_failed_record_that_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = env_in(dir.path());
+        let j = job();
+        // The job and its connection are not in the store: the record is kept without links.
+        let run = record_skipped(&env, &j, RunTrigger::Schedule, &busy()).unwrap();
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(run.error.as_ref().unwrap().kind, "busy");
+        assert!(run.error.as_ref().unwrap().message.starts_with("not run:"));
+        let rows = env.service.store().backup_runs_list(None, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "failed");
+        assert_eq!(rows[0].trigger, "schedule");
+        assert_eq!(rows[0].job_id, None);
+    }
+
+    #[test]
+    fn leftovers_of_dead_runs_are_swept_but_fresh_ones_are_not() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let env = env_in(dir.path());
+        let tmp = dir.path().join("tmp");
+        fs::create_dir_all(tmp.join("run-old")).unwrap();
+        fs::write(tmp.join("run-old/dump.sql"), "x").unwrap();
+        fs::create_dir_all(tmp.join("run-fresh")).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(48 * 3600);
+        fs::File::open(tmp.join("run-old"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert_eq!(cleanup_orphans(&env), 1);
+        assert!(!tmp.join("run-old").exists());
+        assert!(tmp.join("run-fresh").exists());
     }
 
     #[test]

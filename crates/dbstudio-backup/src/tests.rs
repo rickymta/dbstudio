@@ -399,3 +399,95 @@ fn fixtures() {
         }),
     );
 }
+
+#[tokio::test]
+async fn old_integrated_backups_are_refused_with_a_clear_message() {
+    use crate::container::{ContainerOptions, SpoolWriter, write_container};
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let spool = dir.path().join("spool");
+    std::fs::create_dir(&spool).unwrap();
+    let mut w = SpoolWriter::create(&spool, 1, "schema/pre.sql").unwrap();
+    w.write_all(b"CREATE TABLE t (a int);").unwrap();
+    let e = vec![w.finish().unwrap()];
+    let opts = ContainerOptions {
+        compression: Compression::None,
+        passphrase: None,
+        native: None,
+        created_at: "2025-01-01T00:00:00Z".into(),
+        kdf_cost: None,
+    };
+    // Layout of the first release: `formatVersion` 1, several files.
+    let pre = json!({"engine": "logical", "formatVersion": 1, "database": "app", "objects": []});
+    let (dest, _) = write_container(
+        &dir.path().join("old.dbsbak"),
+        &opts,
+        &pre,
+        &e,
+        &spool,
+        &|_| true,
+    )
+    .unwrap();
+    // It can still be inspected, but neither verified nor restored by this version.
+    assert!(inspect(&dest, None).await.is_ok());
+    let rep = Reporter(CancelToken::default());
+    let err = verify(&dest, None, &rep).await.unwrap_err();
+    assert_eq!(err.kind(), "unsupported");
+    assert!(err.to_string().contains("older DBStudio"), "{err}");
+    // The current layout passes the check.
+    assert!(
+        crate::logical::check_supported(&json!({"engine": "logical", "formatVersion": 2})).is_ok()
+    );
+    assert!(
+        crate::logical::check_supported(&json!({"engine": "native", "formatVersion": 1})).is_ok()
+    );
+}
+
+#[test]
+fn scratch_space_is_private_and_not_the_destination() {
+    let work = tempfile::tempdir().unwrap();
+    let dir = crate::ops::scratch_dir(&Some(work.path().to_path_buf())).unwrap();
+    assert!(dir.path().starts_with(work.path().join("tmp")));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for p in [work.path().join("tmp"), dir.path().to_path_buf()] {
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o700,
+                "{p:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn retention_never_deletes_the_newest_file_or_a_file_a_kept_run_uses() {
+    let now = Utc.with_ymd_and_hms(2025, 1, 10, 0, 0, 0).unwrap();
+    let mut j = job();
+    j.retention = Retention {
+        keep_last: Some(1),
+        max_age_days: None,
+    };
+    // Two runs recorded the same path (an overwritten name): the older record must not delete it.
+    let runs = vec![
+        run_of(1, "2025-01-03T02:00:00Z", "/b/shared.dbsbak"),
+        run_of(2, "2025-01-02T02:00:00Z", "/b/shared.dbsbak"),
+        run_of(3, "2025-01-01T02:00:00Z", "/b/old.dbsbak"),
+    ];
+    assert_eq!(
+        apply_retention(&j, &runs, now),
+        vec![PathBuf::from("/b/old.dbsbak")]
+    );
+    // Whatever the rules say, the file the current run just wrote is protected.
+    j.retention.max_age_days = Some(0);
+    let only_old = vec![
+        run_of(1, "2025-01-01T02:00:00Z", "/b/a.dbsbak"),
+        run_of(2, "2025-01-02T02:00:00Z", "/b/b.dbsbak"),
+    ];
+    let protect = [std::path::Path::new("/b/a.dbsbak")];
+    let doomed = crate::apply_retention_protecting(&j, &only_old, now, &protect);
+    assert!(doomed.is_empty(), "{doomed:?}");
+    // Retention on a job without rules or runs does nothing.
+    assert!(apply_retention(&j, &[], now).is_empty());
+}

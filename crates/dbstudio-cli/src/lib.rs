@@ -14,8 +14,9 @@ use std::sync::{Arc, Mutex};
 
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use dbstudio_backup::runner::{
-    RunEnv, RunMeta, RunOutput, execute_restore, record_run, restore_confirmation_text, row_to_job,
-    run_job, tool_overrides,
+    RunEnv, RunMeta, RunOutput, execute_restore, explicit_target_required, record_run,
+    restore_confirmation_text, restore_is_guarded, restore_names_its_target, row_to_job, run_job,
+    tool_overrides,
 };
 use dbstudio_backup::{
     BackupRun, RestoreSpec, RunKind, RunStatus, RunTrigger, detect_tools, inspect, verify,
@@ -229,16 +230,20 @@ fn open_deps(cli: &Cli) -> Result<CliDeps, Error> {
         SecretStoreKind::Memory => Arc::new(MemorySecretStore::new()),
     };
     let service = Arc::new(ConnectionService::new(store, secrets.clone()));
-    Ok(CliDeps {
+    let deps = CliDeps {
         env: RunEnv {
             service,
             secrets,
             registry: Arc::new(build_registry()),
             locks_dir: dir.join("locks"),
+            work_dir: dir.clone(),
         },
         passphrase: Box::new(|var| std::env::var(var).ok().map(Secret::new)),
         assume_yes: None,
-    })
+    };
+    // What a crashed earlier run left behind (scratch directories, half-written files).
+    dbstudio_backup::runner::cleanup_orphans(&deps.env);
+    Ok(deps)
 }
 
 /// Parse `args` and run; returns the process exit code.
@@ -315,7 +320,21 @@ impl CliReporter {
         });
         if !quiet {
             let token = r.cancel.clone();
+            // Ctrl-C and, on Unix, SIGTERM (cron/launchd stopping the job): cancel the run, which
+            // kills the tool and removes the temporary files on the way out.
             tokio::spawn(async move {
+                #[cfg(unix)]
+                {
+                    use tokio::signal::unix::{SignalKind, signal};
+                    if let Ok(mut term) = signal(SignalKind::terminate()) {
+                        tokio::select! {
+                            _ = tokio::signal::ctrl_c() => {}
+                            _ = term.recv() => {}
+                        }
+                        token.cancel();
+                        return;
+                    }
+                }
                 if tokio::signal::ctrl_c().await.is_ok() {
                     token.cancel();
                 }
@@ -482,6 +501,10 @@ pub async fn execute_async(cli: &Cli, deps: &CliDeps, out: &mut dyn Write) -> u8
                 Ok(p) => p,
                 Err(e) => return fail(&e),
             };
+            if restore_is_guarded(&profile.config, &spec) && !restore_names_its_target(&spec) {
+                eprintln!("dbstudio-cli: {}", explicit_target_required().message());
+                return EXIT_USAGE;
+            }
             if let Some(required) = restore_confirmation_text(&profile.config, &spec) {
                 if !*yes || confirm_text.as_deref() != Some(required.as_str()) {
                     eprintln!(

@@ -295,7 +295,9 @@ impl Store {
         let n = self
             .lock()
             .execute(
-                "UPDATE backup_runs SET job_id = ?2, job_name = ?3, connection_id = ?4, \
+                // `job_id` and `connection_id` are left alone: the job or connection may have
+                // been deleted while the run was going (the foreign key then cleared them).
+                "UPDATE backup_runs SET job_name = ?3, \
                  kind = ?5, trigger = ?6, engine = ?7, status = ?8, started_at = ?9, \
                  finished_at = ?10, duration_ms = ?11, file_path = ?12, size_bytes = ?13, \
                  checksum = ?14, objects = ?15, rows = ?16, error_kind = ?17, \
@@ -449,6 +451,24 @@ mod tests {
         };
         store.save_profile(&p).unwrap();
         (store, p.config.id)
+    }
+
+    #[test]
+    fn a_run_survives_the_deletion_of_its_job_and_still_gets_its_result() {
+        let (store, conn) = store_with_connection();
+        let j = row(1, conn);
+        store.backup_job_save(&j).unwrap();
+        let mut r = run(1, Some(j.id), "2026-01-01T00:00:01Z");
+        store.backup_run_insert(&r).unwrap();
+        // The job is deleted (the foreign key clears the link) while the run is going.
+        store.backup_job_delete(j.id).unwrap();
+        r.status = "succeeded".into();
+        r.file_path = Some("/b/x.dbsbak".into());
+        store.backup_run_update(&r).unwrap();
+        let got = &store.backup_runs_list(None, 10).unwrap()[0];
+        assert_eq!(got.status, "succeeded");
+        assert_eq!(got.job_id, None);
+        assert_eq!(got.file_path.as_deref(), Some("/b/x.dbsbak"));
     }
 
     #[test]

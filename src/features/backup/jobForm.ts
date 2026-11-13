@@ -253,11 +253,21 @@ export function buildTargets(form: JobForm): ObjectPath[] {
   return db ? [{ segments: [{ kind: 'database', name: db }] }] : [];
 }
 
+/** Options sent for each native tool: complete backups by default (the backend allow-lists keys). */
+export const NATIVE_DEFAULT_OPTIONS: Partial<Record<NativeTool, Record<string, string>>> = {
+  mySqlDump: { singleTransaction: 'true', routines: 'true', triggers: 'true', events: 'true' },
+  pgDump: { format: 'custom' },
+};
+
 export function buildSpec(form: JobForm): BackupSpec {
   const engine: BackupEngine =
     form.engineKind === 'logical'
       ? { kind: 'logical', content: form.content }
-      : { kind: 'native', tool: form.nativeTool as NativeTool };
+      : {
+          kind: 'native',
+          tool: form.nativeTool as NativeTool,
+          options: NATIVE_DEFAULT_OPTIONS[form.nativeTool as NativeTool] ?? {},
+        };
   const path = form.directory.trim();
   const serverSide =
     form.engineKind === 'native' && SERVER_SIDE_TOOLS.includes(form.nativeTool as NativeTool);

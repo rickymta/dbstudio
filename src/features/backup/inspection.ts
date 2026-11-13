@@ -9,6 +9,8 @@ export interface InspectionView {
   sourceDatabase: string | null;
   /** Names of the objects listed in the preamble. */
   objects: string[];
+  /** SQL dialect of an integrated backup (`postgres`, `mysql`...). */
+  dialect: string | null;
   /** The backup is one integrated SQL script: it can only be restored as a whole. */
   integrated: boolean;
   /** Remaining preamble data (supported scope etc.) pretty-printed, or `null`. */
@@ -48,6 +50,7 @@ export function readInspection(info: BackupInspection): InspectionView {
     headerFields,
     sourceDatabase: preamble?.database ?? null,
     objects,
+    dialect: preamble?.dialect ?? null,
     integrated: preamble?.engine === 'logical',
     extra: Object.keys(rest).length ? JSON.stringify(rest, null, 2) : null,
     readable: preamble !== null,
