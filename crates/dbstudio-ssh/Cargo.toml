@@ -11,9 +11,12 @@ authors.workspace = true
 dbstudio-core.workspace = true
 russh.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "sync", "time", "io-util", "macros"] }
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile.workspace = true
+rand = "0.10"
 
 [lints]
 workspace = true

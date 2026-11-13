@@ -14,6 +14,7 @@ import enKeyvalue from '../locales/en/keyvalue.json';
 import enPlan from '../locales/en/plan.json';
 import enSafety from '../locales/en/safety.json';
 import enSettings from '../locales/en/settings.json';
+import enSsh from '../locales/en/ssh.json';
 import viBackup from '../locales/vi/backup.json';
 import viCommon from '../locales/vi/common.json';
 import viConnections from '../locales/vi/connections.json';
@@ -28,6 +29,7 @@ import viKeyvalue from '../locales/vi/keyvalue.json';
 import viPlan from '../locales/vi/plan.json';
 import viSafety from '../locales/vi/safety.json';
 import viSettings from '../locales/vi/settings.json';
+import viSsh from '../locales/vi/ssh.json';
 
 export const LANGUAGES = ['vi', 'en'] as const;
 export type Language = (typeof LANGUAGES)[number];
@@ -48,6 +50,7 @@ export const NAMESPACES = [
   'document',
   'keyvalue',
   'safety',
+  'ssh',
 ] as const;
 export type Namespace = (typeof NAMESPACES)[number];
 
@@ -95,6 +98,7 @@ void i18n.use(initReactI18next).init({
       document: enDocument,
       keyvalue: enKeyvalue,
       safety: enSafety,
+      ssh: enSsh,
     },
     vi: {
       common: viCommon,
@@ -111,6 +115,7 @@ void i18n.use(initReactI18next).init({
       document: viDocument,
       keyvalue: viKeyvalue,
       safety: viSafety,
+      ssh: viSsh,
     },
   },
   ns: [...NAMESPACES],
