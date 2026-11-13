@@ -5,10 +5,10 @@ import { PALETTES, buildSvg, bytesToBase64, renderExport, svgToPngBytes } from '
 import { DEFAULT_OPTIONS, buildView, tableKey } from './model';
 
 // jsdom resolves the CommonJS build of svg2pdf.js; the app (Vite) uses the ES build.
-vi.mock(
-  'svg2pdf.js',
-  async () => await import('../../../node_modules/svg2pdf.js/dist/svg2pdf.es.min.js'),
-);
+vi.mock('svg2pdf.js', async () => {
+  // @ts-expect-error the ES build ships without its own declaration file
+  return await import('../../../node_modules/svg2pdf.js/dist/svg2pdf.es.min.js');
+});
 
 async function input(theme: 'light' | 'dark', n?: number) {
   const model = n ? generateModel(n) : sampleModel(true);

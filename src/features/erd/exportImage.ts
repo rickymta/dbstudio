@@ -21,6 +21,8 @@ import {
   tableLabel,
 } from './model';
 import { endSymbol, relationEnds } from './notation';
+import type { jsPDF as JsPdfClass } from 'jspdf';
+import type { svg2pdf as Svg2PdfFn } from 'svg2pdf.js';
 import type { Relation } from '@/lib/types';
 
 export type ExportTheme = 'light' | 'dark';
@@ -264,8 +266,8 @@ export async function svgToPdfBytes(
     const m = mod as Record<string, unknown> & { default?: Record<string, unknown> };
     return (m[name] ?? m.default?.[name]) as T;
   };
-  const jsPDF = pick<typeof import('jspdf').jsPDF>(jspdfModule, 'jsPDF');
-  const svg2pdf = pick<typeof import('svg2pdf.js').svg2pdf>(svg2pdfModule, 'svg2pdf');
+  const jsPDF = pick<typeof JsPdfClass>(jspdfModule, 'jsPDF');
+  const svg2pdf = pick<typeof Svg2PdfFn>(svg2pdfModule, 'svg2pdf');
   const doc = new jsPDF({
     orientation: width >= height ? 'landscape' : 'portrait',
     unit: 'pt',
