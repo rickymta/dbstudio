@@ -19,6 +19,8 @@ export interface EditSessionState {
   editing: EditingCell | null;
   /** The last apply failed at this change (index into the change list) and was rolled back. */
   failure: { index: number; message: string } | null;
+  /** An apply is in flight: the grid is locked so no edit can slip between send and clear. */
+  applying: boolean;
 }
 
 export const INITIAL_EDIT_SESSION: EditSessionState = {
@@ -27,6 +29,7 @@ export const INITIAL_EDIT_SESSION: EditSessionState = {
   editMode: false,
   editing: null,
   failure: null,
+  applying: false,
 };
 
 interface EditSessionStore {

@@ -255,6 +255,88 @@ async fn editability_cases(port: u16) {
     assert_eq!(e.reason, Some(NotEditableReason::NotATable));
 }
 
+async fn quoted_names_partial_index_and_arrays(port: u16) {
+    let s = fixture(port).await;
+    let es = "dbs_edit_quoted";
+    exec(&*s, &format!("CREATE SCHEMA IF NOT EXISTS {es}")).await;
+    exec(
+        &*s,
+        &format!(
+            "DROP TABLE IF EXISTS {es}.\"Mixed\" CASCADE; \
+             CREATE TABLE {es}.\"Mixed\" (\"UserId\" int PRIMARY KEY, \"order\" text, tags text[], nums int[]); \
+             INSERT INTO {es}.\"Mixed\" VALUES (1,'a','{{x,y}}','{{1,2}}'),(2,'b',NULL,NULL); \
+             DROP TABLE IF EXISTS {es}.partial_only CASCADE; \
+             CREATE TABLE {es}.partial_only (a int NOT NULL, b text); \
+             CREATE UNIQUE INDEX partial_u ON {es}.partial_only (a) WHERE a > 0"
+        ),
+    )
+    .await;
+    let path = table_path(es, ObjectKind::Table, "Mixed");
+    let e = s.editability(&path).await.unwrap();
+    assert!(e.editable, "{e:?}");
+    assert_eq!(e.key_columns, vec!["UserId"]);
+    // A partial unique index cannot identify rows.
+    let e = s
+        .editability(&table_path(es, ObjectKind::Table, "partial_only"))
+        .await
+        .unwrap();
+    assert_eq!(e.reason, Some(NotEditableReason::NoUniqueKey), "{e:?}");
+
+    let arr = |v: Vec<Value>| EditValue::Value(Value::Array(v));
+    let changes = ChangeSet::Rows(RowChangeSet {
+        table: path.clone(),
+        key_columns: vec!["UserId".into()],
+        changes: vec![
+            RowChange::Update {
+                key: vec![Value::Int(1)],
+                set: vec![
+                    txt("order", "o'1"),
+                    CellEdit {
+                        column: "tags".into(),
+                        value: arr(vec![
+                            Value::Text("a b".into()),
+                            Value::Text("q\"".into()),
+                            Value::Null,
+                        ]),
+                    },
+                    CellEdit {
+                        column: "nums".into(),
+                        value: arr(vec![Value::Decimal("7".into()), Value::Decimal("8".into())]),
+                    },
+                ],
+            },
+            RowChange::Insert {
+                values: vec![txt("UserId", "3"), txt("order", "z")],
+            },
+            RowChange::Delete {
+                key: vec![Value::Int(2)],
+            },
+        ],
+    });
+    s.apply_changes(changes).await.unwrap();
+    let rows = rows(
+        &*s,
+        &format!(
+            "SELECT \"UserId\", \"order\", tags::text, nums::text FROM {es}.\"Mixed\" ORDER BY 1"
+        ),
+    )
+    .await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0][1], Value::Text("o'1".into()));
+    assert_eq!(rows[0][2], Value::Text("{\"a b\",\"q\\\"\",NULL}".into()));
+    assert_eq!(rows[0][3], Value::Text("{7,8}".into()));
+
+    // Preview also checks the key columns and read-only columns.
+    let wrong_key = ChangeSet::Rows(RowChangeSet {
+        table: path,
+        key_columns: vec!["order".into()],
+        changes: vec![RowChange::Delete {
+            key: vec![Value::Text("z".into())],
+        }],
+    });
+    assert!(s.preview_changes(&wrong_key).await.is_err());
+}
+
 macro_rules! both {
     ($f:ident, $a:ident, $b:ident) => {
         #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -276,3 +358,8 @@ both!(edit_three_plus_insert_delete, edit_ok_16, edit_ok_12);
 both!(failure_rolls_back, edit_fail_16, edit_fail_12);
 both!(zero_rows_rolls_back, edit_zero_16, edit_zero_12);
 both!(editability_cases, edit_cases_16, edit_cases_12);
+both!(
+    quoted_names_partial_index_and_arrays,
+    edit_quoted_16,
+    edit_quoted_12
+);

@@ -10,6 +10,8 @@ import {
   usePendingChanges,
 } from './pendingChanges';
 import { duplicateCells } from './rowOps';
+import '../store'; // registers the close guard
+import { getTabGuard } from '@/stores/tabGuard';
 
 const TAB = 't1';
 const k = (n: number): Value[] => [{ t: 'int', v: n }];
@@ -93,10 +95,33 @@ describe('keys and row operations', () => {
     expect(rowKeyString(k(7))).toBe('[{"t":"int","v":7}]');
   });
 
+  it('a duplicate keeps array values typed', () => {
+    const arr: Value = { t: 'array', v: [{ t: 'int', v: 1 }] };
+    expect(
+      duplicateCells([arr], [{ name: 'tags', typeName: 'int[]', valueKind: 'array' }], [], []),
+    ).toEqual({
+      tags: { kind: 'value', v: arr },
+    });
+  });
+
   it('a duplicate leaves out generated columns, defaults the key and keeps NULL', () => {
     expect(duplicateCells(row, cols, ['id'], ['g'])).toEqual({
       id: { kind: 'default' },
       a: { kind: 'value', v: { t: 'null' } },
     });
+  });
+});
+
+describe('close guard', () => {
+  it('exists for any tab with pending changes, mounted or not, and goes away with them', () => {
+    expect(getTabGuard(TAB)).toBeUndefined();
+    st().toggleDelete(TAB, k(1));
+    expect(getTabGuard(TAB)).toBeDefined();
+    st().toggleDelete(TAB, k(1));
+    expect(getTabGuard(TAB)).toBeUndefined();
+    st().addInsert(TAB, {});
+    expect(getTabGuard(TAB)).toBeDefined();
+    st().discard(TAB);
+    expect(getTabGuard(TAB)).toBeUndefined();
   });
 });

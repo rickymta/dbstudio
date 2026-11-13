@@ -38,7 +38,7 @@ async fn setup(t: Target, name: &str, extra: &str) -> (std::sync::Arc<dyn Sessio
         &*s,
         &format!(
             "CREATE TABLE `{db}`.t (id INT PRIMARY KEY, a VARCHAR(20), b VARCHAR(20) NOT NULL DEFAULT 'd', \
-             n INT{extra}); \
+             n INT, ts DATETIME NULL DEFAULT CURRENT_TIMESTAMP{extra}); \
              INSERT INTO `{db}`.t (id, a, b, n) VALUES (1,'x','x',1),(2,'y','y',2),(3,'z','z',3),(4,'w','w',4)"
         ),
     )

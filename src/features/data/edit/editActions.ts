@@ -5,7 +5,7 @@ import { ipc } from '@/lib/ipc';
 import type { ChangeSet, Editability, IpcError, ObjectPath, Uuid } from '@/lib/types';
 import { toast } from '@/components/ui/toastStore';
 import type { GridModel } from '../gridModel';
-import { patchEditSession } from './editSession';
+import { patchEditSession, useEditSessionStore } from './editSession';
 import { buildChanges, usePendingChanges, type PendingTab } from './pendingChanges';
 
 /** The change set sent to `changes_preview` / `changes_apply`. */
@@ -51,8 +51,12 @@ export async function applyPending(opts: {
   const { tabId, sessionId, path, editability, model } = opts;
   const pending = usePendingChanges.getState().byTab[tabId];
   if (!pending) return true;
+  if (useEditSessionStore.getState().byTab[tabId]?.applying) return false;
   const changeSet = toChangeSet(path, editability, pending);
   if (changeSet.model === 'rows' && changeSet.changes.length === 0) return true;
+  // Lock the grid while the request is in flight: an edit made now would be wiped by the
+  // success path below without ever having been sent.
+  patchEditSession(tabId, { applying: true, editing: null });
   try {
     const r = await ipc.changesApply(sessionId, changeSet);
     usePendingChanges.getState().discard(tabId);
@@ -72,5 +76,7 @@ export async function applyPending(opts: {
       toast.error(i18n.t('data:edit.applyError', { message: err.message }));
     }
     return false;
+  } finally {
+    patchEditSession(tabId, { applying: false });
   }
 }

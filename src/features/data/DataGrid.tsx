@@ -139,7 +139,13 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
   const keyColumns = editability?.keyColumns;
   const readOnlyColumns = editability?.readOnlyColumns;
   const inserts = pending.inserts;
-  const rowCount = loadedCount + inserts.length;
+  const insertCount = inserts.length;
+  // New rows are shown at the top, so loading more pages never moves them.
+  const rowCount = insertCount + loadedCount;
+  const insertAt = (i: number): PendingInsert | undefined =>
+    i < insertCount ? inserts[i] : undefined;
+  const loadedAt = (i: number): Value[] | undefined =>
+    i >= insertCount ? rows[i - insertCount] : undefined;
   const hasKeyed =
     Object.keys(pending.updates).length > 0 || Object.keys(pending.deletes).length > 0;
   const failedTarget = useMemo(() => {
@@ -275,8 +281,8 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
   // Fetch the next page when the user gets close to the end of what is loaded.
   const status = model.status;
   useEffect(() => {
-    if (lastVisible >= 0 && lastVisible >= loadedCount - LOAD_AHEAD_ROWS) model.loadMore();
-  }, [lastVisible, loadedCount, status, model]);
+    if (lastVisible >= 0 && lastVisible >= rowCount - LOAD_AHEAD_ROWS) model.loadMore();
+  }, [lastVisible, rowCount, status, model]);
 
   const totalWidth = colVirtualizer.getTotalSize();
   const selection = ui.selection;
@@ -306,19 +312,19 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
 
   const copySelected = useCallback(() => {
     if (!selection) return;
-    const value = rows[selection.row]?.[selection.col];
-    if (!value) return;
+    const value = rows[selection.row - insertCount]?.[selection.col];
+    if (!value || selection.row < insertCount) return;
     if (estimateValueSize(value) > LARGE_COPY_BYTES && !window.confirm(t('grid.copyLarge'))) return;
     void navigator.clipboard?.writeText(valueToText(value, timestamp)).catch(() => undefined);
-  }, [rows, selection, t, timestamp]);
+  }, [rows, insertCount, selection, t, timestamp]);
 
   // -- editing --------------------------------------------------------------------------------
 
   const startEdit = (pos: CellPos): boolean => {
     const name = columns[pos.col]?.name;
-    if (!editMode || !name || readOnlyColumns?.includes(name)) return false;
-    if (pos.row < loadedCount) {
-      const row = rows[pos.row];
+    if (!editMode || session.applying || !name || readOnlyColumns?.includes(name)) return false;
+    if (pos.row >= insertCount) {
+      const row = loadedAt(pos.row);
       if (!row || !extractKey(row, columns, keyColumns ?? [])) return false;
     }
     patchEditSession(tabId, { editing: pos });
@@ -334,11 +340,11 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
     const col = columns[pos.col];
     if (!col) return;
     const store = usePendingChanges.getState();
-    if (pos.row >= loadedCount) {
-      const ins = inserts[pos.row - loadedCount];
-      if (ins) store.setInsertCell(tabId, ins.id, col.name, edit);
+    const ins = insertAt(pos.row);
+    if (ins) {
+      store.setInsertCell(tabId, ins.id, col.name, edit);
     } else {
-      const row = rows[pos.row];
+      const row = loadedAt(pos.row);
       const key = row ? extractKey(row, columns, keyColumns ?? []) : null;
       const original = row?.[pos.col];
       if (key && original) {
@@ -353,12 +359,14 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
   const deleteSelectedRow = () => {
     if (!selection) return;
     const store = usePendingChanges.getState();
-    if (selection.row >= loadedCount) {
-      const ins = inserts[selection.row - loadedCount];
-      if (ins) store.removeInsert(tabId, ins.id);
+    if (session.applying) return;
+    const ins = insertAt(selection.row);
+    if (ins) {
+      store.removeInsert(tabId, ins.id);
+      patchUi({ selection: null });
       return;
     }
-    const row = rows[selection.row];
+    const row = loadedAt(selection.row);
     const key = row ? extractKey(row, columns, keyColumns ?? []) : null;
     if (key) store.toggleDelete(tabId, key);
   };
@@ -367,7 +375,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
   const insertCountRef = useRef(inserts.length);
   useEffect(() => {
     if (inserts.length > insertCountRef.current) {
-      select({ row: rowCount - 1, col: selection?.col ?? displayOrder[0] ?? 0 }, true);
+      select({ row: 0, col: selection?.col ?? displayOrder[0] ?? 0 }, true);
     }
     insertCountRef.current = inserts.length;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -743,9 +751,8 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
             }}
           >
             {vRows.map((vr) => {
-              const insert: PendingInsert | undefined =
-                vr.index >= loadedCount ? inserts[vr.index - loadedCount] : undefined;
-              const row = vr.index < loadedCount ? rows[vr.index] : undefined;
+              const insert = insertAt(vr.index);
+              const row = loadedAt(vr.index);
               if (!row && !insert) return null;
               const top = rowTop(vr.index, ROW_HEIGHT, realTop, virtualOffset);
               const rowSelected = selection?.row === vr.index;

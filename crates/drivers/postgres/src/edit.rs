@@ -6,8 +6,8 @@
 //! position of the change in the original `changes` vector.
 
 use dbstudio_core::{
-    ApplyResult, CellEdit, ChangeSet, EditValue, Editability, Error, ObjectPath, Result, RowChange,
-    RowChangeSet, Value,
+    ApplyResult, CellEdit, ChangeSet, EditValue, Editability, Error, NotEditableReason, ObjectKind,
+    ObjectPath, Result, RowChange, RowChangeSet, Value,
 };
 
 use crate::details;
@@ -15,12 +15,91 @@ use crate::error::map_error;
 use crate::session::PostgresSession;
 use crate::sql::{qualified, quote_ident, quote_literal};
 
-/// Editability of a table; falls back to the core implementation based on `table_details`.
+/// Editability of a table. Key columns come straight from `pg_attribute` (plain names: the index
+/// definitions of `table_details` are quoted, which would break `"UserId"`-style columns) and
+/// only from full, valid, non-partial, non-expression indexes.
 pub(crate) async fn editability(
     session: &PostgresSession,
     path: &ObjectPath,
 ) -> Result<Editability> {
-    dbstudio_core::fallback::editability_from_details(session, path).await
+    let not_editable = |reason| Editability {
+        editable: false,
+        key_columns: vec![],
+        read_only_columns: vec![],
+        reason: Some(reason),
+        atomic: true,
+    };
+    let rel = details::resolve_relation(path)?;
+    if rel.kind != ObjectKind::Table {
+        return Ok(not_editable(NotEditableReason::NotATable));
+    }
+    let mut conn = session.shared.acquire_catalog(&rel.database).await?;
+    let d = details::table_details(&conn.client, path, &rel.database).await;
+    let keys = match &d {
+        Ok(_) => details::key_columns(&conn.client, &rel.schema, &rel.name).await,
+        Err(_) => Ok(vec![]),
+    };
+    if d.is_ok() && keys.is_ok() {
+        conn.finish().await;
+    }
+    let (d, key_columns) = (d?, keys?);
+    let read_only_columns = d
+        .columns
+        .iter()
+        .filter(|c| {
+            c.extra.as_deref().is_some_and(|e| {
+                let e = e.to_ascii_lowercase();
+                !e.contains("by default") && (e.contains("identity") || e.contains("generated"))
+            })
+        })
+        .map(|c| c.name.clone())
+        .collect();
+    let editable = !key_columns.is_empty();
+    Ok(Editability {
+        editable,
+        key_columns,
+        read_only_columns,
+        reason: (!editable).then_some(NotEditableReason::NoUniqueKey),
+        atomic: true,
+    })
+}
+
+/// Reject change sets that do not match the table: wrong key columns or read-only columns.
+/// `strict_table` also demands an editable table (apply, or any preview with updates/deletes).
+fn validate(ed: &Editability, rs: &RowChangeSet, strict_table: bool) -> Result<()> {
+    let keyed = rs
+        .changes
+        .iter()
+        .any(|c| matches!(c, RowChange::Update { .. } | RowChange::Delete { .. }));
+    if strict_table || keyed {
+        if !ed.editable {
+            return Err(Error::Unsupported(format!(
+                "table is not editable ({})",
+                ed.reason
+                    .map_or("unknown".to_string(), |r| format!("{r:?}"))
+            )));
+        }
+        if keyed && rs.key_columns != ed.key_columns {
+            return Err(Error::Other(format!(
+                "key columns {:?} do not match the table's key {:?}",
+                rs.key_columns, ed.key_columns
+            )));
+        }
+    }
+    for (i, change) in rs.changes.iter().enumerate() {
+        let (cells, insert): (&[CellEdit], bool) = match change {
+            RowChange::Update { set, .. } => (set, false),
+            RowChange::Insert { values } => (values, true),
+            RowChange::Delete { .. } => continue,
+        };
+        for c in cells {
+            let default_on_insert = insert && matches!(c.value, EditValue::Default);
+            if ed.read_only_columns.contains(&c.column) && !default_on_insert {
+                return Err(bad(i, format!("column {} is read-only", c.column)));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A rendered change plus its position in the original change vector.
@@ -32,12 +111,11 @@ struct Step {
 }
 
 /// The statements `apply` would run, in application order.
-pub(crate) async fn preview(
-    _session: &PostgresSession,
-    changes: &ChangeSet,
-) -> Result<Vec<String>> {
+pub(crate) async fn preview(session: &PostgresSession, changes: &ChangeSet) -> Result<Vec<String>> {
     let rs = rows_of(changes)?;
     let table = resolve_table(rs)?;
+    let ed = editability(session, &rs.table).await?;
+    validate(&ed, rs, false)?;
     Ok(render(rs, &table)?
         .into_iter()
         .map(|s| format!("{};", s.sql))
@@ -49,7 +127,9 @@ pub(crate) async fn apply(session: &PostgresSession, changes: ChangeSet) -> Resu
     let rs = rows_of(&changes)?;
     let rel = details::resolve_relation(&rs.table)?;
     let table = qualified(&rel.schema, &rel.name);
-    let steps = render_checked(session, rs, &table).await?;
+    let ed = editability(session, &rs.table).await?;
+    validate(&ed, rs, true)?;
+    let steps = render(rs, &table)?;
     if steps.is_empty() {
         return Ok(ApplyResult {
             applied: 0,
@@ -91,8 +171,8 @@ pub(crate) async fn apply(session: &PostgresSession, changes: ChangeSet) -> Resu
             return Err(err);
         }
         conn.finish().await;
-        let last = steps.last().map_or(0, |s| s.index);
-        return Err(failed(last, &err));
+        // The failure belongs to no single change (deferred constraint): no index.
+        return Err(err);
     }
     conn.in_txn = false;
     conn.finish().await;
@@ -123,40 +203,6 @@ fn rows_of(changes: &ChangeSet) -> Result<&RowChangeSet> {
 fn resolve_table(rs: &RowChangeSet) -> Result<String> {
     let rel = details::resolve_relation(&rs.table)?;
     Ok(qualified(&rel.schema, &rel.name))
-}
-
-/// Check editability (key, read-only columns) against the server, then render.
-async fn render_checked(
-    session: &PostgresSession,
-    rs: &RowChangeSet,
-    table: &str,
-) -> Result<Vec<Step>> {
-    let ed = editability(session, &rs.table).await?;
-    if !ed.editable {
-        return Err(Error::Unsupported(format!(
-            "table is not editable ({})",
-            ed.reason
-                .map_or("unknown".to_string(), |r| format!("{r:?}"))
-        )));
-    }
-    for (i, change) in rs.changes.iter().enumerate() {
-        let (cells, insert): (&[CellEdit], bool) = match change {
-            RowChange::Update { set, .. } => (set, false),
-            RowChange::Insert { values } => (values, true),
-            RowChange::Delete { .. } => continue,
-        };
-        for c in cells {
-            let default_on_insert = insert && matches!(c.value, EditValue::Default);
-            if ed.read_only_columns.contains(&c.column) && !default_on_insert {
-                return Err(Error::ChangeFailed {
-                    index: i as u32,
-                    message: format!("column {} is read-only", c.column),
-                    applied: 0,
-                });
-            }
-        }
-    }
-    render(rs, table)
 }
 
 /// Render every change, ordered deletes, updates, inserts (stable within each group).
@@ -294,13 +340,39 @@ fn literal(index: usize, v: &Value) -> Result<String> {
         | Value::Uuid(s)
         | Value::Json(s) => quote_literal(s),
         Value::Ext(e) => quote_literal(&e.text),
-        Value::Array(_) | Value::Document(_) => {
-            return Err(bad(
-                index,
-                "arrays and documents must be typed as text for PostgreSQL",
-            ));
+        Value::Array(items) => quote_literal(&array_text(index, items)?),
+        Value::Document(_) => {
+            return Err(bad(index, "documents must be typed as text for PostgreSQL"));
         }
     })
+}
+
+/// PostgreSQL array text form `{1,"a b",NULL}`; the server coerces it to the column's type.
+fn array_text(index: usize, items: &[Value]) -> Result<String> {
+    let mut parts = Vec::with_capacity(items.len());
+    for v in items {
+        parts.push(match v {
+            Value::Null => "NULL".to_string(),
+            Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+            Value::Array(inner) => array_text(index, inner)?,
+            Value::Document(_) | Value::Bytes(_) => {
+                return Err(bad(index, "unsupported array element"));
+            }
+            Value::Int(i) => i.to_string(),
+            Value::UInt(u) => u.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Decimal(t)
+            | Value::Text(t)
+            | Value::Date(t)
+            | Value::Time(t)
+            | Value::DateTime(t)
+            | Value::Timestamp(t)
+            | Value::Uuid(t)
+            | Value::Json(t) => format!("\"{}\"", t.replace('\\', "\\\\").replace('"', "\\\"")),
+            Value::Ext(e) => format!("\"{}\"", e.text.replace('\\', "\\\\").replace('"', "\\\"")),
+        });
+    }
+    Ok(format!("{{{}}}", parts.join(",")))
 }
 
 #[cfg(test)]
@@ -389,6 +461,20 @@ mod tests {
         assert_eq!(
             render(&rs, "t").unwrap()[0].sql,
             "INSERT INTO t (\"d\", \"b\") VALUES (DEFAULT, decode('00ff', 'hex'))"
+        );
+    }
+
+    #[test]
+    fn arrays_render_as_array_text() {
+        let v = Value::Array(vec![
+            Value::Int(1),
+            Value::Null,
+            Value::Text("a \"b\" \\c".into()),
+            Value::Array(vec![Value::Bool(true)]),
+        ]);
+        assert_eq!(
+            literal(0, &v).unwrap(),
+            "E'{1,NULL,\"a \\\\\"b\\\\\" \\\\\\\\c\",{true}}'"
         );
     }
 

@@ -225,7 +225,8 @@
       "statement": "Câu lệnh {{n}}",
       "failedAt": "Câu lệnh {{n}} lỗi: {{message}}",
       "errorTitle": "Không chuẩn bị được câu lệnh",
-      "close": "Đóng"
+      "close": "Đóng",
+      "keyOrderNote": "Các UPDATE chạy lần lượt theo thứ tự này. Đổi giá trị khoá (ví dụ hoán đổi giữa hai dòng) có thể vướng ràng buộc unique; hãy lưu các thay đổi đó thành từng bước riêng."
     },
     "failure": "Thay đổi {{n}} lỗi và chưa lưu gì: {{message}}",
     "applied": "Đã lưu {{count}} thay đổi",

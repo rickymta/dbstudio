@@ -76,6 +76,28 @@ describe('parseInput', () => {
   });
 });
 
+describe('array columns', () => {
+  it('become typed arrays so the server renders the database syntax', () => {
+    expect(parseInput('array', '[1, "a b", null, [true]]', false)).toEqual({
+      ok: true,
+      edit: {
+        kind: 'value',
+        v: {
+          t: 'array',
+          v: [
+            { t: 'decimal', v: '1' },
+            { t: 'text', v: 'a b' },
+            { t: 'null' },
+            { t: 'array', v: [{ t: 'bool', v: true }] },
+          ],
+        },
+      },
+    });
+    expect(parseInput('array', '{"a":1}', false)).toEqual({ ok: false, error: 'invalidJson' });
+    expect(parseInput('array', '[{"a":1}]', false)).toEqual({ ok: false, error: 'invalidJson' });
+  });
+});
+
 describe('editEqualsOriginal', () => {
   it('compares typed text with the stored value', () => {
     expect(editEqualsOriginal({ t: 'int', v: 5 }, { kind: 'text', v: '5' })).toBe(true);

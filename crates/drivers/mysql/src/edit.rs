@@ -9,10 +9,10 @@ use dbstudio_core::{
     ApplyResult, CellEdit, ChangeSet, EditValue, Editability, Error, NotEditableReason, ObjectKind,
     ObjectPath, Result, RowChange, RowChangeSet, Session, TableDetails, Value,
 };
-use mysql_async::Conn;
 use mysql_async::prelude::Queryable;
+use mysql_async::{Conn, OptsBuilder};
 
-use crate::error::map_query_error;
+use crate::error::{map_connect_error, map_query_error};
 use crate::session::MySqlSession;
 use crate::sql::{quote_ident, quote_literal, quote_table, table_target};
 
@@ -52,12 +52,15 @@ pub(crate) async fn editability(session: &MySqlSession, path: &ObjectPath) -> Re
     })
 }
 
+/// Generated columns only. `DEFAULT_GENERATED` (a `DEFAULT CURRENT_TIMESTAMP` or expression
+/// default) is an ordinary writable column; `table_details` appends ` AS (expr)` to EXTRA when
+/// the column has a generation expression.
 fn is_read_only(extra: Option<&str>) -> bool {
     extra.is_some_and(|e| {
         let e = e.to_ascii_lowercase();
-        ["generated", "virtual", "persistent", "stored"]
-            .iter()
-            .any(|k| e.contains(k))
+        e.contains(" as (")
+            || e.split_whitespace()
+                .any(|w| matches!(w, "virtual" | "stored" | "persistent"))
     })
 }
 
@@ -129,6 +132,8 @@ struct Step {
 pub(crate) async fn preview(session: &MySqlSession, changes: &ChangeSet) -> Result<Vec<String>> {
     let rs = rows_of(changes)?;
     let (db, table) = table_target(&rs.table)?;
+    let ed = editability(session, &rs.table).await?;
+    validate(&ed, rs, false)?;
     let nb = !session.inner.backslash_escapes;
     Ok(render(rs, &quote_table(&db, &table), nb)?
         .into_iter()
@@ -141,12 +146,15 @@ pub(crate) async fn apply(session: &MySqlSession, changes: ChangeSet) -> Result<
     let rs = rows_of(&changes)?;
     let (db, table) = table_target(&rs.table)?;
     let ed = editability(session, &rs.table).await?;
-    check_editable(&ed, rs)?;
-    let mut conn = session.inner.acquire().await?;
+    validate(&ed, rs, true)?;
+    // A dedicated connection with CLIENT_FOUND_ROWS: the affected count of an UPDATE is then the
+    // number of matched rows (also when the values did not change), without parsing server text.
+    let opts = OptsBuilder::from_opts(session.inner.opts.clone()).client_found_rows(true);
+    let mut conn = Conn::new(opts)
+        .await
+        .map_err(|e| map_connect_error(e, None))?;
     let r = run(&mut conn, rs, &quote_table(&db, &table)).await;
-    // A connection that failed at the protocol level, or whose ROLLBACK failed, is discarded.
-    let broken = matches!(&r, Err(Error::Connection(_) | Error::Timeout));
-    session.inner.release(conn, broken).await;
+    let _ = conn.disconnect().await;
     r
 }
 
@@ -173,7 +181,7 @@ async fn run(conn: &mut Conn, rs: &RowChangeSet, table: &str) -> Result<ApplyRes
             let err = map_query_error(e);
             return Err(abort(conn, step.index, &err.message(), err).await);
         }
-        let n = matched_rows(conn);
+        let n = conn.affected_rows();
         if step.expect_one && n != 1 {
             let msg = format!("expected exactly 1 affected row, got {n}");
             return Err(abort(conn, step.index, &msg, Error::Other(msg.clone())).await);
@@ -181,9 +189,10 @@ async fn run(conn: &mut Conn, rs: &RowChangeSet, table: &str) -> Result<ApplyRes
         affected.push(n);
     }
     if let Err(e) = conn.query_drop("COMMIT").await {
+        // The failure belongs to no single change: report it without an index.
         let err = map_query_error(e);
-        let last = steps.last().map_or(0, |s| s.index);
-        return Err(abort(conn, last, &err.message(), err).await);
+        let _ = conn.query_drop("ROLLBACK").await;
+        return Err(err);
     }
     Ok(ApplyResult {
         applied: steps.len() as u32,
@@ -208,24 +217,27 @@ async fn abort(conn: &mut Conn, index: usize, message: &str, cause: Error) -> Er
     }
 }
 
-/// Rows matched by the last statement. `UPDATE` reports "Rows matched: N" in the OK info, which
-/// (unlike the affected count) also counts rows whose values did not change.
-fn matched_rows(conn: &Conn) -> u64 {
-    let info = conn.info();
-    info.split("Rows matched:")
-        .nth(1)
-        .and_then(|rest| rest.split_whitespace().next())
-        .and_then(|n| n.parse::<u64>().ok())
-        .unwrap_or_else(|| conn.affected_rows())
-}
-
-fn check_editable(ed: &Editability, rs: &RowChangeSet) -> Result<()> {
-    if !ed.editable {
-        return Err(Error::Unsupported(format!(
-            "table is not editable ({})",
-            ed.reason
-                .map_or("unknown".to_string(), |r| format!("{r:?}"))
-        )));
+/// Reject change sets that do not match the table: wrong key columns or read-only columns.
+/// `strict_table` also demands an editable table (apply, or any preview with updates/deletes).
+fn validate(ed: &Editability, rs: &RowChangeSet, strict_table: bool) -> Result<()> {
+    let keyed = rs
+        .changes
+        .iter()
+        .any(|c| matches!(c, RowChange::Update { .. } | RowChange::Delete { .. }));
+    if strict_table || keyed {
+        if !ed.editable {
+            return Err(Error::Unsupported(format!(
+                "table is not editable ({})",
+                ed.reason
+                    .map_or("unknown".to_string(), |r| format!("{r:?}"))
+            )));
+        }
+        if keyed && rs.key_columns != ed.key_columns {
+            return Err(Error::Other(format!(
+                "key columns {:?} do not match the table's key {:?}",
+                rs.key_columns, ed.key_columns
+            )));
+        }
     }
     for (i, change) in rs.changes.iter().enumerate() {
         let (cells, insert): (&[CellEdit], bool) = match change {
@@ -478,6 +490,12 @@ mod tests {
         assert_eq!(index_column("`t`(10)"), Some(("t".into(), true)));
         assert_eq!(index_column("(lower(`x`))"), None);
         assert!(is_read_only(Some("VIRTUAL GENERATED")));
+        assert!(is_read_only(Some("STORED GENERATED")));
+        assert!(is_read_only(Some(" AS (`n` * 2)")));
+        assert!(!is_read_only(Some("DEFAULT_GENERATED")));
+        assert!(!is_read_only(Some(
+            "DEFAULT_GENERATED on update CURRENT_TIMESTAMP"
+        )));
         assert!(!is_read_only(Some("auto_increment")));
     }
 

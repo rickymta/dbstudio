@@ -25,9 +25,9 @@ export function duplicateCells(
   return cells;
 }
 
-/** Arrays and documents have no SQL literal: send them as JSON text. */
+/** Arrays stay typed (the server renders them); documents have no SQL literal: JSON text. */
 function insertable(v: Value): Value {
-  if (v.t === 'array' || v.t === 'document') return { t: 'json', v: JSON.stringify(plain(v)) };
+  if (v.t === 'document') return { t: 'json', v: JSON.stringify(plain(v)) };
   return v;
 }
 

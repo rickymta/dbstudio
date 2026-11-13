@@ -56,6 +56,10 @@ export function ChangesPreviewDialog({
   const statements = current?.statements ?? null;
   const error = current?.error ?? null;
 
+  // Updates run one by one: swapping key values between rows can hit a unique constraint.
+  const keyChanged = Object.values(pending.updates).some((u) =>
+    editability.keyColumns.some((k) => k in u.cells),
+  );
   const failure = session.failure;
   const apply = async () => {
     setApplying(true);
@@ -121,6 +125,11 @@ export function ChangesPreviewDialog({
               );
             })}
           </ol>
+        )}
+        {keyChanged && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t('edit.previewDialog.keyOrderNote')}
+          </p>
         )}
         {!editability.atomic && <p className="mt-2 text-xs text-warning">{t('edit.nonAtomic')}</p>}
       </DialogContent>

@@ -81,8 +81,18 @@ export function parseInput(kind: ValueKind, text: string, asNull: boolean): Pars
         ? { ok: true, edit: { kind: 'text', v } }
         : { ok: false, error: 'invalidNumber' };
     }
+    case 'array': {
+      // A typed array: the server renders it in the database's own array syntax.
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return { ok: false, error: 'invalidJson' };
+      }
+      const v = Array.isArray(parsed) ? jsonToArray(parsed) : null;
+      return v ? { ok: true, edit: { kind: 'value', v } } : { ok: false, error: 'invalidJson' };
+    }
     case 'json':
-    case 'array':
     case 'document':
       try {
         JSON.parse(text);
@@ -93,6 +103,23 @@ export function parseInput(kind: ValueKind, text: string, asNull: boolean): Pars
     default:
       return { ok: true, edit: { kind: 'text', v: text } };
   }
+}
+
+/** JSON array of scalars (nested arrays allowed) as an array `Value`; `null` for objects. */
+function jsonToArray(items: unknown[]): Value | null {
+  const out: Value[] = [];
+  for (const x of items) {
+    if (x === null) out.push({ t: 'null' });
+    else if (typeof x === 'boolean') out.push({ t: 'bool', v: x });
+    else if (typeof x === 'number') out.push({ t: 'decimal', v: String(x) });
+    else if (typeof x === 'string') out.push({ t: 'text', v: x });
+    else if (Array.isArray(x)) {
+      const inner = jsonToArray(x);
+      if (!inner) return null;
+      out.push(inner);
+    } else return null;
+  }
+  return { t: 'array', v: out };
 }
 
 /** Raw text of a value for the editor and for comparisons; NULL has no text. */

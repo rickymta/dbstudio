@@ -225,7 +225,8 @@
       "statement": "Statement {{n}}",
       "failedAt": "Statement {{n}} failed: {{message}}",
       "errorTitle": "Could not prepare the statements",
-      "close": "Close"
+      "close": "Close",
+      "keyOrderNote": "Updates run one at a time, in this order. Changing key values (for example swapping them between two rows) can fail on a unique constraint; save such changes in separate steps."
     },
     "failure": "Change {{n}} failed and nothing was saved: {{message}}",
     "applied": "{{count}} changes saved",

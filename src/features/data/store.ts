@@ -9,7 +9,8 @@ import { create } from 'zustand';
 import type { ObjectPath, Uuid } from '@/lib/types';
 import { useTabsStore } from '@/stores/tabs';
 import { GridModel } from './gridModel';
-import { useEditSessionStore } from './edit/editSession';
+import { patchEditSession, useEditSessionStore } from './edit/editSession';
+import './edit/pendingGuard';
 import { usePendingChanges } from './edit/pendingChanges';
 import { EMPTY_LAYOUT, type ColumnLayout } from './columnLayout';
 import { emptyDraft, type FilterDraft } from './request';
@@ -92,7 +93,11 @@ export function getGridModel(tabId: string, sessionId: Uuid, table: ObjectPath):
       sessionId,
       table,
       // Row indexes mean other records after a reload: drop the selection.
-      onReset: () => useDataUiStore.getState().patch(tabId, { selection: null }),
+      onReset: () => {
+        useDataUiStore.getState().patch(tabId, { selection: null });
+        // An open cell editor points at a row index that no longer means the same row.
+        patchEditSession(tabId, { editing: null });
+      },
     });
     models.set(tabId, m);
   }

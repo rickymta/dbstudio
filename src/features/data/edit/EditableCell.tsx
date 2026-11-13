@@ -36,7 +36,8 @@ export function EditableCell({
 }: EditableCellProps) {
   const { t } = useTranslation('data');
   const kind = editorKind(column.valueKind);
-  const [text, setText] = useState(() => editorInitialText(current));
+  const [initialText] = useState(() => editorInitialText(current));
+  const [text, setText] = useState(initialText);
   const done = useRef(false);
   const inputRef = useRef<HTMLInputElement | HTMLSelectElement>(null);
 
@@ -54,7 +55,8 @@ export function EditableCell({
     if (edit) onCommit(edit);
     else onCancel();
   };
-  const commit = () => finish(result.ok ? result.edit : null);
+  // Leaving the field without typing is not an edit (an untouched NULL must stay NULL).
+  const commit = () => finish(result.ok && text !== initialText ? result.edit : null);
 
   if (kind === 'bool') {
     const initial = boolChoice(current);
@@ -103,6 +105,7 @@ export function EditableCell({
           if (e.key === 'Enter') {
             e.preventDefault();
             if (result.ok) commit();
+            else if (text === initialText) finish(null);
           } else if (e.key === 'Escape') {
             finish(null);
           }
