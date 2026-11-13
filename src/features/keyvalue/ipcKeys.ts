@@ -1,32 +1,14 @@
-import { ipc, ipcTransport, toIpcError } from '@/lib/ipc';
-import { applyKeyChanges, previewKeyChanges } from '@/lib/mock/keyvalue';
+import { ipc, toIpcError } from '@/lib/ipc';
 import type { ApplyResult, ChangeSet, IpcError, Uuid } from '@/lib/types';
 
-/**
- * Commands `changes_apply` would run for a key change set. In the browser mock the generic
- * `changes` mock does not know the `keys` model, so the key-value mock answers instead.
- */
-export async function previewKeyChangeSet(sessionId: Uuid, set: ChangeSet): Promise<string[]> {
-  if (set.model === 'keys' && ipcTransport() === 'mock') return previewKeyChanges(set);
+/** Commands `changes_apply` would run for a key change set. */
+export function previewKeyChangeSet(sessionId: Uuid, set: ChangeSet): Promise<string[]> {
   return ipc.changesPreview(sessionId, set);
 }
 
-/** Apply a key change set (see `previewKeyChangeSet` for the mock fallback). */
-export async function applyKeyChangeSet(sessionId: Uuid, set: ChangeSet): Promise<ApplyResult> {
-  try {
-    return await ipc.changesApply(sessionId, set);
-  } catch (e) {
-    const err = toIpcError(e);
-    if (
-      set.model === 'keys' &&
-      ipcTransport() === 'mock' &&
-      err.kind === 'unsupported' &&
-      err.capability === 'data_editing'
-    ) {
-      return applyKeyChanges(set);
-    }
-    throw e;
-  }
+/** Apply a key change set. */
+export function applyKeyChangeSet(sessionId: Uuid, set: ChangeSet): Promise<ApplyResult> {
+  return ipc.changesApply(sessionId, set);
 }
 
 /** Failure of change #`index`: Redis does not roll back, `applied` changes already took effect. */

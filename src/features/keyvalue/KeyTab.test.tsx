@@ -166,6 +166,8 @@ describe('KeyTab editing', () => {
     expect(keyChanges(spy)).toEqual([
       { op: 'setString', key: 'config', value: { t: 'bytes', v: '/wA=' } },
     ]);
+    // Let the apply finish so it cannot write into the next test's freshly reset database.
+    await waitFor(() => expect(screen.queryByTestId('pending-bar')).toBeNull(), WAIT);
   });
 
   it('formats JSON in the JSON mode', async () => {

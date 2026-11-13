@@ -17,6 +17,7 @@ import type {
 import { lastSegment } from '../objectPath';
 import { findRelation } from './catalog';
 import { mongoApply, mongoEditability, mongoPreview } from './catalogMongo';
+import { applyKeyChanges, previewKeyChanges } from './keyvalue';
 import { mockSessionKind } from './sessions';
 import { ipcError, sleep } from './util';
 
@@ -120,6 +121,7 @@ export const changesMock = {
   async changesPreview(sessionId: Uuid, changes: ChangeSet): Promise<string[]> {
     mockSessionKind(sessionId);
     if (changes.model === 'documents') return mongoPreview(changes.collection, changes.changes);
+    if (changes.model === 'keys') return previewKeyChanges(changes);
     if (changes.model !== 'rows') throw ipcError('unsupported', 'data_editing');
     const name = lastSegment(changes.table)?.name ?? 'table';
     const table = quote(name);
@@ -129,6 +131,10 @@ export const changesMock = {
   async changesApply(sessionId: Uuid, changes: ChangeSet): Promise<ApplyResult> {
     mockSessionKind(sessionId);
     if (changes.model === 'documents') return mongoApply(changes.collection, changes.changes);
+    if (changes.model === 'keys') {
+      await sleep(20, 60);
+      return applyKeyChanges(changes);
+    }
     if (changes.model !== 'rows') throw ipcError('unsupported', 'data_editing');
     // Like the real drivers: a table that cannot be edited is refused.
     const ed = await changesMock.tableEditability(sessionId, changes.table);

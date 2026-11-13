@@ -131,9 +131,13 @@ describe('mock stores and stubs', () => {
     expect(await ipc.filePickSave('a.csv', [])).toBeNull();
     expect(await ipc.backgroundGet()).toEqual({ closeToTray: 'auto', autostart: false });
     expect((await ipc.driverDiagnostics('oracle')).status.state).toBe('planned');
-    await expect(ipc.connectionParseUri('mongodb://x')).rejects.toMatchObject({
-      kind: 'unsupported',
+    // Only `mongodb://` URIs are understood by the browser mock.
+    expect((await ipc.connectionParseUri('mongodb://x')).profile).toMatchObject({
+      kind: 'mongodb',
+      host: 'x',
+      port: 27017,
     });
+    await expect(ipc.connectionParseUri('postgres://x')).rejects.toMatchObject({ kind: 'other' });
   });
 
   it('pages the object tree', async () => {

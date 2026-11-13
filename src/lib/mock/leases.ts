@@ -4,7 +4,6 @@
 // sleeps, manual transactions, truncated results with `fetch_more`, read-only connections and
 // destructive-statement confirmation on production connections.
 
-import { useSessionsStore } from '@/stores/sessions';
 import type {
   ColumnMeta,
   DestructiveReason,
@@ -30,7 +29,7 @@ import type {
 import { findMockProfile } from './connections';
 import { mockRecordHistory, mockFinishHistory } from './history';
 import { mockEmit } from './events';
-import { mockSessionDialect } from './sessions';
+import { mockSessionConnectionId, mockSessionDialect } from './sessions';
 import { clone, ipcError, newId, sleep } from './util';
 
 interface Pending {
@@ -390,10 +389,8 @@ function planRead(text: string, base: number, dialect: ScriptDialect): Plan {
 }
 
 function profileOfSession(sessionId: Uuid) {
-  const info = Object.values(useSessionsStore.getState().sessionsByConnection).find(
-    (s) => s.sessionId === sessionId,
-  );
-  return info ? findMockProfile(info.connectionId) : undefined;
+  const connectionId = mockSessionConnectionId(sessionId);
+  return connectionId ? findMockProfile(connectionId) : undefined;
 }
 
 const emptyResult = (

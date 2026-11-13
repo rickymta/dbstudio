@@ -12,6 +12,11 @@ export function mockSessionKind(sessionId: Uuid): DbKind {
   return s.kind;
 }
 
+/** Connection (profile) id behind `sessionId`, or `undefined` for an unknown session. */
+export function mockSessionConnectionId(sessionId: Uuid): Uuid | undefined {
+  return sessions.get(sessionId)?.connectionId;
+}
+
 const DIALECTS: Record<DbKind, ScriptDialect> = {
   postgres: { name: 'postgres' },
   mysql: { name: 'mySql', mariadb: false, backslashEscapes: true },
