@@ -379,6 +379,27 @@ function context(kind: DbKind, path: ObjectPath): Ctx {
   return { db, schema };
 }
 
+/** Schemas (with their relations) of the database named in `path`; `undefined` when unknown. */
+export function mockSchemasOf(
+  kind: DbKind,
+  path: ObjectPath,
+): { database: string; schemas: { name: string | null; tables: MockTable[] }[] } | undefined {
+  const { db } = context(kind, path);
+  if (!db) return undefined;
+  const schemaSeg = path.segments.find((s) => s.kind === 'schema');
+  const mysql = dialectOf(kind) === 'mysql';
+  const schemas = mysql
+    ? db.schemas.slice(0, 1)
+    : db.schemas.filter((s) => !schemaSeg || s.name === schemaSeg.name);
+  return {
+    database: db.name,
+    schemas: schemas.map((s) => ({ name: mysql ? null : s.name, tables: s.tables })),
+  };
+}
+
+/** Folder holding relations of `kind` in the object tree. */
+export const relationFolder = (kind: RelationKind): FolderKey => RELATION_FOLDER[kind];
+
 /** Locate the table/view at `path`. */
 export function findRelation(
   kind: DbKind,

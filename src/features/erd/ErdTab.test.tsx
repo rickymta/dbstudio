@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PG_CONNECTION,
   openMockSession,
@@ -8,7 +8,7 @@ import {
   renderWithProviders,
 } from '@/features/data/testUtils';
 import { ipc } from '@/lib/ipc';
-import { resetMockErd } from '@/lib/mock/erd';
+import { resetMockErd, sampleSchemaModel } from '@/lib/mock/erd';
 import type { ErdLayout, ObjectPath } from '@/lib/types';
 import { ErdTab } from './ErdTab';
 import { parseLayoutTables, tableKey } from './model';
@@ -25,6 +25,12 @@ beforeAll(() => {
 
 let sessionId = '';
 const scope: ObjectPath = { segments: [{ kind: 'database', name: 'app_dev' }] };
+
+// The diagram tests use the Pagila-like sample schema (16 tables, 25 relations) as a fixture; the
+// default mock model is the shared catalog (see `erd.catalog.test.ts`).
+beforeEach(() => {
+  vi.spyOn(ipc, 'schemaModel').mockImplementation(async (_id, req) => sampleSchemaModel(req));
+});
 
 async function mount(layoutId: string | null = null) {
   sessionId ||= await openMockSession();
@@ -233,9 +239,8 @@ describe('ErdTab (mock IPC)', () => {
 
   it('warns when the schema model was truncated', async () => {
     sessionId ||= await openMockSession();
-    const real = ipc.schemaModel.bind(ipc);
-    vi.spyOn(ipc, 'schemaModel').mockImplementation(async (id, req) => ({
-      ...(await real(id, req)),
+    vi.spyOn(ipc, 'schemaModel').mockImplementation(async (_id, req) => ({
+      ...sampleSchemaModel(req),
       truncated: true,
     }));
     await mount();

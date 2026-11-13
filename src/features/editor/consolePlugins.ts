@@ -12,8 +12,8 @@
 // Both are registered below; a feature package can still replace one with `registerConsolePlugin`.
 
 import type { ReactNode } from 'react';
-import { renderMongoResult } from '@/features/document/ResultDocuments';
-import { renderRedisReply } from '@/features/keyvalue/ReplyView';
+import { renderMongoResult } from '@/features/document/renderResult';
+import { renderRedisReply } from '@/features/keyvalue/renderReply';
 import type { EditorMode } from '@/stores/tabs';
 import type { StatementResult } from './results';
 

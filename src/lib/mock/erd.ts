@@ -16,6 +16,7 @@ import type {
   Uuid,
   ValueKind,
 } from '../types';
+import { mockSchemasOf, relationFolder, type RelationKind } from './catalog';
 import { mockSessionKind } from './sessions';
 import { clone, ipcError, sleep } from './util';
 
@@ -339,26 +340,107 @@ function lastName(path: ObjectPath): string {
 
 // ---------------------------------------------------------------------------------------------
 
+/** Keep only the `tables` named in the request (and the relations between them). */
+function onlyRequested(model: SchemaModel, request: SchemaModelRequest): SchemaModel {
+  const names = new Set((request.tables ?? []).map(lastName));
+  if (names.size === 0) return model;
+  const tables = model.tables.filter((t) => names.has(t.name));
+  const keep = new Set(tables.map((t) => t.name));
+  return {
+    ...model,
+    tables,
+    relations: model.relations.filter(
+      (r) => keep.has(lastName(r.fromTable)) && keep.has(lastName(r.toTable)),
+    ),
+  };
+}
+
+const EMPTY = (scope: ObjectPath): SchemaModel => ({
+  scope,
+  tables: [],
+  relations: [],
+  inferred: false,
+  truncated: false,
+});
+
+/**
+ * Schema model of the mock servers, built from the same catalog the object tree and the editor
+ * autocomplete use (`mock/catalog.ts`), so every feature sees the same tables.
+ */
+function catalogModel(kind: string, request: SchemaModelRequest): SchemaModel {
+  const { scope } = request;
+  const hasDatabase = scope.segments.some((s) => s.kind === 'database');
+  const found =
+    hasDatabase && (kind === 'postgres' || kind === 'mysql')
+      ? mockSchemasOf(kind, scope)
+      : undefined;
+  if (!found) return EMPTY(scope);
+  const tables: TableModel[] = [];
+  const relations: Relation[] = [];
+  for (const schema of found.schemas) {
+    const pathOfTable = (name: string, relKind: RelationKind): ObjectPath => {
+      let p = childPath(ROOT_PATH, 'database', found.database);
+      if (schema.name !== null) {
+        p = childPath(childPath(p, 'folder', 'schemas'), 'schema', schema.name);
+      }
+      return childPath(childPath(p, 'folder', relationFolder(relKind)), relKind, name);
+    };
+    const wanted = schema.tables.filter((t) => t.kind === 'table' || request.includeViews);
+    for (const t of wanted) {
+      tables.push({
+        path: pathOfTable(t.name, t.kind),
+        kind: t.kind,
+        schema: schema.name,
+        name: t.name,
+        comment: request.includeComments ? (t.comment ?? null) : null,
+        columns: t.columns.map((c, i) => ({
+          name: c.name,
+          ordinal: i + 1,
+          typeName: c.typeName,
+          valueKind: c.valueKind,
+          nullable: c.nullable,
+          default: c.default ?? null,
+          comment: null,
+          primaryKey: c.pk,
+          extra: c.extra ?? null,
+        })),
+        primaryKey: t.columns.filter((c) => c.pk).map((c) => c.name),
+        uniqueKeys: [],
+        estimatedRows: t.rows,
+      });
+      for (const fk of t.fks) {
+        const target = wanted.find((x) => x.name === fk.refTable);
+        if (!target) continue;
+        relations.push({
+          name: fk.name,
+          fromTable: pathOfTable(t.name, t.kind),
+          fromColumns: fk.columns,
+          toTable: pathOfTable(target.name, target.kind),
+          toColumns: fk.refColumns,
+          onUpdate: 'NO ACTION',
+          onDelete: 'NO ACTION',
+          fromOptional: fk.columns.some((n) => t.columns.find((c) => c.name === n)?.nullable),
+          oneToOne: false,
+          inferred: false,
+        });
+      }
+    }
+  }
+  return { scope, tables, relations, inferred: false, truncated: false };
+}
+
+/** The Pagila-like sample schema (a fixture for the diagram tests and demos). */
+export function sampleSchemaModel(request: SchemaModelRequest): SchemaModel {
+  if (!request.scope.segments.some((s) => s.kind === 'database')) return EMPTY(request.scope);
+  const place = placeOf(request.scope, 'postgres');
+  return onlyRequested(modelFromSpecs(SAMPLE, place, request.scope, request), request);
+}
+
 export const erdMock = {
   async schemaModel(sessionId: Uuid, request: SchemaModelRequest): Promise<SchemaModel> {
     const kind = mockSessionKind(sessionId);
     await sleep(30, 90);
-    if (!request.scope.segments.some((s) => s.kind === 'database')) {
-      return { scope: request.scope, tables: [], relations: [], inferred: false, truncated: false };
-    }
-    const place = placeOf(request.scope, kind);
-    const model = modelFromSpecs(SAMPLE, place, request.scope, request);
-    const names = new Set((request.tables ?? []).map(lastName));
-    if (names.size === 0) return model;
-    const tables = model.tables.filter((t) => names.has(t.name));
-    const keep = new Set(tables.map((t) => t.name));
-    return {
-      ...model,
-      tables,
-      relations: model.relations.filter(
-        (r) => keep.has(lastName(r.fromTable)) && keep.has(lastName(r.toTable)),
-      ),
-    };
+    return onlyRequested(catalogModel(kind, request), request);
   },
   async erdLayoutsList(connectionId: Uuid): Promise<ErdLayoutSummary[]> {
     return layouts
