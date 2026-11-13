@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { ChevronRight, RefreshCw } from 'lucide-react';
+import { ChevronRight, RefreshCw, X } from 'lucide-react';
 import {
   memo,
   useCallback,
@@ -18,25 +18,42 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@/components/ui/ContextMenu';
+import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
 import { toast } from '@/components/ui/toastStore';
+import { DeleteByPatternDialog } from '@/features/keyvalue/DeleteByPatternDialog';
+import { parseKeyDetail, formatDuration } from '@/features/keyvalue/keyDetail';
 import { cn } from '@/lib/cn';
 import { pathKey, ROOT_PATH } from '@/lib/objectPath';
-import type { Capabilities, ObjectNode, ObjectPath, SessionInfo, Uuid } from '@/lib/types';
+import type {
+  Capabilities,
+  DriverDescriptor,
+  ObjectNode,
+  ObjectPath,
+  SessionInfo,
+  Uuid,
+} from '@/lib/types';
 import { useSession } from '@/stores/sessions';
 import { ddlTabId, tableTabId, useTabsStore } from '@/stores/tabs';
+import { explorerActions, type ExplorerAction } from './actions';
 import { KindIcon } from './kindIcons';
+import { PatternFilterDialog } from './PatternFilterDialog';
 import { openObjectTab } from './openObject';
 import { revealTuning, useRevealStore } from './revealStore';
 import {
   clearBranch,
   clearSessionCache,
+  getLevelPattern,
   loadChildren,
+  loadMoreChildren,
   readChildrenState,
+  readPaging,
+  setLevelPattern,
   useTreeCacheVersion,
 } from './queries';
 import {
   flattenTree,
+  isPagingRow,
   navigate,
   nodeLabel,
   nodeActions,
@@ -44,6 +61,7 @@ import {
   type NavKey,
   type NodeAction,
   type NodeRow,
+  type PagingRow,
   type StatusRow,
   type TreeRow,
 } from './treeModel';
@@ -97,11 +115,15 @@ function SessionTree({
 
   const load = useCallback(
     (path: ObjectPath) => {
-      loadChildren(qc, sessionId, path).catch(() => {
+      loadChildren(qc, sessionId, path, capabilities.pagedTree).catch(() => {
         // The error is kept in the query cache and rendered on the row.
       });
     },
-    [qc, sessionId],
+    [qc, sessionId, capabilities.pagedTree],
+  );
+
+  const [dialog, setDialog] = useState<{ type: 'filter' | 'delete'; node: ObjectNode } | null>(
+    null,
   );
 
   useEffect(() => {
@@ -114,12 +136,13 @@ function SessionTree({
     () =>
       flattenTree({
         getChildren: (p) => readChildrenState(qc, sessionId, p),
+        getPaging: capabilities.pagedTree ? (p) => readPaging(qc, sessionId, p) : undefined,
         expanded,
         filter,
         label,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [qc, sessionId, expanded, filter, label, version],
+    [qc, sessionId, expanded, filter, label, version, capabilities.pagedTree],
   );
 
   // Reveal requests ("show in tree"): expand every ancestor, then focus the target row.
@@ -137,7 +160,7 @@ function SessionTree({
         const ancestor = { segments: segments.slice(0, i) };
         setExpanded((prev) => new Set(prev).add(pathKey(ancestor)));
         try {
-          await loadChildren(qc, sessionId, ancestor);
+          await loadChildren(qc, sessionId, ancestor, capabilities.pagedTree);
           if (token !== revealToken.current) return;
         } catch {
           if (token === revealToken.current) setPendingFocus(null);
@@ -146,7 +169,7 @@ function SessionTree({
       }
       if (token === revealToken.current) setPendingFocus(pathKey(reveal.path));
     })();
-  }, [reveal, connectionId, qc, sessionId]);
+  }, [reveal, connectionId, qc, sessionId, capabilities.pagedTree]);
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
@@ -225,6 +248,15 @@ function SessionTree({
             payload,
           });
           break;
+        case 'openKey':
+          openObjectTab(row.node, session);
+          break;
+        case 'filterPattern':
+          setDialog({ type: 'filter', node: row.node });
+          break;
+        case 'deleteByPattern':
+          setDialog({ type: 'delete', node: row.node });
+          break;
         case 'viewDdl':
           openTab({
             id: ddlTabId(sessionId, row.node.path),
@@ -245,7 +277,29 @@ function SessionTree({
           break;
       }
     },
-    [sessionId, connectionId, openTab, refresh, t],
+    [sessionId, connectionId, session, openTab, refresh, t],
+  );
+
+  const applyPattern = useCallback(
+    (node: ObjectNode, pattern: string) => {
+      setLevelPattern(qc, sessionId, node.path, pattern);
+      setExpanded((prev) => new Set(prev).add(pathKey(node.path)));
+      load(node.path);
+    },
+    [qc, sessionId, load],
+  );
+
+  const runExplorerAction = useCallback((action: ExplorerAction) => action.run(session), [session]);
+  const loadMore = useCallback(
+    (path: ObjectPath) => void loadMoreChildren(qc, sessionId, path),
+    [qc, sessionId],
+  );
+  const clearPattern = useCallback(
+    (path: ObjectPath) => {
+      setLevelPattern(qc, sessionId, path, '');
+      load(path);
+    },
+    [qc, sessionId, load],
   );
 
   const indexOfKey = useCallback((key: string) => rows.findIndex((r) => r.key === key), [rows]);
@@ -318,13 +372,17 @@ function SessionTree({
                   row={row}
                   sessionId={sessionId}
                   capabilities={capabilities}
+                  descriptor={session.descriptor}
                   label={label(row.node)}
                   selected={row.key === focusKey}
                   onSelect={setFocusKey}
                   onToggle={setNodeExpanded}
                   onActivate={activate}
                   onAction={runAction}
+                  onExplorerAction={runExplorerAction}
                 />
+              ) : isPagingRow(row) ? (
+                <PagingRowView row={row} onLoadMore={loadMore} onClearPattern={clearPattern} />
               ) : (
                 <StatusRowView row={row} onRetry={load} />
               )}
@@ -332,8 +390,42 @@ function SessionTree({
           );
         })}
       </div>
+      {dialog?.type === 'filter' && (
+        <PatternFilterDialog
+          open
+          title={nodeLabel(t, dialog.node)}
+          initial={
+            getLevelPattern(sessionId, dialog.node.path) ||
+            (dialog.node.kind === 'keyPrefix' ? `${dialog.node.name}*` : '')
+          }
+          onOpenChange={(open) => !open && setDialog(null)}
+          onApply={(pattern) => applyPattern(dialog.node, pattern)}
+        />
+      )}
+      {dialog?.type === 'delete' && (
+        <DeleteByPatternDialog
+          open
+          sessionId={sessionId}
+          node={dialog.node}
+          onOpenChange={(open) => !open && setDialog(null)}
+          onDone={() => refresh(nodeRowFor(dialog.node))}
+        />
+      )}
     </div>
   );
+}
+
+/** Minimal row for `refresh`, which only needs the node and its key. */
+function nodeRowFor(node: ObjectNode): NodeRow {
+  return {
+    type: 'node',
+    key: pathKey(node.path),
+    node,
+    depth: 0,
+    expanded: false,
+    loading: false,
+    parentKey: null,
+  };
 }
 
 const itemId = (sessionId: Uuid, key: string) => `tree-${sessionId}-${key}`;
@@ -360,28 +452,34 @@ interface NodeRowProps {
   row: NodeRow;
   sessionId: Uuid;
   capabilities: Capabilities;
+  descriptor: DriverDescriptor;
   label: string;
   selected: boolean;
   onSelect: (key: string) => void;
   onToggle: (row: NodeRow, expand: boolean) => void;
   onActivate: (row: NodeRow) => void;
   onAction: (action: NodeAction, row: NodeRow) => void;
+  onExplorerAction: (action: ExplorerAction) => void;
 }
 
 const TreeNodeRow = memo(function TreeNodeRow({
   row,
   sessionId,
   capabilities,
+  descriptor,
   label,
   selected,
   onSelect,
   onToggle,
   onActivate,
   onAction,
+  onExplorerAction,
 }: NodeRowProps) {
   const { t } = useTranslation('explorer');
   const { node } = row;
   const actions = nodeActions(node, capabilities);
+  const extraActions = explorerActions(node, descriptor);
+  const keyDetail = node.kind === 'key' ? parseKeyDetail(node.detail) : null;
   const content: ReactNode = (
     <div
       id={itemId(sessionId, row.key)}
@@ -423,14 +521,25 @@ const TreeNodeRow = memo(function TreeNodeRow({
       </span>
       <KindIcon kind={node.kind} className="shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate">{label}</span>
-      {node.detail && (
-        <span className="ml-auto max-w-[50%] shrink-0 truncate pl-2 text-[11px] text-muted-foreground">
-          {node.detail}
+      {keyDetail ? (
+        <span className="ml-auto flex shrink-0 items-center gap-1 pl-2">
+          {keyDetail.ttlSeconds !== null && (
+            <span className="text-[11px] text-muted-foreground">
+              {formatDuration(keyDetail.ttlSeconds)}
+            </span>
+          )}
+          <Badge data-testid="key-type-badge">{keyDetail.type}</Badge>
         </span>
+      ) : (
+        node.detail && (
+          <span className="ml-auto max-w-[50%] shrink-0 truncate pl-2 text-[11px] text-muted-foreground">
+            {node.detail}
+          </span>
+        )
       )}
     </div>
   );
-  if (actions.length === 0) return content;
+  if (actions.length === 0 && extraActions.length === 0) return content;
   return (
     <ContextMenu onOpenChange={(open) => open && onSelect(row.key)}>
       <ContextMenuTrigger asChild>{content}</ContextMenuTrigger>
@@ -441,10 +550,78 @@ const TreeNodeRow = memo(function TreeNodeRow({
             {t(`action.${a}`)}
           </ContextMenuItem>
         ))}
+        {extraActions.map((a) => (
+          <ContextMenuItem key={a.id} onSelect={() => onExplorerAction(a)}>
+            {t(a.labelKey)}
+          </ContextMenuItem>
+        ))}
       </ContextMenuContent>
     </ContextMenu>
   );
 });
+
+function PagingRowView({
+  row,
+  onLoadMore,
+  onClearPattern,
+}: {
+  row: PagingRow;
+  onLoadMore: (path: ObjectPath) => void;
+  onClearPattern: (path: ObjectPath) => void;
+}) {
+  const { t } = useTranslation('explorer');
+  const pad = 4 + row.depth * INDENT + 20;
+  const { paging } = row;
+  if (row.type === 'pattern') {
+    return (
+      <div
+        style={{ paddingLeft: pad, height: ROW_HEIGHT }}
+        className="flex items-center gap-1 pr-2 text-xs text-muted-foreground"
+      >
+        <span className="min-w-0 truncate" title={paging.pattern}>
+          {t('pattern.active', { pattern: paging.pattern })}
+        </span>
+        <button
+          type="button"
+          aria-label={t('pattern.clear')}
+          title={t('pattern.clear')}
+          onClick={() => onClearPattern(row.path)}
+          className="shrink-0 rounded p-0.5 hover:bg-surface-muted hover:text-foreground"
+        >
+          <X size={12} />
+        </button>
+      </div>
+    );
+  }
+  const remaining = paging.total !== null ? Math.max(0, paging.total - row.loaded) : null;
+  return (
+    <div
+      style={{ paddingLeft: pad, height: ROW_HEIGHT }}
+      className="flex items-center gap-2 pr-2 text-xs"
+    >
+      <button
+        type="button"
+        disabled={paging.loadingMore}
+        onClick={() => onLoadMore(row.path)}
+        className="flex items-center gap-1 rounded px-1 text-accent hover:bg-surface-muted disabled:opacity-60"
+      >
+        {paging.loadingMore && <Spinner size={11} />}
+        {remaining !== null && remaining > 0
+          ? t('loadMoreCount', { count: remaining })
+          : t('loadMore')}
+      </button>
+      {paging.moreError && (
+        <span
+          role="alert"
+          className="min-w-0 truncate text-danger"
+          title={paging.moreError.message}
+        >
+          {t('loadError')}: {paging.moreError.message}
+        </span>
+      )}
+    </div>
+  );
+}
 
 function StatusRowView({ row, onRetry }: { row: StatusRow; onRetry: (path: ObjectPath) => void }) {
   const { t } = useTranslation('explorer');

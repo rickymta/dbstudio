@@ -1,6 +1,8 @@
 import type { TFunction } from 'i18next';
 import { lastSegment, pathKey, ROOT_PATH } from '@/lib/objectPath';
+import { displayKeyName } from '@/features/keyvalue/keyDetail';
 import type { Capabilities, IpcError, ObjectKind, ObjectNode, ObjectPath } from '@/lib/types';
+import type { PagingState } from './paging';
 
 /** Load state of the children of one path, as read from the query cache. */
 export type ChildrenState =
@@ -32,7 +34,23 @@ export interface StatusRow {
   error?: IpcError;
 }
 
-export type TreeRow = NodeRow | StatusRow;
+/** Row below the loaded children of a paged level: "load more" and the active glob filter. */
+export interface PagingRow {
+  type: 'more' | 'pattern';
+  key: string;
+  depth: number;
+  parentKey: string | null;
+  path: ObjectPath;
+  paging: PagingState;
+  /** Children loaded so far (`more` rows). */
+  loaded: number;
+}
+
+export type TreeRow = NodeRow | StatusRow | PagingRow;
+
+export function isPagingRow(row: TreeRow): row is PagingRow {
+  return row.type === 'more' || row.type === 'pattern';
+}
 
 export interface FlattenOptions {
   getChildren: (path: ObjectPath) => ChildrenState;
@@ -41,6 +59,8 @@ export interface FlattenOptions {
   filter?: string;
   /** Display label of a node (translated folder names). */
   label: (node: ObjectNode) => string;
+  /** Paging state of a level; only paged levels have one. */
+  getPaging?: (path: ObjectPath) => PagingState | undefined;
 }
 
 export const ROOT_KEY = pathKey(ROOT_PATH);
@@ -86,9 +106,22 @@ export function flattenTree(options: FlattenOptions): TreeRow[] {
       return;
     }
     if (state.status !== 'loaded') return;
-    if (state.nodes.length === 0) {
+    const paging = filter ? undefined : options.getPaging?.(path);
+    const scope = parentKey ?? ROOT_KEY;
+    if (paging?.pattern) {
+      rows.push({
+        type: 'pattern',
+        key: `pattern:${scope}`,
+        depth,
+        parentKey,
+        path,
+        paging,
+        loaded: 0,
+      });
+    }
+    if (state.nodes.length === 0 && !paging?.nextCursor) {
       if (!filter) {
-        rows.push({ type: 'empty', key: `empty:${parentKey ?? ROOT_KEY}`, depth, parentKey, path });
+        rows.push({ type: 'empty', key: `empty:${scope}`, depth, parentKey, path });
       }
       return;
     }
@@ -109,6 +142,17 @@ export function flattenTree(options: FlattenOptions): TreeRow[] {
         parentKey,
       });
       if (isExpanded) visit(node.path, depth + 1, key);
+    }
+    if (paging?.nextCursor) {
+      rows.push({
+        type: 'more',
+        key: `more:${scope}`,
+        depth,
+        parentKey,
+        path,
+        paging,
+        loaded: state.nodes.length,
+      });
     }
   };
 
@@ -162,6 +206,7 @@ export function navigate(rows: TreeRow[], focusKey: string | null, key: NavKey):
 // Activation and context menu
 // ---------------------------------------------------------------------------------------------
 
+const KEY_KINDS: ReadonlySet<ObjectKind> = new Set(['key']);
 const TABLE_KINDS: ReadonlySet<ObjectKind> = new Set(['table', 'view', 'materializedView']);
 const DDL_KINDS: ReadonlySet<ObjectKind> = new Set([
   'function',
@@ -179,6 +224,7 @@ const KIND_CAPABILITY: Partial<Record<ObjectKind, keyof Capabilities>> = {
   procedure: 'storedRoutines',
   trigger: 'triggers',
   sequence: 'sequences',
+  key: 'keyValueStore',
 };
 
 /** False only when the driver explicitly lacks the capability the kind needs. */
@@ -188,14 +234,26 @@ export function kindEnabled(kind: ObjectKind, caps?: Capabilities): boolean {
 }
 
 /** Which tab (if any) activating an object of `kind` opens. Unknown kinds open nothing. */
-export function activationTab(kind: ObjectKind, caps?: Capabilities): 'table' | 'ddl' | null {
+export function activationTab(
+  kind: ObjectKind,
+  caps?: Capabilities,
+): 'table' | 'ddl' | 'key' | null {
   if (!kindEnabled(kind, caps)) return null;
+  if (KEY_KINDS.has(kind)) return 'key';
   if (TABLE_KINDS.has(kind)) return 'table';
   if (DDL_KINDS.has(kind)) return 'ddl';
   return null;
 }
 
-export type NodeAction = 'openData' | 'viewDdl' | 'copyName' | 'copyFullName' | 'refresh';
+export type NodeAction =
+  | 'openData'
+  | 'openKey'
+  | 'viewDdl'
+  | 'copyName'
+  | 'copyFullName'
+  | 'filterPattern'
+  | 'deleteByPattern'
+  | 'refresh';
 
 /** Context-menu actions that apply to a node of `kind`, in display order. */
 export function nodeActions(
@@ -204,12 +262,16 @@ export function nodeActions(
 ): NodeAction[] {
   const actions: NodeAction[] = [];
   if (!kindEnabled(node.kind, caps)) return node.hasChildren ? ['refresh'] : [];
+  if (KEY_KINDS.has(node.kind)) actions.push('openKey');
   if (TABLE_KINDS.has(node.kind)) actions.push('openData');
   if (TABLE_KINDS.has(node.kind) || DDL_KINDS.has(node.kind)) actions.push('viewDdl');
   if (node.kind !== 'folder') actions.push('copyName');
   if (TABLE_KINDS.has(node.kind) || DDL_KINDS.has(node.kind) || node.kind === 'column') {
     actions.push('copyFullName');
   }
+  const keyLevel = node.kind === 'keyPrefix' || (node.kind === 'database' && caps?.keyValueStore);
+  if (keyLevel && caps?.pagedTree) actions.push('filterPattern');
+  if (keyLevel && caps?.keyValueStore) actions.push('deleteByPattern');
   if (node.hasChildren) actions.push('refresh');
   return actions;
 }
@@ -229,6 +291,20 @@ export function qualifiedName(path: ObjectPath): string {
 }
 
 /** Display label of a node: folders are translated, everything else shows its name. */
-export function nodeLabel(t: TFunction, node: Pick<ObjectNode, 'kind' | 'name'>): string {
-  return node.kind === 'folder' ? t(`explorer:folder.${node.name}`, node.name) : node.name;
+export function nodeLabel(
+  t: TFunction,
+  node: Pick<ObjectNode, 'kind' | 'name'> & { path?: ObjectPath },
+): string {
+  if (node.kind === 'folder') return t(`explorer:folder.${node.name}`, node.name);
+  if (node.kind === 'key' || node.kind === 'keyPrefix') {
+    // Inside a prefix folder only the part after the folder's name is interesting.
+    const segments = node.path?.segments ?? [];
+    const parent = segments[segments.length - 2];
+    const rest =
+      parent?.kind === 'keyPrefix' && node.name.startsWith(parent.name) && node.name !== parent.name
+        ? node.name.slice(parent.name.length)
+        : node.name;
+    return displayKeyName(rest);
+  }
+  return node.name;
 }

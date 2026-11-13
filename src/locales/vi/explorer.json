@@ -53,6 +53,19 @@
     "openEditor": "Mở trình soạn thảo",
     "showErd": "Xem sơ đồ",
     "exportData": "Xuất...",
-    "backup": "Sao lưu..."
-  }
+    "backup": "Sao lưu...",
+    "openKey": "Mở khóa",
+    "filterPattern": "Lọc theo mẫu...",
+    "deleteByPattern": "Xóa khóa theo mẫu..."
+  },
+  "loadMore": "Tải thêm",
+  "pattern": {
+    "title": "Lọc {{name}}",
+    "description": "Mẫu glob áp dụng cho các khóa bên dưới nút này (* ? [..]).",
+    "label": "Mẫu",
+    "apply": "Áp dụng",
+    "clear": "Xóa bộ lọc",
+    "active": "Bộ lọc: {{pattern}}"
+  },
+  "loadMoreCount": "Tải thêm ({{count}})"
 }

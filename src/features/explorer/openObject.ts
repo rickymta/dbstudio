@@ -1,5 +1,6 @@
 import type { ObjectNode, SessionInfo } from '@/lib/types';
-import { ddlTabId, tableTabId, useTabsStore } from '@/stores/tabs';
+import { displayKeyName } from '@/features/keyvalue/keyDetail';
+import { ddlTabId, keyTabId, tableTabId, useTabsStore } from '@/stores/tabs';
 import { activationTab } from './treeModel';
 
 /**
@@ -15,7 +16,15 @@ export function openObjectTab(node: ObjectNode, session: SessionInfo): boolean {
     path: node.path,
   };
   const { openTab } = useTabsStore.getState();
-  if (tab === 'table') {
+  if (tab === 'key') {
+    openTab({
+      id: keyTabId(session.sessionId, node.path),
+      kind: 'key',
+      title: displayKeyName(node.name),
+      closable: true,
+      payload,
+    });
+  } else if (tab === 'table') {
     openTab({
       id: tableTabId(session.sessionId, node.path),
       kind: 'table',

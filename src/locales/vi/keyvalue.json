@@ -2,8 +2,153 @@
   "tab": {
     "title": "Khóa"
   },
-  "placeholder": {
-    "title": "Khóa",
-    "description": "Trình xem khóa chưa khả dụng."
+  "actions": {
+    "cancel": "Hủy",
+    "close": "Đóng",
+    "delete": "Xóa",
+    "refresh": "Làm mới",
+    "retry": "Thử lại",
+    "ttl": "TTL",
+    "rename": "Đổi tên",
+    "deleteKey": "Xóa khóa"
+  },
+  "header": {
+    "ttl": "Thời gian sống",
+    "persistent": "Không hết hạn",
+    "expired": "Đã hết hạn",
+    "length": "Độ dài",
+    "memory": "Bộ nhớ",
+    "encoding": "Mã hóa"
+  },
+  "emptyValue": "(rỗng)",
+  "noEntries": "Không có phần tử.",
+  "edit": {
+    "hint": "Nhấp đúp để sửa",
+    "cell": "Sửa giá trị"
+  },
+  "loaded": "Đã tải {{loaded}} / {{total}}",
+  "loadMore": "Tải thêm",
+  "search": {
+    "label": "Mẫu tìm kiếm",
+    "placeholder": "Mẫu glob, ví dụ user*",
+    "apply": "Tìm",
+    "clear": "Xóa lọc"
+  },
+  "missing": {
+    "title": "Không tìm thấy khóa",
+    "description": "Khóa không tồn tại (có thể đã bị xóa, đổi tên hoặc hết hạn)."
+  },
+  "error": {
+    "title": "Không đọc được khóa"
+  },
+  "string": {
+    "mode": "Chế độ hiển thị",
+    "modes": {
+      "text": "Văn bản",
+      "json": "JSON",
+      "hex": "Hex"
+    },
+    "value": "Giá trị chuỗi",
+    "truncated": "Giá trị bị cắt ({{shown}} / {{total}} byte đang hiển thị); đã khóa chỉnh sửa để tránh mất dữ liệu.",
+    "notConvertible": "Không thể hiển thị giá trị ở chế độ này.",
+    "invalidJson": "JSON không hợp lệ",
+    "invalidHex": "Hex không hợp lệ.",
+    "revert": "Hoàn tác",
+    "save": "Đưa vào thay đổi",
+    "bytes": "{{count}} B"
+  },
+  "hash": {
+    "field": "Trường",
+    "value": "Giá trị",
+    "newField": "Trường mới",
+    "newValue": "Giá trị mới",
+    "add": "Thêm trường"
+  },
+  "list": {
+    "index": "Chỉ số",
+    "value": "Giá trị",
+    "newValue": "Phần tử mới",
+    "pushHead": "Thêm vào đầu",
+    "pushTail": "Thêm vào cuối"
+  },
+  "set": {
+    "member": "Thành viên",
+    "newMember": "Thành viên mới",
+    "add": "Thêm thành viên"
+  },
+  "zset": {
+    "member": "Thành viên",
+    "score": "Điểm",
+    "newMember": "Thành viên mới",
+    "newScore": "Điểm mới",
+    "add": "Thêm thành viên"
+  },
+  "stream": {
+    "id": "ID",
+    "fields": "Trường",
+    "newId": "ID bản ghi",
+    "idAuto": "ID (tự động)",
+    "newFields": "Trường của bản ghi",
+    "fieldsHint": "Mỗi dòng một cặp trường=giá trị",
+    "add": "Thêm bản ghi",
+    "groups": "Số nhóm consumer: {{count}}"
+  },
+  "json": {
+    "readOnly": "Giá trị RedisJSON chỉ xem, không sửa được ở đây."
+  },
+  "unsupported": {
+    "title": "Kiểu chưa hỗ trợ: {{type}}",
+    "description": "DBStudio chưa hiển thị hoặc sửa được kiểu khóa này."
+  },
+  "pending": {
+    "noRollback": "Redis không hoàn tác: các thay đổi được áp dụng lần lượt.",
+    "discard": "Bỏ qua",
+    "preview": "Xem trước lệnh",
+    "apply": "Áp dụng",
+    "count": "Thay đổi đang chờ: {{count}}"
+  },
+  "preview": {
+    "title": "Lệnh sẽ chạy",
+    "description": "Các lệnh Redis này sẽ được gửi theo thứ tự."
+  },
+  "apply": {
+    "failed": "Thay đổi #{{index}} thất bại: {{message}}. Redis không hoàn tác: đã áp dụng {{applied}} thay đổi trước đó.",
+    "done": "Đã áp dụng thay đổi: {{count}}"
+  },
+  "ttl": {
+    "title": "Thời hạn",
+    "description": "Số giây cho đến khi khóa hết hạn.",
+    "seconds": "Số giây",
+    "set": "Đặt TTL",
+    "persist": "Xóa TTL"
+  },
+  "rename": {
+    "title": "Đổi tên khóa",
+    "newName": "Tên khóa mới",
+    "apply": "Đổi tên"
+  },
+  "delete": {
+    "title": "Xóa khóa?",
+    "description": "Khóa \"{{name}}\" sẽ bị xóa. Không thể hoàn tác."
+  },
+  "deletePattern": {
+    "title": "Xóa khóa theo mẫu",
+    "description": "Xóa mọi khóa trong cơ sở dữ liệu khớp với mẫu glob.",
+    "pattern": "Mẫu",
+    "hint": "Cú pháp glob: * mọi chuỗi, ? một ký tự, [ab] một tập ký tự. Khớp với tên khóa đầy đủ.",
+    "start": "Xóa các khóa khớp",
+    "confirmPrompt": "Kết nối này yêu cầu xác nhận để xóa các khóa khớp \"{{pattern}}\".",
+    "typeToConfirm": "Nhập để xác nhận:",
+    "confirmInput": "Văn bản xác nhận",
+    "confirm": "Xác nhận xóa",
+    "running": "Đã xóa {{done}} / {{total}} khóa...",
+    "cancelJob": "Hủy tác vụ",
+    "status": {
+      "failed": "Tác vụ thất bại sau khi xóa {{count}} khóa.",
+      "cancelled": "Đã hủy sau khi xóa {{count}} khóa.",
+      "running": "Đang chạy",
+      "queued": "Đang chờ",
+      "succeeded": "Xong. Số khóa đã xóa: {{count}}."
+    }
   }
 }
