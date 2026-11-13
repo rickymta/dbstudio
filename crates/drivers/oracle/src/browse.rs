@@ -61,46 +61,54 @@ pub async fn list_children(shared: &Arc<Shared>, parent: &ObjectPath) -> Result<
     let show_all = shared.target.show_all_schemas;
     shared
         .with_conn(move |conn| {
-            let segs: Vec<(ObjectKind, &str)> = parent
+            // Folder segments are optional in every path: the listing is decided by the
+            // objects named and by whether the last segment is a folder.
+            let named = non_folder_segments(&parent);
+            let last_folder = parent
                 .segments
-                .iter()
-                .map(|s| (s.kind, s.name.as_str()))
-                .collect();
-            match segs.as_slice() {
-                [] => root(conn, &parent, show_all),
-                [(K::Folder, folder::ROLES)] => roles(conn, &parent),
-                [(K::Schema, schema)] => Ok(schema_folders(&parent, schema)),
-                [(K::Schema, schema), (K::Folder, key)] => {
-                    schema_objects(conn, &parent, schema, key)
-                }
-                [
-                    (K::Schema, schema),
-                    (K::Folder, _),
-                    (kind @ (K::Table | K::View | K::MaterializedView), name),
-                ] => Ok(relation_folders(&parent, schema, name, *kind)),
-                [
-                    (K::Schema, schema),
-                    (K::Folder, _),
-                    (K::Table | K::View | K::MaterializedView, name),
-                    (K::Folder, key),
-                ] => relation_items(conn, &parent, schema, name, key),
-                // Leaves and unknown shapes.
-                _ => match segs.last() {
-                    Some((K::Column | K::Index | K::Trigger | K::Role, _))
-                    | Some((
-                        K::Sequence
-                        | K::Synonym
-                        | K::Function
-                        | K::Procedure
-                        | K::Package
-                        | K::Type,
-                        _,
-                    )) => Ok(Vec::new()),
-                    _ => Err(Error::NotFound(format!(
-                        "no such node in the tree: {}",
-                        describe(&parent)
-                    ))),
-                },
+                .last()
+                .filter(|s| s.kind == K::Folder)
+                .map(|s| s.name.as_str());
+            match (named.as_slice(), last_folder) {
+                ([], None) => root(conn, &parent, show_all),
+                ([], Some(folder::ROLES)) => roles(conn, &parent),
+                ([(K::Schema, schema)], None) => Ok(schema_folders(&parent, schema)),
+                ([(K::Schema, schema)], Some(key)) => schema_objects(conn, &parent, schema, key),
+                (
+                    [
+                        (K::Schema, schema),
+                        (kind @ (K::Table | K::View | K::MaterializedView), name),
+                    ],
+                    None,
+                ) => Ok(relation_folders(&parent, schema, name, *kind)),
+                (
+                    [
+                        (K::Schema, schema),
+                        (K::Table | K::View | K::MaterializedView, name),
+                    ],
+                    Some(key),
+                ) => relation_items(conn, &parent, schema, name, key),
+                // Leaves.
+                ([.., (K::Column | K::Index | K::Trigger | K::Role, _)], None)
+                | (
+                    [
+                        ..,
+                        (
+                            K::Sequence
+                            | K::Synonym
+                            | K::Function
+                            | K::Procedure
+                            | K::Package
+                            | K::Type,
+                            _,
+                        ),
+                    ],
+                    None,
+                ) => Ok(Vec::new()),
+                _ => Err(Error::NotFound(format!(
+                    "no such node in the tree: {}",
+                    describe(&parent)
+                ))),
             }
         })
         .await

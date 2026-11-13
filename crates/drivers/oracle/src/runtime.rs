@@ -153,7 +153,11 @@ pub fn open_connection(target: &Target) -> Result<Connection> {
     }
     connector.stmt_cache_size(50);
     connector.driver_name("DBStudio");
-    let conn = connector.connect().map_err(map_error)?;
+    // Whatever else goes wrong while connecting is a connection problem, not a query error.
+    let conn = connector.connect().map_err(|e| match map_error(e) {
+        Error::Query { message, .. } => Error::Connection(message),
+        other => other,
+    })?;
     for sql in INIT_SQL {
         // Session tweaks are best effort (a restricted login may refuse them).
         let _ = conn.execute(sql, &[]);

@@ -442,13 +442,19 @@ END;";
 
 /// Lines written by `DBMS_OUTPUT.PUT_LINE` since the last call.
 pub fn drain_output(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.statement(DRAIN_OUTPUT).build().map_err(map_error)?;
+    use std::io::Read;
+    // The output travels in a temporary CLOB, so the variable must be a LOB locator.
+    let mut builder = conn.statement(DRAIN_OUTPUT);
+    builder.lob_locator();
+    let mut stmt = builder.build().map_err(map_error)?;
     stmt.bind("out", &OracleType::CLOB).map_err(map_error)?;
     stmt.execute(&[]).map_err(map_error)?;
-    let text: Option<String> = stmt.bind_value("out").map_err(map_error)?;
-    let Some(text) = text else {
+    let clob: Option<oracle::sql_type::Clob> = stmt.bind_value("out").map_err(map_error)?;
+    let Some(mut clob) = clob else {
         return Ok(Vec::new());
     };
+    let mut text = String::new();
+    clob.read_to_string(&mut text).map_err(Error::from)?;
     if text.is_empty() {
         return Ok(Vec::new());
     }
