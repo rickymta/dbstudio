@@ -73,7 +73,7 @@ bound to localhost only. CI runs the same steps in the `integration` job.
 `tauri-specta` has no stable 2.x release yet (only `2.0.0-rc.*`), so IPC types are written by hand:
 `src/lib/types.ts` mirrors the Rust types and `src/lib/ipc.ts` wraps `invoke`. Keep them in sync
 when changing Rust-side types. Outside Tauri (plain browser), `ipc.ts` serves data from
-`src/lib/mock.ts`.
+`src/lib/mock/`.
 
 The app icon source is `app-icon.svg`; regenerate with `cargo tauri icon app-icon.svg -o src-tauri/icons`
 (delete the generated `android/` and `ios/` folders afterwards, they are not used).
