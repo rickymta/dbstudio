@@ -727,6 +727,44 @@ async fn ddl(port: u16) {
 }
 on_both!(ddl, ddl_pg16, ddl_pg12);
 
+/// Index columns are catalog names (not quoted DDL); partial indexes are flagged and never
+/// chosen as the row key.
+async fn partial_and_quoted_indexes(port: u16) {
+    let s = fixture(port).await;
+    exec(&*s, "DROP SCHEMA IF EXISTS dbs_it_ix CASCADE").await;
+    exec(&*s, "CREATE SCHEMA dbs_it_ix").await;
+    exec(
+        &*s,
+        "CREATE TABLE dbs_it_ix.t (\"Weird Col\" int NOT NULL, b int NOT NULL, c int NOT NULL)",
+    )
+    .await;
+    exec(
+        &*s,
+        "CREATE UNIQUE INDEX t_part ON dbs_it_ix.t (b) WHERE b > 0",
+    )
+    .await;
+    exec(
+        &*s,
+        "CREATE UNIQUE INDEX t_quoted ON dbs_it_ix.t (\"Weird Col\", c)",
+    )
+    .await;
+    let path = table_path("dbs_it_ix", ObjectKind::Table, "t");
+    let d = s.table_details(&path).await.unwrap();
+    let idx = |n: &str| d.indexes.iter().find(|i| i.name == n).unwrap();
+    assert!(idx("t_part").partial && idx("t_part").columns == ["b"]);
+    assert!(!idx("t_quoted").partial);
+    assert_eq!(idx("t_quoted").columns, ["Weird Col", "c"]);
+    let e = s.editability(&path).await.unwrap();
+    assert!(e.editable, "{e:?}");
+    assert_eq!(e.key_columns, ["Weird Col", "c"]);
+    exec(&*s, "DROP SCHEMA dbs_it_ix CASCADE").await;
+}
+on_both!(
+    partial_and_quoted_indexes,
+    partial_and_quoted_indexes_pg16,
+    partial_and_quoted_indexes_pg12
+);
+
 async fn details(port: u16) {
     let s = fixture(port).await;
     let path = table_path(SCHEMA, ObjectKind::Table, "children");
@@ -761,7 +799,8 @@ async fn details(port: u16) {
     assert!(
         idx("children_parent_id_note_key").unique && !idx("children_parent_id_note_key").primary
     );
-    assert_eq!(idx("children_note_idx").columns, ["lower(note)"]);
+    assert_eq!(idx("children_note_idx").columns, ["(lower(note))"]);
+    assert!(!idx("children_note_idx").partial);
     assert!(
         idx("children_note_idx")
             .definition

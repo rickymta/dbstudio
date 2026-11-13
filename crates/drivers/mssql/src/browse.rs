@@ -624,6 +624,7 @@ pub async fn table_details(sess: &MssqlSession, path: &ObjectPath) -> Result<Tab
             primary: i.primary,
             method: Some(i.type_desc.clone()),
             definition: ddl::create_index(Names { qualify: true }, &obj.schema, &obj.name, i),
+            partial: i.filter.is_some(),
         })
         .collect();
     let foreign_keys = fks

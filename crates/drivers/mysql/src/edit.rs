@@ -17,8 +17,7 @@ use crate::session::MySqlSession;
 use crate::sql::{quote_ident, quote_literal, quote_table, table_target};
 
 /// Editability of a table: key = primary key, else the first unique index whose columns are all
-/// plain NOT NULL columns. `table_details` reports index columns as DDL fragments (quoted,
-/// possibly with a prefix length or `DESC`), so they are decoded here.
+/// plain NOT NULL columns.
 pub(crate) async fn editability(session: &MySqlSession, path: &ObjectPath) -> Result<Editability> {
     let not_editable = |reason| Editability {
         editable: false,
@@ -41,7 +40,7 @@ pub(crate) async fn editability(session: &MySqlSession, path: &ObjectPath) -> Re
         .filter(|c| is_read_only(c.extra.as_deref()))
         .map(|c| c.name.clone())
         .collect();
-    let key_columns = key_columns(&d);
+    let key_columns = dbstudio_core::fallback::key_columns(&d);
     let editable = !key_columns.is_empty();
     Ok(Editability {
         editable,
@@ -62,62 +61,6 @@ fn is_read_only(extra: Option<&str>) -> bool {
             || e.split_whitespace()
                 .any(|w| matches!(w, "virtual" | "stored" | "persistent"))
     })
-}
-
-/// Column name of an index fragment such as `` `a` ``, `` `a` DESC `` or `` `a`(10) ``.
-/// Returns the name and whether a prefix length was present; expressions yield `None`.
-fn index_column(fragment: &str) -> Option<(String, bool)> {
-    let rest = fragment.trim().strip_prefix('`')?;
-    let mut name = String::new();
-    let mut chars = rest.char_indices();
-    while let Some((i, c)) = chars.next() {
-        if c != '`' {
-            name.push(c);
-            continue;
-        }
-        let tail = &rest[i + 1..];
-        if tail.starts_with('`') {
-            name.push('`');
-            chars.next();
-            continue;
-        }
-        let tail = tail.trim_end_matches(" DESC");
-        return match tail {
-            "" => Some((name, false)),
-            t if t.starts_with('(') && t.ends_with(')') => Some((name, true)),
-            _ => None,
-        };
-    }
-    None
-}
-
-fn key_columns(d: &TableDetails) -> Vec<String> {
-    if let Some(pk) = d.indexes.iter().find(|i| i.primary) {
-        let cols: Option<Vec<String>> = pk
-            .columns
-            .iter()
-            .map(|c| index_column(c).map(|(n, _)| n))
-            .collect();
-        return cols.unwrap_or_default();
-    }
-    d.indexes
-        .iter()
-        .filter(|i| i.unique && !i.columns.is_empty())
-        .find_map(|i| {
-            let cols: Option<Vec<String>> = i
-                .columns
-                .iter()
-                .map(|c| match index_column(c) {
-                    Some((n, false)) => Some(n),
-                    _ => None,
-                })
-                .collect();
-            let cols = cols?;
-            cols.iter()
-                .all(|n| d.columns.iter().any(|c| &c.name == n && !c.nullable))
-                .then_some(cols)
-        })
-        .unwrap_or_default()
 }
 
 /// A rendered change plus its position in the original change vector.
@@ -484,11 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn index_fragments_are_decoded() {
-        assert_eq!(index_column("`id`"), Some(("id".into(), false)));
-        assert_eq!(index_column("`a``b` DESC"), Some(("a`b".into(), false)));
-        assert_eq!(index_column("`t`(10)"), Some(("t".into(), true)));
-        assert_eq!(index_column("(lower(`x`))"), None);
+    fn generated_columns_are_read_only() {
         assert!(is_read_only(Some("VIRTUAL GENERATED")));
         assert!(is_read_only(Some("STORED GENERATED")));
         assert!(is_read_only(Some(" AS (`n` * 2)")));

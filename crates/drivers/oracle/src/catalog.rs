@@ -290,6 +290,7 @@ pub fn indexes(conn: &Connection, schema: &str, name: &str) -> Result<Vec<IndexD
                 unique: cell(&r, 1) == "UNIQUE",
                 method: Some(cell(&r, 2)).filter(|m| !m.is_empty()),
                 definition: None,
+                partial: false,
             });
         }
     }

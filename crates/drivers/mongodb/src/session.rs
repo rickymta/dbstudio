@@ -577,6 +577,7 @@ impl Session for MongoSession {
                 primary: s.get_str("name").ok() == Some("_id_"),
                 method: None,
                 definition: Some(doc_to_ejson(&s, false, false)),
+                partial: false,
             })
             .collect();
         let estimated = cmd

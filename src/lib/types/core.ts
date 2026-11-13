@@ -443,6 +443,8 @@ export interface IndexDetail {
   primary: boolean;
   method?: string | null;
   definition?: string | null;
+  /** Partial index (has a predicate): never a row key. */
+  partial?: boolean;
 }
 
 export interface ForeignKeyDetail {
