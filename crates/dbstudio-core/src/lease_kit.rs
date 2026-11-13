@@ -458,9 +458,10 @@ impl<B: LeaseBackend> ActorLease<B> {
                     match event {
                         Some(event) => {
                             if deliver(event, &mut sink_error) {
-                                // The sink wants to stop: make the backend stop too.
+                                // The sink wants to stop: the backend's next event is
+                                // refused and it stops by itself. No protocol cancel here: in a
+                                // transaction it would abort a healthy block.
                                 stop.store(true, Ordering::Release);
-                                let _ = self.canceller.cancel_for(query_id).await;
                             }
                         }
                         // The actor dropped its sink; only the final result is left.

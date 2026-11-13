@@ -396,6 +396,14 @@ pub fn is_dml(stmt: &str) -> bool {
 /// Effect of a successfully executed statement on the "inside an explicit transaction" flag.
 pub fn txn_effect(stmt: &str, in_txn: bool) -> bool {
     let w = words(stmt);
+    // `COMMIT AND CHAIN` / `ROLLBACK AND CHAIN` start the next transaction right away.
+    if matches!(
+        w.first().map(String::as_str),
+        Some("COMMIT" | "END" | "ROLLBACK" | "ABORT")
+    ) && w.windows(2).any(|p| p[0] == "AND" && p[1] == "CHAIN")
+    {
+        return true;
+    }
     let first = w.first().map(String::as_str);
     let second = w.get(1).map(String::as_str);
     match (first, second) {

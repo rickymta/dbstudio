@@ -13,6 +13,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 use async_trait::async_trait;
 use dbstudio_core::lease_kit::{ActorLease, Canceller, LeaseBackend};
@@ -30,6 +31,8 @@ use crate::sql::quote_ident;
 
 /// Longest the final `ROLLBACK` of `close` may take.
 const ROLLBACK_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long an auto-commit cursor (which holds a transaction) may wait for `fetch_more`.
+const AUTO_COMMIT_PENDING_TTL: Duration = Duration::from_secs(60);
 
 /// Open a dedicated connection.
 pub(crate) async fn open(session: &PostgresSession, opts: LeaseOptions) -> Result<Box<dyn Lease>> {
@@ -47,6 +50,7 @@ pub(crate) async fn open(session: &PostgresSession, opts: LeaseOptions) -> Resul
         database: database.clone(),
         auto_commit: opts.auto_commit,
         pending: None,
+        pending_query: None,
         current: Arc::new(Mutex::new(None)),
     };
     if let Some(schema) = opts.schema.as_deref().filter(|s| !s.is_empty()) {
@@ -61,6 +65,9 @@ pub(crate) async fn open(session: &PostgresSession, opts: LeaseOptions) -> Resul
     Ok(Box::new(ActorLease::spawn(backend, initial)?))
 }
 
+/// The request running right now (id and cancellation state).
+type CurrentCall = Arc<Mutex<Option<(Uuid, Arc<Running>)>>>;
+
 struct PgBackend {
     shared: Arc<Shared>,
     conn: Option<Conn>,
@@ -68,14 +75,16 @@ struct PgBackend {
     database: String,
     auto_commit: bool,
     pending: Option<PendingCursor>,
-    /// Cancellation state of the call that is running right now.
-    current: Arc<Mutex<Option<Arc<Running>>>>,
+    /// Request the pending result belongs to.
+    pending_query: Option<Uuid>,
+    /// Cancellation state of the call that is running right now, with its request id.
+    current: CurrentCall,
 }
 
 struct PgCanceller {
     shared: Arc<Shared>,
     token: CancelToken,
-    current: Arc<Mutex<Option<Arc<Running>>>>,
+    current: CurrentCall,
 }
 
 #[async_trait]
@@ -87,8 +96,23 @@ impl Canceller for PgCanceller {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         match running {
-            Some(running) => running.send_cancel(&self.shared, &self.token).await,
+            Some((_, running)) => running.send_cancel(&self.shared, &self.token).await,
             None => Ok(()),
+        }
+    }
+
+    async fn cancel_for(&self, query_id: Uuid) -> Result<()> {
+        let running = self
+            .current
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match running {
+            // The gate inside `Running` serialises this with the end of that very request.
+            Some((id, running)) if id == query_id => {
+                running.send_cancel(&self.shared, &self.token).await
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -155,10 +179,26 @@ impl PgBackend {
         }
     }
 
-    fn begin_call(&self) -> Arc<Running> {
+    fn begin_call(&self, query_id: Uuid) -> Arc<Running> {
         let running = Arc::new(Running::default());
-        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some(running.clone());
+        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((query_id, running.clone()));
         running
+    }
+
+    /// A read-only profile stays read-only whatever an earlier script set: restore the session
+    /// default before every request (outside a transaction, where `SET` is allowed to stick).
+    async fn enforce_read_only(&mut self) -> Result<()> {
+        if !self.shared.read_only {
+            return Ok(());
+        }
+        let conn = self.conn()?;
+        if conn.in_txn {
+            return Ok(());
+        }
+        conn.client
+            .batch_execute("SET SESSION default_transaction_read_only = on")
+            .await
+            .map_err(map_error)
     }
 
     async fn end_call(&self, running: &Running) {
@@ -177,7 +217,9 @@ impl LeaseBackend for PgBackend {
     ) -> Result<ExecSummary> {
         self.drop_pending().await;
         self.conn()?;
-        let running = self.begin_call();
+        self.enforce_read_only().await?;
+        let running = self.begin_call(req.query_id);
+        self.pending_query = Some(req.query_id);
         let started = Instant::now();
         let opts = ScriptOpts {
             batch: req
@@ -212,7 +254,7 @@ impl LeaseBackend for PgBackend {
             .take()
             .ok_or_else(|| Error::NotFound("pending result".into()))?;
         self.conn()?;
-        let running = self.begin_call();
+        let running = self.begin_call(self.pending_query.unwrap_or_default());
         let started = Instant::now();
         let conn = self.conn.as_mut().ok_or_else(lost)?;
         let result = exec::fetch_pending(
@@ -235,8 +277,12 @@ impl LeaseBackend for PgBackend {
             }
             Err(e) => {
                 if let Some(conn) = self.conn.as_mut() {
-                    if conn.in_txn && matches!(e, Error::Query { .. } | Error::Cancelled) {
-                        conn.failed = true;
+                    if conn.in_txn {
+                        match e {
+                            Error::Query { .. } => conn.failed = true,
+                            Error::Cancelled => conn.failed = exec::probe_aborted(conn).await,
+                            _ => {}
+                        }
                     }
                 }
                 Err(self.classify(e))
@@ -258,7 +304,8 @@ impl LeaseBackend for PgBackend {
                     sql.push_str(" ISOLATION LEVEL ");
                     sql.push_str(isolation_sql(level)?);
                 }
-                if opts.read_only {
+                // A read-only profile never gets a read-write transaction.
+                if opts.read_only || self.shared.read_only {
                     sql.push_str(" READ ONLY");
                 }
                 sql
@@ -367,6 +414,19 @@ impl LeaseBackend for PgBackend {
         }
         self.pending = None;
         Ok(rolled_back)
+    }
+
+    fn has_pending(&self) -> Option<bool> {
+        Some(self.pending.is_some())
+    }
+
+    fn pending_ttl(&self) -> Option<Duration> {
+        // A cursor of auto-commit mode holds a transaction (snapshot, xmin) on the server:
+        // do not keep it for long, whatever the environment.
+        self.pending
+            .as_ref()
+            .is_some_and(PendingCursor::own_txn)
+            .then_some(AUTO_COMMIT_PENDING_TTL)
     }
 
     fn canceller(&self) -> Arc<dyn Canceller> {

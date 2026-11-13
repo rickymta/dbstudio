@@ -131,6 +131,8 @@ pub struct Shared {
     pools: Mutex<HashMap<String, Arc<Pool>>>,
     closed: Arc<AtomicBool>,
     server_timezone: OnceLock<String>,
+    /// The connection profile is read-only.
+    pub read_only: bool,
 }
 
 impl Shared {
@@ -201,6 +203,7 @@ impl Shared {
             pools: Mutex::new(HashMap::new()),
             closed: Arc::new(AtomicBool::new(false)),
             server_timezone: OnceLock::new(),
+            read_only: config.read_only,
         })
     }
 

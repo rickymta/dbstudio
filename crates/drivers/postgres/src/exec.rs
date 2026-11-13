@@ -190,12 +190,30 @@ fn is_tx_control(stmt: &str) -> bool {
     )
 }
 
-fn is_rollback_to(stmt: &str) -> bool {
+/// Statements PostgreSQL refuses inside a transaction block: manual commit mode must not open
+/// its implicit `BEGIN` before them.
+fn runs_outside_tx(stmt: &str) -> bool {
     let w = sql::words(stmt);
-    matches!(
-        (w.first().map(String::as_str), w.get(1).map(String::as_str),),
-        (Some("ROLLBACK"), Some("TO"))
-    )
+    let first = w.first().map(String::as_str);
+    let second = w.get(1).map(String::as_str);
+    match (first, second) {
+        (Some("VACUUM"), _) => true,
+        (Some("ALTER"), Some("SYSTEM")) => true,
+        (Some("CREATE" | "DROP"), Some("DATABASE" | "TABLESPACE")) => true,
+        (Some("CREATE" | "DROP" | "REINDEX"), _) => w.iter().any(|x| x == "CONCURRENTLY"),
+        _ => false,
+    }
+}
+
+/// Whether the open transaction block is aborted: any statement but `ROLLBACK` is refused with
+/// `25P02` in that state. Used when the cause of a failure does not say it (a cancelled or
+/// stopped request that may or may not have reached the server).
+pub async fn probe_aborted(conn: &Conn) -> bool {
+    let probe = conn.client.simple_query("SELECT 1");
+    match tokio::time::timeout(std::time::Duration::from_secs(2), probe).await {
+        Ok(Err(e)) => e.as_db_error().is_some_and(|d| d.code().code() == "25P02"),
+        _ => false,
+    }
 }
 
 /// Like [`run_script`] with lease features: statement start events, lazy `BEGIN`, tracking of
@@ -225,7 +243,11 @@ pub async fn run_script_ex(
                 end: start + stmt.text.trim().chars().count() as u32,
             },
         })?;
-        if opts.lazy_begin && !conn.in_txn && !is_tx_control(&stmt.text) {
+        if opts.lazy_begin
+            && !conn.in_txn
+            && !is_tx_control(&stmt.text)
+            && !runs_outside_tx(&stmt.text)
+        {
             conn.client
                 .batch_execute("BEGIN")
                 .await
@@ -247,14 +269,18 @@ pub async fn run_script_ex(
         .await;
         match result {
             Ok(()) => {
-                if !conn.in_txn || is_rollback_to(&stmt.text) {
-                    conn.failed = false;
-                }
+                // A statement that succeeded proves the block is healthy again (`ROLLBACK TO`).
+                conn.failed = false;
             }
             Err(e) => {
-                // Any error inside a transaction block aborts it until ROLLBACK.
-                if conn.in_txn && matches!(e, Error::Query { .. } | Error::Cancelled) {
-                    conn.failed = true;
+                if conn.in_txn {
+                    match e {
+                        // The server refused the statement: the block is aborted.
+                        Error::Query { .. } => conn.failed = true,
+                        // Stopped by the client or the sink: only a server-side cancel aborts.
+                        Error::Cancelled => conn.failed = probe_aborted(conn).await,
+                        _ => {}
+                    }
                 }
                 return Err(e);
             }

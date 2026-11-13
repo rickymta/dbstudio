@@ -541,3 +541,146 @@ async fn lease_options_database_and_connection_loss(port: u16) {
     assert!(!report.forced);
 }
 on_both!(lease_options_database_and_connection_loss, loss_16, loss_12);
+
+// ---------------------------------------------------------------------------------------------
+// Review fixes
+
+/// A sink that stops the request after the first batch.
+struct StopAfterFirstBatch(usize);
+
+impl dbstudio_core::ResultSink for StopAfterFirstBatch {
+    fn on_columns(&mut self, _: Vec<dbstudio_core::ColumnMeta>) -> dbstudio_core::Result<()> {
+        Ok(())
+    }
+    fn on_rows(&mut self, _: Vec<Vec<Value>>) -> dbstudio_core::Result<()> {
+        self.0 += 1;
+        Err(Error::Cancelled)
+    }
+    fn on_message(&mut self, _: String) -> dbstudio_core::Result<()> {
+        Ok(())
+    }
+    fn on_statement_end(&mut self, _: dbstudio_core::StatementEnd) -> dbstudio_core::Result<()> {
+        Ok(())
+    }
+}
+
+async fn transaction_flags(port: u16) {
+    let s = connect(port).await;
+    let lease = open(&*s, true).await;
+
+    // A request stopped by the client leaves a healthy transaction healthy (not "failed").
+    lease.begin(TxOptions::default()).await.unwrap();
+    let mut req = QueryRequest::new("SELECT g FROM generate_series(1, 100000) g");
+    req.batch_size = Some(100);
+    let mut sink = StopAfterFirstBatch(0);
+    let err = lease.execute(req, &mut sink).await.unwrap_err();
+    assert!(matches!(err, Error::Cancelled), "{err:?}");
+    assert_eq!(lease.state().transaction, TxStatus::Active);
+    run(&*lease, "SELECT 1").await;
+    lease.rollback().await.unwrap();
+
+    // ... while a server-side error does abort it, and ROLLBACK TO recovers it.
+    lease.begin(TxOptions::default()).await.unwrap();
+    run(&*lease, "SAVEPOINT a").await;
+    lease
+        .execute(QueryRequest::new("SELECT 1/0"), &mut CollectingSink::new())
+        .await
+        .unwrap_err();
+    assert_eq!(lease.state().transaction, TxStatus::Failed);
+    run(&*lease, "ROLLBACK TO SAVEPOINT a").await;
+    assert_eq!(lease.state().transaction, TxStatus::Active);
+    run(&*lease, "SELECT 2").await;
+    lease.rollback().await.unwrap();
+
+    // COMMIT AND CHAIN keeps a transaction open.
+    run(&*lease, "BEGIN").await;
+    run(&*lease, "COMMIT AND CHAIN").await;
+    assert_eq!(lease.state().transaction, TxStatus::Active);
+    run(&*lease, "ROLLBACK AND CHAIN").await;
+    assert_eq!(lease.state().transaction, TxStatus::Active);
+    run(&*lease, "COMMIT").await;
+    assert_eq!(lease.state().transaction, TxStatus::Idle);
+    lease.close().await.unwrap();
+}
+on_both!(transaction_flags, flags_16, flags_12);
+
+async fn manual_mode_runs_vacuum_outside_a_transaction(port: u16) {
+    let s = connect(port).await;
+    let lease = open(&*s, false).await;
+    let table = unique("lease_vac");
+    run(&*lease, &format!("CREATE TABLE {table} (a int)")).await;
+    run(&*lease, "COMMIT").await;
+    // No implicit BEGIN before VACUUM (it would fail inside a transaction block).
+    run(&*lease, &format!("VACUUM {table}")).await;
+    assert_eq!(lease.state().transaction, TxStatus::Idle);
+    run(
+        &*lease,
+        &format!("CREATE INDEX CONCURRENTLY {table}_i ON {table} (a)"),
+    )
+    .await;
+    assert_eq!(lease.state().transaction, TxStatus::Idle);
+    // An ordinary statement still opens the transaction lazily, after which VACUUM is refused
+    // by the server with its own clear message.
+    run(&*lease, &format!("INSERT INTO {table} VALUES (1)")).await;
+    assert_eq!(lease.state().transaction, TxStatus::Active);
+    let err = lease
+        .execute(
+            QueryRequest::new(format!("VACUUM {table}")),
+            &mut CollectingSink::new(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("transaction block"), "{err}");
+    lease.rollback().await.unwrap();
+    run(&*lease, &format!("DROP TABLE {table}")).await;
+    run(&*lease, "COMMIT").await;
+    lease.close().await.unwrap();
+}
+on_both!(
+    manual_mode_runs_vacuum_outside_a_transaction,
+    vacuum_16,
+    vacuum_12
+);
+
+async fn read_only_profile_stays_read_only(port: u16) {
+    let mut cfg = config(port, dbstudio_core::TlsMode::Prefer);
+    cfg.read_only = true;
+    let s = try_connect(&cfg, PASSWORD).await.expect("connect");
+    let table = unique("lease_ro");
+    let admin = connect(port).await;
+    exec(&*admin, &format!("CREATE TABLE {table} (a int)")).await;
+
+    let lease = open(&*s, true).await;
+    let insert = format!("INSERT INTO {table} VALUES (1)");
+    let refused = |e: Error| e.to_string().contains("read-only");
+    assert!(refused(
+        lease
+            .execute(QueryRequest::new(&insert), &mut CollectingSink::new())
+            .await
+            .unwrap_err()
+    ));
+    // A script that switches read-only off does not survive into the next request ...
+    run(&*lease, "SET default_transaction_read_only = off").await;
+    assert!(refused(
+        lease
+            .execute(QueryRequest::new(&insert), &mut CollectingSink::new())
+            .await
+            .unwrap_err()
+    ));
+    // ... and a transaction started through the lease is read-only whatever was asked.
+    lease.begin(TxOptions::default()).await.unwrap();
+    assert!(refused(
+        lease
+            .execute(QueryRequest::new(&insert), &mut CollectingSink::new())
+            .await
+            .unwrap_err()
+    ));
+    lease.rollback().await.unwrap();
+    assert_eq!(
+        count(&*admin, &format!("SELECT count(*) FROM {table}")).await,
+        0
+    );
+    lease.close().await.unwrap();
+    exec(&*admin, &format!("DROP TABLE {table}")).await;
+}
+on_both!(read_only_profile_stays_read_only, ro_16, ro_12);
