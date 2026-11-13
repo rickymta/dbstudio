@@ -1,0 +1,280 @@
+# DBStudio — Yêu cầu sản phẩm
+
+> Trạng thái: bản nháp v0.1 (Giai đoạn 0). Tên sản phẩm "DBStudio" là tên tạm.
+> Tài liệu liên quan: [architecture.md](architecture.md), [roadmap.md](roadmap.md).
+
+## 1. Mục tiêu
+
+DBStudio là ứng dụng desktop (Rust + Tauri 2, frontend React + TypeScript) chạy trên Windows, macOS, Linux, dùng để kết nối, đọc và thao tác dữ liệu trên nhiều hệ quản trị CSDL:
+
+- Quan hệ: PostgreSQL, MySQL/MariaDB, Microsoft SQL Server (MSSQL), Oracle.
+- NoSQL: MongoDB, Redis.
+- Về sau: Cassandra, ScyllaDB, ClickHouse, NewSQL (CockroachDB, YugabyteDB qua giao thức PostgreSQL; TiDB qua giao thức MySQL).
+
+Năng lực chính: quản lý kết nối, duyệt đối tượng, xem/sửa dữ liệu, query editor, phân tích query thành sơ đồ, ERD, xuất (và có thể nhập) schema/dữ liệu, backup/restore kèm lịch tự động.
+
+### 1.1 Quy ước
+
+- Mã yêu cầu: `<NHÓM>-<số>`, ví dụ `CONN-01`. Mã đã cấp không đổi nghĩa; yêu cầu bị bỏ thì đánh dấu *(huỷ)*, không tái sử dụng mã.
+- Mức ưu tiên (MoSCoW):
+  - **Must** — bắt buộc để coi tính năng của nhóm là hoàn thành.
+  - **Should** — nên có trong giai đoạn tương ứng, có thể lùi nếu bị chặn.
+  - **Could** — làm khi có thời gian hoặc ở giai đoạn sau.
+- **Đề xuất** — mục do người viết tài liệu thêm ngoài yêu cầu gốc, cần chủ dự án xác nhận trước khi đưa vào phạm vi.
+- "SQL DB" = PostgreSQL, MySQL, MSSQL, Oracle và các DB tương thích giao thức của chúng.
+- "Lệnh phá huỷ" = `DROP`, `TRUNCATE`, `DELETE`/`UPDATE` không có `WHERE`, `ALTER ... DROP`; Redis `FLUSHDB`/`FLUSHALL`/`DEL` theo pattern; MongoDB `drop`/`deleteMany({})`.
+
+## 2. Yêu cầu chức năng
+
+### 2.1 Quản lý kết nối (CONN)
+
+| Mã | Yêu cầu | Ưu tiên |
+|---|---|---|
+| CONN-01 | Tạo/sửa/xoá/nhân bản profile kết nối: loại DB, host, port, database mặc định, user, phương thức xác thực, tham số riêng theo driver. | Must |
+| CONN-02 | Sắp xếp profile theo nhóm/thư mục lồng nhau; kéo thả để di chuyển. | Should |
+| CONN-03 | Gắn nhãn môi trường (dev/staging/prod/tuỳ chỉnh) kèm màu; màu hiển thị ở cây kết nối, tab editor và status bar. | Must |
+| CONN-04 | Test connection: báo thành công kèm phiên bản server, hoặc lỗi rõ ràng (DNS, timeout, xác thực, TLS). | Must |
+| CONN-05 | SSL/TLS: các mode disable/prefer/require/verify-ca/verify-full; chọn CA cert, client cert/key. | Must |
+| CONN-06 | SSH tunnel: host, port, user, xác thực bằng mật khẩu hoặc private key (có passphrase), hỗ trợ ssh-agent. | Must |
+| CONN-07 | Mật khẩu, passphrase, token lưu trong OS keychain (macOS Keychain, Windows Credential Manager, Secret Service trên Linux). Không bao giờ lưu plaintext trên đĩa. | Must |
+| CONN-08 | Tuỳ chọn "không lưu mật khẩu" — hỏi mỗi lần kết nối. | Should |
+| CONN-09 | Import/export danh sách profile ra file JSON; file export **không** chứa secret. | Should |
+| CONN-10 | Chế độ read-only theo kết nối: chặn ở tầng ứng dụng mọi câu lệnh ghi (phân loại bằng parser) và, khi DB hỗ trợ, mở session ở chế độ read-only (vd. `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`). | Must |
+| CONN-11 | Kết nối gắn nhãn prod: lệnh phá huỷ phải qua hộp thoại xác nhận bổ sung (hiển thị câu lệnh, yêu cầu gõ tên database để xác nhận). | Must |
+| CONN-12 | Tự kết nối lại khi mất kết nối (hỏi trước nếu đang có transaction mở); timeout kết nối/query cấu hình được. | Should |
+| CONN-13 | **Đề xuất:** dán connection string/URI (vd. `postgres://...`, `mongodb+srv://...`) để điền tự động form. | Could |
+
+### 2.2 Trình duyệt đối tượng (BROWSE)
+
+| Mã | Yêu cầu | Ưu tiên |
+|---|---|---|
+| BROWSE-01 | Cây đối tượng tải lười (lazy) theo cấp: kết nối → database → schema → nhóm đối tượng → đối tượng → cột/index/constraint. | Must |
+| BROWSE-02 | SQL DB: hiển thị table, view, materialized view (nếu có), index, procedure, function, trigger, sequence, user/role. Nhóm nào DB không có thì ẩn. | Must |
+| BROWSE-03 | MongoDB: database → collection (kèm view) → index; hiển thị số document ước tính. | Must |
+| BROWSE-04 | Redis: chọn database (db0..dbN), duyệt key theo pattern bằng `SCAN` (không dùng `KEYS`), nhóm theo dấu phân cách (mặc định `:`), hiển thị kiểu và TTL. | Must |
+| BROWSE-05 | Xem DDL của đối tượng (table, view, index, procedure, function, trigger, sequence), copy hoặc mở trong editor. | Must |
+| BROWSE-06 | Tìm/lọc đối tượng trong cây theo tên (lọc cục bộ cho phần đã tải, tìm phía server cho phần chưa tải). | Must |
+| BROWSE-07 | Làm mới (refresh) từng nhánh; menu ngữ cảnh theo loại đối tượng (mở dữ liệu, xem DDL, sinh SELECT/INSERT mẫu, xuất, ...). | Should |
+| BROWSE-08 | Bảng thuộc tính đối tượng: cột (kiểu, nullable, default), khoá, index, kích thước ước tính, số dòng ước tính. | Should |
+
+### 2.3 Xem & sửa dữ liệu (DATA)
+
+| Mã | Yêu cầu | Ưu tiên |
+|---|---|---|
+| DATA-01 | Lưới dữ liệu với virtual scroll; tải theo trang/lô, hiển thị tổng số dòng khi có thể (đếm theo yêu cầu, không tự động với bảng lớn). | Must |
+| DATA-02 | Lọc (theo cột, điều kiện, hoặc nhập mệnh đề WHERE thô) và sắp xếp nhiều cột; lọc/sắp xếp thực hiện phía server. | Must |
+| DATA-03 | Sửa ô trực tiếp; thay đổi đưa vào danh sách chờ (pending changes), tô màu dòng/ô đã sửa. | Must |
+| DATA-04 | Xem trước câu lệnh SQL sẽ chạy cho danh sách chờ; commit (chạy trong một transaction) hoặc rollback (bỏ thay đổi). | Must |
+| DATA-05 | Thêm, xoá, nhân bản dòng (đi qua danh sách chờ). | Must |
+| DATA-06 | Chỉ cho sửa khi xác định được khoá duy nhất (PK/unique); nếu không có thì lưới ở chế độ chỉ đọc và giải thích lý do. | Must |
+| DATA-07 | Trình xem/sửa ô: JSON (format, tree), text dài, blob (hex, ảnh, tải ra file), giá trị NULL tách biệt với chuỗi rỗng. | Must |
+| DATA-08 | Copy vùng chọn theo nhiều định dạng: TSV, CSV, JSON, Markdown, SQL INSERT, danh sách `IN (...)`. | Should |
+| DATA-09 | Giá trị số nguyên lớn/decimal/thời gian hiển thị đúng, không mất độ chính xác (xem kiểu `Value` trong architecture.md §4). | Must |
+| DATA-10 | MongoDB: xem document dạng tree, JSON (Extended JSON) và bảng (làm phẳng trường cấp 1); sửa/thêm/xoá document. | Must |
+| DATA-11 | Redis: trình xem theo kiểu key — string, hash, list, set, zset, stream; sửa giá trị, thêm/xoá phần tử, đặt/xoá TTL. | Must |
+| DATA-12 | Ẩn/hiện, đổi thứ tự, ghim cột; ghi nhớ theo bảng. | Could |
+
+### 2.4 Query editor (QUERY)
+
+| Mã | Yêu cầu | Ưu tiên |
+|---|---|---|
+| QUERY-01 | Nhiều tab editor, mỗi tab gắn một kết nối + database/schema hiện hành; khôi phục tab khi mở lại app. | Must |
+| QUERY-02 | Highlight cú pháp theo dialect (PostgreSQL, MySQL, T-SQL, PL/SQL, CQL, ...). | Must |
+| QUERY-03 | Autocomplete theo schema: keyword, schema, bảng, cột (theo alias), function. | Must |
+| QUERY-04 | Chạy: vùng chọn, câu lệnh tại con trỏ, toàn bộ script. | Must |
+| QUERY-05 | Nhiều result set (mỗi câu lệnh một tab kết quả), kèm số dòng ảnh hưởng và thông điệp server (NOTICE, PRINT, warning). | Must |
+| QUERY-06 | Huỷ query đang chạy (dùng cơ chế cancel của giao thức, không chỉ ngắt phía client). | Must |
+| QUERY-07 | Lịch sử query theo kết nối: thời điểm, thời gian chạy, trạng thái; tìm kiếm, mở lại. | Must |
+| QUERY-08 | Query lưu sẵn và snippet (có placeholder), sắp xếp theo thư mục. | Should |
+| QUERY-09 | Format SQL theo dialect. | Should |
+| QUERY-10 | Tham số/biến trong query (`:name`, `$1`, `?`, `@p`): hộp thoại nhập giá trị trước khi chạy. | Should |
+| QUERY-11 | Chế độ transaction: auto-commit / manual commit; hiển thị rõ trạng thái transaction mở, nút commit/rollback, cảnh báo khi đóng tab có transaction mở. | Must |
+| QUERY-12 | Giới hạn số dòng trả về mặc định (cấu hình được), tải thêm khi cuộn. | Must |
+| QUERY-13 | Hiển thị thời gian chạy, số dòng; lỗi hiển thị vị trí (dòng/cột) và đánh dấu trong editor khi DB trả về. | Must |
+| QUERY-14 | MongoDB: editor cho find/aggregate (cú pháp kiểu shell, JSON/EJSON), autocomplete tên collection và toán tử. | Must |
+| QUERY-15 | Redis: console lệnh với lịch sử, gợi ý lệnh; xác nhận với lệnh phá huỷ (xem CONN-11). | Must |
+| QUERY-16 | Mở/lưu file `.sql` từ đĩa. | Should |
+
+### 2.5 Phân tích query thành sơ đồ (PLAN)
+
+| Mã | Yêu cầu | Ưu tiên |
+|---|---|---|
+| PLAN-01 | Chạy EXPLAIN (ước tính) và EXPLAIN ANALYZE (thực tế) cho câu lệnh tại con trỏ; ANALYZE với lệnh ghi phải được bọc trong transaction rollback và cảnh báo trước. | Must |
+| PLAN-02 | Chuẩn hoá plan của từng DB về một cây plan chung (node: loại thao tác, đối tượng, cost, rows ước tính/thực tế, thời gian, loops, thuộc tính thô). | Must |
+| PLAN-03 | Hiển thị sơ đồ node (graph) với auto layout, zoom/pan; độ dày/màu cạnh và node theo cost hoặc thời gian; tô đậm nhánh tốn kém nhất. | Must |
+| PLAN-04 | Cảnh báo tự động: full table scan trên bảng lớn, sai lệch rows ước tính/thực tế vượt ngưỡng (mặc định 10×), sort/hash tràn đĩa, nested loop với nhiều dòng. | Should |
+| PLAN-05 | Dạng bảng (cây thụt lề) và dạng raw (JSON/XML/text gốc) cạnh sơ đồ; chọn node đồng bộ giữa các dạng. | Must |
+| PLAN-06 | So sánh 2 plan (trước/sau khi đổi query hoặc index): đặt cạnh nhau, chênh lệch cost/thời gian tổng. | Could |
+| PLAN-07 | Lưu plan vào lịch sử và mở lại từ file. | Could |
+
+Nguồn plan theo DB:
+
+| DB | Nguồn |
+|---|---|
+| PostgreSQL (+ CockroachDB, YugabyteDB) | `EXPLAIN (FORMAT JSON)`, `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` |
+| MySQL/MariaDB (+ TiDB) | `EXPLAIN FORMAT=JSON`; `EXPLAIN ANALYZE` (MySQL 8.0.18+, dạng text cây) |
+| MSSQL | `SET SHOWPLAN_XML ON` (ước tính), `SET STATISTICS XML ON` (thực tế) |
+| Oracle | `EXPLAIN PLAN` + `DBMS_XPLAN.DISPLAY` / `PLAN_TABLE`; thực tế qua `V$SQL_PLAN_STATISTICS_ALL` (cần quyền) |
+| MongoDB | `explain("queryPlanner" / "executionStats")` |
+| ClickHouse | `EXPLAIN PLAN`, `EXPLAIN PIPELINE` |
+| Cassandra/ScyllaDB | Query tracing (không có plan dạng cây; hiển thị timeline sự kiện) |
+| Redis | Không áp dụng; có thể hiển thị `SLOWLOG` (Could) |
+
+### 2.6 ERD (ERD)
+
+| Mã | Yêu cầu | Ưu tiên |
+|---|---|---|
+| ERD-01 | Reverse-engineer từ schema: bảng, cột (kiểu, nullable), PK, FK, unique. | Must |
+| ERD-02 | Chọn bảng đưa vào sơ đồ (toàn schema, chọn tay, hoặc "bảng X + các bảng liên quan N bậc"). | Must |
+| ERD-03 | Auto layout; kéo thả bảng; zoom/pan; minimap. | Must |
+| ERD-04 | Ký hiệu crow's foot cho quan hệ; phân biệt quan hệ bắt buộc/tuỳ chọn. | Must |
+| ERD-05 | Lưu sơ đồ (danh sách bảng + vị trí) cục bộ, mở lại; phát hiện bảng/cột đã thay đổi so với schema hiện tại. | Should |
+| ERD-06 | Xuất PNG, SVG, PDF. | Must |
+| ERD-07 | Tuỳ chọn hiển thị: chỉ khoá / tất cả cột, hiện kiểu dữ liệu, ghi chú (comment) cột. | Should |
+| ERD-08 | MongoDB: suy luận schema bằng sampling document để vẽ sơ đồ collection. | Could |
+
+Ngoài phạm vi ban đầu: forward-engineering (sửa ERD → sinh DDL).
+
+### 2.7 Xuất/nhập schema & dữ liệu (EXPORT, IMPORT)
+
+Cách hiểu yêu cầu gốc "tạo schema - data - hoặc cả 2": xuất **chỉ schema**, **chỉ data**, hoặc **cả hai**, cho phạm vi chọn được, ra các định dạng SQL/XLSX/CSV/JSON.
+
+| Mã | Yêu cầu | Ưu tiên |
+|---|---|---|
+| EXPORT-01 | Chọn nội dung: chỉ schema / chỉ data / cả hai. | Must |
+| EXPORT-02 | Chọn phạm vi: toàn database, một schema, các bảng được chọn, hoặc kết quả một query. | Must |
+| EXPORT-03 | SQL: DDL (theo dialect nguồn, thứ tự tạo đúng phụ thuộc FK) + `INSERT` (gộp nhiều dòng, kích thước lô cấu hình được). | Must |
+| EXPORT-04 | XLSX: mỗi bảng một sheet; khi xuất schema, thêm sheet data dictionary (bảng, cột, kiểu, nullable, default, khoá, comment). Cảnh báo khi vượt giới hạn 1.048.576 dòng/sheet (tự tách sheet). | Must |
+| EXPORT-05 | CSV: mỗi bảng một file, gom thành `.zip` khi nhiều bảng; tuỳ chọn delimiter, quote, encoding (UTF-8 có/không BOM), header. | Must |
+| EXPORT-06 | JSON: dạng array hoặc NDJSON; khi xuất schema, xuất file JSON mô tả cấu trúc (bảng, cột, kiểu, khoá, index). | Must |
+| EXPORT-07 | Chạy nền, stream dữ liệu (không nạp toàn bộ vào RAM), hiển thị tiến độ, huỷ được. | Must |
+| EXPORT-08 | Ánh xạ kiểu khi xuất: NULL, binary (base64/hex), ngày giờ (ISO 8601), số lớn (giữ nguyên dạng chuỗi số). | Must |
+| EXPORT-09 | MongoDB: xuất collection ra JSON/NDJSON (Extended JSON), CSV/XLSX (làm phẳng có chọn trường). Redis: xuất key theo pattern ra JSON. | Should |
+| EXPORT-10 | Lưu cấu hình xuất thành preset để chạy lại. | Could |
+| IMPORT-01 | **Đề xuất (cần xác nhận):** nhập CSV/XLSX/JSON vào bảng có sẵn hoặc bảng mới, có mapping cột, xem trước, chọn kiểu dữ liệu. | Should |
+| IMPORT-02 | **Đề xuất (cần xác nhận):** chạy file SQL lớn (script) theo stream, báo lỗi theo câu lệnh, tuỳ chọn dừng/tiếp tục khi lỗi. | Should |
+| IMPORT-03 | **Đề xuất (cần xác nhận):** chế độ khi trùng khoá: bỏ qua / ghi đè / dừng; nhập trong transaction hoặc theo lô. | Could |
+
+### 2.8 Backup – Restore (BACKUP)
+
+| Mã | Yêu cầu | Ưu tiên |
+|---|---|---|
+| BACKUP-01 | Backup thủ công: toàn database hoặc các đối tượng được chọn. | Must |
+| BACKUP-02 | Engine backup logic tích hợp sẵn (không phụ thuộc tool ngoài): schema + data ra định dạng của DBStudio (SQL theo dialect, kèm manifest). | Must |
+| BACKUP-03 | Tuỳ chọn dùng tool native khi có trên máy: `pg_dump`/`pg_restore`, `mysqldump`, `mongodump`/`mongorestore`, MSSQL `BACKUP DATABASE`/`RESTORE` (file nằm phía server), Oracle `expdp`/`impdp`, Redis RDB (`BGSAVE`/tải RDB). Tự dò đường dẫn, cho cấu hình tay. | Should |
+| BACKUP-04 | Nén gzip hoặc zstd. | Must |
+| BACKUP-05 | Mã hoá tuỳ chọn (AES-256-GCM, khoá dẫn xuất từ passphrase lưu trong keychain). | Should |
+| BACKUP-06 | Restore: chọn file, xem trước nội dung (manifest: DB nguồn, thời điểm, đối tượng), chọn đích, xác nhận (xác nhận bổ sung nếu đích là prod). | Must |
+| BACKUP-07 | Lịch backup tự động dạng cron (có trình tạo lịch trực quan: hằng ngày/tuần/tháng + biểu thức cron nâng cao). | Must |
+| BACKUP-08 | Chính sách giữ lại: giữ N bản gần nhất và/hoặc xoá bản cũ hơn X ngày. | Must |
+| BACKUP-09 | Đích lưu: thư mục local (gồm ổ mạng đã mount). S3/SFTP về sau. | Must (local) / Could (S3, SFTP) |
+| BACKUP-10 | Thông báo thành công/thất bại qua thông báo hệ điều hành. | Must |
+| BACKUP-11 | Nhật ký lịch sử backup/restore: thời điểm, thời lượng, kích thước, trạng thái, lỗi. | Must |
+| BACKUP-12 | Lần chạy bị lỡ (máy tắt/app đóng): khi app mở lại, chạy bù một lần hoặc bỏ qua theo cấu hình từng lịch. | Must |
+| BACKUP-13 | App chạy nền qua tray icon (đóng cửa sổ không thoát app khi có lịch); tuỳ chọn autostart cùng hệ điều hành. | Must |
+| BACKUP-14 | Kiểm tra tính toàn vẹn file backup (checksum trong manifest). | Should |
+| BACKUP-15 | CLI headless (`dbstudio-cli backup --job <id>`) để gắn vào scheduler của OS (cron, launchd, Task Scheduler). | Could |
+
+### 2.9 Chung (APP)
+
+| Mã | Yêu cầu | Ưu tiên |
+|---|---|---|
+| APP-01 | Giao diện đa ngôn ngữ tiếng Việt và tiếng Anh, chuyển không cần khởi động lại. | Must |
+| APP-02 | Theme sáng/tối/theo hệ thống. | Must |
+| APP-03 | Khung giao diện: sidebar (kết nối + cây đối tượng), vùng tab, status bar (kết nối hiện hành, môi trường, trạng thái transaction, tác vụ nền). | Must |
+| APP-04 | Phím tắt cho thao tác chính (chạy query, tab mới, đóng tab, format, tìm đối tượng), có bảng tra phím tắt; tuỳ biến phím tắt là Could. | Must |
+| APP-05 | Trang cài đặt: ngôn ngữ, theme, font editor, giới hạn dòng mặc định, timeout, hành vi đóng cửa sổ. | Must |
+| APP-06 | Auto-update (kiểm tra, tải, cài bản mới, có chữ ký). | Should |
+| APP-07 | Log ứng dụng ra file xoay vòng, mức log cấu hình được; không ghi secret; nút "mở thư mục log". | Must |
+| APP-08 | Command palette (tìm lệnh/đối tượng nhanh). | Could |
+| APP-09 | Trung tâm tác vụ nền (export, backup, restore): tiến độ, huỷ, xem lỗi. | Should |
+
+## 3. Yêu cầu phi chức năng (NFR)
+
+| Mã | Yêu cầu |
+|---|---|
+| NFR-PLAT-01 | Chạy trên Windows 10+ (x64; arm64 là Could), macOS 12+ (Intel + Apple Silicon), Linux x64 (Ubuntu 22.04+/Fedora 38+ hoặc tương đương; gói deb, rpm, AppImage). |
+| NFR-PLAT-02 | Hành vi nhất quán giữa các webview (WebView2, WKWebView, WebKitGTK); kiểm thử giao diện trên cả 3. |
+| NFR-PERF-01 | Khởi động đến cửa sổ dùng được < 2 giây trên máy tầm trung (SSD, 8 GB RAM), không tính thời gian kết nối DB. |
+| NFR-PERF-02 | Kết quả được stream theo lô (mặc định 500–1000 dòng/lô); dòng đầu tiên hiển thị ngay khi lô đầu về. |
+| NFR-PERF-03 | Lưới cuộn mượt (mục tiêu ~60 fps) với 1 triệu dòng đã tải; bộ nhớ có giới hạn (cấu hình được) — vượt ngưỡng thì dừng tải và báo. |
+| NFR-PERF-04 | Không thao tác DB nào chạy trên luồng UI; mọi query huỷ được; UI phản hồi trong khi query chạy. |
+| NFR-SEC-01 | Secret chỉ nằm trong OS keychain và bộ nhớ tiến trình Rust; không bao giờ gửi sang frontend, không ghi log, không có trong file export profile. |
+| NFR-SEC-02 | Hỗ trợ TLS (rustls) và SSH tunnel cho mọi driver có thể. |
+| NFR-SEC-03 | Read-only mode và xác nhận lệnh phá huỷ (CONN-10, CONN-11) được thực thi ở phía Rust, không chỉ ở UI. |
+| NFR-SEC-04 | Tauri capabilities tối thiểu (chỉ cấp plugin/quyền thật sự dùng); CSP chặt, không tải script từ xa. |
+| NFR-SEC-05 | Không gửi telemetry mặc định. Nếu có về sau: opt-in, mô tả rõ dữ liệu gửi đi. |
+| NFR-SEC-06 | Dữ liệu cục bộ (SQLite) không chứa secret; file backup mã hoá được (BACKUP-05). |
+| NFR-EXT-01 | Thêm một hệ quản trị = thêm một crate driver hiện thực trait chung (`Driver`, `Session`) + khai báo `Capabilities`; không sửa code UI cho từng DB ngoài các view chuyên biệt (document, key-value). |
+| NFR-EXT-02 | UI tự bật/tắt tính năng theo `Capabilities` của driver (vd. ẩn ERD với Redis). |
+| NFR-REL-01 | **Đề xuất:** sửa dữ liệu không bao giờ tự commit ngầm; mọi lỗi giữa chừng của commit lô phải rollback toàn bộ. |
+| NFR-REL-02 | **Đề xuất:** dữ liệu cục bộ (profile, lịch sử, lịch backup) có migration schema có phiên bản; nâng cấp app không làm mất dữ liệu. |
+| NFR-QUAL-01 | Unit test cho core, parser plan, export; integration test với DB thật chạy bằng Docker (testcontainers hoặc docker compose). |
+| NFR-QUAL-02 | CI chạy build + lint (`cargo clippy -D warnings`, `cargo fmt --check`, ESLint, `tsc --noEmit`) + test trên Windows, macOS, Linux. Integration test DB chạy trên Linux (Docker). |
+| NFR-QUAL-03 | Chuỗi giao diện đi qua i18n, không hard-code; kiểm tra thiếu khoá dịch trong CI. |
+
+### 3.1 Phiên bản DB mục tiêu (đề xuất)
+
+| DB | Phiên bản tối thiểu |
+|---|---|
+| PostgreSQL | 12+ |
+| MySQL / MariaDB | MySQL 5.7+, MariaDB 10.4+ |
+| SQL Server | 2016+ (kể cả Azure SQL) |
+| Oracle | 12c+ |
+| MongoDB | 4.4+ |
+| Redis / Valkey | Redis 6+, Valkey 7.2+ |
+| Cassandra / ScyllaDB | Cassandra 4+, ScyllaDB 5+ |
+| ClickHouse | 23+ |
+| NewSQL | CockroachDB, YugabyteDB (giao thức PostgreSQL), TiDB (giao thức MySQL) — bản stable hiện hành |
+
+## 4. Ma trận tính năng × hệ quản trị
+
+Ký hiệu: ✓ áp dụng · ◐ áp dụng một phần / dạng riêng · — không áp dụng.
+
+| Tính năng | PostgreSQL | MySQL | MSSQL | Oracle | MongoDB | Redis | Cassandra/Scylla | ClickHouse | NewSQL |
+|---|---|---|---|---|---|---|---|---|---|
+| Kết nối, TLS, SSH (CONN) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cây đối tượng (BROWSE) | ✓ | ✓ | ✓ | ✓ | ◐ db/collection/index | ◐ db/key | ◐ keyspace/table | ✓ | ✓ |
+| Xem DDL (BROWSE-05) | ✓ | ✓ | ✓ | ✓ | ◐ index/validator | — | ✓ | ✓ | ✓ |
+| Lưới dữ liệu (DATA) | ✓ | ✓ | ✓ | ✓ | ◐ document | ◐ theo kiểu key | ✓ | ✓ | ✓ |
+| Sửa dữ liệu (DATA-03..06) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ◐ theo primary key | ◐ hạn chế | ✓ |
+| Query editor (QUERY) | ✓ SQL | ✓ SQL | ✓ T-SQL | ✓ PL/SQL | ◐ MQL | ◐ console | ✓ CQL | ✓ SQL | ✓ SQL |
+| Transaction thủ công (QUERY-11) | ✓ | ✓ | ✓ | ✓ | ◐ replica set | ◐ MULTI/EXEC | — | — | ✓ |
+| Plan diagram (PLAN) | ✓ | ✓ | ✓ | ✓ | ✓ | — (SLOWLOG) | ◐ tracing | ✓ | ✓ |
+| ERD (ERD) | ✓ | ✓ | ✓ | ✓ | ◐ sampling (Could) | — | ◐ không có FK | ◐ không có FK | ✓ |
+| Export schema | ✓ | ✓ | ✓ | ✓ | ◐ suy luận | — | ✓ | ✓ | ✓ |
+| Export data | ✓ | ✓ | ✓ | ✓ | ✓ | ◐ JSON | ✓ | ✓ | ✓ |
+| Backup tích hợp | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ◐ | ◐ | ✓ |
+| Backup native | pg_dump | mysqldump | BACKUP DATABASE | expdp | mongodump | RDB | nodetool snapshot | BACKUP | theo giao thức gốc* |
+
+\* CockroachDB có `BACKUP` riêng; TiDB có BR/Dumpling; YugabyteDB có `ysql_dump`. Chỉ hỗ trợ khi tới GĐ10+.
+
+## 5. Ngoài phạm vi (bản đầu)
+
+- Forward-engineering ERD (sinh DDL từ sơ đồ), so sánh/đồng bộ schema giữa 2 DB.
+- Trình thiết kế bảng dạng form (tạo/sửa bảng qua UI) — có thể xem xét sau GĐ6.
+- Quản trị server (quản lý user/quyền qua UI, monitoring, replication).
+- Làm việc nhóm, đồng bộ profile qua cloud, AI hỗ trợ viết query.
+- Ứng dụng web/mobile.
+
+## 6. Rủi ro & câu hỏi mở
+
+Câu hỏi cần chủ dự án trả lời (gắn với giai đoạn bị ảnh hưởng):
+
+1. **Import có nằm trong phạm vi không?** (IMPORT-01..03, GĐ5) — yêu cầu gốc chỉ nói "tạo", nhưng công cụ DB thường cần cả nhập.
+2. **Backup: ưu tiên engine tích hợp hay tool native?** Engine tích hợp chạy mọi nơi nhưng chậm hơn và không đảm bảo tương đương 100% với `pg_dump`/`expdp` (đối tượng đặc thù, quyền, extension). Đích cloud (S3/SFTP) có cần ở bản đầu không? (GĐ8)
+3. **Backup tự động chỉ chạy khi app đang mở (tray) có đủ không**, hay cần service/daemon độc lập chạy cả khi user chưa đăng nhập? (GĐ8, liên quan BACKUP-15)
+4. **Phân phối nội bộ hay công khai?** Quyết định chi phí ký số (Apple Developer ID + notarize, chứng thư code signing Windows), kênh auto-update, và việc có cần cửa hàng ứng dụng không. (GĐ9)
+5. **Giấy phép sản phẩm** (mã nguồn mở hay thương mại)? Ảnh hưởng việc chọn dependency (vd. giấy phép của driver, Oracle Instant Client) và khả năng phân phối kèm. *(bổ sung)*
+6. **Xác thực MSSQL**: có cần Windows Integrated Authentication (Kerberos/NTLM) và Azure AD không? `tiberius` hỗ trợ hạn chế trên macOS/Linux. *(bổ sung, GĐ3)*
+7. Tên sản phẩm và bundle identifier hiện tạm là "DBStudio" — cần chốt trước GĐ9 (đổi identifier sau khi phát hành sẽ làm mất dữ liệu cục bộ/keychain entry và đứt chuỗi auto-update).
+
+Rủi ro kỹ thuật:
+
+| Rủi ro | Ảnh hưởng | Hướng xử lý |
+|---|---|---|
+| Crate `oracle` cần Oracle Instant Client (ODPI-C) | Đóng gói phức tạp, giấy phép phân phối lại, người dùng phải cài thêm | Nạp động khi cần, hướng dẫn cài; đánh giá phương án thuần Rust ở GĐ3 |
+| Hiệu năng WebKitGTK (Linux) với lưới lớn và sơ đồ lớn | Giật/lag trên Linux | Benchmark sớm ở GĐ1; dự phòng canvas grid *(bổ sung)* |
+| Khác biệt dialect lớn (DDL, kiểu dữ liệu, plan) | Tốn công cho mỗi DB, dễ sai ở export/backup | Test integration theo từng DB + bộ dữ liệu mẫu nhiều kiểu |
+| Backup logic không đầy đủ so với tool native | Restore thiếu đối tượng | Manifest liệt kê rõ phạm vi hỗ trợ; khuyến nghị tool native cho production |
+| Keychain trên Linux phụ thuộc Secret Service đang chạy | Không lưu được mật khẩu trên một số môi trường | Phát hiện và báo rõ; fallback "hỏi mỗi lần" (CONN-08), không fallback plaintext |
