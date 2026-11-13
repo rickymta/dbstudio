@@ -111,6 +111,11 @@ where
     let confirm_text = guard::confirm_text_for(&config, None);
     let (read_only, production) = guard::policy_flags(&config);
     let dialect = session.script_dialect();
+    let context = query
+        .database
+        .clone()
+        .or_else(|| config.database.clone())
+        .unwrap_or_default();
     let guarded = guard::run_guard(
         &state.confirm,
         &GuardInput {
@@ -122,6 +127,7 @@ where
             confirm_text: &confirm_text,
             confirm: confirm.as_ref(),
             target_id: &target,
+            context: &context,
         },
     )?;
     let tracker = if record_history {
@@ -204,6 +210,12 @@ where
     let confirm_text = guard::confirm_text_for(&config, lease_db.as_deref());
     let (read_only, production) = guard::policy_flags(&config);
     let dialect = session.script_dialect();
+    let lease_state = lease.state();
+    let context = format!(
+        "{}/{}",
+        lease_state.database.as_deref().unwrap_or_default(),
+        lease_state.schema.as_deref().unwrap_or_default()
+    );
     let guarded = guard::run_guard(
         &state.confirm,
         &GuardInput {
@@ -215,6 +227,7 @@ where
             confirm_text: &confirm_text,
             confirm: confirm.as_ref(),
             target_id: &target,
+            context: &context,
         },
     )?;
     let tracker = if record_history {
@@ -314,7 +327,12 @@ pub(crate) async fn lease_begin_impl(
     lease_id: Uuid,
     options: TxOptions,
 ) -> Result<LeaseState> {
-    let lease = state.leases.get(lease_id)?;
+    let (session_id, lease) = state.leases.get_with_session(lease_id)?;
+    // A read-only connection never gets a read-write transaction.
+    let mut options = options;
+    if state.sessions.get_with_config(session_id)?.1.read_only {
+        options.read_only = true;
+    }
     let result = lease.begin(options).await;
     notify_on_error(state, lease_id, &result);
     result?;
@@ -1006,6 +1024,150 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.kind(), "readOnly");
+    }
+
+    #[tokio::test]
+    async fn read_only_cannot_be_switched_off_by_a_statement_the_classifier_allows() {
+        let _classifier = use_keyword_classifier();
+        let m = mock();
+        let sid = open(&m.state, profile(DbKind::Postgres, true, None, "app")).await;
+        for text in [
+            "SET default_transaction_read_only = off",
+            "SET SESSION default_transaction_read_only TO 'off'",
+            "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE",
+            "BEGIN READ WRITE",
+            "BEGIN; SET TRANSACTION READ WRITE",
+            "SELECT set_config('default_transaction_read_only', 'off', false)",
+            "SET SESSION TRANSACTION READ WRITE",
+            "START TRANSACTION READ WRITE",
+            "SET transaction_read_only = 0",
+            "SET SESSION tx_read_only = 0",
+            "SET sql_mode = ''",
+            "select 1; set  DEFAULT_TRANSACTION_READ_ONLY=off",
+        ] {
+            let err = run(&m.state, sid, request(text)).await.unwrap_err();
+            assert_eq!(err.kind(), "readOnly", "{text}: {err:?}");
+        }
+        assert!(m.probe.executed.lock().unwrap().is_empty());
+        // Reading the setting, a read-only transaction and quoted/commented words are fine.
+        for ok in [
+            "SHOW transaction_read_only",
+            "SELECT 'READ WRITE'",
+            "BEGIN READ ONLY",
+            "SELECT 1 -- READ WRITE",
+            "SELECT /* set_config */ 1",
+            "SET search_path = public",
+        ] {
+            run(&m.state, sid, request(ok))
+                .await
+                .unwrap_or_else(|e| panic!("{ok}: {e:?}"));
+        }
+        // The position points at the offending statement in the typed text.
+        let err = run(&m.state, sid, request("SELECT 1;\n  BEGIN READ WRITE"))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::ReadOnlyViolation {
+                position: Some(12),
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn production_fallback_asks_when_the_classifier_cannot_tell() {
+        // No classifier override: `dbstudio_sql::analyze` may not classify anything yet.
+        let m = mock();
+        let sid = open(
+            &m.state,
+            profile(
+                DbKind::Postgres,
+                false,
+                Some(Environment::Production),
+                "appdb",
+            ),
+        )
+        .await;
+        for text in [
+            "DROP TABLE t",
+            "TRUNCATE t",
+            "DELETE FROM t",
+            "ALTER TABLE t ADD b int",
+            "UPDATE t SET a = 1",
+            "SELECT 1; DROP TABLE t",
+            "DO $$ BEGIN DELETE FROM t; END $$",
+        ] {
+            let c = confirmation(run(&m.state, sid, request(text)).await.unwrap_err());
+            assert_eq!(c.confirm_text, "appdb", "{text}");
+            assert!(!c.statements.is_empty(), "{text}");
+        }
+        assert!(m.probe.executed.lock().unwrap().is_empty());
+        // Strings, comments and ordinary statements do not ask.
+        for ok in [
+            "SELECT 'DROP TABLE t'",
+            "SELECT 1 /* DELETE FROM t */",
+            "-- DROP TABLE t\nSELECT 1",
+            "UPDATE t SET a = 1 WHERE id = 1",
+            "SELECT \"truncate\" FROM t",
+        ] {
+            run(&m.state, sid, request(ok))
+                .await
+                .unwrap_or_else(|e| panic!("{ok}: {e:?}"));
+        }
+        // The confirmation then lets it through.
+        let c = confirmation(run(&m.state, sid, request("TRUNCATE t")).await.unwrap_err());
+        run(&m.state, sid, with_confirm("TRUNCATE t", &c.token, "appdb"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_confirmation_is_bound_to_the_context_it_was_issued_for() {
+        let _classifier = use_keyword_classifier();
+        let m = mock();
+        let sid = open(
+            &m.state,
+            profile(
+                DbKind::Postgres,
+                false,
+                Some(Environment::Production),
+                "appdb",
+            ),
+        )
+        .await;
+        let in_db = |db: &str, mut r: ExecuteRequest| {
+            r.query.database = Some(db.into());
+            r
+        };
+        let c = confirmation(
+            run(&m.state, sid, in_db("one", request("DROP TABLE t")))
+                .await
+                .unwrap_err(),
+        );
+        // The same token and text, but another database: refused.
+        confirmation(
+            run(
+                &m.state,
+                sid,
+                in_db("two", with_confirm("DROP TABLE t", &c.token, "appdb")),
+            )
+            .await
+            .unwrap_err(),
+        );
+        // In the right context it works.
+        let c = confirmation(
+            run(&m.state, sid, in_db("one", request("DROP TABLE t")))
+                .await
+                .unwrap_err(),
+        );
+        run(
+            &m.state,
+            sid,
+            in_db("one", with_confirm("DROP TABLE t", &c.token, "appdb")),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

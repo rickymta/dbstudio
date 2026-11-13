@@ -85,7 +85,9 @@ fn outcome_of(result: &Result<ExecSummary>) -> (&'static str, Option<String>) {
         Ok(_) => ("ok", None),
         Err(Error::Cancelled) => ("cancelled", None),
         Err(Error::Timeout) => ("error", Some("the query timed out".to_string())),
-        Err(e) => ("error", Some(e.to_string())),
+        // Server messages can quote data (a duplicate key, a value that does not fit): keep the
+        // beginning only.
+        Err(e) => ("error", Some(e.to_string().chars().take(500).collect())),
     }
 }
 

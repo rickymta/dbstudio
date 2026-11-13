@@ -46,6 +46,10 @@ impl AppState {
         secrets: Arc<dyn SecretStore>,
         host: Arc<dyn Host>,
     ) -> Self {
+        // History rows still `running` were left by a process that died mid-statement.
+        if let Err(e) = connections.store().history_mark_interrupted() {
+            tracing::warn!(error = %e, "cannot close stale history entries");
+        }
         let registry = Arc::new(registry);
         let events = EventHub::new();
         let emitter: Arc<dyn EventEmitter> = events.clone();
