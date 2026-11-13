@@ -11,6 +11,8 @@ use dbstudio_driver_mssql::MssqlDriver;
 use tokio::sync::OnceCell;
 
 pub const IT_DB: &str = "dbstudio_it";
+/// Scratch database of tests that create and change tables.
+pub const WORK_DB: &str = "dbstudio_it_work";
 pub const PASSWORD: &str = "Dbstudio_test1!";
 
 pub fn it_enabled() -> bool {
@@ -69,6 +71,13 @@ pub async fn ensure_fixture() {
                 ),
             )
             .await;
+            run(
+                &*m,
+                &format!(
+                    "IF DB_ID(N'{WORK_DB}') IS NOT NULL BEGIN ALTER DATABASE [{WORK_DB}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{WORK_DB}]; END\nGO\nCREATE DATABASE [{WORK_DB}] COLLATE Latin1_General_100_CI_AS\n"
+                ),
+            )
+            .await;
             let s = session_on(IT_DB).await;
             run(&*s, include_str!("fixture.sql")).await;
             s.close().await.ok();
@@ -80,6 +89,12 @@ pub async fn ensure_fixture() {
 pub async fn fixture() -> Arc<dyn Session> {
     ensure_fixture().await;
     session_on(IT_DB).await
+}
+
+/// Session on the scratch database.
+pub async fn work() -> Arc<dyn Session> {
+    ensure_fixture().await;
+    session_on(WORK_DB).await
 }
 
 pub async fn run(s: &dyn Session, sql: &str) -> Vec<StatementResult> {
@@ -117,4 +132,23 @@ pub fn err_kind(r: Result<impl std::fmt::Debug>) -> &'static str {
 
 pub fn is_query_err(e: &Error) -> bool {
     matches!(e, Error::Query { .. })
+}
+
+/// Counts the catalog queries the driver logs (target `dbstudio_mssql::query`) on this thread.
+pub struct QueryCounter(pub std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for QueryCounter {
+    fn on_event(&self, e: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if e.metadata().target() == "dbstudio_mssql::query" {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+/// Install a counting subscriber for the current thread (tests use the current-thread runtime).
+pub fn count_queries() -> (std::sync::Arc<std::sync::atomic::AtomicUsize>, tracing::subscriber::DefaultGuard) {
+    use tracing_subscriber::layer::SubscriberExt;
+    let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sub = tracing_subscriber::registry().with(QueryCounter(n.clone()));
+    (n, tracing::subscriber::set_default(sub))
 }

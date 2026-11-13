@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dbstudio_core::{
+    ApplyResult, ChangeSet, DdlItem, DdlRequest, Editability, ExplainRequest, RawPlan,
+    SchemaModel, SchemaModelRequest,
     ExecSummary, ObjectKind, ObjectNode, ObjectPath, ObjectSearchRequest, QueryRequest, Result,
     ResultSink, ScriptDialect, ServerInfo, Session, TableCountRequest, TableDataRequest,
     TableDetails, Value,
@@ -292,6 +294,30 @@ impl Session for MssqlSession {
 
     async fn search_objects(&self, req: ObjectSearchRequest) -> Result<Vec<ObjectNode>> {
         crate::data::search_objects(self, req).await
+    }
+
+    async fn editability(&self, path: &ObjectPath) -> Result<Editability> {
+        crate::edit::editability(self, path).await
+    }
+
+    async fn preview_changes(&self, changes: &ChangeSet) -> Result<Vec<String>> {
+        crate::edit::preview(self, changes).await
+    }
+
+    async fn apply_changes(&self, changes: ChangeSet) -> Result<ApplyResult> {
+        crate::edit::apply(self, changes).await
+    }
+
+    async fn explain(&self, req: ExplainRequest) -> Result<RawPlan> {
+        crate::explain::explain(self, req).await
+    }
+
+    async fn schema_model(&self, req: SchemaModelRequest) -> Result<SchemaModel> {
+        crate::model::schema_model(self, req).await
+    }
+
+    async fn generate_ddl(&self, req: DdlRequest) -> Result<Vec<DdlItem>> {
+        crate::ddl_gen::generate(self, req).await
     }
 
     async fn close(&self) -> Result<()> {

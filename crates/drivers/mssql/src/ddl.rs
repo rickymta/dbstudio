@@ -21,6 +21,15 @@ impl Names {
 
 /// One column definition (`[name] type ...`), as used in `CREATE TABLE` and `ALTER TABLE ADD`.
 pub fn column_definition(c: &Col, db_collation: &str) -> String {
+    column_def(c, db_collation, true)
+}
+
+/// Column of a table type: defaults cannot be named there.
+pub fn type_column_definition(c: &Col, db_collation: &str) -> String {
+    column_def(c, db_collation, false)
+}
+
+fn column_def(c: &Col, db_collation: &str, named_default: bool) -> String {
     let mut s = quote(&c.name);
     if let Some((expr, persisted)) = &c.computed {
         s.push_str(&format!(" AS {expr}"));
@@ -46,7 +55,11 @@ pub fn column_definition(c: &Col, db_collation: &str) -> String {
         s.push_str(if c.nullable { " NULL" } else { " NOT NULL" });
     }
     if let Some((name, def)) = &c.default {
-        s.push_str(&format!(" CONSTRAINT {} DEFAULT {def}", quote(name)));
+        if named_default {
+            s.push_str(&format!(" CONSTRAINT {} DEFAULT {def}", quote(name)));
+        } else {
+            s.push_str(&format!(" DEFAULT {def}"));
+        }
     }
     s
 }
@@ -167,19 +180,43 @@ pub fn add_foreign_key(names: Names, schema: &str, table: &str, f: &Fk) -> Strin
     s
 }
 
-/// `sp_addextendedproperty` for a table or column comment.
-pub fn comment_sql(schema: &str, table: &str, column: Option<&str>, kind: &str, comment: &str) -> String {
-    let mut s = format!(
-        "EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = {}, @level0type = N'SCHEMA', @level0name = {}, @level1type = N'{kind}', @level1name = {}",
-        lit(comment),
-        lit(schema),
-        lit(table)
-    );
-    if let Some(c) = column {
-        s.push_str(&format!(", @level2type = N'COLUMN', @level2name = {}", lit(c)));
+/// `sp_addextendedproperty` for a table or column comment; with `idempotent` an existing
+/// comment is updated instead of failing.
+pub fn comment_sql(
+    schema: &str,
+    table: &str,
+    column: Option<&str>,
+    kind: &str,
+    comment: &str,
+    idempotent: bool,
+) -> String {
+    let args = |proc_: &str| {
+        let mut s = format!(
+            "EXEC sys.{proc_} @name = N'MS_Description', @value = {}, @level0type = N'SCHEMA', @level0name = {}, @level1type = N'{kind}', @level1name = {}",
+            lit(comment),
+            lit(schema),
+            lit(table)
+        );
+        if let Some(c) = column {
+            s.push_str(&format!(", @level2type = N'COLUMN', @level2name = {}", lit(c)));
+        }
+        s.push(';');
+        s
+    };
+    if !idempotent {
+        return args("sp_addextendedproperty");
     }
-    s.push(';');
-    s
+    let level2 = match column {
+        Some(c) => format!("N'COLUMN', {}", lit(c)),
+        None => "NULL, NULL".to_string(),
+    };
+    format!(
+        "IF EXISTS (SELECT 1 FROM sys.fn_listextendedproperty(N'MS_Description', N'SCHEMA', {}, N'{kind}', {}, {level2}))\n{}\nELSE\n{}",
+        lit(schema),
+        lit(table),
+        args("sp_updateextendedproperty"),
+        args("sp_addextendedproperty")
+    )
 }
 
 /// Turn `CREATE VIEW ...` into `CREATE OR ALTER VIEW ...` (idempotent re-runs).
@@ -322,7 +359,10 @@ mod tests {
 
     #[test]
     fn comment_statement() {
-        let s = comment_sql("dbo", "t", Some("c"), "TABLE", "it's");
+        let s = comment_sql("dbo", "t", Some("c"), "TABLE", "it's", false);
         assert!(s.contains("@value = N'it''s'") && s.ends_with("@level2name = N'c';"));
+        let s = comment_sql("dbo", "t", None, "TABLE", "x", true);
+        assert!(s.starts_with("IF EXISTS (SELECT 1 FROM sys.fn_listextendedproperty(N'MS_Description', N'SCHEMA', N'dbo', N'TABLE', N't', NULL, NULL))"));
+        assert!(s.contains("sp_updateextendedproperty") && s.contains("ELSE\nEXEC sys.sp_addextendedproperty"));
     }
 }

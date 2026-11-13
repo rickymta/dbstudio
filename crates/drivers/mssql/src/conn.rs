@@ -80,12 +80,34 @@ impl Conn {
 
     /// Run a batch and collect every result set (catalog queries, small results).
     pub async fn sets(&mut self, sql: &str) -> Result<Vec<Rows>> {
+        self.sets_once(sql).await.map_err(|(e, _)| e)
+    }
+
+    /// Like [`Conn::sets`] but for read-only queries: a deadlock victim (error 1205, possible
+    /// between catalog reads and concurrent DDL) is retried.
+    async fn sets_retrying(&mut self, sql: &str) -> Result<Vec<Rows>> {
+        let mut attempt = 0;
+        loop {
+            match self.sets_once(sql).await {
+                Ok(v) => return Ok(v),
+                Err((_, Some(1205))) if attempt < 3 => {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(50 * attempt)).await;
+                }
+                Err((e, _)) => return Err(e),
+            }
+        }
+    }
+
+    async fn sets_once(&mut self, sql: &str) -> std::result::Result<Vec<Rows>, (Error, Option<u32>)> {
         let lob = self.lob_limit;
+        tracing::debug!(target: "dbstudio_mssql::query", len = sql.len(), head = %sql.chars().take(40).collect::<String>());
         let mut stream = match self.client.simple_query(sql).await {
             Ok(s) => s,
             Err(e) => {
                 self.broken |= error::is_fatal(&e);
-                return Err(map_query(e, None));
+                let code = e.code();
+                return Err((map_query(e, None), code));
             }
         };
         let mut sets: Vec<Rows> = Vec::new();
@@ -116,14 +138,20 @@ impl Conn {
             Err(e) => {
                 fatal |= error::is_fatal(&e);
                 self.broken |= fatal;
-                Err(map_query(e, None))
+                let code = e.code();
+                Err((map_query(e, None), code))
             }
         }
     }
 
-    /// First result set of a batch.
+    /// First result set of a read-only batch (retried when chosen as a deadlock victim).
     pub async fn rows(&mut self, sql: &str) -> Result<Rows> {
-        Ok(self.sets(sql).await?.into_iter().next().unwrap_or_default())
+        Ok(self
+            .sets_retrying(sql)
+            .await?
+            .into_iter()
+            .next()
+            .unwrap_or_default())
     }
 
     /// Run a batch and ignore its results.

@@ -825,7 +825,7 @@ async fn object_ddl_on(conn: &mut Conn, obj: &ObjRef, db: &str) -> Result<String
                 out.push(format!("GO\n{t}"));
             }
             if let Some(c) = comment {
-                out.push(ddl::comment_sql(&obj.schema, &obj.name, None, "TABLE", &c));
+                out.push(ddl::comment_sql(&obj.schema, &obj.name, None, "TABLE", &c, false));
             }
             for c in cols.iter().filter(|c| c.comment.is_some()) {
                 out.push(ddl::comment_sql(
@@ -834,6 +834,7 @@ async fn object_ddl_on(conn: &mut Conn, obj: &ObjRef, db: &str) -> Result<String
                     Some(&c.name),
                     "TABLE",
                     c.comment.as_deref().unwrap_or(""),
+                    false,
                 ));
             }
             Ok(out.join("\n"))
@@ -968,7 +969,7 @@ async fn type_ddl(conn: &mut Conn, obj: &ObjRef, db: &str) -> Result<String> {
         let collation = database_collation(conn).await?;
         let lines: Vec<String> = list
             .iter()
-            .map(|c| ddl::column_definition(c, &collation))
+            .map(|c| format!("    {}", ddl::type_column_definition(c, &collation)))
             .collect();
         let _ = db;
         return Ok(format!(
