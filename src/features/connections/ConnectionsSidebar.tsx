@@ -266,10 +266,13 @@ export function ConnectionsSidebar() {
   const actions: RowActions = {
     dnd,
     connect: (p) => void connect(p),
-    disconnect: (p) => {
-      setProfileExpanded(p.id, false);
-      void useSessionsStore.getState().close(p.id);
-    },
+    disconnect: (p) =>
+      void useSessionsStore
+        .getState()
+        .requestClose(p.id)
+        .then((closed) => {
+          if (closed) setProfileExpanded(p.id, false);
+        }),
     edit: (profile) => setModal({ type: 'connection', profile }),
     duplicate: (p) => void run(() => ipc.connectionDuplicate(p.id), t('toast.duplicated')),
     moveTo: (p, groupId) =>
@@ -390,7 +393,8 @@ export function ConnectionsSidebar() {
   const deleteProfile = (profile: ConnectionProfile) =>
     run(async () => {
       if (useSessionsStore.getState().sessionsByConnection[profile.id]) {
-        await useSessionsStore.getState().close(profile.id);
+        // A tab with unfinished work may veto: keep the profile (and its session) then.
+        if (!(await useSessionsStore.getState().requestClose(profile.id))) return;
       }
       setProfileExpanded(profile.id, false);
       await ipc.connectionDelete(profile.id);
