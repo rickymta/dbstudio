@@ -1,4 +1,5 @@
 # Tiberius
+
 [![crates.io](https://meritbadge.herokuapp.com/tiberius)](https://crates.io/crates/tiberius)
 [![docs.rs](https://docs.rs/tiberius/badge.svg)](https://docs.rs/tiberius)
 [![Cargo tests](https://github.com/prisma/tiberius/actions/workflows/test.yml/badge.svg)](https://github.com/prisma/tiberius/actions/workflows/test.yml)
@@ -22,20 +23,20 @@ A native Microsoft SQL Server (TDS) client for Rust.
 ### Supported SQL Server versions
 
 | Version | Support level | Notes                               |
-|---------|---------------|-------------------------------------|
-|    2022 | Tested on CI  |                                     |
-|    2019 | Tested on CI  |                                     |
-|    2017 | Tested on CI  |                                     |
-|    2016 | Should work   |                                     |
-|    2014 | Should work   |                                     |
-|    2012 | Should work   |                                     |
-|    2008 | Should work   |                                     |
-|    2005 | Should work   | With feature flag `tds73` disabled. |
+| ------- | ------------- | ----------------------------------- |
+| 2022    | Tested on CI  |                                     |
+| 2019    | Tested on CI  |                                     |
+| 2017    | Tested on CI  |                                     |
+| 2016    | Should work   |                                     |
+| 2014    | Should work   |                                     |
+| 2012    | Should work   |                                     |
+| 2008    | Should work   |                                     |
+| 2005    | Should work   | With feature flag `tds73` disabled. |
 
 ### Feature flags
 
 | Flag                     | Description                                                                                                                      | Default    |
-|--------------------------|----------------------------------------------------------------------------------------------------------------------------------|------------|
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- | ---------- |
 | `tds73`                  | Support for new date and time types in TDS version 7.3. Disable if using version 7.2.                                            | `enabled`  |
 | `native-tls`             | Use operating system's TLS libraries for traffic encryption.                                                                     | `enabled`  |
 | `rustls`                 | Use the builtin TLS implementation from rustls instead of linking to the operating system implementation for traffic encryption. | `disabled` |
@@ -58,7 +59,7 @@ Tiberius does not rely on any protocol when connecting to an SQL Server instance
 Currently there are good async implementations for TCP in the [async-std](https://crates.io/crates/async-std), [Tokio](https://crates.io/crates/tokio) and [Smol](https://crates.io/crates/smol) projects.
 
 To be able to use them together with Tiberius on Windows platforms with SQL Server, you should make sure that the TCP protocol is enabled, as depending on the edition, this may not be the case. Standard and Enterprise editions will have the setting enabled by default, whereas Developer, Express editions and the Windows Internal Database feature of the Windows Server OS don't.
-To enable the TCP/IP protocol you may want to use  the [server settings](https://docs.microsoft.com/en-us/sql/database-engine/configure-windows/enable-or-disable-a-server-network-protocol) the [command line](https://docs.microsoft.com/en-us/sql/powershell/how-to-enable-tcp-sqlps).
+To enable the TCP/IP protocol you may want to use the [server settings](https://docs.microsoft.com/en-us/sql/database-engine/configure-windows/enable-or-disable-a-server-network-protocol) the [command line](https://docs.microsoft.com/en-us/sql/powershell/how-to-enable-tcp-sqlps).
 In the official [Docker image](https://hub.docker.com/_/microsoft-mssql-server) TCP is is enabled by default.
 
 Named pipes should work by using the [NamedPipeClient](https://docs.rs/tokio/1.9.0/tokio/net/windows/named_pipe/struct.NamedPipeClient.html) from the latest Tokio versions.
@@ -75,23 +76,24 @@ The crate can also be compiled without TLS support, but not with both features e
 
 Tiberius has three runtime encryption settings:
 
-| Encryption level | Description                                      |
-|------------------|--------------------------------------------------|
-| `Required`       | All traffic is encrypted. (default)              |
-| `Off`            | Only the login procedure is encrypted.           |
-| `NotSupported`   | None of the traffic is encrypted.                |
+| Encryption level | Description                            |
+| ---------------- | -------------------------------------- |
+| `Required`       | All traffic is encrypted. (default)    |
+| `Off`            | Only the login procedure is encrypted. |
+| `NotSupported`   | None of the traffic is encrypted.      |
 
 The encryption levels can be set when connecting to the database.
 
 ### Integrated Authentication (TrustedConnection) on \*nix
 
 With the `integrated-auth-gssapi` feature enabled, the crate requires the GSSAPI/Kerberos libraries/headers installed:
-  * [CentOS](https://pkgs.org/download/krb5-devel)
-  * [Arch](https://www.archlinux.org/packages/core/x86_64/krb5/)
-  * [Debian](https://tracker.debian.org/pkg/krb5) (you need the -dev packages to build)
-  * [Ubuntu](https://packages.ubuntu.com/bionic-updates/libkrb5-dev)
-  * NixOS: Run `nix-shell shell.nix` on the repository root.
-  * Mac: as of version `0.4.2` the [libgssapi](https://crates.io/crates/libgssapi) crate used for this feature now uses Apple's [GSS Framework](https://developer.apple.com/documentation/gss?language=objc) which ships with MacOS 10.14+.
+
+- [CentOS](https://pkgs.org/download/krb5-devel)
+- [Arch](https://www.archlinux.org/packages/core/x86_64/krb5/)
+- [Debian](https://tracker.debian.org/pkg/krb5) (you need the -dev packages to build)
+- [Ubuntu](https://packages.ubuntu.com/bionic-updates/libkrb5-dev)
+- NixOS: Run `nix-shell shell.nix` on the repository root.
+- Mac: as of version `0.4.2` the [libgssapi](https://crates.io/crates/libgssapi) crate used for this feature now uses Apple's [GSS Framework](https://developer.apple.com/documentation/gss?language=objc) which ships with MacOS 10.14+.
 
 Additionally, your runtime system will need to be trusted by and configured for the Active Directory domain your SQL Server is part of. In particular, you'll need to be able to get a valid TGT for your identity, via `kinit` or a keytab. This setup varies by environment and OS, but your friendly network/system administrator should be able to help figure out the specifics.
 

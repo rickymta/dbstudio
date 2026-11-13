@@ -1,6 +1,7 @@
 import { CompletionContext } from '@codemirror/autocomplete';
 import { EditorState } from '@codemirror/state';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ipc } from '@/lib/ipc';
 import { resetCatalogCache } from './catalogLoader';
 import { createCompletionSource } from './completionSource';
 import { openSession, resetEditorWorld } from './testUtils';
@@ -8,6 +9,15 @@ import { openSession, resetEditorWorld } from './testUtils';
 beforeEach(() => {
   resetEditorWorld();
   resetCatalogCache();
+  // The ERD mock answers `schema_model` with its own sample schema; these tests are about the
+  // object tree of the mock catalog, which the loader walks when `schema_model` has no tables.
+  vi.spyOn(ipc, 'schemaModel').mockResolvedValue({
+    scope: { segments: [] },
+    tables: [],
+    relations: [],
+    inferred: false,
+    truncated: false,
+  });
 });
 
 /** `|` marks the cursor. */
