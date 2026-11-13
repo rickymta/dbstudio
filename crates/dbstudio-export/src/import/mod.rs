@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dbstudio_core::{
-    BulkInsertRequest, CancelToken, ColumnMeta, EditValue, EndOutcome, Error, JobProgress,
-    OnConflict, QueryRequest, Result, ResultSink, ScriptDialect, StatementEnd, TxOptions, Value,
+    BulkInsertRequest, CancelToken, CollectingSink, ColumnDetail, ColumnMeta, EditValue,
+    EndOutcome, Error, JobProgress, OnConflict, QueryRequest, Result, ResultSink, ScriptDialect,
+    StatementEnd, StatementOutcome, TxOptions, Value, ValueKind,
 };
 use dbstudio_sql::Dialect;
 
@@ -140,17 +141,26 @@ fn apply_transform(cell: EditValue, t: Transform) -> EditValue {
 // Running
 // ---------------------------------------------------------------------------------------------
 
-/// Counts the rows a statement affected.
+/// Counts the rows a statement affected, and the rows of a `RETURNING (xmax = 0)` result
+/// (`true` = inserted, `false` = updated).
 #[derive(Default)]
 struct AffectedSink {
     affected: u64,
+    returned: u64,
+    returned_inserted: u64,
 }
 
 impl ResultSink for AffectedSink {
     fn on_columns(&mut self, _columns: Vec<ColumnMeta>) -> Result<()> {
         Ok(())
     }
-    fn on_rows(&mut self, _rows: Vec<Vec<Value>>) -> Result<()> {
+    fn on_rows(&mut self, rows: Vec<Vec<Value>>) -> Result<()> {
+        for r in &rows {
+            self.returned += 1;
+            if matches!(r.first(), Some(Value::Bool(true))) {
+                self.returned_inserted += 1;
+            }
+        }
         Ok(())
     }
     fn on_message(&mut self, _message: String) -> Result<()> {
@@ -176,6 +186,52 @@ struct Mapped {
     values: Vec<EditValue>,
 }
 
+/// Default size cap of one `INSERT` statement (the MySQL packet limit lowers it).
+const DEFAULT_STATEMENT_BYTES: usize = 1024 * 1024;
+
+/// Rough size of the SQL text of a row.
+fn row_bytes(row: &[EditValue]) -> usize {
+    row.iter()
+        .map(|c| match c {
+            EditValue::Text(s) => s.len() + 4,
+            EditValue::Default => 8,
+            EditValue::Value(v) => match v {
+                Value::Text(s)
+                | Value::Decimal(s)
+                | Value::Date(s)
+                | Value::Time(s)
+                | Value::DateTime(s)
+                | Value::Timestamp(s)
+                | Value::Uuid(s)
+                | Value::Json(s) => s.len() + 4,
+                Value::Bytes(b) => b.len() * 2 + 6,
+                _ => 24,
+            },
+        })
+        .sum::<usize>()
+        + 4
+}
+
+/// Split `rows` into statements of at most [`MAX_STATEMENT_ROWS`] rows and `max_bytes` bytes
+/// (a single big row still gets a statement of its own).
+fn statement_ranges(rows: &[Mapped], max_bytes: usize) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let (mut start, mut bytes) = (0usize, 0usize);
+    for (i, m) in rows.iter().enumerate() {
+        let b = row_bytes(&m.values);
+        if i > start && (i - start >= MAX_STATEMENT_ROWS || bytes + b > max_bytes) {
+            out.push(start..i);
+            start = i;
+            bytes = 0;
+        }
+        bytes += b;
+    }
+    if start < rows.len() {
+        out.push(start..rows.len());
+    }
+    out
+}
+
 struct Importer<'a> {
     ctx: &'a ExportContext,
     conn: Arc<Conn>,
@@ -188,6 +244,7 @@ struct Importer<'a> {
     max_errors: u32,
     mode: ImportMode,
     bulk_supported: bool,
+    max_statement_bytes: usize,
     report: ImportReport,
     progress: JobProgress,
 }
@@ -197,11 +254,16 @@ impl Importer<'_> {
         self.conn.lease().is_some()
     }
 
+    async fn run_sink(&self, sql: String, sink: &mut AffectedSink) -> Result<()> {
+        self.conn
+            .execute_cancellable(self.cancel, QueryRequest::new(sql), sink)
+            .await
+            .map(|_| ())
+    }
+
     async fn run_sql(&self, sql: String) -> Result<u64> {
         let mut sink = AffectedSink::default();
-        self.conn
-            .execute_cancellable(self.cancel, QueryRequest::new(sql), &mut sink)
-            .await?;
+        self.run_sink(sql, &mut sink).await?;
         Ok(sink.affected)
     }
 
@@ -225,8 +287,9 @@ impl Importer<'_> {
         }
     }
 
-    /// Insert `rows` (one transaction scope with the caller): bulk insert when the lease has
-    /// one, otherwise multi-row `INSERT` statements.
+    /// Insert `rows` (one statement's worth, inside the caller's transaction scope): the
+    /// lease's bulk insert (same connection, same transaction) when it has one, otherwise one
+    /// multi-row `INSERT` statement.
     async fn insert_rows(&mut self, rows: &[Vec<EditValue>]) -> Result<Counts> {
         if self.bulk_supported {
             if let (Some(lease), Some(table)) = (self.conn.lease(), &self.table_path) {
@@ -252,20 +315,48 @@ impl Importer<'_> {
                 self.bulk_supported = false;
             }
         }
-        let mut counts = Counts::default();
-        for chunk in rows.chunks(MAX_STATEMENT_ROWS) {
-            let sql = insert_statement(self.dialect, &self.target, chunk, self.on_conflict)?;
-            let affected = self.run_sql(sql).await?;
-            let n = chunk.len() as u64;
-            match self.on_conflict {
-                OnConflict::Skip => {
-                    counts.inserted += affected.min(n);
-                    counts.skipped += n.saturating_sub(affected);
+        let n = rows.len() as u64;
+        let returning = matches!(self.dialect, ScriptDialect::Postgres)
+            && self.on_conflict == OnConflict::Update;
+        let sql = insert_statement(
+            self.dialect,
+            &self.target,
+            rows,
+            self.on_conflict,
+            returning,
+        )?;
+        let mut sink = AffectedSink::default();
+        self.run_sink(sql, &mut sink).await?;
+        let affected = sink.affected;
+        Ok(match self.on_conflict {
+            OnConflict::Error => Counts {
+                inserted: affected.min(n),
+                ..Counts::default()
+            },
+            OnConflict::Skip => Counts {
+                inserted: affected.min(n),
+                skipped: n.saturating_sub(affected),
+                updated: 0,
+            },
+            OnConflict::Update if returning => Counts {
+                inserted: sink.returned_inserted,
+                updated: sink.returned - sink.returned_inserted,
+                skipped: n.saturating_sub(sink.returned),
+            },
+            OnConflict::Update => {
+                // MySQL counts 1 per inserted and 2 per changed row.
+                let (inserted, updated) = if affected > n {
+                    (n.saturating_sub(affected - n), affected - n)
+                } else {
+                    (affected, 0)
+                };
+                Counts {
+                    inserted,
+                    updated,
+                    skipped: 0,
                 }
-                _ => counts.inserted += affected.min(n.max(affected)),
             }
-        }
-        Ok(counts)
+        })
     }
 
     fn add(&mut self, c: Counts) {
@@ -274,25 +365,31 @@ impl Importer<'_> {
         self.report.skipped += c.skipped;
     }
 
-    /// Insert one batch. A failing batch is undone and retried row by row to find the bad
-    /// rows, which are reported with their line number.
+    /// Insert one batch, statement by statement. Only the statement that fails is undone and
+    /// retried row by row, so rows of the statements before it are never inserted twice.
     async fn load_batch(&mut self, batch: &[Mapped]) -> Result<()> {
-        let rows: Vec<Vec<EditValue>> = batch.iter().map(|m| m.values.clone()).collect();
+        for range in statement_ranges(batch, self.max_statement_bytes) {
+            self.load_chunk(&batch[range]).await?;
+        }
+        Ok(())
+    }
+
+    /// One statement's rows. With a lease a savepoint makes the failed statement undoable inside
+    /// the open transaction; without one the statement is atomic by itself.
+    async fn load_chunk(&mut self, chunk: &[Mapped]) -> Result<()> {
+        let rows: Vec<Vec<EditValue>> = chunk.iter().map(|m| m.values.clone()).collect();
         let sp: Option<Savepoint> = if self.has_lease() {
-            savepoint(self.dialect, "dbstudio_batch")
+            savepoint(self.dialect, "dbstudio_chunk")
         } else {
             None
         };
         if let Some(sp) = &sp {
             self.run_sql(sp.create.clone()).await?;
         }
-        let first = self.insert_rows(&rows).await;
-        let error = match first {
+        let error = match self.insert_rows(&rows).await {
             Ok(c) => {
-                if let Some(sp) = &sp {
-                    if let Some(release) = &sp.release {
-                        self.run_sql(release.clone()).await?;
-                    }
+                if let Some(release) = sp.as_ref().and_then(|s| s.release.clone()) {
+                    self.run_sql(release).await?;
                 }
                 self.add(c);
                 return Ok(());
@@ -301,10 +398,10 @@ impl Importer<'_> {
             Err(e) => e,
         };
         if self.has_lease() && sp.is_none() {
-            // Nothing to roll back to: report the batch as a whole.
+            // Nothing to roll back to: report the statement as a whole.
             let (a, b) = (
-                batch.first().map_or(0, |m| m.line),
-                batch.last().map_or(0, |m| m.line),
+                chunk.first().map_or(0, |m| m.line),
+                chunk.last().map_or(0, |m| m.line),
             );
             return Err(Error::Query {
                 message: format!("lines {a}-{b}: {}", error.message()),
@@ -320,7 +417,7 @@ impl Importer<'_> {
         } else {
             None
         };
-        for m in batch {
+        for m in chunk {
             if self.cancel.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -340,19 +437,24 @@ impl Importer<'_> {
                     if let Some(rsp) = &row_sp {
                         self.run_sql(rsp.rollback.clone()).await?;
                     }
-                    let message = e.message();
-                    self.report.errors.push(RowError {
-                        line: m.line,
-                        message: message.clone(),
-                    });
-                    if self.report.errors.len() as u32 > self.max_errors {
-                        return Err(Error::Query {
-                            message: format!("line {}: {message}", m.line),
-                            position: None,
-                        });
-                    }
+                    self.row_failed(m.line, e.message())?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Record a failed row; stops the import when more rows failed than tolerated.
+    fn row_failed(&mut self, line: u64, message: String) -> Result<()> {
+        self.report.errors.push(RowError {
+            line,
+            message: message.clone(),
+        });
+        if self.report.errors.len() as u32 > self.max_errors {
+            return Err(Error::Query {
+                message: format!("line {line}: {message}"),
+                position: None,
+            });
         }
         Ok(())
     }
@@ -382,6 +484,107 @@ fn is_sql_dialect(d: ScriptDialect) -> bool {
     )
 }
 
+/// How a target column wants its cells coerced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColKind {
+    Bytes,
+    Bool,
+    Plain,
+}
+
+fn kind_of_detail(c: &ColumnDetail) -> ColKind {
+    match c.value_kind {
+        ValueKind::Bytes => ColKind::Bytes,
+        ValueKind::Bool => ColKind::Bool,
+        _ if c.type_name.to_lowercase().replace(' ', "") == "tinyint(1)" => ColKind::Bool,
+        _ => ColKind::Plain,
+    }
+}
+
+/// Kind of a column that is about to be created, from its type name.
+fn kind_of_type_name(type_name: &str) -> ColKind {
+    let t = type_name.to_lowercase();
+    if ["bytea", "blob", "binary", "raw"]
+        .iter()
+        .any(|k| t.contains(k))
+    {
+        ColKind::Bytes
+    } else if t.contains("bool") || t.trim() == "bit" {
+        ColKind::Bool
+    } else {
+        ColKind::Plain
+    }
+}
+
+/// Bytes of a text cell: base64 (what the exports write), or hex with a `0x` / `\x` prefix.
+fn decode_binary(text: &str) -> std::result::Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
+    let t = text.trim();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("\\x")) {
+        if hex.len() % 2 != 0 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("invalid hexadecimal binary value".into());
+        }
+        return Ok((0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0))
+            .collect());
+    }
+    STANDARD
+        .decode(t)
+        .or_else(|_| STANDARD_NO_PAD.decode(t))
+        .map_err(|_| "invalid base64 binary value".to_string())
+}
+
+/// Coerce a cell to what its (binary / boolean) target column needs. Other columns get the
+/// text as typed: the database converts it to the column type.
+fn coerce(cell: EditValue, kind: ColKind) -> std::result::Result<EditValue, String> {
+    match (kind, cell) {
+        (ColKind::Bytes, EditValue::Text(s)) => {
+            decode_binary(&s).map(|b| EditValue::Value(Value::Bytes(b)))
+        }
+        (ColKind::Bool, EditValue::Text(s)) => Ok(match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "t" => EditValue::Value(Value::Bool(true)),
+            "false" | "f" => EditValue::Value(Value::Bool(false)),
+            _ => EditValue::Text(s),
+        }),
+        (_, other) => Ok(other),
+    }
+}
+
+/// Packet limit of a MySQL server bounds the size of an `INSERT`.
+async fn statement_limit(conn: &Arc<Conn>, dialect: ScriptDialect) -> usize {
+    if !matches!(dialect, ScriptDialect::MySql { .. }) {
+        return DEFAULT_STATEMENT_BYTES;
+    }
+    let mut sink = CollectingSink::new();
+    let packet = match conn
+        .execute(QueryRequest::new("SELECT @@max_allowed_packet"), &mut sink)
+        .await
+    {
+        Ok(_) => sink
+            .into_results()
+            .into_iter()
+            .next()
+            .and_then(|r| match r.outcome {
+                StatementOutcome::Rows(rs) => rs.rows.first().and_then(|row| match row.first() {
+                    Some(Value::Int(i)) => u64::try_from(*i).ok(),
+                    Some(Value::UInt(u)) => Some(*u),
+                    Some(Value::Text(t) | Value::Decimal(t)) => t.parse().ok(),
+                    Some(Value::Bytes(b)) => String::from_utf8_lossy(b).parse().ok(),
+                    _ => None,
+                }),
+                _ => None,
+            }),
+        Err(_) => None,
+    };
+    match packet {
+        // Leave room for the escaping and the statement head.
+        Some(p) => DEFAULT_STATEMENT_BYTES.min((p / 4) as usize).max(4096),
+        None => DEFAULT_STATEMENT_BYTES,
+    }
+}
+
 async fn run_rows(
     ctx: ExportContext,
     spec: ImportSpec,
@@ -391,14 +594,19 @@ async fn run_rows(
         return Err(Error::Unsupported("import_dialect".into()));
     }
     let path = PathBuf::from(&spec.file);
-    let mut src = source::open(&path, &spec.format)?;
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    // Opening a workbook or scanning a JSON file for its keys must not block the runtime.
+    let (open_path, open_format) = (path.clone(), spec.format.clone());
+    let mut src =
+        tokio::task::spawn_blocking(move || source::open(&open_path, &open_format, false))
+            .await
+            .map_err(|e| Error::Other(format!("import task failed: {e}")))??;
     let dialect = ctx.dialect;
     let q = Dialect::new(dialect);
 
     // Target table.
     let mut create_sql: Option<String> = None;
-    let (qualified, table_columns, pk, table_path, display) = match &spec.target {
+    let (qualified, table_columns, kinds, pk, table_path, display, database) = match &spec.target {
         ImportTarget::Existing { table } => {
             let details = ctx.session.table_details(table).await?;
             let name = table
@@ -410,13 +618,22 @@ async fn run_rows(
                 None => q.quote_ident(&name),
             };
             let cols: Vec<String> = details.columns.iter().map(|c| c.name.clone()).collect();
+            let kinds: Vec<ColKind> = details.columns.iter().map(kind_of_detail).collect();
             let pk: Vec<String> = details
                 .columns
                 .iter()
                 .filter(|c| c.primary_key)
                 .map(|c| c.name.clone())
                 .collect();
-            (qualified, cols, pk, Some(table.clone()), name)
+            (
+                qualified,
+                cols,
+                kinds,
+                pk,
+                Some(table.clone()),
+                name,
+                crate::conn::database_of(table),
+            )
         }
         ImportTarget::New {
             parent,
@@ -438,12 +655,24 @@ async fn run_rows(
             };
             create_sql = Some(sql);
             let cols: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+            let kinds: Vec<ColKind> = columns
+                .iter()
+                .map(|c| kind_of_type_name(&c.type_name))
+                .collect();
             let pk: Vec<String> = columns
                 .iter()
                 .filter(|c| c.primary_key)
                 .map(|c| c.name.clone())
                 .collect();
-            (qualified, cols, pk, None, name.clone())
+            (
+                qualified,
+                cols,
+                kinds,
+                pk,
+                None,
+                name.clone(),
+                crate::conn::database_of(parent),
+            )
         }
         ImportTarget::Script { .. } => {
             return Err(Error::Other(
@@ -453,6 +682,16 @@ async fn run_rows(
     };
 
     let mapping = resolve_mapping(&spec.mapping, src.columns(), &table_columns)?;
+    let col_kinds: Vec<ColKind> = mapping
+        .iter()
+        .map(|m| {
+            table_columns
+                .iter()
+                .position(|c| *c == m.target)
+                .and_then(|i| kinds.get(i).copied())
+                .unwrap_or(ColKind::Plain)
+        })
+        .collect();
     let on_conflict = spec.on_conflict.unwrap_or(OnConflict::Error);
     let conflict_columns = pk;
     if on_conflict == OnConflict::Update && conflict_columns.is_empty() {
@@ -461,36 +700,82 @@ async fn run_rows(
         ));
     }
 
-    let (conn, _) = Conn::open(Arc::clone(&ctx.session), None).await?;
+    let (conn, _) = Conn::open(Arc::clone(&ctx.session), database, None).await?;
     let conn = Arc::new(conn);
+    let result = import_table(
+        &ctx,
+        &cancel,
+        &conn,
+        &spec,
+        &mut *src,
+        TableTarget {
+            qualified,
+            table_path,
+            display,
+            conflict_columns,
+            on_conflict,
+            create_sql,
+            mapping,
+            col_kinds,
+            size,
+        },
+    )
+    .await;
+    conn.close().await;
+    result
+}
+
+/// Everything `import_table` needs about the table.
+struct TableTarget {
+    qualified: String,
+    table_path: Option<dbstudio_core::ObjectPath>,
+    display: String,
+    conflict_columns: Vec<String>,
+    on_conflict: OnConflict,
+    create_sql: Option<String>,
+    mapping: Vec<MappedColumn>,
+    col_kinds: Vec<ColKind>,
+    size: u64,
+}
+
+async fn import_table(
+    ctx: &ExportContext,
+    cancel: &CancelToken,
+    conn: &Arc<Conn>,
+    spec: &ImportSpec,
+    src: &mut dyn RowSource,
+    t: TableTarget,
+) -> Result<ImportReport> {
     if matches!(spec.mode, ImportMode::SingleTransaction) && conn.lease().is_none() {
         return Err(Error::Unsupported("leases".into()));
     }
+    let dialect = ctx.dialect;
     let mut importer = Importer {
-        ctx: &ctx,
-        conn: Arc::clone(&conn),
-        cancel: &cancel,
+        ctx,
+        conn: Arc::clone(conn),
+        cancel,
         dialect,
         target: Target {
-            table: qualified,
-            columns: mapping.iter().map(|m| m.target.clone()).collect(),
-            conflict_columns,
+            table: t.qualified,
+            columns: t.mapping.iter().map(|m| m.target.clone()).collect(),
+            conflict_columns: t.conflict_columns,
         },
-        table_path,
-        on_conflict,
+        table_path: t.table_path,
+        on_conflict: t.on_conflict,
         max_errors: spec.max_errors,
         mode: spec.mode,
         bulk_supported: true,
+        max_statement_bytes: statement_limit(conn, dialect).await,
         report: ImportReport::default(),
         progress: JobProgress {
             phase: "import".into(),
-            object: Some(display),
-            bytes_total: Some(size),
+            object: Some(t.display),
+            bytes_total: Some(t.size),
             ..JobProgress::default()
         },
     };
-    let created = create_sql.is_some();
-    let result = import_loop(&mut importer, &mut *src, &mapping, create_sql).await;
+    let created = t.create_sql.is_some();
+    let result = import_loop(&mut importer, src, &t.mapping, &t.col_kinds, t.create_sql).await;
     if result.is_err() && created && matches!(spec.mode, ImportMode::SingleTransaction) {
         // All or nothing: do not leave the empty table the failed import created.
         let _ = importer
@@ -498,10 +783,6 @@ async fn run_rows(
             .await;
     }
     let report = std::mem::take(&mut importer.report);
-    drop(importer);
-    if let Ok(conn) = Arc::try_unwrap(conn) {
-        conn.close().await;
-    }
     result.map(|()| report)
 }
 
@@ -509,6 +790,7 @@ async fn import_loop(
     imp: &mut Importer<'_>,
     src: &mut dyn RowSource,
     mapping: &[MappedColumn],
+    kinds: &[ColKind],
     create_sql: Option<String>,
 ) -> Result<()> {
     if let Some(sql) = create_sql {
@@ -522,7 +804,7 @@ async fn import_loop(
     if single {
         imp.begin().await?;
     }
-    let outcome = load_all(imp, src, mapping, batch_rows, single).await;
+    let outcome = load_all(imp, src, mapping, kinds, batch_rows, single).await;
     match outcome {
         Ok(()) => {
             if single {
@@ -545,6 +827,7 @@ async fn load_all(
     imp: &mut Importer<'_>,
     src: &mut dyn RowSource,
     mapping: &[MappedColumn],
+    kinds: &[ColKind],
     batch_rows: usize,
     single: bool,
 ) -> Result<()> {
@@ -555,34 +838,38 @@ async fn load_all(
         }
         let mut batch: Vec<Mapped> = Vec::with_capacity(batch_rows.min(10_000));
         while batch.len() < batch_rows {
-            match src.next_row()? {
-                Some(row) => {
-                    let values = mapping
-                        .iter()
-                        .map(|m| {
-                            let cell = row
-                                .cells
-                                .get(m.source_index)
-                                .cloned()
-                                .unwrap_or(EditValue::Value(Value::Null));
-                            apply_transform(cell, m.transform)
-                        })
-                        .collect();
-                    batch.push(Mapped {
-                        line: row.line,
-                        values,
-                    });
+            let Some(row) = src.next_row()? else {
+                eof = true;
+                break;
+            };
+            imp.report.rows_read += 1;
+            let mut values = Vec::with_capacity(mapping.len());
+            let mut bad: Option<String> = None;
+            for (m, kind) in mapping.iter().zip(kinds) {
+                let cell = row
+                    .cells
+                    .get(m.source_index)
+                    .cloned()
+                    .unwrap_or(EditValue::Value(Value::Null));
+                match coerce(apply_transform(cell, m.transform), *kind) {
+                    Ok(v) => values.push(v),
+                    Err(e) => {
+                        bad = Some(format!("column {}: {e}", m.target));
+                        break;
+                    }
                 }
-                None => {
-                    eof = true;
-                    break;
-                }
+            }
+            match bad {
+                Some(message) => imp.row_failed(row.line, message)?,
+                None => batch.push(Mapped {
+                    line: row.line,
+                    values,
+                }),
             }
         }
         if batch.is_empty() {
-            break;
+            continue;
         }
-        imp.report.rows_read += batch.len() as u64;
         if !single {
             imp.begin().await?;
         }
@@ -686,5 +973,55 @@ mod tests {
             apply_transform(EditValue::Value(Value::Int(1)), Transform::Trim),
             EditValue::Value(Value::Int(1))
         );
+    }
+
+    #[test]
+    fn binary_cells_are_decoded_for_binary_columns_only() {
+        assert_eq!(decode_binary("AQID").unwrap(), [1, 2, 3]);
+        assert_eq!(decode_binary("AQI").unwrap(), [1, 2]);
+        assert_eq!(decode_binary("0xdeAD").unwrap(), [0xde, 0xad]);
+        assert_eq!(decode_binary("\\x01ff").unwrap(), [1, 255]);
+        assert!(decode_binary("not base64!").is_err());
+        assert!(decode_binary("0xabc").is_err());
+        let text = || EditValue::Text("AQID".into());
+        assert_eq!(
+            coerce(text(), ColKind::Bytes).unwrap(),
+            EditValue::Value(Value::Bytes(vec![1, 2, 3]))
+        );
+        assert_eq!(coerce(text(), ColKind::Plain).unwrap(), text());
+        assert!(coerce(EditValue::Text("%%".into()), ColKind::Bytes).is_err());
+        assert_eq!(
+            coerce(EditValue::Value(Value::Null), ColKind::Bytes).unwrap(),
+            EditValue::Value(Value::Null)
+        );
+        assert_eq!(
+            coerce(EditValue::Text("TRUE".into()), ColKind::Bool).unwrap(),
+            EditValue::Value(Value::Bool(true))
+        );
+        assert_eq!(
+            coerce(EditValue::Text("maybe".into()), ColKind::Bool).unwrap(),
+            EditValue::Text("maybe".into())
+        );
+        assert_eq!(kind_of_type_name("bytea"), ColKind::Bytes);
+        assert_eq!(kind_of_type_name("LONGBLOB"), ColKind::Bytes);
+        assert_eq!(kind_of_type_name("boolean"), ColKind::Bool);
+        assert_eq!(kind_of_type_name("text"), ColKind::Plain);
+    }
+
+    #[test]
+    fn statements_respect_row_and_byte_limits() {
+        let row = |n: usize| Mapped {
+            line: 1,
+            values: vec![EditValue::Text("x".repeat(n))],
+        };
+        let rows: Vec<Mapped> = (0..2500).map(|_| row(10)).collect();
+        let ranges = statement_ranges(&rows, 1 << 20);
+        assert_eq!(ranges, vec![0..1000, 1000..2000, 2000..2500]);
+        // Bytes: 100 KiB rows, 250 KiB per statement.
+        let big: Vec<Mapped> = (0..5).map(|_| row(100 * 1024)).collect();
+        assert_eq!(statement_ranges(&big, 250 * 1024), vec![0..2, 2..4, 4..5]);
+        // One row bigger than the limit still gets a statement.
+        assert_eq!(statement_ranges(&[row(10_000)], 100), vec![0..1]);
+        assert!(statement_ranges(&[], 100).is_empty());
     }
 }

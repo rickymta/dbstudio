@@ -8,7 +8,8 @@ use dbstudio_core::{
     JobKind, JobReporter, OnConflict, ScriptDialect, Session, TextRange,
 };
 use dbstudio_export::{
-    ExportContext, ExportSpec, ImportFormat, ImportPreview, ImportPreviewRequest, ImportSpec,
+    ExportContext, ExportFormat, ExportSpec, ImportFormat, ImportPreview, ImportPreviewRequest,
+    ImportSpec,
 };
 use dbstudio_store::ExportPreset;
 use tauri::State;
@@ -16,6 +17,7 @@ use uuid::Uuid;
 
 use super::blocking;
 use crate::grants::Purpose;
+use crate::session::SessionManager;
 use crate::state::AppState;
 
 type Result<T> = std::result::Result<T, Error>;
@@ -23,12 +25,37 @@ type Result<T> = std::result::Result<T, Error>;
 /// Session a job runs on, plus the profile settings of its connection.
 ///
 /// A job owns its session (it must outlive the tab that started it), opened from the saved
-/// profile. Proposal: look up an already open session of the connection first, so that
-/// profiles whose password is not stored work too.
+/// profile. The session is closed when the job is done and also when the guard is merely
+/// dropped (the job was cancelled while queued, or its work panicked), so none leaks.
+/// Proposal: look up an already open session of the connection first, so that profiles whose
+/// password is not stored work too.
 struct JobSession {
     session_id: Uuid,
     session: Arc<dyn Session>,
     config: ConnectionConfig,
+    sessions: Arc<SessionManager>,
+    closed: bool,
+}
+
+impl JobSession {
+    async fn close(mut self) {
+        self.closed = true;
+        let _ = self.sessions.close(self.session_id).await;
+    }
+}
+
+impl Drop for JobSession {
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let (sessions, id) = (Arc::clone(&self.sessions), self.session_id);
+            runtime.spawn(async move {
+                let _ = sessions.close(id).await;
+            });
+        }
+    }
 }
 
 async fn open_job_session(state: &AppState, connection_id: Uuid) -> Result<JobSession> {
@@ -43,6 +70,8 @@ async fn open_job_session(state: &AppState, connection_id: Uuid) -> Result<JobSe
         session_id: info.session_id,
         session,
         config: profile.config,
+        sessions: Arc::clone(&state.sessions),
+        closed: false,
     })
 }
 
@@ -64,14 +93,27 @@ fn export_result(report: &dbstudio_export::ExportReport) -> serde_json::Value {
     })
 }
 
-pub(crate) async fn start_impl(state: &AppState, spec: ExportSpec) -> Result<JobId> {
-    // Only a path the user picked in a Save dialog (or its `.zip` sibling, used when several
-    // files are produced) may be written.
-    let dest = Path::new(&spec.destination.path);
-    state.grants.check(dest, Purpose::Write)?;
-    state
+pub(crate) async fn start_impl(state: &AppState, mut spec: ExportSpec) -> Result<JobId> {
+    // Only a path the user picked in a Save dialog may be written. When several files are
+    // produced (CSV / JSON) the output is a `.zip` next to it; that sibling is granted too, but
+    // the engine refuses to replace such a file the user did not pick.
+    let dest = state
         .grants
-        .grant(&dest.with_extension("zip"), Purpose::Write)?;
+        .check(Path::new(&spec.destination.path), Purpose::Write)?;
+    let may_zip = matches!(spec.format, ExportFormat::Csv(_) | ExportFormat::Json(_))
+        && !dest
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+    if may_zip {
+        state
+            .grants
+            .grant(&dest.with_extension("zip"), Purpose::Write)?;
+    }
+    spec.destination.path = dest.to_string_lossy().into_owned();
+    if let Some(dir) = dest.parent() {
+        // Leftovers of an export that was killed (an hour old at least: it may be running).
+        dbstudio_export::cleanup_orphans(dir, std::time::Duration::from_secs(3600));
+    }
 
     let job = open_job_session(state, spec.connection_id).await?;
     let title = format!(
@@ -80,7 +122,6 @@ pub(crate) async fn start_impl(state: &AppState, spec: ExportSpec) -> Result<Job
         file_name(&spec.destination.path)
     );
     let connection_id = spec.connection_id;
-    let sessions = Arc::clone(&state.sessions);
     Ok(state.jobs.spawn(
         JobKind::Export,
         title,
@@ -91,13 +132,13 @@ pub(crate) async fn start_impl(state: &AppState, spec: ExportSpec) -> Result<Job
                 ExportContext {
                     dialect: job.session.script_dialect(),
                     kind: job.config.kind,
-                    session: job.session,
+                    session: Arc::clone(&job.session),
                     reporter,
                 },
                 spec,
             )
             .await;
-            let _ = sessions.close(job.session_id).await;
+            job.close().await;
             result.map(|r| Some(export_result(&r)))
         },
     ))
@@ -184,7 +225,7 @@ fn scan_script(path: &Path, dialect: ScriptDialect) -> Result<Vec<DestructiveSta
 
 /// Production connections ask for confirmation before a script with destructive statements runs
 /// or rows are overwritten.
-fn confirm_import(
+async fn confirm_import(
     state: &AppState,
     config: &ConnectionConfig,
     dialect: ScriptDialect,
@@ -197,7 +238,11 @@ fn confirm_import(
         return Ok(());
     }
     let statements = match spec.format {
-        ImportFormat::Sql { .. } => scan_script(file, dialect)?,
+        ImportFormat::Sql { .. } => {
+            // Reads and lexes the whole file: off the async threads.
+            let path = file.to_path_buf();
+            blocking(move || scan_script(&path, dialect)).await?
+        }
         _ => Vec::new(),
     };
     let overwrite = spec.on_conflict == Some(OnConflict::Update);
@@ -233,23 +278,23 @@ fn confirm_import(
 
 pub(crate) async fn import_start_impl(
     state: &AppState,
-    spec: ImportSpec,
+    mut spec: ImportSpec,
     confirm: Option<ConfirmationGrant>,
 ) -> Result<JobId> {
     let file = state.grants.check(Path::new(&spec.file), Purpose::Read)?;
+    spec.file = file.to_string_lossy().into_owned();
     let job = open_job_session(state, spec.connection_id).await?;
     let dialect = job.session.script_dialect();
-    let checked = crate::guard::ensure_writable(&job.config, "import").and_then(|()| {
-        let (state, config, spec, file) = (state, &job.config, &spec, &file);
-        confirm_import(state, config, dialect, spec, file, confirm.as_ref())
-    });
+    let checked = match crate::guard::ensure_writable(&job.config, "import") {
+        Ok(()) => confirm_import(state, &job.config, dialect, &spec, &file, confirm.as_ref()).await,
+        Err(e) => Err(e),
+    };
     if let Err(e) = checked {
-        let _ = state.sessions.close(job.session_id).await;
+        job.close().await;
         return Err(e);
     }
     let title = format!("Import {} → {}", file_name(&spec.file), job.config.name);
     let connection_id = spec.connection_id;
-    let sessions = Arc::clone(&state.sessions);
     Ok(state.jobs.spawn(
         JobKind::Import,
         title,
@@ -260,13 +305,13 @@ pub(crate) async fn import_start_impl(
                 ExportContext {
                     dialect,
                     kind: job.config.kind,
-                    session: job.session,
+                    session: Arc::clone(&job.session),
                     reporter,
                 },
                 spec,
             )
             .await;
-            let _ = sessions.close(job.session_id).await;
+            job.close().await;
             result.and_then(|r| {
                 serde_json::to_value(&r)
                     .map(Some)
@@ -440,8 +485,8 @@ mod tests {
         c
     }
 
-    #[test]
-    fn destructive_scripts_into_production_need_a_typed_confirmation() {
+    #[tokio::test]
+    async fn destructive_scripts_into_production_need_a_typed_confirmation() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("d.sql");
         std::fs::write(&file, "INSERT INTO t VALUES (1);\nDROP TABLE old;\n").unwrap();
@@ -454,10 +499,12 @@ mod tests {
         );
         let dialect = ScriptDialect::Postgres;
         // Not production: no question.
-        confirm_import(&s, &config(false), dialect, &spec, &file, None).unwrap();
+        confirm_import(&s, &config(false), dialect, &spec, &file, None)
+            .await
+            .unwrap();
         // Production: the destructive statement is listed and a token is issued.
         let Err(Error::ConfirmationRequired(req)) =
-            confirm_import(&s, &config(true), dialect, &spec, &file, None)
+            confirm_import(&s, &config(true), dialect, &spec, &file, None).await
         else {
             panic!("expected a confirmation");
         };
@@ -471,11 +518,11 @@ mod tests {
             typed: "nope".into(),
         };
         assert!(matches!(
-            confirm_import(&s, &config(true), dialect, &spec, &file, Some(&wrong)),
+            confirm_import(&s, &config(true), dialect, &spec, &file, Some(&wrong)).await,
             Err(Error::ConfirmationRequired(_))
         ));
         let Err(Error::ConfirmationRequired(req)) =
-            confirm_import(&s, &config(true), dialect, &spec, &file, None)
+            confirm_import(&s, &config(true), dialect, &spec, &file, None).await
         else {
             panic!("expected a confirmation");
         };
@@ -483,13 +530,19 @@ mod tests {
             token: req.token,
             typed: "shop".into(),
         };
-        confirm_import(&s, &config(true), dialect, &spec, &file, Some(&grant)).unwrap();
+        confirm_import(&s, &config(true), dialect, &spec, &file, Some(&grant))
+            .await
+            .unwrap();
         // The token is gone, and the file changing would also invalidate it.
-        assert!(confirm_import(&s, &config(true), dialect, &spec, &file, Some(&grant)).is_err());
+        assert!(
+            confirm_import(&s, &config(true), dialect, &spec, &file, Some(&grant))
+                .await
+                .is_err()
+        );
     }
 
-    #[test]
-    fn harmless_scripts_and_overwrites_on_production() {
+    #[tokio::test]
+    async fn harmless_scripts_and_overwrites_on_production() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("h.sql");
         std::fs::write(&file, "INSERT INTO t VALUES (1);\n").unwrap();
@@ -501,7 +554,9 @@ mod tests {
                 continue_on_error: false,
             },
         );
-        confirm_import(&s, &config(true), dialect, &sql, &file, None).unwrap();
+        confirm_import(&s, &config(true), dialect, &sql, &file, None)
+            .await
+            .unwrap();
         // Overwriting rows of a production table is destructive even without statements.
         let mut table = import_spec(
             file.to_str().unwrap(),
@@ -517,10 +572,12 @@ mod tests {
                 .child(ObjectKind::Database, "shop")
                 .child(ObjectKind::Table, "t"),
         };
-        confirm_import(&s, &config(true), dialect, &table, &file, None).unwrap();
+        confirm_import(&s, &config(true), dialect, &table, &file, None)
+            .await
+            .unwrap();
         table.on_conflict = Some(OnConflict::Update);
         let Err(Error::ConfirmationRequired(req)) =
-            confirm_import(&s, &config(true), dialect, &table, &file, None)
+            confirm_import(&s, &config(true), dialect, &table, &file, None).await
         else {
             panic!("expected a confirmation");
         };
@@ -561,5 +618,45 @@ mod tests {
         );
         preset_delete_impl(&s, saved.id).await.unwrap();
         assert!(presets_list_impl(&s, Some(id)).await.unwrap().is_empty());
+    }
+
+    async fn saved_connection(s: &AppState) -> Uuid {
+        let conn = ConnectionConfig::new(DbKind::Postgres, "c", "h");
+        let profile = dbstudio_store::ConnectionProfile {
+            config: conn.clone(),
+            group_id: None,
+            color: None,
+            save_password: false,
+            has_password: false,
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let svc = s.connections.clone();
+        blocking(move || svc.save(profile, dbstudio_store::SecretChange::Clear))
+            .await
+            .unwrap();
+        conn.id
+    }
+
+    #[tokio::test]
+    async fn a_job_session_is_closed_when_the_job_is_dropped_unrun() {
+        let s = state();
+        let id = saved_connection(&s).await;
+        let job = open_job_session(&s, id).await.unwrap();
+        assert_eq!(s.sessions.len(), 1);
+        // Neither run nor closed (a queued job that was cancelled): dropping closes it.
+        drop(job);
+        for _ in 0..100 {
+            if s.sessions.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(s.sessions.is_empty());
+        // The explicit path closes it as well.
+        let job = open_job_session(&s, id).await.unwrap();
+        job.close().await;
+        assert!(s.sessions.is_empty());
     }
 }

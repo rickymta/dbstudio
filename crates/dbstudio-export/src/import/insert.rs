@@ -63,6 +63,7 @@ pub(crate) fn insert_statement(
     target: &Target,
     rows: &[Vec<EditValue>],
     on_conflict: OnConflict,
+    returning_inserted: bool,
 ) -> Result<String> {
     let q = Dialect::new(dialect);
     let cols = target
@@ -93,23 +94,35 @@ pub(crate) fn insert_statement(
             Ok(s)
         }
         ScriptDialect::MySql { .. } => {
-            let verb = match on_conflict {
-                OnConflict::Skip => "INSERT IGNORE INTO",
-                _ => "INSERT INTO",
-            };
             let values = rows.iter().map(tuple).collect::<Vec<_>>().join(",\n");
-            let mut s = format!("{verb} {} ({cols}) VALUES\n{values}", target.table);
-            if on_conflict == OnConflict::Update {
-                let sets: Vec<String> = target
-                    .columns
-                    .iter()
-                    .filter(|c| !target.conflict_columns.contains(c))
-                    .map(|c| format!("{0} = VALUES({0})", q.quote_ident(c)))
-                    .collect();
-                if sets.is_empty() {
-                    s = s.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
-                } else {
-                    s.push_str(&format!("\nON DUPLICATE KEY UPDATE {}", sets.join(", ")));
+            let mut s = format!("INSERT INTO {} ({cols}) VALUES\n{values}", target.table);
+            // No `INSERT IGNORE`: it would turn bad values into silent warnings. A duplicate
+            // is skipped by "updating" a column to itself.
+            let noop = target
+                .columns
+                .first()
+                .map(|c| format!("{0} = {0}", q.quote_ident(c)));
+            match on_conflict {
+                OnConflict::Error => {}
+                OnConflict::Skip => {
+                    if let Some(noop) = noop {
+                        s.push_str(&format!("\nON DUPLICATE KEY UPDATE {noop}"));
+                    }
+                }
+                OnConflict::Update => {
+                    let sets: Vec<String> = target
+                        .columns
+                        .iter()
+                        .filter(|c| !target.conflict_columns.contains(c))
+                        .map(|c| format!("{0} = VALUES({0})", q.quote_ident(c)))
+                        .collect();
+                    if sets.is_empty() {
+                        if let Some(noop) = noop {
+                            s.push_str(&format!("\nON DUPLICATE KEY UPDATE {noop}"));
+                        }
+                    } else {
+                        s.push_str(&format!("\nON DUPLICATE KEY UPDATE {}", sets.join(", ")));
+                    }
                 }
             }
             Ok(s)
@@ -145,6 +158,10 @@ pub(crate) fn insert_statement(
                             keys.join(", "),
                             sets.join(", ")
                         ));
+                    }
+                    if returning_inserted {
+                        // `xmax = 0` tells an inserted row from an updated one.
+                        s.push_str("\nRETURNING (xmax = 0)");
                     }
                 }
             }
@@ -187,46 +204,33 @@ mod tests {
         ]
     }
 
+    fn stmt(
+        d: ScriptDialect,
+        t: &Target,
+        rows: &[Vec<EditValue>],
+        c: OnConflict,
+    ) -> Result<String> {
+        insert_statement(d, t, rows, c, false)
+    }
+
     #[test]
     fn postgres_conflict_modes() {
-        let sql = insert_statement(
-            ScriptDialect::Postgres,
-            &target(),
-            &rows(),
-            OnConflict::Error,
-        )
-        .unwrap();
+        let pg = ScriptDialect::Postgres;
+        let sql = stmt(pg, &target(), &rows(), OnConflict::Error).unwrap();
         assert_eq!(
             sql,
             "INSERT INTO \"s\".\"t\" (\"id\", \"name\") VALUES\n('1', 'it''s'),\n(2, NULL),\n(DEFAULT, 'x')"
         );
-        let skip = insert_statement(
-            ScriptDialect::Postgres,
-            &target(),
-            &rows(),
-            OnConflict::Skip,
-        )
-        .unwrap();
+        let skip = stmt(pg, &target(), &rows(), OnConflict::Skip).unwrap();
         assert!(skip.ends_with("ON CONFLICT DO NOTHING"));
-        let upd = insert_statement(
-            ScriptDialect::Postgres,
-            &target(),
-            &rows(),
-            OnConflict::Update,
-        )
-        .unwrap();
+        let upd = stmt(pg, &target(), &rows(), OnConflict::Update).unwrap();
         assert!(upd.ends_with("ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""));
+        let with_returning =
+            insert_statement(pg, &target(), &rows(), OnConflict::Update, true).unwrap();
+        assert!(with_returning.ends_with("EXCLUDED.\"name\"\nRETURNING (xmax = 0)"));
         let mut no_key = target();
         no_key.conflict_columns.clear();
-        assert!(
-            insert_statement(
-                ScriptDialect::Postgres,
-                &no_key,
-                &rows(),
-                OnConflict::Update
-            )
-            .is_err()
-        );
+        assert!(stmt(pg, &no_key, &rows(), OnConflict::Update).is_err());
     }
 
     #[test]
@@ -237,15 +241,18 @@ mod tests {
         };
         let mut t = target();
         t.table = "`t`".into();
-        let skip = insert_statement(my, &t, &rows(), OnConflict::Skip).unwrap();
-        assert!(skip.starts_with("INSERT IGNORE INTO `t` (`id`, `name`) VALUES"));
-        let upd = insert_statement(my, &t, &rows(), OnConflict::Update).unwrap();
+        // Skipping a duplicate is a no-op update, not `INSERT IGNORE` (which hides bad values).
+        let skip = stmt(my, &t, &rows(), OnConflict::Skip).unwrap();
+        assert!(skip.starts_with("INSERT INTO `t` (`id`, `name`) VALUES"));
+        assert!(skip.ends_with("ON DUPLICATE KEY UPDATE `id` = `id`"));
+        assert!(!skip.contains("IGNORE"));
+        let upd = stmt(my, &t, &rows(), OnConflict::Update).unwrap();
         assert!(upd.ends_with("ON DUPLICATE KEY UPDATE `name` = VALUES(`name`)"));
     }
 
     #[test]
     fn oracle_and_savepoints() {
-        let sql = insert_statement(
+        let sql = stmt(
             ScriptDialect::Oracle,
             &target(),
             &rows()[..2],
@@ -254,9 +261,7 @@ mod tests {
         .unwrap();
         assert!(sql.starts_with("INSERT ALL INTO"));
         assert!(sql.ends_with("SELECT 1 FROM DUAL"));
-        assert!(
-            insert_statement(ScriptDialect::Oracle, &target(), &rows(), OnConflict::Skip).is_err()
-        );
+        assert!(stmt(ScriptDialect::Oracle, &target(), &rows(), OnConflict::Skip).is_err());
         let sp = savepoint(ScriptDialect::Postgres, "s1").unwrap();
         assert_eq!(sp.rollback, "ROLLBACK TO SAVEPOINT s1");
         assert!(

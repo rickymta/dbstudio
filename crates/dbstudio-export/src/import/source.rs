@@ -30,10 +30,19 @@ pub(crate) trait RowSource: Send {
     fn bytes_read(&self) -> u64 {
         0
     }
+    /// Rows the source knows it holds (sheet dimensions), header included.
+    fn declared_rows(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Open the reader of `format`.
-pub(crate) fn open(path: &Path, format: &ImportFormat) -> Result<Box<dyn RowSource>> {
+/// `preview`: only a sample is needed (JSON keys are learnt from the first records only).
+pub(crate) fn open(
+    path: &Path,
+    format: &ImportFormat,
+    preview: bool,
+) -> Result<Box<dyn RowSource>> {
     match format {
         ImportFormat::Csv {
             delimiter,
@@ -43,10 +52,12 @@ pub(crate) fn open(path: &Path, format: &ImportFormat) -> Result<Box<dyn RowSour
         } => Ok(Box::new(CsvSource::open(
             path, *delimiter, *quote, *header,
         )?)),
-        ImportFormat::Xlsx { sheet, header } => {
-            Ok(Box::new(XlsxSource::open(path, sheet, *header)?))
-        }
-        ImportFormat::Json { layout } => Ok(Box::new(JsonSource::open(path, *layout)?)),
+        ImportFormat::Xlsx { sheet, header } => xlsx_open(path, sheet, *header),
+        ImportFormat::Json { layout } => Ok(Box::new(JsonSource::open(
+            path,
+            *layout,
+            preview.then_some(PREVIEW_KEY_SCAN),
+        )?)),
         ImportFormat::Sql { .. } => Err(Error::Other("a SQL script has no rows".into())),
     }
 }
@@ -74,6 +85,9 @@ fn skip_bom<R: BufRead>(r: &mut R) -> std::io::Result<()> {
 // ---------------------------------------------------------------------------------------------
 // CSV
 // ---------------------------------------------------------------------------------------------
+
+/// A parsed record: the line it starts on and its fields with their `was quoted` flag.
+type CsvRecord = (u64, Vec<(String, bool)>);
 
 /// Incremental CSV parser that tracks line numbers (quoted fields may span lines).
 struct CsvParser<R: BufRead> {
@@ -108,8 +122,9 @@ impl<R: BufRead> CsvParser<R> {
     }
 
     /// Next record and the line it starts on; blank lines are skipped.
-    fn next_record(&mut self) -> std::io::Result<Option<(u64, Vec<String>)>> {
-        let mut fields: Vec<String> = Vec::new();
+    fn next_record(&mut self) -> std::io::Result<Option<CsvRecord>> {
+        let mut fields: Vec<(String, bool)> = Vec::new();
+        let mut quoted = false;
         let mut field: Vec<u8> = Vec::new();
         let mut state = CsvState::FieldStart;
         let mut start_line = self.line;
@@ -118,7 +133,7 @@ impl<R: BufRead> CsvParser<R> {
             let buf = self.reader.fill_buf()?;
             if buf.is_empty() {
                 if any || state != CsvState::FieldStart || !field.is_empty() {
-                    fields.push(String::from_utf8_lossy(&field).into_owned());
+                    fields.push((String::from_utf8_lossy(&field).into_owned(), quoted));
                     return Ok(Some((start_line, fields)));
                 }
                 return Ok(None);
@@ -164,19 +179,23 @@ impl<R: BufRead> CsvParser<R> {
                         start_line = self.line;
                         continue;
                     }
-                    fields.push(String::from_utf8_lossy(&field).into_owned());
+                    fields.push((String::from_utf8_lossy(&field).into_owned(), quoted));
                     done = true;
                     break;
                 }
                 if b == self.delimiter {
-                    fields.push(String::from_utf8_lossy(&field).into_owned());
+                    fields.push((String::from_utf8_lossy(&field).into_owned(), quoted));
                     field.clear();
+                    quoted = false;
                     any = true;
                     state = CsvState::FieldStart;
                     continue;
                 }
                 match state {
-                    CsvState::FieldStart if b == self.quote => state = CsvState::InQuotes,
+                    CsvState::FieldStart if b == self.quote => {
+                        state = CsvState::InQuotes;
+                        quoted = true;
+                    }
                     CsvState::FieldStart | CsvState::Unquoted | CsvState::QuoteSeen => {
                         // Text after a closing quote is kept as it is.
                         field.push(b);
@@ -236,7 +255,18 @@ impl CsvSource {
             Ok(None) => Ok(None),
             Ok(Some((line, fields))) => Ok(Some(SourceRow {
                 line,
-                cells: fields.into_iter().map(EditValue::Text).collect(),
+                // An empty field without quotes is NULL, `""` is the empty string: what the
+                // CSV export writes.
+                cells: fields
+                    .into_iter()
+                    .map(|(text, quoted)| {
+                        if text.is_empty() && !quoted {
+                            EditValue::Value(Value::Null)
+                        } else {
+                            EditValue::Text(text)
+                        }
+                    })
+                    .collect(),
             })),
             Err(e) => Err(Error::Other(format!(
                 "line {}: cannot read the file: {e}",
@@ -267,7 +297,8 @@ impl RowSource for CsvSource {
 // XLSX
 // ---------------------------------------------------------------------------------------------
 
-pub(crate) struct XlsxSource {
+pub(crate) struct XlsxMemSource {
+    header: bool,
     columns: Vec<String>,
     rows: std::vec::IntoIter<(u64, Vec<Data>)>,
 }
@@ -278,8 +309,8 @@ pub(crate) fn xlsx_sheets(path: &Path) -> Result<Vec<String>> {
     Ok(wb.sheet_names())
 }
 
-impl XlsxSource {
-    pub fn open(path: &Path, sheet: &str, header: bool) -> Result<XlsxSource> {
+impl XlsxMemSource {
+    pub fn open(path: &Path, sheet: &str, header: bool) -> Result<XlsxMemSource> {
         let mut wb = open_workbook_auto(path).map_err(|e| Error::Other(format!("xlsx: {e}")))?;
         let name = if sheet.is_empty() {
             wb.sheet_names()
@@ -317,15 +348,175 @@ impl XlsxSource {
         } else {
             (1..=width).map(|i| format!("#{i}")).collect()
         };
-        Ok(XlsxSource {
+        Ok(XlsxMemSource {
+            header: header && width > 0,
             columns,
             rows: rows.into_iter(),
         })
     }
+}
 
-    /// Rows left (exact).
-    pub fn remaining(&self) -> usize {
-        self.rows.len()
+/// `.xlsx` / `.xlsm` files are read as a stream (the sheet never sits in memory); other
+/// workbook formats fall back to loading the sheet.
+fn xlsx_open(path: &Path, sheet: &str, header: bool) -> Result<Box<dyn RowSource>> {
+    let streamable = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("xlsx") || e.eq_ignore_ascii_case("xlsm"));
+    if streamable {
+        Ok(Box::new(XlsxStream::open(path, sheet, header)?))
+    } else {
+        Ok(Box::new(XlsxMemSource::open(path, sheet, header)?))
+    }
+}
+
+enum XlsxMsg {
+    /// Rows the sheet declares (estimate).
+    Meta(u64),
+    Row(u64, Vec<EditValue>),
+    Failed(String),
+}
+
+/// Streams the rows of an `.xlsx` sheet. The workbook and its cell reader live on a helper
+/// thread (the reader borrows the workbook) that hands rows over a small bounded channel.
+pub(crate) struct XlsxStream {
+    columns: Vec<String>,
+    pending: Option<SourceRow>,
+    rx: std::sync::mpsc::Receiver<XlsxMsg>,
+    estimated: u64,
+}
+
+fn xlsx_worker(path: std::path::PathBuf, sheet: String, tx: std::sync::mpsc::SyncSender<XlsxMsg>) {
+    use calamine::{Xlsx, open_workbook};
+    let fail = |m: String| {
+        let _ = tx.send(XlsxMsg::Failed(m));
+    };
+    let mut wb: Xlsx<_> = match open_workbook(&path) {
+        Ok(w) => w,
+        Err(e) => return fail(format!("xlsx: {e}")),
+    };
+    let name = if sheet.is_empty() {
+        match wb.sheet_names().first() {
+            Some(n) => n.clone(),
+            None => return fail("the workbook has no sheets".into()),
+        }
+    } else {
+        sheet
+    };
+    let mut reader = match wb.worksheet_cells_reader(&name) {
+        Ok(r) => r,
+        Err(e) => return fail(format!("xlsx sheet {name}: {e}")),
+    };
+    let dims = reader.dimensions();
+    let declared = u64::from(dims.end.0.saturating_sub(dims.start.0)) + 1;
+    if tx.send(XlsxMsg::Meta(declared)).is_err() {
+        return;
+    }
+    let mut current: Option<u32> = None;
+    let mut cells: Vec<EditValue> = Vec::new();
+    loop {
+        match reader.next_cell() {
+            Ok(Some(cell)) => {
+                let (row, col) = cell.get_position();
+                if current.is_some_and(|r| r != row) {
+                    let line = u64::from(current.unwrap_or(0)) + 1;
+                    if tx
+                        .send(XlsxMsg::Row(line, std::mem::take(&mut cells)))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                current = Some(row);
+                let col = col as usize;
+                if cells.len() <= col {
+                    cells.resize(col + 1, EditValue::Value(Value::Null));
+                }
+                let data: Data = cell.get_value().clone().into();
+                cells[col] = data_cell(&data);
+            }
+            Ok(None) => break,
+            Err(e) => return fail(format!("xlsx sheet {name}: {e}")),
+        }
+    }
+    if let Some(row) = current {
+        let _ = tx.send(XlsxMsg::Row(u64::from(row) + 1, cells));
+    }
+}
+
+impl XlsxStream {
+    pub fn open(path: &Path, sheet: &str, header: bool) -> Result<XlsxStream> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(256);
+        let (path, sheet) = (path.to_path_buf(), sheet.to_string());
+        std::thread::Builder::new()
+            .name("xlsx-reader".into())
+            .spawn(move || xlsx_worker(path, sheet, tx))
+            .map_err(|e| Error::Other(format!("cannot start the xlsx reader: {e}")))?;
+        let mut src = XlsxStream {
+            columns: Vec::new(),
+            pending: None,
+            rx,
+            estimated: 0,
+        };
+        // The first message is the sheet's size (or the reason it cannot be read).
+        match src.rx.recv() {
+            Ok(XlsxMsg::Meta(n)) => src.estimated = n,
+            Ok(XlsxMsg::Failed(m)) => return Err(Error::Other(m)),
+            _ => return Err(Error::Other("the xlsx reader stopped".into())),
+        }
+        if let Some(first) = src.read()? {
+            if header {
+                src.columns = first
+                    .cells
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| match c {
+                        EditValue::Text(t) if !t.trim().is_empty() => t.trim().to_string(),
+                        EditValue::Value(Value::Null) => format!("#{}", i + 1),
+                        EditValue::Value(v) => {
+                            let t = crate::values::cell_text(v, crate::BinaryFormat::Base64)
+                                .map(|c| c.into_owned())
+                                .unwrap_or_default();
+                            if t.trim().is_empty() {
+                                format!("#{}", i + 1)
+                            } else {
+                                t.trim().to_string()
+                            }
+                        }
+                        _ => format!("#{}", i + 1),
+                    })
+                    .collect();
+            } else {
+                src.columns = (1..=first.cells.len()).map(|i| format!("#{i}")).collect();
+                src.pending = Some(first);
+            }
+        }
+        Ok(src)
+    }
+
+    fn read(&mut self) -> Result<Option<SourceRow>> {
+        match self.rx.recv() {
+            Ok(XlsxMsg::Row(line, cells)) => Ok(Some(SourceRow { line, cells })),
+            Ok(XlsxMsg::Failed(m)) => Err(Error::Other(m)),
+            Ok(XlsxMsg::Meta(_)) | Err(_) => Ok(None),
+        }
+    }
+}
+
+impl RowSource for XlsxStream {
+    fn columns(&self) -> &[String] {
+        &self.columns
+    }
+
+    fn declared_rows(&self) -> Option<u64> {
+        Some(self.estimated)
+    }
+
+    fn next_row(&mut self) -> Result<Option<SourceRow>> {
+        if let Some(row) = self.pending.take() {
+            return Ok(Some(row));
+        }
+        self.read()
     }
 }
 
@@ -406,9 +597,13 @@ fn data_cell(d: &Data) -> EditValue {
     }
 }
 
-impl RowSource for XlsxSource {
+impl RowSource for XlsxMemSource {
     fn columns(&self) -> &[String] {
         &self.columns
+    }
+
+    fn declared_rows(&self) -> Option<u64> {
+        Some(self.rows.len() as u64 + u64::from(self.header))
     }
 
     fn next_row(&mut self) -> Result<Option<SourceRow>> {
@@ -425,7 +620,7 @@ impl RowSource for XlsxSource {
 
 /// A JSON object whose key order is kept.
 #[derive(Debug)]
-struct OrderedObject(Vec<(String, serde_json::Value)>);
+struct OrderedObject(Vec<(String, Box<serde_json::value::RawValue>)>);
 
 impl<'de> Deserialize<'de> for OrderedObject {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
@@ -440,7 +635,9 @@ impl<'de> Deserialize<'de> for OrderedObject {
                 mut map: A,
             ) -> std::result::Result<OrderedObject, A::Error> {
                 let mut fields = Vec::new();
-                while let Some((k, v)) = map.next_entry::<String, serde_json::Value>()? {
+                while let Some((k, v)) =
+                    map.next_entry::<String, Box<serde_json::value::RawValue>>()?
+                {
                     fields.push((k, v));
                 }
                 Ok(OrderedObject(fields))
@@ -450,22 +647,25 @@ impl<'de> Deserialize<'de> for OrderedObject {
     }
 }
 
-fn json_cell(v: &serde_json::Value) -> EditValue {
-    use serde_json::Value as J;
-    match v {
-        J::Null => EditValue::Value(Value::Null),
-        J::Bool(b) => EditValue::Value(Value::Bool(*b)),
-        J::Number(n) => {
-            if let Some(i) = n.as_i64() {
+/// A JSON value as a cell. Numbers keep their exact text (big integers and decimals do not go
+/// through a float), nested documents keep their original text and key order.
+fn json_cell(raw: &serde_json::value::RawValue) -> EditValue {
+    let t = raw.get().trim();
+    match t.as_bytes().first() {
+        Some(b'n') => EditValue::Value(Value::Null),
+        Some(b't') => EditValue::Value(Value::Bool(true)),
+        Some(b'f') => EditValue::Value(Value::Bool(false)),
+        Some(b'"') => EditValue::Text(serde_json::from_str::<String>(t).unwrap_or_default()),
+        Some(b'{' | b'[') => EditValue::Value(Value::Json(t.to_string())),
+        _ => {
+            if let Ok(i) = t.parse::<i64>() {
                 EditValue::Value(Value::Int(i))
-            } else if let Some(u) = n.as_u64() {
+            } else if let Ok(u) = t.parse::<u64>() {
                 EditValue::Value(Value::UInt(u))
             } else {
-                EditValue::Value(Value::Decimal(n.to_string()))
+                EditValue::Value(Value::Decimal(t.to_string()))
             }
         }
-        J::String(s) => EditValue::Text(s.clone()),
-        J::Array(_) | J::Object(_) => EditValue::Value(Value::Json(v.to_string())),
     }
 }
 
@@ -588,18 +788,24 @@ pub(crate) struct JsonSource {
     line: u64,
 }
 
-/// Records inspected to learn the column names.
-const KEY_SCAN_RECORDS: usize = 1000;
+/// Records inspected for the column names in a preview.
+pub(crate) const PREVIEW_KEY_SCAN: usize = 1000;
 
 impl JsonSource {
-    pub fn open(path: &Path, layout: JsonLayout) -> Result<JsonSource> {
+    /// `key_scan_limit`: records read to learn the column names (`None` = all of them, so a key
+    /// that first appears late is not lost).
+    pub fn open(
+        path: &Path,
+        layout: JsonLayout,
+        key_scan_limit: Option<usize>,
+    ) -> Result<JsonSource> {
         let mut columns: Vec<String> = Vec::new();
         // Pass 1: the key union of the first records.
         {
             let mut scan = Self::reader(path, layout)?;
             let mut seen = 0usize;
             let mut line = 0u64;
-            while seen < KEY_SCAN_RECORDS {
+            while key_scan_limit.is_none_or(|n| seen < n) {
                 let Some((_, text)) = Self::read_text(&mut scan, layout, &mut line)? else {
                     break;
                 };
@@ -701,6 +907,10 @@ mod tests {
         p
     }
 
+    fn null() -> EditValue {
+        EditValue::Value(Value::Null)
+    }
+
     fn text(v: &str) -> EditValue {
         EditValue::Text(v.into())
     }
@@ -735,13 +945,28 @@ mod tests {
         let r = s.next_row().unwrap().unwrap();
         assert_eq!((r.line, r.cells), (3, vec![text("1"), text("x\"y")]));
         let r = s.next_row().unwrap().unwrap();
-        assert_eq!((r.line, r.cells), (4, vec![text("2"), text("")]));
+        assert_eq!((r.line, r.cells), (4, vec![text("2"), null()]));
         let r = s.next_row().unwrap().unwrap();
-        assert_eq!((r.line, r.cells), (5, vec![text("3"), text("")]));
+        assert_eq!((r.line, r.cells), (5, vec![text("3"), null()]));
         let r = s.next_row().unwrap().unwrap();
         assert_eq!((r.line, r.cells), (6, vec![text("last"), text("field")]));
         assert!(s.next_row().unwrap().is_none());
         assert_eq!(s.bytes_read(), 30);
+    }
+
+    #[test]
+    fn csv_null_versus_empty_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write(&dir, "n.csv", b"a,b,c\n,\"\",x\n\"\",,\n");
+        let mut s = CsvSource::open(&p, ',', '"', true).unwrap();
+        assert_eq!(
+            s.next_row().unwrap().unwrap().cells,
+            [null(), text(""), text("x")]
+        );
+        assert_eq!(
+            s.next_row().unwrap().unwrap().cells,
+            [text(""), null(), null()]
+        );
     }
 
     #[test]
@@ -764,7 +989,7 @@ mod tests {
             "a.json",
             br#"[ {"id": 1, "name": "a,]x"}, {"id": 2, "tags": [1,2], "name": null}, {"name": "c\"]"} ]"#,
         );
-        let mut s = JsonSource::open(&p, JsonLayout::Array).unwrap();
+        let mut s = JsonSource::open(&p, JsonLayout::Array, None).unwrap();
         assert_eq!(s.columns(), ["id", "name", "tags"]);
         let r1 = s.next_row().unwrap().unwrap();
         assert_eq!(r1.cells[1], text("a,]x"));
@@ -778,7 +1003,7 @@ mod tests {
         assert!(s.next_row().unwrap().is_none());
 
         let nd = write(&dir, "a.ndjson", b"{\"a\":1}\n\n{\"a\":2,\"b\":true}\n");
-        let mut s = JsonSource::open(&nd, JsonLayout::Ndjson).unwrap();
+        let mut s = JsonSource::open(&nd, JsonLayout::Ndjson, None).unwrap();
         assert_eq!(s.columns(), ["a", "b"]);
         assert_eq!(s.next_row().unwrap().unwrap().line, 1);
         let r = s.next_row().unwrap().unwrap();
@@ -786,7 +1011,7 @@ mod tests {
         assert_eq!(r.cells[1], EditValue::Value(Value::Bool(true)));
 
         let bad = write(&dir, "b.json", b"{\"a\": 1}");
-        assert!(JsonSource::open(&bad, JsonLayout::Array).is_err());
+        assert!(JsonSource::open(&bad, JsonLayout::Array, None).is_err());
     }
 
     #[test]
@@ -800,5 +1025,51 @@ mod tests {
             Some(Value::DateTime("2023-03-15 12:00:00".into()))
         );
         assert_eq!(excel_serial(f64::NAN), None);
+    }
+
+    #[test]
+    fn xlsx_is_streamed_row_by_row_with_row_numbers() {
+        use rust_xlsxwriter::Workbook;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.xlsx");
+        let mut wb = Workbook::new();
+        let ws = wb.add_worksheet_with_constant_memory().unwrap();
+        ws.set_name("Data").unwrap();
+        ws.write_string(0, 0, "id").unwrap();
+        ws.write_string(0, 1, "name").unwrap();
+        // Row 3 is blank; row 5 has an empty first cell.
+        for r in 1..=5000u32 {
+            if r == 2 {
+                continue;
+            }
+            if r != 4 {
+                ws.write_number(r, 0, f64::from(r)).unwrap();
+            }
+            ws.write_string(r, 1, format!("n{r}")).unwrap();
+        }
+        wb.save(&path).unwrap();
+
+        let mut s = XlsxStream::open(&path, "", true).unwrap();
+        assert_eq!(s.columns(), ["id", "name"]);
+        assert_eq!(s.declared_rows(), Some(5001));
+        let first = s.next_row().unwrap().unwrap();
+        assert_eq!((first.line, &first.cells[1]), (2, &text("n1")));
+        assert_eq!(first.cells[0], EditValue::Value(Value::Int(1)));
+        // The blank row is skipped; row numbers are the sheet's.
+        assert_eq!(s.next_row().unwrap().unwrap().line, 4);
+        let fifth = s.next_row().unwrap().unwrap();
+        assert_eq!((fifth.line, &fifth.cells[0]), (5, &null()));
+        let mut count = 3;
+        while s.next_row().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 4999);
+        // A sheet that does not exist is an error, not an empty import.
+        assert!(XlsxStream::open(&path, "Nope", true).is_err());
+        // Dropping a half-read stream ends the helper thread without hanging.
+        let mut again = XlsxStream::open(&path, "Data", false).unwrap();
+        assert_eq!(again.columns(), ["#1", "#2"]);
+        assert_eq!(again.next_row().unwrap().unwrap().line, 1);
+        drop(again);
     }
 }

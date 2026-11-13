@@ -35,6 +35,21 @@ pub(crate) fn select_for(
     ))
 }
 
+/// The `SELECT` that reads a whole table on `conn`.
+pub(crate) async fn table_select_on(
+    conn: &mut mysql_async::Conn,
+    no_backslash_escapes: bool,
+    req: &TableStreamRequest,
+) -> Result<String> {
+    let (db, table) = sql::table_target(&req.table)?;
+    let key = if req.order_by_key {
+        crate::bulk::primary_key(conn, &db, &table).await?
+    } else {
+        Vec::new()
+    };
+    select_for(req, &db, &table, &key, no_backslash_escapes)
+}
+
 /// Stream a whole table into `sink`.
 #[allow(dead_code)]
 pub(crate) async fn stream_table(

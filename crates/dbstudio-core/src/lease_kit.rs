@@ -32,9 +32,9 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::{
-    ColumnMeta, EndOutcome, Error, ExecSummary, Lease, LeaseCloseReport, LeaseContext,
-    LeaseOptions, LeaseState, QueryRequest, Result, ResultSink, StatementEnd, StatementStart,
-    TxControl, TxOptions, TxStatus, Value,
+    BulkInsertRequest, BulkInsertResult, ColumnMeta, EndOutcome, Error, ExecSummary, Lease,
+    LeaseCloseReport, LeaseContext, LeaseOptions, LeaseState, QueryRequest, Result, ResultSink,
+    StatementEnd, StatementStart, TableStreamRequest, TxControl, TxOptions, TxStatus, Value,
 };
 
 /// Default batch size passed to [`LeaseBackend::fetch_more`] when the caller gives none.
@@ -77,6 +77,19 @@ pub trait LeaseBackend: Send + 'static {
     async fn refresh_context(&mut self, executed_text: &str) -> Result<Option<LeaseContext>> {
         let _ = executed_text;
         Ok(None)
+    }
+    /// SQL text of the `SELECT` that reads a whole table (export). [`ActorLease`] runs it like
+    /// any statement on this connection, so rows stream inside the lease's transaction.
+    /// Default: `Unsupported("table_stream")`.
+    async fn table_select(&mut self, req: &TableStreamRequest) -> Result<String> {
+        let _ = req;
+        Err(Error::Unsupported("table_stream".into()))
+    }
+    /// Insert rows on this very connection, inside its current transaction (no commit).
+    /// Default: `Unsupported("bulk_insert")`.
+    async fn bulk_insert(&mut self, req: BulkInsertRequest) -> Result<BulkInsertResult> {
+        let _ = req;
+        Err(Error::Unsupported("bulk_insert".into()))
     }
     /// Liveness check.
     async fn ping(&mut self) -> Result<()>;
@@ -271,6 +284,14 @@ enum Cmd {
         reply: oneshot::Sender<Result<()>>,
     },
     Ping(oneshot::Sender<Result<()>>),
+    TableSelect {
+        req: TableStreamRequest,
+        reply: oneshot::Sender<Result<String>>,
+    },
+    Bulk {
+        req: BulkInsertRequest,
+        reply: oneshot::Sender<Result<BulkInsertResult>>,
+    },
     Close(oneshot::Sender<LeaseCloseReport>),
 }
 
@@ -649,6 +670,27 @@ impl<B: LeaseBackend> Lease for ActorLease<B> {
         self.shared.lock().state.clone()
     }
 
+    async fn stream_table(
+        &self,
+        req: TableStreamRequest,
+        sink: &mut dyn ResultSink,
+    ) -> Result<ExecSummary> {
+        let text = self
+            .simple(|reply| Cmd::TableSelect {
+                req: req.clone(),
+                reply,
+            })
+            .await?;
+        let mut query = QueryRequest::new(text);
+        query.query_id = req.query_id;
+        query.batch_size = req.batch_size;
+        self.execute(query, sink).await
+    }
+
+    async fn bulk_insert(&self, req: BulkInsertRequest) -> Result<BulkInsertResult> {
+        self.simple(|reply| Cmd::Bulk { req, reply }).await
+    }
+
     async fn ping(&self) -> Result<()> {
         {
             let g = self.shared.lock();
@@ -840,6 +882,16 @@ async fn run_actor<B: LeaseBackend>(
                 if result.is_ok() {
                     apply_context(&shared, &ctx);
                 }
+                finish_simple(&mut backend, &shared, &result).await;
+                let _ = reply.send(result);
+            }
+            Cmd::TableSelect { req, reply } => {
+                let result = backend.table_select(&req).await;
+                finish_simple(&mut backend, &shared, &result).await;
+                let _ = reply.send(result);
+            }
+            Cmd::Bulk { req, reply } => {
+                let result = backend.bulk_insert(req).await;
                 finish_simple(&mut backend, &shared, &result).await;
                 let _ = reply.send(result);
             }

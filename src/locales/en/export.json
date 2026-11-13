@@ -39,7 +39,8 @@
     "lineEnding": "Line ending",
     "bom": "UTF-8 byte order mark (Excel)",
     "header": "Header row",
-    "quoteAll": "Quote every field"
+    "quoteAll": "Quote every field",
+    "excelSafe": "Protect against Excel formulas (prefix =, +, -, @ with ')"
   },
   "json": {
     "layout": "Layout",

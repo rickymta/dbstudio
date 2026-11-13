@@ -236,6 +236,32 @@ impl Drop for Output {
     }
 }
 
+/// Remove temporary export files (`.name.dbstudio-tmp-<id>`) in `dir` that were last written
+/// more than `older_than` ago: leftovers of an export that was killed. Returns how many files
+/// were removed.
+pub fn cleanup_orphans(dir: &Path, older_than: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with('.') && name.contains(".dbstudio-tmp-")) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= older_than);
+        if old && entry.path().is_file() && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Zip entry / sheet friendly file name: no path separators or reserved characters.
 pub(crate) fn safe_name(name: &str) -> String {
     let cleaned: String = name
@@ -313,6 +339,29 @@ mod tests {
         let mut s = String::new();
         io::Read::read_to_string(&mut z.by_name("two.txt").unwrap(), &mut s).unwrap();
         assert_eq!(s, "22");
+    }
+
+    #[test]
+    fn orphans_are_removed_when_old_enough() {
+        let dir = tempfile::tempdir().unwrap();
+        let orphan = dir.path().join(".data.csv.dbstudio-tmp-abc");
+        std::fs::write(&orphan, "x").unwrap();
+        let other = dir.path().join("data.csv");
+        std::fs::write(&other, "x").unwrap();
+        let hidden = dir.path().join(".gitignore");
+        std::fs::write(&hidden, "x").unwrap();
+        // Too young: kept (it may belong to an export that is running).
+        assert_eq!(
+            cleanup_orphans(dir.path(), std::time::Duration::from_secs(3600)),
+            0
+        );
+        assert!(orphan.exists());
+        assert_eq!(cleanup_orphans(dir.path(), std::time::Duration::ZERO), 1);
+        assert!(!orphan.exists() && other.exists() && hidden.exists());
+        assert_eq!(
+            cleanup_orphans(&dir.path().join("missing"), std::time::Duration::ZERO),
+            0
+        );
     }
 
     #[test]

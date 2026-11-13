@@ -215,7 +215,7 @@ async fn conflict_modes_shape_the_statement() {
         (OnConflict::Skip, "ON CONFLICT DO NOTHING"),
         (
             OnConflict::Update,
-            "ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\"",
+            "ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\"\nRETURNING (xmax = 0)",
         ),
     ] {
         let mut s = spec(&file, csv_format(), existing("orders"));
@@ -460,4 +460,106 @@ async fn preview_xlsx_lists_sheets() {
     .unwrap();
     assert_eq!(report.inserted, 2);
     assert!(inserts(&session)[0].ends_with("(1, 'a'),\n(2, NULL)"));
+}
+
+#[tokio::test]
+async fn without_a_lease_only_the_failing_statement_is_retried() {
+    // 2500 rows, a bad one at line 1501 (the second statement of 1000 rows): the rows of the
+    // statement that went through must not be inserted again.
+    let dir = tempfile::tempdir().unwrap();
+    let mut text = String::from("id;name\n");
+    for i in 1..=2500 {
+        text.push_str(&format!("{i};{}\n", if i == 1500 { "bad" } else { "ok" }));
+    }
+    let file = write(dir.path(), "in.csv", &text);
+    let session = FakeSession::with_tables(&[("orders", 0)]);
+    *session.fail_on.lock().unwrap() = Some("'bad'".into());
+    let mut s = spec(&file, csv_format(), existing("orders"));
+    s.mode = ImportMode::Batches { rows: 5000 };
+    s.max_errors = 5;
+    let report = run_import(context(session.clone(), Recorder::new()), s)
+        .await
+        .unwrap();
+    assert_eq!(report.rows_read, 2500);
+    assert_eq!(report.inserted, 2499);
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(report.errors[0].line, 1501);
+    let sql = inserts(&session);
+    let with = |needle: &str| sql.iter().filter(|s| s.contains(needle)).count();
+    assert_eq!(with("('1', 'ok')"), 1, "row 1 went in exactly once");
+    assert_eq!(with("('1000', 'ok')"), 1);
+    assert_eq!(with("('2500', 'ok')"), 1);
+    // 1000 rows + the failed 1000-row statement + 1000 single rows + the last 500 rows.
+    assert_eq!(sql.len(), 1 + 1 + 1000 + 1);
+}
+
+#[tokio::test]
+async fn empty_fields_are_null_and_quoted_empty_strings_are_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(dir.path(), "in.csv", "id;name\n1;\n2;\"\"\n");
+    let session = FakeSession::with_tables(&[("orders", 0)]);
+    run_import(
+        context(session.clone(), Recorder::new()),
+        spec(&file, csv_format(), existing("orders")),
+    )
+    .await
+    .unwrap();
+    assert!(inserts(&session)[0].ends_with("('1', NULL),\n('2', '')"));
+}
+
+#[tokio::test]
+async fn json_numbers_keep_their_digits() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(
+        dir.path(),
+        "in.json",
+        r#"[{"id": 9223372036854775807, "name": "a", "price": 1234567890.123456789012},
+           {"id": 2, "name": "{\"z\": 1, \"a\": 2}", "late": 1}]"#,
+    );
+    let session = FakeSession::with_tables(&[("orders", 0)]);
+    run_import(
+        context(session.clone(), Recorder::new()),
+        spec(
+            &file,
+            ImportFormat::Json {
+                layout: dbstudio_export::JsonLayout::Array,
+            },
+            existing("orders"),
+        ),
+    )
+    .await
+    .unwrap();
+    let sql = &inserts(&session)[0];
+    assert!(
+        sql.contains("(9223372036854775807, 'a', 1234567890.123456789012)"),
+        "{sql}"
+    );
+}
+
+#[tokio::test]
+async fn a_key_that_first_appears_late_still_becomes_a_column() {
+    // The key of the last record is far beyond any sampling window.
+    let dir = tempfile::tempdir().unwrap();
+    let mut text = String::new();
+    for i in 1..=1500 {
+        text.push_str(&format!("{{\"id\": {i}}}\n"));
+    }
+    text.push_str("{\"id\": 1501, \"name\": \"late\"}\n");
+    let file = write(dir.path(), "in.ndjson", &text);
+    let session = FakeSession::with_tables(&[("orders", 0)]);
+    let report = run_import(
+        context(session.clone(), Recorder::new()),
+        spec(
+            &file,
+            ImportFormat::Json {
+                layout: dbstudio_export::JsonLayout::Ndjson,
+            },
+            existing("orders"),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.inserted, 1501);
+    let last = inserts(&session).pop().unwrap();
+    assert!(last.contains("(1501, 'late')"), "{last}");
 }

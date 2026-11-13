@@ -6,8 +6,8 @@ use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 
 use dbstudio_core::{
-    CancelToken, ColumnMeta, EndOutcome, Error, JobProgress, LeaseContext, QueryRequest, Result,
-    ResultSink, StatementEnd, Value,
+    CancelToken, ColumnMeta, EndOutcome, Error, JobProgress, QueryRequest, Result, ResultSink,
+    StatementEnd, Value,
 };
 use dbstudio_sql::StreamSplitter;
 
@@ -74,16 +74,8 @@ pub(crate) async fn run(
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut reader = BufReader::with_capacity(256 * 1024, file);
 
-    let (conn, _) = Conn::open(Arc::clone(&ctx.session), None).await?;
+    let (conn, _) = Conn::open(Arc::clone(&ctx.session), database.clone(), None).await?;
     let conn = Arc::new(conn);
-    if let (Some(db), Some(lease)) = (database, conn.lease()) {
-        lease
-            .set_context(LeaseContext {
-                database: Some(db.clone()),
-                schema: None,
-            })
-            .await?;
-    }
     let result = execute_script(
         ctx,
         spec,
@@ -94,9 +86,7 @@ pub(crate) async fn run(
         size,
     )
     .await;
-    if let Ok(conn) = Arc::try_unwrap(conn) {
-        conn.close().await;
-    }
+    conn.close().await;
     result
 }
 
@@ -109,10 +99,6 @@ async fn execute_script(
     reader: &mut BufReader<File>,
     size: u64,
 ) -> Result<ImportReport> {
-    let ImportTarget::Script { database } = &spec.target else {
-        unreachable!("checked by the caller")
-    };
-    let use_request_database = conn.lease().is_none();
     let mut splitter = StreamSplitter::new(ctx.dialect);
     let mut report = ImportReport::default();
     let mut bytes = 0u64;
@@ -143,10 +129,7 @@ async fn execute_script(
                 continue;
             }
             report.rows_read += 1;
-            let mut req = QueryRequest::new(stmt.clone());
-            if use_request_database {
-                req.database = database.clone();
-            }
+            let req = QueryRequest::new(stmt.clone());
             let mut sink = AffectedSink::default();
             match conn.execute_cancellable(cancel, req, &mut sink).await {
                 Ok(_) => {

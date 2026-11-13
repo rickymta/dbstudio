@@ -44,10 +44,20 @@ struct TableState {
 
 impl SqlWriter {
     pub fn create(cfg: &WriterConfig, opts: SqlOptions) -> Result<SqlWriter> {
+        // The script must read the same on any server: MySQL literals always use backslash
+        // escapes (and the prologue turns `NO_BACKSLASH_ESCAPES` off), whatever the source or
+        // the destination session is set to.
+        let dialect = match cfg.dialect {
+            ScriptDialect::MySql { mariadb, .. } => ScriptDialect::MySql {
+                mariadb,
+                backslash_escapes: true,
+            },
+            other => other,
+        };
         Ok(SqlWriter {
             out: Output::create(&cfg.dest, cfg.overwrite, false)?,
-            q: Dialect::new(cfg.dialect),
-            dialect: cfg.dialect,
+            q: Dialect::new(dialect),
+            dialect,
             opts,
             buf: String::new(),
             started: false,
@@ -97,8 +107,16 @@ impl SqlWriter {
             .unwrap_or_default();
         self.buf
             .push_str(&format!("-- DBStudio SQL export\n-- Generated: {now}\n\n"));
-        if matches!(self.dialect, ScriptDialect::MySql { .. }) {
-            self.buf.push_str("SET NAMES utf8mb4;\n");
+        match self.dialect {
+            ScriptDialect::MySql { .. } => self.buf.push_str(
+                "SET NAMES utf8mb4;\n\
+                 SET @DBSTUDIO_OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO';\n\
+                 SET @DBSTUDIO_OLD_TIME_ZONE=@@TIME_ZONE, TIME_ZONE='+00:00';\n",
+            ),
+            ScriptDialect::Postgres => self
+                .buf
+                .push_str("SET standard_conforming_strings = on;\nSET client_encoding = 'UTF8';\n"),
+            _ => {}
         }
         if self.opts.disable_fk_checks {
             if let Some((off, _)) = self.fk_off() {
@@ -310,8 +328,13 @@ impl TableWriter for SqlWriter {
         if matches!(self.dialect, ScriptDialect::MsSql) {
             batch_rows = batch_rows.min(MSSQL_MAX_ROWS);
         }
-        self.buf
-            .push_str(&format!("-- Data of {}\n", meta.name.replace('\n', " ")));
+        self.buf.push_str(&format!(
+            "-- Data of {}\n",
+            meta.name
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+        ));
         self.table = Some(TableState {
             prefix: format!("INSERT INTO {name}{columns} VALUES"),
             stmt: String::new(),
@@ -343,6 +366,11 @@ impl TableWriter for SqlWriter {
                 self.buf.push('\n');
             }
         }
+        if matches!(self.dialect, ScriptDialect::MySql { .. }) {
+            self.buf.push_str(
+                "SET SQL_MODE=@DBSTUDIO_OLD_SQL_MODE;\nSET TIME_ZONE=@DBSTUDIO_OLD_TIME_ZONE;\n",
+            );
+        }
         self.flush_buf()?;
         if !self.wrote_any && self.out.bytes() == 0 {
             return Err(Error::Other("nothing to export".into()));
@@ -372,7 +400,7 @@ mod tests {
         ]);
         assert_eq!(
             sql_literal(pg(), ScriptDialect::Postgres, &arr),
-            "'{1,\"a \\\"b\\\"\",NULL,{t}}'"
+            "E'{1,\"a \\\\\"b\\\\\"\",NULL,{t}}'"
         );
         let doc = Value::Document(vec![("a".into(), Value::Text("it's".into()))]);
         assert_eq!(

@@ -6,15 +6,16 @@ use std::path::PathBuf;
 use dbstudio_core::{ColumnMeta, Error, Result, ResultSink, StatementEnd, Value};
 use rust_xlsxwriter::{Workbook, XlsxError};
 
-use super::{DICTIONARY_HEADER, NameSet, SchemaEntry, WriterConfig};
+use super::{DICTIONARY_HEADER, SchemaEntry, WriterConfig};
 use crate::fsio::Output;
 use crate::values::cell_text;
 use crate::{BinaryFormat, ExportContent, ObjectMeta, TableWriter, XlsxOptions};
 
 /// Longest sheet name Excel accepts.
 const MAX_SHEET_NAME: usize = 31;
-/// Largest integer Excel keeps exactly.
-const MAX_EXACT_INT: i64 = 9_007_199_254_740_991;
+/// Largest integer written as a number: Excel shows 15 significant digits, anything longer
+/// would lose its tail, so it goes in as text.
+const MAX_EXACT_INT: i64 = 999_999_999_999_999;
 
 fn xerr(e: XlsxError) -> Error {
     Error::Other(format!("xlsx: {e}"))
@@ -37,7 +38,7 @@ pub(crate) struct XlsxWriter {
     binary: BinaryFormat,
     content: ExportContent,
     max_rows: u32,
-    names: NameSet,
+    names: std::collections::HashSet<String>,
     sheet_count: usize,
     current: Option<Sheet>,
     schema: Vec<SchemaEntry>,
@@ -52,17 +53,40 @@ impl std::fmt::Debug for XlsxWriter {
     }
 }
 
-/// Sheet name valid for Excel: no `[]:*?/\`, not empty.
+/// Sheet name valid for Excel: no `[]:*?/\\`, no leading / trailing apostrophe, not empty and
+/// not the reserved name "History".
 fn clean_sheet_name(name: &str) -> String {
     let s: String = name
         .chars()
         .map(|c| match c {
             '[' | ']' | ':' | '*' | '?' | '/' | '\\' => '_',
+            c if c.is_control() => '_',
             c => c,
         })
         .collect();
-    let s = s.trim_matches('\'').trim().to_string();
-    if s.is_empty() { "Sheet".into() } else { s }
+    let s = s.trim().trim_matches('\'').trim().to_string();
+    if s.is_empty() {
+        "Sheet".into()
+    } else if s.eq_ignore_ascii_case("history") {
+        format!("{s}_")
+    } else {
+        s
+    }
+}
+
+/// `s` cut to at most `units` UTF-16 code units (Excel's limit counts those), never in the
+/// middle of a character.
+fn fit_utf16(s: &str, units: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        used += c.len_utf16();
+        if used > units {
+            break;
+        }
+        out.push(c);
+    }
+    out
 }
 
 impl XlsxWriter {
@@ -77,7 +101,7 @@ impl XlsxWriter {
             binary: cfg.binary,
             content: cfg.content,
             max_rows: cfg.tuning.xlsx_sheet_rows.max(1),
-            names: NameSet::default(),
+            names: std::collections::HashSet::new(),
             sheet_count: 0,
             current: None,
             schema: Vec::new(),
@@ -85,7 +109,8 @@ impl XlsxWriter {
         })
     }
 
-    /// Unique sheet name: `orders`, `orders (2)`...
+    /// Unique sheet name: `orders`, `orders (2)`...; a clash with another table's name appends
+    /// `_2`, `_3`...
     fn sheet_name(&mut self, base: &str, part: u32) -> String {
         let base = clean_sheet_name(base);
         let suffix = if part > 1 {
@@ -93,10 +118,22 @@ impl XlsxWriter {
         } else {
             String::new()
         };
-        let room = MAX_SHEET_NAME.saturating_sub(suffix.chars().count());
-        let candidate: String = base.chars().take(room).collect::<String>() + &suffix;
-        // `unique` appends `_n` on a clash with the name of another table.
-        self.names.unique(&candidate, MAX_SHEET_NAME)
+        let room = MAX_SHEET_NAME - suffix.encode_utf16().count();
+        let candidate = fit_utf16(&base, room) + &suffix;
+        let mut n = 1;
+        loop {
+            let name = if n == 1 {
+                candidate.clone()
+            } else {
+                let tail = format!("_{n}");
+                fit_utf16(&candidate, MAX_SHEET_NAME - tail.len()) + &tail
+            };
+            let name = name.trim_end_matches('\'').to_string();
+            if self.names.insert(name.to_lowercase()) {
+                return name;
+            }
+            n += 1;
+        }
     }
 
     fn open_sheet(&mut self, base: &str, part: u32, columns: Vec<String>) -> Result<()> {
@@ -127,7 +164,7 @@ impl XlsxWriter {
     }
 
     fn write_dictionary(&mut self) -> Result<()> {
-        let name = self.names.unique("Data dictionary", MAX_SHEET_NAME);
+        let name = self.sheet_name("Data dictionary", 1);
         let max_chars = self.opts.max_cell_chars as usize;
         let rows: Vec<[String; 8]> = self
             .schema
@@ -225,7 +262,7 @@ impl TableWriter for XlsxWriter {
         if self.content == ExportContent::Schema {
             return Ok(());
         }
-        let columns = meta.columns.iter().map(|c| c.name.clone()).collect();
+        let columns = super::dedupe_names(meta.columns.iter().map(|c| c.name.as_str()));
         self.open_sheet(&meta.name, 1, columns)
     }
 
@@ -267,5 +304,11 @@ mod tests {
     fn sheet_names_are_clean() {
         assert_eq!(clean_sheet_name("a/b[c]"), "a_b_c_");
         assert_eq!(clean_sheet_name("''"), "Sheet");
+        assert_eq!(clean_sheet_name("'quoted'"), "quoted");
+        assert_eq!(clean_sheet_name("History"), "History_");
+        // 31 UTF-16 units, not 31 characters: an astral character counts twice.
+        let name = fit_utf16(&"😀".repeat(20), MAX_SHEET_NAME);
+        assert_eq!(name.encode_utf16().count(), 30);
+        assert_eq!(fit_utf16("abc", 2), "ab");
     }
 }

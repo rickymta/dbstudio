@@ -1,7 +1,7 @@
 //! The export engine: resolves the objects, streams rows into a format writer, reports progress
 //! and honours cancellation. Nothing is left on disk unless the export completes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dbstudio_core::{
@@ -51,34 +51,14 @@ pub async fn run_export_tuned(
         read_only: true,
         isolation: Some(IsolationLevel::RepeatableRead),
     };
-    let (conn, note) = open_conn(&ctx.session, tx).await?;
+    let (conn, note) =
+        Conn::open(Arc::clone(&ctx.session), work.database.clone(), Some(tx)).await?;
     warnings.extend(note);
     let conn = Arc::new(conn);
 
     let result = run(&ctx, &spec, &tuning, &work, &conn, &cancel, &mut warnings).await;
-    if let Ok(conn) = Arc::try_unwrap(conn) {
-        conn.close().await;
-    }
+    conn.close().await;
     result
-}
-
-/// Open the connection with a snapshot; fall back to a plain lease / the session when the
-/// transaction cannot be started.
-async fn open_conn(
-    session: &Arc<dyn dbstudio_core::Session>,
-    tx: TxOptions,
-) -> Result<(Conn, Option<String>)> {
-    match Conn::open(Arc::clone(session), Some(tx)).await {
-        Ok(r) => Ok(r),
-        Err(Error::Cancelled) => Err(Error::Cancelled),
-        Err(e) => {
-            let (conn, _) = Conn::open(Arc::clone(session), None).await?;
-            Ok((
-                conn,
-                Some(format!("no consistent snapshot: {}", e.message())),
-            ))
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -94,6 +74,8 @@ struct Work {
     ddl_scopes: Vec<(ObjectPath, Vec<ObjectPath>)>,
     /// Qualifiers differ between tables: entry names carry the schema.
     multi_schema: bool,
+    /// Database every table lives in (one connection reads them all).
+    database: Option<String>,
     /// Number of files the output holds.
     files: usize,
     content: ExportContent,
@@ -183,6 +165,25 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, warnings: &mut Vec<String>
         ExportSource::Keys { .. } => return Err(Error::Unsupported("export_keys".into())),
     }
     let is_query = matches!(spec.source, ExportSource::Query { .. });
+    let database = match &spec.source {
+        ExportSource::Query { database, .. } => database.clone(),
+        _ => {
+            let mut dbs: Vec<String> = tables
+                .iter()
+                .filter_map(|t| crate::conn::database_of(&t.path))
+                .collect();
+            dbs.dedup();
+            dbs.sort();
+            dbs.dedup();
+            if dbs.len() > 1 {
+                return Err(Error::Other(format!(
+                    "the tables belong to several databases ({}); export them one database at a time",
+                    dbs.join(", ")
+                )));
+            }
+            dbs.pop()
+        }
+    };
     if !is_query && tables.is_empty() {
         return Err(Error::Other("nothing to export: no tables found".into()));
     }
@@ -221,6 +222,7 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, warnings: &mut Vec<String>
         tables,
         ddl_scopes,
         multi_schema,
+        database,
         files,
         content,
     })
@@ -251,6 +253,13 @@ fn output_path(spec: &ExportSpec, work: &Work, warnings: &mut Vec<String>) -> Pa
 fn check_destination(spec: &ExportSpec, work: &Work) -> Result<()> {
     let mut ignored = Vec::new();
     let path = output_path(spec, work, &mut ignored);
+    // The user picked `dest`; a `.zip` next to it that they did not pick is never overwritten.
+    if path != Path::new(&spec.destination.path) && path.exists() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("file already exists: {}", path.display()),
+        )));
+    }
     crate::fsio::check_destination(&path, spec.destination.overwrite)
 }
 

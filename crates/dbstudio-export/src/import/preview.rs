@@ -10,7 +10,7 @@ use dbstudio_core::{
 };
 use regex::Regex;
 
-use super::source::{self, RowSource, XlsxSource, xlsx_sheets};
+use super::source::{self, RowSource, xlsx_sheets};
 use crate::{ImportFormat, ImportPreview, ImportPreviewRequest, JsonLayout};
 
 const MAX_PREVIEW_ROWS: u32 = 1000;
@@ -196,15 +196,11 @@ fn preview_blocking(path: &Path, format: &ImportFormat, limit: usize) -> Result<
             *sheet = out.sheets.first().cloned().unwrap_or_default();
         }
     }
-    let mut src: Box<dyn RowSource> = match &format {
-        ImportFormat::Xlsx { sheet, header } => {
-            let s = XlsxSource::open(path, sheet, *header)?;
-            out.estimated_rows = Some(s.remaining() as u64);
-            Box::new(s)
-        }
-        other => source::open(path, other)?,
-    };
+    let mut src: Box<dyn RowSource> = source::open(path, &format, true)?;
     out.columns = src.columns().to_vec();
+    if let (ImportFormat::Xlsx { header, .. }, Some(rows)) = (&format, src.declared_rows()) {
+        out.estimated_rows = Some(rows.saturating_sub(u64::from(*header)));
+    }
     let mut sample_rows: Vec<Vec<EditValue>> = Vec::new();
     while sample_rows.len() < limit {
         match src.next_row()? {

@@ -25,6 +25,7 @@ mod values;
 mod writers;
 
 pub use engine::{run_export, run_export_tuned};
+pub use fsio::cleanup_orphans;
 pub use import::{preview_import, run_import};
 
 // ---------------------------------------------------------------------------------------------
@@ -186,6 +187,10 @@ pub struct CsvOptions {
     pub line_ending: LineEnding,
     /// Text written for NULL.
     pub null_text: String,
+    /// Prefix text cells that start with `=`, `+`, `-`, `@`, tab or CR with `'` so that Excel
+    /// does not run them as formulas (CSV injection). Off by default: the file then imports back
+    /// byte for byte.
+    pub excel_safe: bool,
 }
 
 impl Default for CsvOptions {
@@ -198,6 +203,7 @@ impl Default for CsvOptions {
             encoding: TextEncoding::Utf8Bom,
             line_ending: LineEnding::Crlf,
             null_text: String::new(),
+            excel_safe: false,
         }
     }
 }

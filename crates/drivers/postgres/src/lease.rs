@@ -354,6 +354,20 @@ impl LeaseBackend for PgBackend {
         Ok(())
     }
 
+    async fn table_select(&mut self, req: &dbstudio_core::TableStreamRequest) -> Result<String> {
+        let database = self.database.clone();
+        let conn = self.conn()?;
+        crate::stream::table_select_on(&conn.client, &database, req).await
+    }
+
+    async fn bulk_insert(
+        &mut self,
+        req: dbstudio_core::BulkInsertRequest,
+    ) -> Result<dbstudio_core::BulkInsertResult> {
+        let conn = self.conn()?;
+        crate::bulk::bulk_on_client(&conn.client, &req).await
+    }
+
     async fn probe_tx(&mut self) -> Result<TxStatus> {
         let Some(conn) = self.conn.as_ref() else {
             return Ok(TxStatus::Idle);

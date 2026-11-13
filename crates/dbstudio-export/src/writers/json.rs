@@ -151,7 +151,7 @@ impl TableWriter for JsonWriter {
         self.out.start_entry(&format!("{name}.{ext}"))?;
         self.in_entry = true;
         self.first_row = true;
-        self.names_cols = meta.columns.iter().map(|c| c.name.clone()).collect();
+        self.names_cols = super::dedupe_names(meta.columns.iter().map(|c| c.name.as_str()));
         self.keep = (0..self.names_cols.len())
             .filter(|&i| {
                 self.opts.fields.is_empty() || self.opts.fields.contains(&self.names_cols[i])

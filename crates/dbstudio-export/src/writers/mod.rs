@@ -131,6 +131,29 @@ fn columns_from_meta(columns: &[ColumnMeta]) -> Vec<ColumnDetail> {
         .collect()
 }
 
+/// Column names made unique: the second `id` becomes `id#2`, the third `id#3`.
+pub(crate) fn dedupe_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut out: Vec<String> = Vec::new();
+    for n in names {
+        let count = seen.entry(n.to_string()).or_insert(0);
+        *count += 1;
+        out.push(if *count == 1 {
+            n.to_string()
+        } else {
+            format!("{n}#{count}")
+        });
+    }
+    // A generated name may clash with a real one; make those unique too.
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for n in &mut out {
+        while !taken.insert(n.clone()) {
+            n.push('_');
+        }
+    }
+    out
+}
+
 /// Hands out names that are unique (case-insensitively) within one output.
 #[derive(Debug, Default)]
 pub(crate) struct NameSet(HashSet<String>);
@@ -199,6 +222,14 @@ mod tests {
         let long = "x".repeat(40);
         assert_eq!(n.unique(&long, 10).len(), 10);
         assert_eq!(n.unique(&long, 10).len(), 10);
+    }
+
+    #[test]
+    fn duplicate_columns_are_numbered() {
+        assert_eq!(
+            dedupe_names(["id", "name", "id", "id", "id#2"].into_iter()),
+            ["id", "name", "id#2", "id#3", "id#2_"]
+        );
     }
 
     #[test]

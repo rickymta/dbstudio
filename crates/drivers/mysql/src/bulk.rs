@@ -1,12 +1,15 @@
 //! MySQL/MariaDB driver: bulk insert for import, called by the lease. Owned by work package G.
 //!
-//! Multi-row `INSERT [IGNORE] ... [ON DUPLICATE KEY UPDATE]` statements.
+//! Multi-row `INSERT ... [ON DUPLICATE KEY UPDATE]` statements.
 
 use dbstudio_core::{
-    BulkInsertRequest, BulkInsertResult, EditValue, OnConflict, QueryRequest, Result,
-    ScriptDialect, Session, StatementOutcome, Value, execute_collect,
+    BulkInsertRequest, BulkInsertResult, EditValue, Error, OnConflict, Result, ScriptDialect,
+    Session, Value,
 };
+use mysql_async::Conn;
+use mysql_async::prelude::Queryable;
 
+use crate::error::map_query_error;
 use crate::session::MySqlSession;
 use crate::sql::{self, quote_ident, quote_literal, quote_table};
 
@@ -70,15 +73,20 @@ pub(crate) fn insert_sql(
         })
         .collect::<Vec<_>>()
         .join(",\n");
-    let verb = if req.on_conflict == OnConflict::Skip {
-        "INSERT IGNORE INTO"
-    } else {
-        "INSERT INTO"
-    };
     let mut s = format!(
-        "{verb} {} ({cols}) VALUES\n{values}",
+        "INSERT INTO {} ({cols}) VALUES\n{values}",
         quote_table(db, table)
     );
+    if req.on_conflict == OnConflict::Skip {
+        // Not `INSERT IGNORE`: that would also turn bad values into silent warnings. A
+        // duplicate is skipped by "updating" a column to itself.
+        if let Some(first) = req.columns.first() {
+            s.push_str(&format!(
+                "\nON DUPLICATE KEY UPDATE {0} = {0}",
+                quote_ident(first)
+            ));
+        }
+    }
     if req.on_conflict == OnConflict::Update {
         let sets: Vec<String> = req
             .columns
@@ -87,7 +95,12 @@ pub(crate) fn insert_sql(
             .map(|c| format!("{0} = VALUES({0})", quote_ident(c)))
             .collect();
         if sets.is_empty() {
-            s = s.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
+            if let Some(first) = req.columns.first() {
+                s.push_str(&format!(
+                    "\nON DUPLICATE KEY UPDATE {0} = {0}",
+                    quote_ident(first)
+                ));
+            }
         } else {
             s.push_str(&format!("\nON DUPLICATE KEY UPDATE {}", sets.join(", ")));
         }
@@ -95,13 +108,68 @@ pub(crate) fn insert_sql(
     s
 }
 
-/// Insert rows in bulk.
+/// Primary key columns of `db.table`, read on `conn`.
+pub(crate) async fn primary_key(conn: &mut Conn, db: &str, table: &str) -> Result<Vec<String>> {
+    conn.exec::<String, _, _>(
+        "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE \
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' \
+         ORDER BY ORDINAL_POSITION",
+        (db, table),
+    )
+    .await
+    .map_err(map_query_error)
+}
+
+/// `(inserted, updated)` of an `ON DUPLICATE KEY UPDATE` statement over `rows` rows: MySQL
+/// reports 1 per inserted and 2 per changed row.
+pub(crate) fn split_upsert_count(affected: u64, rows: u64) -> (u64, u64) {
+    if affected > rows {
+        let updated = affected - rows;
+        (rows.saturating_sub(updated), updated)
+    } else {
+        (affected, 0)
+    }
+}
+
+/// Insert rows on `conn` (inside its current transaction; nothing is committed here).
+pub(crate) async fn bulk_on_conn(
+    conn: &mut Conn,
+    no_backslash_escapes: bool,
+    req: &BulkInsertRequest,
+) -> Result<BulkInsertResult> {
+    let (db, table) = sql::table_target(&req.table)?;
+    let mut req = req.clone();
+    if req.on_conflict == OnConflict::Update && req.conflict_columns.is_empty() {
+        req.conflict_columns = primary_key(conn, &db, &table).await?;
+    }
+    let mut result = BulkInsertResult::default();
+    for chunk in req.rows.chunks(STATEMENT_ROWS) {
+        let text = insert_sql(&db, &table, &req, chunk, no_backslash_escapes);
+        conn.query_drop(text).await.map_err(map_query_error)?;
+        let affected = conn.affected_rows();
+        let n = chunk.len() as u64;
+        match req.on_conflict {
+            OnConflict::Error => result.inserted += affected.min(n),
+            OnConflict::Skip => {
+                result.inserted += affected.min(n);
+                result.skipped += n.saturating_sub(affected);
+            }
+            OnConflict::Update => {
+                let (i, u) = split_upsert_count(affected, n);
+                result.inserted += i;
+                result.updated += u;
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Insert rows in bulk on a pooled connection of the session.
 #[allow(dead_code)]
 pub(crate) async fn bulk_insert(
     session: &MySqlSession,
     req: BulkInsertRequest,
 ) -> Result<BulkInsertResult> {
-    let (db, table) = sql::table_target(&req.table)?;
     let nb = matches!(
         session.script_dialect(),
         ScriptDialect::MySql {
@@ -109,35 +177,11 @@ pub(crate) async fn bulk_insert(
             ..
         }
     );
-    let mut req = req;
-    if req.on_conflict == OnConflict::Update && req.conflict_columns.is_empty() {
-        req.conflict_columns = session
-            .table_details(&req.table)
-            .await?
-            .columns
-            .iter()
-            .filter(|c| c.primary_key)
-            .map(|c| c.name.clone())
-            .collect();
-    }
-    let mut result = BulkInsertResult::default();
-    for chunk in req.rows.chunks(STATEMENT_ROWS) {
-        let mut query = QueryRequest::new(insert_sql(&db, &table, &req, chunk, nb));
-        query.database = Some(db.clone());
-        let results = execute_collect(session, query).await?;
-        let affected = match results.first().map(|r| &r.outcome) {
-            Some(StatementOutcome::Affected { rows }) => *rows,
-            _ => 0,
-        };
-        let n = chunk.len() as u64;
-        if req.on_conflict == OnConflict::Skip {
-            result.inserted += affected.min(n);
-            result.skipped += n.saturating_sub(affected);
-        } else {
-            result.inserted += affected.min(n);
-        }
-    }
-    Ok(result)
+    let mut conn = session.inner.acquire().await?;
+    let r = bulk_on_conn(&mut conn, nb, &req).await;
+    let broken = matches!(r, Err(Error::Connection(_) | Error::Timeout));
+    session.inner.release(conn, broken).await;
+    r
 }
 
 #[cfg(test)]
@@ -166,7 +210,13 @@ mod tests {
             "INSERT INTO `d`.`t` (`id`, `name`) VALUES\n(1, 'it''s \\\\')"
         );
         let r = req(OnConflict::Skip);
-        assert!(insert_sql("d", "t", &r, &r.rows, true).starts_with("INSERT IGNORE INTO"));
+        assert!(
+            insert_sql("d", "t", &r, &r.rows, true)
+                .ends_with("ON DUPLICATE KEY UPDATE `id` = `id`")
+        );
+        assert_eq!(split_upsert_count(3, 3), (3, 0));
+        assert_eq!(split_upsert_count(5, 3), (1, 2));
+        assert_eq!(split_upsert_count(0, 3), (0, 0));
         let r = req(OnConflict::Update);
         assert!(
             insert_sql("d", "t", &r, &r.rows, false)

@@ -5,8 +5,7 @@
 
 use bytes::Bytes;
 use dbstudio_core::{
-    BulkInsertRequest, BulkInsertResult, EditValue, Error, OnConflict, QueryRequest, Result,
-    Session, Value, execute_collect,
+    BulkInsertRequest, BulkInsertResult, EditValue, Error, OnConflict, Result, Value,
 };
 use futures_util::SinkExt;
 
@@ -170,11 +169,29 @@ pub(crate) fn insert_sql(table: &str, req: &BulkInsertRequest, key: &[String]) -
     Ok(s)
 }
 
-/// Insert rows in bulk.
-#[allow(dead_code)]
-pub(crate) async fn bulk_insert(
-    session: &PostgresSession,
-    req: BulkInsertRequest,
+/// Primary key columns of `table` (quoted, qualified name), read on `client`.
+pub(crate) async fn primary_key(
+    client: &tokio_postgres::Client,
+    table: &str,
+) -> Result<Vec<String>> {
+    let rows = client
+        .query(
+            "SELECT a.attname::text FROM pg_index i \
+             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) \
+             WHERE i.indrelid = $1::text::regclass AND i.indisprimary \
+             ORDER BY array_position(i.indkey::int2[], a.attnum)",
+            &[&table],
+        )
+        .await
+        .map_err(map_error)?;
+    Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
+}
+
+/// Insert rows on `client` (inside whatever transaction it is in; nothing is committed here).
+/// Plain inserts go through `COPY ... FROM STDIN`, the other conflict modes through `INSERT`.
+pub(crate) async fn bulk_on_client(
+    client: &tokio_postgres::Client,
+    req: &BulkInsertRequest,
 ) -> Result<BulkInsertResult> {
     let target = details::resolve_relation(&req.table)?;
     let table = sql::qualified(&target.schema, &target.name);
@@ -189,9 +206,7 @@ pub(crate) async fn bulk_insert(
                 .map(|c| sql::quote_ident(c))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let conn = session.shared.acquire(&target.database).await?;
-            let sink = conn
-                .client
+            let sink = client
                 .copy_in::<_, Bytes>(&format!("COPY {table} ({cols}) FROM STDIN"))
                 .await
                 .map_err(map_error)?;
@@ -205,36 +220,54 @@ pub(crate) async fn bulk_insert(
         }
     }
     let key = if req.on_conflict == OnConflict::Update && req.conflict_columns.is_empty() {
-        session
-            .table_details(&req.table)
-            .await?
-            .columns
-            .iter()
-            .filter(|c| c.primary_key)
-            .map(|c| c.name.clone())
-            .collect()
+        primary_key(client, &table).await?
     } else {
         Vec::new()
     };
-    let mut query = QueryRequest::new(insert_sql(&table, &req, &key)?);
-    query.database = Some(target.database);
-    let results = execute_collect(session, query).await?;
-    let affected = match results.first().map(|r| &r.outcome) {
-        Some(dbstudio_core::StatementOutcome::Affected { rows }) => *rows,
-        _ => 0,
-    };
+    let text = insert_sql(&table, req, &key)?;
     let total = req.rows.len() as u64;
-    Ok(match req.on_conflict {
-        OnConflict::Skip => BulkInsertResult {
-            inserted: affected,
-            updated: 0,
-            skipped: total.saturating_sub(affected),
-        },
-        _ => BulkInsertResult {
-            inserted: affected,
-            ..BulkInsertResult::default()
-        },
-    })
+    match req.on_conflict {
+        OnConflict::Update => {
+            // `xmax = 0` tells a freshly inserted row from an updated one.
+            let rows = client
+                .query(&format!("{text}\nRETURNING (xmax = 0)"), &[])
+                .await
+                .map_err(map_error)?;
+            let inserted = rows.iter().filter(|r| r.get::<_, bool>(0)).count() as u64;
+            Ok(BulkInsertResult {
+                inserted,
+                updated: rows.len() as u64 - inserted,
+                skipped: total.saturating_sub(rows.len() as u64),
+            })
+        }
+        OnConflict::Skip => {
+            let affected = client.execute(&text, &[]).await.map_err(map_error)?;
+            Ok(BulkInsertResult {
+                inserted: affected,
+                updated: 0,
+                skipped: total.saturating_sub(affected),
+            })
+        }
+        OnConflict::Error => {
+            let affected = client.execute(&text, &[]).await.map_err(map_error)?;
+            Ok(BulkInsertResult {
+                inserted: affected,
+                ..BulkInsertResult::default()
+            })
+        }
+    }
+}
+
+/// Insert rows in bulk on a pooled connection of the session (each call is its own statement,
+/// atomic but committed at once; the lease version runs inside the lease's transaction).
+#[allow(dead_code)]
+pub(crate) async fn bulk_insert(
+    session: &PostgresSession,
+    req: BulkInsertRequest,
+) -> Result<BulkInsertResult> {
+    let target = details::resolve_relation(&req.table)?;
+    let conn = session.shared.acquire(&target.database).await?;
+    bulk_on_client(&conn.client, &req).await
 }
 
 #[cfg(test)]

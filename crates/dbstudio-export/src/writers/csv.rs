@@ -29,6 +29,20 @@ pub(crate) struct CsvWriter {
     columns: usize,
 }
 
+/// Text of a cell made harmless for Excel: text that starts like a formula gets a `'` prefix
+/// (numbers keep their sign).
+fn excel_safe<'a>(v: &Value, text: std::borrow::Cow<'a, str>) -> std::borrow::Cow<'a, str> {
+    let numeric = matches!(
+        v,
+        Value::Int(_) | Value::UInt(_) | Value::Float(_) | Value::Decimal(_)
+    );
+    if !numeric && text.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        std::borrow::Cow::Owned(format!("'{text}"))
+    } else {
+        text
+    }
+}
+
 /// Append one field, quoting it when needed.
 pub(crate) fn push_field(buf: &mut String, value: Option<&str>, o: &CsvOptions) {
     let Some(s) = value else {
@@ -143,8 +157,15 @@ impl ResultSink for CsvWriter {
             return Ok(());
         }
         let binary = self.binary;
+        let safe = self.opts.excel_safe;
         for row in &rows {
-            let cells: Vec<_> = row.iter().map(|v| cell_text(v, binary)).collect();
+            let cells: Vec<_> = row
+                .iter()
+                .map(|v| {
+                    let text = cell_text(v, binary)?;
+                    Some(if safe { excel_safe(v, text) } else { text })
+                })
+                .collect();
             self.record(cells.iter().map(|c| c.as_deref()));
             if self.buf.len() >= FLUSH_AT {
                 self.flush_buf()?;
@@ -172,8 +193,8 @@ impl TableWriter for CsvWriter {
         self.start_entry(&format!("{name}.csv"))?;
         self.columns = meta.columns.len();
         if self.opts.header {
-            let names: Vec<&str> = meta.columns.iter().map(|c| c.name.as_str()).collect();
-            self.record(names.iter().map(|n| Some(*n)));
+            let names = super::dedupe_names(meta.columns.iter().map(|c| c.name.as_str()));
+            self.record(names.iter().map(|n| Some(n.as_str())));
         }
         Ok(())
     }
@@ -213,6 +234,21 @@ mod tests {
         let mut s = String::new();
         push_field(&mut s, v, o);
         s
+    }
+
+    #[test]
+    fn formulas_get_a_prefix_but_numbers_do_not() {
+        for (v, want) in [
+            (Value::Text("=1+1".into()), "'=1+1"),
+            (Value::Text("-x".into()), "'-x"),
+            (Value::Text("@a".into()), "'@a"),
+            (Value::Text("plain".into()), "plain"),
+            (Value::Int(-5), "-5"),
+            (Value::Decimal("-1.5".into()), "-1.5"),
+        ] {
+            let text = cell_text(&v, BinaryFormat::Base64).unwrap();
+            assert_eq!(excel_safe(&v, text), want);
+        }
     }
 
     #[test]

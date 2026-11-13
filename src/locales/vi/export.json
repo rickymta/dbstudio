@@ -39,7 +39,8 @@
     "lineEnding": "Kết thúc dòng",
     "bom": "Dấu BOM UTF-8 (cho Excel)",
     "header": "Dòng tiêu đề",
-    "quoteAll": "Trích dẫn mọi trường"
+    "quoteAll": "Trích dẫn mọi trường",
+    "excelSafe": "Chống công thức Excel (thêm ' trước =, +, -, @)"
   },
   "json": {
     "layout": "Bố cục",

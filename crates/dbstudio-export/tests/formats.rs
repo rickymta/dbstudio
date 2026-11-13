@@ -661,3 +661,233 @@ async fn invalid_requests_are_rejected() {
     assert!(matches!(err, Error::NotFound(_)));
     assert!(leftovers(dir.path()).is_empty());
 }
+
+fn query_spec(text: &str, format: ExportFormat, dest: &Path) -> ExportSpec {
+    spec(
+        ExportSource::Query {
+            text: text.into(),
+            database: None,
+        },
+        ExportContent::Data,
+        format,
+        dest,
+    )
+}
+
+#[tokio::test]
+async fn queries_with_side_effect_functions_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = FakeSession::with_tables(&[("orders", 1)]);
+    for text in [
+        "SELECT pg_terminate_backend(1)",
+        "SELECT lo_export(1, '/tmp/x')",
+        "SELECT nextval('s')",
+        "WITH d AS (DELETE FROM orders RETURNING *) SELECT * FROM d",
+    ] {
+        let err = run_export(
+            context(session.clone(), Recorder::new()),
+            query_spec(
+                text,
+                ExportFormat::Csv(CsvOptions::default()),
+                &dir.path().join("q.csv"),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::ReadOnlyViolation { .. }),
+            "{text}: {err:?}"
+        );
+    }
+    assert!(session.statements().is_empty());
+    assert!(leftovers(dir.path()).is_empty());
+}
+
+#[tokio::test]
+async fn a_snapshot_that_cannot_start_is_an_error_not_a_silent_downgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = FakeSession::with_tables(&[("orders", 2)]);
+    *session.lease_begin_fails.lock().unwrap() = true;
+    let err = run_export(
+        context(session.clone(), Recorder::new()),
+        spec(
+            tables(&["orders"]),
+            ExportContent::Data,
+            ExportFormat::Csv(CsvOptions::default()),
+            &dir.path().join("o.csv"),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, Error::Query { message, .. } if message.contains("transaction")),
+        "{err:?}"
+    );
+    assert!(leftovers(dir.path()).is_empty());
+    assert!(
+        session.statements().is_empty(),
+        "nothing was read outside the snapshot"
+    );
+}
+
+#[tokio::test]
+async fn an_unchosen_zip_next_to_the_destination_is_never_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("dump.zip");
+    std::fs::write(&existing, "precious").unwrap();
+    let session = FakeSession::with_tables(&[("orders", 2), ("items", 1)]);
+    let mut s = spec(
+        tables(&["orders", "items"]),
+        ExportContent::Both,
+        ExportFormat::Csv(CsvOptions::default()),
+        &dir.path().join("dump.csv"),
+    );
+    s.destination.overwrite = true;
+    let err = run_export(context(session, Recorder::new()), s)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Io(_)), "{err:?}");
+    assert_eq!(std::fs::read_to_string(&existing).unwrap(), "precious");
+}
+
+#[tokio::test]
+async fn duplicate_column_names_are_numbered() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = FakeSession::with_tables(&[("orders", 1)]);
+    let csv = run_export(
+        context(session.clone(), Recorder::new()),
+        query_spec(
+            "SELECT 1 AS dup",
+            ExportFormat::Csv(CsvOptions {
+                encoding: TextEncoding::Utf8,
+                ..CsvOptions::default()
+            }),
+            &dir.path().join("d.csv"),
+        ),
+    )
+    .await
+    .unwrap();
+    let text = String::from_utf8(read(&csv.files[0])).unwrap();
+    assert!(text.starts_with("a,a#2,a#2_\r\n1,2,3"), "{text}");
+    let json = run_export(
+        context(session, Recorder::new()),
+        query_spec(
+            "SELECT 1 AS dup",
+            ExportFormat::Json(JsonOptions::default()),
+            &dir.path().join("d.json"),
+        ),
+    )
+    .await
+    .unwrap();
+    let rows: serde_json::Value = serde_json::from_slice(&read(&json.files[0])).unwrap();
+    assert_eq!(rows[0]["a#2"], 2);
+    assert_eq!(rows[0].as_object().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn csv_excel_safe_protects_formulas_and_keeps_numbers() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = FakeSession::with_tables(&[("orders", 1)]);
+    let run = |safe: bool, name: &str| {
+        let session = session.clone();
+        let dest = dir.path().join(name);
+        async move {
+            let r = run_export(
+                context(session, Recorder::new()),
+                query_spec(
+                    "SELECT 1 AS formula",
+                    ExportFormat::Csv(CsvOptions {
+                        encoding: TextEncoding::Utf8,
+                        excel_safe: safe,
+                        ..CsvOptions::default()
+                    }),
+                    &dest,
+                ),
+            )
+            .await
+            .unwrap();
+            String::from_utf8(read(&r.files[0])).unwrap()
+        }
+    };
+    assert_eq!(run(false, "a.csv").await, "t,n\r\n=1+1,-5\r\nplain,7\r\n");
+    assert_eq!(run(true, "b.csv").await, "t,n\r\n'=1+1,-5\r\nplain,7\r\n");
+}
+
+#[tokio::test]
+async fn xlsx_integers_beyond_fifteen_digits_are_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = FakeSession::with_tables(&[("orders", 1)]);
+    let report = run_export(
+        context(session, Recorder::new()),
+        query_spec(
+            "SELECT 1 AS big",
+            ExportFormat::Xlsx(XlsxOptions::default()),
+            &dir.path().join("b.xlsx"),
+        ),
+    )
+    .await
+    .unwrap();
+    let rows = sheet_rows(&report.files[0], "query");
+    assert_eq!(
+        rows[1][0],
+        calamine::Data::String("1000000000000000".into())
+    );
+    assert_eq!(rows[2][0], calamine::Data::Float(999_999_999_999_999.0));
+}
+
+#[tokio::test]
+async fn the_sql_script_does_not_depend_on_the_session_modes() {
+    use dbstudio_core::ScriptDialect;
+    let dir = tempfile::tempdir().unwrap();
+    let session = FakeSession::with_tables(&[("orders", 1)]);
+    // A MySQL source running with NO_BACKSLASH_ESCAPES.
+    let mut ctx = context(session.clone(), Recorder::new());
+    ctx.dialect = ScriptDialect::MySql {
+        mariadb: false,
+        backslash_escapes: false,
+    };
+    let report = run_export(
+        ctx,
+        query_spec(
+            "SELECT 1 AS hostile",
+            ExportFormat::Sql(SqlOptions::default()),
+            &dir.path().join("m.sql"),
+        ),
+    )
+    .await
+    .unwrap();
+    let sql = String::from_utf8(read(&report.files[0])).unwrap();
+    assert!(sql.contains("SET NAMES utf8mb4;"));
+    assert!(sql.contains("SQL_MODE='NO_AUTO_VALUE_ON_ZERO'"), "{sql}");
+    assert!(!sql.contains("NO_BACKSLASH_ESCAPES"));
+    assert!(sql.contains("TIME_ZONE='+00:00'"));
+    // The backslash is escaped as the script's own mode (no NO_BACKSLASH_ESCAPES) reads it.
+    assert!(
+        sql.contains("('\\\\'', 0); DROP TABLE users; -- ',"),
+        "{sql}"
+    );
+    assert!(
+        sql.trim_end()
+            .ends_with("SET TIME_ZONE=@DBSTUDIO_OLD_TIME_ZONE;"),
+        "{sql}"
+    );
+
+    // PostgreSQL: standard_conforming_strings is pinned and the literal does not depend on it.
+    let report = run_export(
+        context(session, Recorder::new()),
+        query_spec(
+            "SELECT 1 AS hostile",
+            ExportFormat::Sql(SqlOptions::default()),
+            &dir.path().join("p.sql"),
+        ),
+    )
+    .await
+    .unwrap();
+    let sql = String::from_utf8(read(&report.files[0])).unwrap();
+    assert!(sql.contains("SET standard_conforming_strings = on;"));
+    assert!(sql.contains("SET client_encoding = 'UTF8';"));
+    assert!(
+        sql.contains("E'\\\\'', 0); DROP TABLE users; -- '"),
+        "{sql}"
+    );
+}

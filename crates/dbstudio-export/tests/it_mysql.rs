@@ -13,6 +13,11 @@ async fn all_scenarios(env: Env) {
     it_support::csv_round_trip(&env).await;
     it_support::import_conflicts(&env).await;
     it_support::csv_import(&env, 20_000).await;
+    it_support::cross_database(&env).await;
+    it_support::lease_hooks(&env).await;
+    it_support::single_transaction_rolls_back(&env).await;
+    it_support::typed_round_trips(&env).await;
+    it_support::hostile_values(&env).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

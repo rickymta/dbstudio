@@ -770,9 +770,18 @@ pub async fn import_conflicts(env: &Env) {
         "old"
     );
 
+    // Back to rows 1 and 2 (the skip run added 3 and 4).
+    run(&*dst, db, "DELETE FROM imp WHERE id > 2").await;
     let mut s = csv_import_spec(&file, target.clone(), 0, 100);
     s.on_conflict = Some(dbstudio_core::OnConflict::Update);
-    run_import(env.ctx(&dst, Recorder::new()), s).await.unwrap();
+    let r = run_import(env.ctx(&dst, Recorder::new()), s).await.unwrap();
+    // Two rows are new, two exist and change: told apart on both servers.
+    assert_eq!(
+        (r.inserted, r.updated, r.skipped),
+        (2, 2, 0),
+        "[{}]",
+        env.label
+    );
     assert_eq!(
         text_of(&*dst, db, "SELECT label FROM imp WHERE id = 1").await,
         "row 1 \"q\""
@@ -1049,4 +1058,423 @@ pub async fn big_export(env: &Env) {
         "DROP TABLE IF EXISTS exp_big",
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Review scenarios
+// ---------------------------------------------------------------------------------------------
+
+/// A session whose login database is not the database of the objects: export and import must
+/// work in the database the paths name (a PostgreSQL connection is bound to one database).
+pub async fn cross_database(env: &Env) {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("b.csv");
+    // `admin` is logged in to `dbstudio` (PostgreSQL), the tables live in the fixture database.
+    let report = run_export(
+        env.ctx(&env.admin, Recorder::new()),
+        export_spec(
+            ExportSource::Tables {
+                paths: vec![env.table("exp_b")],
+            },
+            ExportContent::Data,
+            ExportFormat::Csv(CsvOptions::default()),
+            &dest,
+        ),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("[{}] export from another database failed: {e}", env.label));
+    assert_eq!(report.rows, 50, "[{}]", env.label);
+    let query = run_export(
+        env.ctx(&env.admin, Recorder::new()),
+        export_spec(
+            ExportSource::Query {
+                text: "SELECT count(*) AS n FROM exp_b".into(),
+                database: Some(env.src_db.clone()),
+            },
+            ExportContent::Data,
+            ExportFormat::Json(JsonOptions::default()),
+            &dir.path().join("q.json"),
+        ),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("[{}] query in another database failed: {e}", env.label));
+    assert_eq!(query.rows, 1);
+
+    // Import into a table of yet another database through the same session.
+    let (_dst_session, database) = env.destination("xdb").await;
+    let db_name = dst_db_name(env, "xdb", &database);
+    let ddl = match env.flavor {
+        Flavor::Pg => {
+            "CREATE TABLE exp_b (id integer PRIMARY KEY, a_id bigint NOT NULL, note text)"
+        }
+        Flavor::My => "CREATE TABLE exp_b (id INT PRIMARY KEY, a_id BIGINT NOT NULL, note TEXT)",
+    };
+    run(&*_dst_session, database.as_deref(), ddl).await;
+    let table = ObjectPath {
+        segments: {
+            let mut segs = import_table_path(env, &db_name).segments;
+            segs.last_mut().unwrap().name = "exp_b".into();
+            segs
+        },
+    };
+    let report = run_import(
+        env.ctx(&env.admin, Recorder::new()),
+        ImportSpec {
+            connection_id: Uuid::nil(),
+            file: dest.to_string_lossy().into_owned(),
+            format: ImportFormat::Csv {
+                delimiter: ',',
+                quote: '"',
+                header: true,
+                encoding: TextEncoding::Utf8Bom,
+            },
+            target: ImportTarget::Existing { table },
+            mapping: vec![],
+            on_conflict: None,
+            mode: ImportMode::Batches { rows: 20 },
+            max_errors: 0,
+        },
+    )
+    .await
+    .unwrap_or_else(|e| panic!("[{}] import into another database failed: {e}", env.label));
+    assert_eq!(report.inserted, 50);
+    assert_eq!(
+        env.fingerprint(&*_dst_session, database.as_deref(), "exp_b")
+            .await,
+        env.fingerprint(&*env.src, env.src_database(), "exp_b")
+            .await
+    );
+}
+
+/// The lease's own table stream and bulk insert: same connection, same transaction.
+pub async fn lease_hooks(env: &Env) {
+    use dbstudio_core::{
+        BulkInsertRequest, CollectingSink, EditValue, IsolationLevel, LeaseOptions, OnConflict,
+        TableStreamRequest, TxOptions,
+    };
+    let s = &*env.src;
+    let db = env.src_database();
+    run(s, db, "DROP TABLE IF EXISTS exp_snap").await;
+    run(
+        s,
+        db,
+        "CREATE TABLE exp_snap (id BIGINT PRIMARY KEY, label VARCHAR(50))",
+    )
+    .await;
+    run(
+        s,
+        db,
+        "INSERT INTO exp_snap SELECT g, CONCAT('l', g) FROM (SELECT 1 AS g UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9 UNION SELECT 10) t",
+    )
+    .await;
+    let path = env.table("exp_snap");
+    let lease = env
+        .src
+        .open_lease(LeaseOptions {
+            database: db.map(str::to_string),
+            ..LeaseOptions::default()
+        })
+        .await
+        .unwrap();
+    lease
+        .begin(TxOptions {
+            read_only: true,
+            isolation: Some(IsolationLevel::RepeatableRead),
+        })
+        .await
+        .unwrap();
+    let stream = |order: bool| TableStreamRequest {
+        query_id: Uuid::new_v4(),
+        table: path.clone(),
+        columns: vec![],
+        filters: vec![],
+        raw_where: None,
+        order_by_key: order,
+        batch_size: Some(3),
+    };
+    let rows_of = |sink: CollectingSink| {
+        let mut r = sink.into_results();
+        match r.remove(0).outcome {
+            dbstudio_core::StatementOutcome::Rows(rs) => rs.rows,
+            other => panic!("{other:?}"),
+        }
+    };
+    let mut sink = CollectingSink::new();
+    lease
+        .stream_table(stream(true), &mut sink)
+        .await
+        .unwrap_or_else(|e| panic!("[{}] lease.stream_table: {e}", env.label));
+    let first = rows_of(sink);
+    assert_eq!(first.len(), 10);
+    assert_eq!(first[0][0], Value::Int(1), "ordered by the key");
+    // Another connection changes the table; the lease still sees its snapshot.
+    run(s, db, "DELETE FROM exp_snap WHERE id > 5").await;
+    let mut sink = CollectingSink::new();
+    lease.stream_table(stream(false), &mut sink).await.unwrap();
+    assert_eq!(rows_of(sink).len(), 10, "[{}] snapshot is kept", env.label);
+    lease.rollback().await.unwrap();
+    let mut sink = CollectingSink::new();
+    lease.stream_table(stream(false), &mut sink).await.unwrap();
+    assert_eq!(rows_of(sink).len(), 5);
+
+    // Bulk insert runs inside the lease's transaction: a rollback removes it.
+    lease.begin(TxOptions::default()).await.unwrap();
+    let rows = |from: i64| -> Vec<Vec<EditValue>> {
+        (from..from + 100)
+            .map(|i| {
+                vec![
+                    EditValue::Value(Value::Int(i)),
+                    EditValue::Text(format!("n{i}")),
+                ]
+            })
+            .collect()
+    };
+    let request = |rows| BulkInsertRequest {
+        table: path.clone(),
+        columns: vec!["id".into(), "label".into()],
+        rows,
+        on_conflict: OnConflict::Error,
+        conflict_columns: vec![],
+    };
+    let r = lease.bulk_insert(request(rows(100))).await.unwrap();
+    assert_eq!(r.inserted, 100, "[{}]", env.label);
+    let mut sink = CollectingSink::new();
+    lease.stream_table(stream(false), &mut sink).await.unwrap();
+    assert_eq!(rows_of(sink).len(), 105, "visible inside the transaction");
+    assert_eq!(
+        text_of(s, db, "SELECT COUNT(*) FROM exp_snap").await,
+        "5",
+        "not outside it"
+    );
+    lease.rollback().await.unwrap();
+    assert_eq!(text_of(s, db, "SELECT COUNT(*) FROM exp_snap").await, "5");
+    // A duplicate key fails the whole call.
+    lease.begin(TxOptions::default()).await.unwrap();
+    assert!(lease.bulk_insert(request(rows(3))).await.is_err());
+    lease.rollback().await.unwrap();
+    lease.close().await.unwrap();
+    run(s, db, "DROP TABLE exp_snap").await;
+}
+
+/// A failing import in one transaction leaves nothing behind, COPY / bulk inserts included.
+pub async fn single_transaction_rolls_back(env: &Env) {
+    let dir = tempfile::tempdir().unwrap();
+    let (dst, database) = env.destination("single").await;
+    let db = database.as_deref();
+    let db_name = dst_db_name(env, "single", &database);
+    create_import_table(env, &*dst, db).await;
+    let target = import_table_path(env, &db_name);
+
+    let bad = dir.path().join("bad.csv");
+    write_big_csv(&bad, 6000, Some(4321));
+    let mut spec = csv_import_spec(&bad, target.clone(), 0, 1000);
+    spec.mode = ImportMode::SingleTransaction;
+    let err = run_import(env.ctx(&dst, Recorder::new()), spec)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, dbstudio_core::Error::Query { message, .. } if message.starts_with("line 4321:")),
+        "[{}] {err:?}",
+        env.label
+    );
+    assert_eq!(
+        text_of(&*dst, db, "SELECT COUNT(*) FROM imp").await,
+        "0",
+        "[{}] the rows of the earlier statements are rolled back too",
+        env.label
+    );
+
+    let good = dir.path().join("good.csv");
+    write_big_csv(&good, 6000, None);
+    let mut spec = csv_import_spec(&good, target, 0, 1000);
+    spec.mode = ImportMode::SingleTransaction;
+    let report = run_import(env.ctx(&dst, Recorder::new()), spec)
+        .await
+        .unwrap();
+    assert_eq!(report.inserted, 6000);
+    assert_eq!(text_of(&*dst, db, "SELECT COUNT(*) FROM imp").await, "6000");
+}
+
+fn pg_columns_without_tags() -> &'static str {
+    "id bigint PRIMARY KEY, name text, qty integer NOT NULL DEFAULT 0, price numeric(12,2), ratio double precision, flag boolean, born date, created timestamp, seen timestamptz, blob bytea, doc jsonb, uid uuid"
+}
+
+async fn typed_fingerprint(env: &Env, session: &dyn Session, db: Option<&str>) -> String {
+    match env.flavor {
+        Flavor::Pg => text_of(
+            session,
+            db,
+            "SELECT count(*)::text || ':' || coalesce(md5(string_agg(ROW(id, name, qty, price, ratio, flag, born, created, seen, blob, doc, uid)::text, '|' ORDER BY id)), '') FROM exp_a",
+        )
+        .await,
+        Flavor::My => env.fingerprint(session, db, "exp_a").await,
+    }
+}
+
+/// Typed columns (bytea / blob, decimals, json, booleans, dates) come back identical after a
+/// CSV, JSON or XLSX round trip.
+pub async fn typed_round_trips(env: &Env) {
+    let dir = tempfile::tempdir().unwrap();
+    let (dst, database) = env.destination("typed").await;
+    let db = database.as_deref();
+    let db_name = dst_db_name(env, "typed", &database);
+    let ddl = match env.flavor {
+        Flavor::Pg => format!("CREATE TABLE exp_a ({})", pg_columns_without_tags()),
+        Flavor::My => format!("CREATE TABLE exp_a LIKE {}.exp_a", env.src_db),
+    };
+    run(&*dst, db, &ddl).await;
+    let table = ObjectPath {
+        segments: {
+            let mut segs = import_table_path(env, &db_name).segments;
+            segs.last_mut().unwrap().name = "exp_a".into();
+            segs
+        },
+    };
+    let want = typed_fingerprint(env, &*env.src, env.src_database()).await;
+    let cases: [(&str, ExportFormat, ImportFormat); 3] = [
+        (
+            "t.csv",
+            ExportFormat::Csv(CsvOptions::default()),
+            ImportFormat::Csv {
+                delimiter: ',',
+                quote: '"',
+                header: true,
+                encoding: TextEncoding::Utf8Bom,
+            },
+        ),
+        (
+            "t.json",
+            ExportFormat::Json(JsonOptions::default()),
+            ImportFormat::Json {
+                layout: JsonLayout::Array,
+            },
+        ),
+        (
+            "t.xlsx",
+            ExportFormat::Xlsx(XlsxOptions::default()),
+            ImportFormat::Xlsx {
+                sheet: String::new(),
+                header: true,
+            },
+        ),
+    ];
+    for (name, export, import) in cases {
+        run(&*dst, db, "DELETE FROM exp_a").await;
+        let file = dir.path().join(name);
+        run_export(
+            env.ctx(&env.src, Recorder::new()),
+            export_spec(
+                ExportSource::Tables {
+                    paths: vec![env.table("exp_a")],
+                },
+                ExportContent::Data,
+                export,
+                &file,
+            ),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("[{}] {name}: export: {e}", env.label));
+        let report = run_import(
+            env.ctx(&dst, Recorder::new()),
+            ImportSpec {
+                connection_id: Uuid::nil(),
+                file: file.to_string_lossy().into_owned(),
+                format: import,
+                target: ImportTarget::Existing {
+                    table: table.clone(),
+                },
+                mapping: vec![],
+                on_conflict: None,
+                mode: ImportMode::Batches { rows: 700 },
+                max_errors: 0,
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("[{}] {name}: import: {e}", env.label));
+        assert_eq!(report.inserted, 2500, "[{}] {name}", env.label);
+        assert_eq!(
+            typed_fingerprint(env, &*dst, db).await,
+            want,
+            "[{}] {name} round trip changed values",
+            env.label
+        );
+    }
+}
+
+/// A value that looks like an injection survives the SQL script, and the destination's modes
+/// do not matter.
+pub async fn hostile_values(env: &Env) {
+    let dir = tempfile::tempdir().unwrap();
+    let s = &*env.src;
+    let db = env.src_database();
+    run(s, db, "DROP TABLE IF EXISTS exp_h").await;
+    run(s, db, "CREATE TABLE exp_h (id INT PRIMARY KEY, t TEXT)").await;
+    let hostile = "\\', 0); DROP TABLE users; -- ";
+    let lit = |v: &str| match env.flavor {
+        Flavor::Pg => format!("E'{}'", v.replace('\\', "\\\\").replace('\'', "''")),
+        Flavor::My => format!("'{}'", v.replace('\\', "\\\\").replace('\'', "''")),
+    };
+    run(
+        s,
+        db,
+        &format!(
+            "INSERT INTO exp_h VALUES (1, {}), (2, {}), (3, {})",
+            lit(hostile),
+            lit("plain \\ back\\slash"),
+            lit("new\nline\ttab")
+        ),
+    )
+    .await;
+    let dest = dir.path().join("h.sql");
+    run_export(
+        env.ctx(&env.src, Recorder::new()),
+        export_spec(
+            ExportSource::Tables {
+                paths: vec![env.table("exp_h")],
+            },
+            ExportContent::Both,
+            ExportFormat::Sql(sql_options_unqualified()),
+            &dest,
+        ),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("[{}] {e}", env.label));
+
+    let (dst, database) = env.destination("hostile").await;
+    let db2 = database.as_deref();
+    run(&*dst, db2, "CREATE TABLE users (id INT PRIMARY KEY)").await;
+    run(&*dst, db2, "INSERT INTO users VALUES (1)").await;
+    run_import(
+        env.ctx(&dst, Recorder::new()),
+        ImportSpec {
+            connection_id: Uuid::nil(),
+            file: dest.to_string_lossy().into_owned(),
+            format: ImportFormat::Sql {
+                continue_on_error: false,
+            },
+            target: ImportTarget::Script {
+                database: database.clone(),
+            },
+            mapping: vec![],
+            on_conflict: None,
+            mode: ImportMode::Batches { rows: 100 },
+            max_errors: 0,
+        },
+    )
+    .await
+    .unwrap_or_else(|e| panic!("[{}] replay failed: {e}", env.label));
+    assert_eq!(text_of(&*dst, db2, "SELECT COUNT(*) FROM users").await, "1");
+    assert_eq!(
+        text_of(&*dst, db2, "SELECT t FROM exp_h WHERE id = 1").await,
+        hostile
+    );
+    assert_eq!(
+        text_of(&*dst, db2, "SELECT t FROM exp_h WHERE id = 2").await,
+        "plain \\ back\\slash"
+    );
+    assert_eq!(
+        text_of(&*dst, db2, "SELECT t FROM exp_h WHERE id = 3").await,
+        "new\nline\ttab"
+    );
+    run(s, db, "DROP TABLE exp_h").await;
 }

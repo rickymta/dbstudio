@@ -90,6 +90,8 @@ pub struct FakeSession {
     pub batch: usize,
     /// Cancels the token after this many rows were delivered (cancellation tests).
     pub cancel_after: Mutex<Option<(usize, CancelToken)>>,
+    /// `open_lease` hands out a lease whose transaction cannot start.
+    pub lease_begin_fails: Mutex<bool>,
 }
 
 impl FakeSession {
@@ -107,6 +109,7 @@ impl FakeSession {
             fail_on: Mutex::new(None),
             batch: 3,
             cancel_after: Mutex::new(None),
+            lease_begin_fails: Mutex::new(false),
         })
     }
 
@@ -147,7 +150,68 @@ impl Session for FakeSession {
         let text = req.text.clone();
         self.log.lock().unwrap().push(text.clone());
         let upper = text.trim_start().to_uppercase();
-        if upper.starts_with("SELECT 1 AS") {
+        let canned = |sink: &mut dyn ResultSink,
+                      cols: &[(&str, ValueKind)],
+                      rows: Vec<Vec<Value>>|
+         -> Result<()> {
+            sink.on_columns(
+                cols.iter()
+                    .map(|(n, k)| ColumnMeta {
+                        name: (*n).into(),
+                        type_name: "x".into(),
+                        value_kind: *k,
+                        nullable: Some(true),
+                    })
+                    .collect(),
+            )?;
+            let n = rows.len() as u64;
+            sink.on_rows(rows)?;
+            sink.on_statement_end(StatementEnd {
+                outcome: EndOutcome::Rows {
+                    row_count: n,
+                    truncated: false,
+                },
+                elapsed_ms: 0,
+            })
+        };
+        if upper.starts_with("SELECT 1 AS DUP") {
+            canned(
+                sink,
+                &[
+                    ("a", ValueKind::Int),
+                    ("a", ValueKind::Int),
+                    ("a#2", ValueKind::Int),
+                ],
+                vec![vec![Value::Int(1), Value::Int(2), Value::Int(3)]],
+            )?;
+        } else if upper.starts_with("SELECT 1 AS FORMULA") {
+            canned(
+                sink,
+                &[("t", ValueKind::Text), ("n", ValueKind::Int)],
+                vec![
+                    vec![Value::Text("=1+1".into()), Value::Int(-5)],
+                    vec![Value::Text("plain".into()), Value::Int(7)],
+                ],
+            )?;
+        } else if upper.starts_with("SELECT 1 AS BIG") {
+            canned(
+                sink,
+                &[("n", ValueKind::Int)],
+                vec![
+                    vec![Value::Int(1_000_000_000_000_000)],
+                    vec![Value::Int(999_999_999_999_999)],
+                ],
+            )?;
+        } else if upper.starts_with("SELECT 1 AS HOSTILE") {
+            canned(
+                sink,
+                &[("t", ValueKind::Text), ("ts", ValueKind::Timestamp)],
+                vec![vec![
+                    Value::Text("\\', 0); DROP TABLE users; -- ".into()),
+                    Value::Timestamp("2024-05-06 07:08:09+00".into()),
+                ]],
+            )?;
+        } else if upper.starts_with("SELECT 1 AS") {
             sink.on_columns(vec![ColumnMeta {
                 name: "n".into(),
                 type_name: "int4".into(),
@@ -217,6 +281,16 @@ impl Session for FakeSession {
             })?;
         }
         Ok(ExecSummary::default())
+    }
+
+    async fn open_lease(
+        &self,
+        _opts: dbstudio_core::LeaseOptions,
+    ) -> Result<Box<dyn dbstudio_core::Lease>> {
+        if *self.lease_begin_fails.lock().unwrap() {
+            return Ok(Box::new(BeginFails));
+        }
+        Err(Error::Unsupported("leases".into()))
     }
 
     async fn list_children(&self, _p: &ObjectPath) -> Result<Vec<ObjectNode>> {
@@ -332,5 +406,57 @@ pub fn context(session: Arc<dyn Session>, reporter: Arc<Recorder>) -> ExportCont
         kind: DbKind::Postgres,
         dialect: ScriptDialect::Postgres,
         reporter,
+    }
+}
+
+/// A lease that works, except that it cannot start a transaction.
+pub struct BeginFails;
+
+#[async_trait]
+impl dbstudio_core::Lease for BeginFails {
+    async fn execute(&self, _r: QueryRequest, _s: &mut dyn ResultSink) -> Result<ExecSummary> {
+        Ok(ExecSummary::default())
+    }
+    async fn fetch_more(
+        &self,
+        _q: uuid::Uuid,
+        _m: u64,
+        _b: Option<u32>,
+        _s: &mut dyn ResultSink,
+    ) -> Result<ExecSummary> {
+        Err(Error::Unsupported("x".into()))
+    }
+    async fn discard_result(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn cancel(&self, _q: uuid::Uuid) -> Result<()> {
+        Ok(())
+    }
+    async fn begin(&self, _o: dbstudio_core::TxOptions) -> Result<()> {
+        Err(Error::query("cannot start a transaction"))
+    }
+    async fn commit(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn rollback(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn set_auto_commit(&self, _on: bool) -> Result<()> {
+        Ok(())
+    }
+    async fn set_context(&self, _c: dbstudio_core::LeaseContext) -> Result<()> {
+        Ok(())
+    }
+    fn state(&self) -> dbstudio_core::LeaseState {
+        dbstudio_core::LeaseState::initial(&dbstudio_core::LeaseOptions::default())
+    }
+    async fn ping(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn close(&self) -> Result<dbstudio_core::LeaseCloseReport> {
+        Ok(dbstudio_core::LeaseCloseReport {
+            rolled_back: false,
+            forced: false,
+        })
     }
 }

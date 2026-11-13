@@ -272,7 +272,12 @@ impl JobManager {
                 return;
             };
             manager.start(id);
-            let outcome = work(ctx).await;
+            // The work runs as a task of its own: a panic ends the job as failed instead of
+            // leaving it `running` forever.
+            let outcome = match tokio::spawn(work(ctx)).await {
+                Ok(outcome) => outcome,
+                Err(e) => Err(Error::Other(format!("the job crashed: {e}"))),
+            };
             drop(permit);
             manager.finish(id, outcome);
         });
@@ -463,6 +468,62 @@ mod tests {
         }
         assert_eq!(jobs.get(first).unwrap().status, JobStatus::Succeeded);
         assert_eq!(jobs.get(second).unwrap().status, JobStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn a_panicking_job_fails_and_frees_its_slot() {
+        let hub = EventHub::new();
+        let jobs = Arc::new(JobManager::with_limit(hub, 1));
+        let first = jobs.spawn(JobKind::Export, "boom", None, |_| async {
+            if true {
+                panic!("boom");
+            }
+            Ok(None)
+        });
+        let second = jobs.spawn(JobKind::Export, "next", None, |_| async { Ok(None) });
+        for _ in 0..200 {
+            if jobs.get(second).unwrap().status == JobStatus::Succeeded {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let failed = jobs.get(first).unwrap();
+        assert_eq!(failed.status, JobStatus::Failed);
+        assert!(failed.error.unwrap().message.contains("crashed"));
+        assert_eq!(jobs.get(second).unwrap().status, JobStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn dropping_a_queued_job_drops_its_work() {
+        struct Flag(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Flag {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let hub = EventHub::new();
+        let jobs = Arc::new(JobManager::with_limit(hub, 1));
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let g = gate.clone();
+        jobs.spawn(JobKind::Export, "busy", None, move |_| async move {
+            g.notified().await;
+            Ok(None)
+        });
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Flag(dropped.clone());
+        let queued = jobs.spawn(JobKind::Export, "queued", None, move |_| async move {
+            let _keep = &flag;
+            Ok(None)
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        jobs.cancel(queued).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(jobs.get(queued).unwrap().status, JobStatus::Cancelled);
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "what the cancelled job owned (its session) must be released"
+        );
+        gate.notify_one();
     }
 
     #[tokio::test]

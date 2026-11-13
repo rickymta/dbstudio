@@ -283,6 +283,12 @@ function FormatStep({
             onChange={(on) => setForm({ ...form, csv: { ...form.csv, header: on } })}
           />
           <Check
+            id="csv-excel-safe"
+            label={t('csv.excelSafe')}
+            checked={form.csv.excelSafe ?? false}
+            onChange={(on) => setForm({ ...form, csv: { ...form.csv, excelSafe: on } })}
+          />
+          <Check
             id="csv-quote-all"
             label={t('csv.quoteAll')}
             checked={form.csv.quoteAll ?? false}

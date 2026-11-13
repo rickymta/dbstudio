@@ -54,6 +54,7 @@ export function defaultForm(source: ExportSource): ExportForm {
       encoding: 'utf8Bom',
       lineEnding: 'crlf',
       nullText: '',
+      excelSafe: false,
     },
     json: { layout: 'array', extendedJson: 'off', pretty: false },
     binary: 'base64',
