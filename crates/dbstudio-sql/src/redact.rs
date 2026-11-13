@@ -55,21 +55,125 @@ fn sig_tokens(d: ScriptDialect, chars: &[char]) -> Vec<T> {
     out
 }
 
-fn apply(chars: &[char], mut spans: Vec<(usize, usize)>) -> String {
-    spans.sort_unstable();
-    spans.dedup();
+fn apply_with(chars: &[char], mut spans: Vec<(usize, usize, String)>) -> String {
+    spans.sort_by_key(|s| (s.0, s.1));
+    spans.dedup_by_key(|s| (s.0, s.1));
     let mut out = String::with_capacity(chars.len());
     let mut pos = 0;
-    for (s, e) in spans {
+    for (s, e, rep) in spans {
         if s < pos {
             continue;
         }
         out.extend(&chars[pos..s]);
-        out.push_str(MASK);
+        out.push_str(&rep);
         pos = e;
     }
     out.extend(&chars[pos..]);
     out
+}
+
+/// Hide the password of connection strings inside `text`: `password=...` / `pwd=...` /
+/// `passwd=...` (libpq, ODBC, ADO.NET) and `scheme://user:pass@host` URIs. Returns `None` when
+/// there is nothing to hide.
+fn mask_connection_secrets(text: &str) -> Option<String> {
+    let c: Vec<char> = text.chars().collect();
+    let n = c.len();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut changed = false;
+    let boundary = |i: usize| i == 0 || !(c[i - 1].is_alphanumeric() || c[i - 1] == '_');
+    while i < n {
+        // key = value
+        if boundary(i) {
+            for key in ["password", "passwd", "pwd"] {
+                let k: Vec<char> = key.chars().collect();
+                if i + k.len() <= n
+                    && c[i..i + k.len()]
+                        .iter()
+                        .zip(&k)
+                        .all(|(a, b)| a.eq_ignore_ascii_case(b))
+                {
+                    let mut j = i + k.len();
+                    while j < n && c[j] == ' ' {
+                        j += 1;
+                    }
+                    if j < n && c[j] == '=' {
+                        j += 1;
+                        while j < n && c[j] == ' ' {
+                            j += 1;
+                        }
+                        // value: doubled quotes (inside an SQL literal), a quote, or bare
+                        let start = j;
+                        if c[j..].starts_with(&['\'', '\'']) {
+                            j += 2;
+                            while j < n && !c[j..].starts_with(&['\'', '\'']) {
+                                j += 1;
+                            }
+                            j = (j + 2).min(n);
+                        } else if j < n && matches!(c[j], '"' | '\'') {
+                            let q = c[j];
+                            j += 1;
+                            while j < n && c[j] != q {
+                                j += 1;
+                            }
+                            j = (j + 1).min(n);
+                        } else {
+                            while j < n
+                                && !c[j].is_whitespace()
+                                && !matches!(c[j], ';' | '\'' | '"')
+                            {
+                                j += 1;
+                            }
+                        }
+                        if j > start {
+                            out.extend(&c[i..start]);
+                            out.push_str("***");
+                            i = j;
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if i >= n {
+                break;
+            }
+        }
+        // scheme://user:pass@host
+        if c[i..].starts_with(&[':', '/', '/']) {
+            let ustart = i + 3;
+            let mut j = ustart;
+            while j < n
+                && !matches!(c[j], '/' | '?' | '#' | '@' | '\'' | '"')
+                && !c[j].is_whitespace()
+            {
+                j += 1;
+            }
+            if j < n && c[j] == '@' {
+                if let Some(colon) = c[ustart..j].iter().position(|x| *x == ':') {
+                    out.extend(&c[i..ustart + colon + 1]);
+                    out.push_str("***");
+                    i = j;
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+        out.push(c[i]);
+        i += 1;
+    }
+    changed.then_some(out)
+}
+
+/// Replacement spans for the connection strings inside String tokens.
+fn connection_spans(chars: &[char], t: &[T]) -> Vec<(usize, usize, String)> {
+    t.iter()
+        .filter(|x| x.kind == TokenKind::String)
+        .filter_map(|x| {
+            let text: String = chars[x.start..x.end].iter().collect();
+            mask_connection_secrets(&text).map(|r| (x.start, x.end, r))
+        })
+        .collect()
 }
 
 fn is_str(t: Option<&T>) -> bool {
@@ -139,7 +243,11 @@ fn redact_sql(d: ScriptDialect, text: &str) -> String {
         }
         i += 1;
     }
-    apply(&chars, spans)
+    let mut all: Vec<(usize, usize, String)> = connection_spans(&chars, &t);
+    // A literal already hidden as a whole (PASSWORD '...') wins over partial masking.
+    all.retain(|c| !spans.iter().any(|s| s.0 == c.0));
+    all.extend(spans.into_iter().map(|(s, e)| (s, e, MASK.to_string())));
+    apply_with(&chars, all)
 }
 
 fn secret_at(t: &[T], j: usize, spans: &mut Vec<(usize, usize)>) {
@@ -212,15 +320,16 @@ fn redact_redis_line(line: &str) -> String {
         }
         _ => {}
     }
-    if hide.is_empty() {
-        return line.to_string();
-    }
     let mut out = String::new();
     let mut pos = 0;
     for (k, &(s, e)) in spans.iter().enumerate() {
         if hide.contains(&k) {
             out.push_str(&line[pos..s]);
             out.push_str(MASK);
+            pos = e;
+        } else if let Some(r) = mask_connection_secrets(&line[s..e]) {
+            out.push_str(&line[pos..s]);
+            out.push_str(&r);
             pos = e;
         }
     }
@@ -262,7 +371,10 @@ fn redact_mongo(text: &str) -> String {
             spans.push((t[i + 4].start, t[i + 4].end));
         }
     }
-    apply(&chars, spans)
+    let mut all: Vec<(usize, usize, String)> = connection_spans(&chars, &t);
+    all.retain(|c| !spans.iter().any(|s| s.0 == c.0));
+    all.extend(spans.into_iter().map(|(s, e)| (s, e, MASK.to_string())));
+    apply_with(&chars, all)
 }
 
 #[cfg(test)]
@@ -438,5 +550,118 @@ mod tests {
             redact(PG, "select 'é😀'; create role r password 'é😀'"),
             "select 'é😀'; create role r password '***'"
         );
+    }
+
+    #[test]
+    fn connection_strings_inside_literals() {
+        assert_eq!(
+            redact(
+                PG,
+                "SELECT dblink_connect('host=h user=u password=secret dbname=d')"
+            ),
+            "SELECT dblink_connect('host=h user=u password=*** dbname=d')"
+        );
+        assert_eq!(
+            redact(
+                PG,
+                "CREATE SUBSCRIPTION s CONNECTION 'host=h password=''a b'' port=5432' PUBLICATION p"
+            ),
+            "CREATE SUBSCRIPTION s CONNECTION 'host=h password=*** port=5432' PUBLICATION p"
+        );
+        assert_eq!(
+            redact(
+                ScriptDialect::MsSql,
+                "SELECT * FROM OPENROWSET('SQLNCLI', 'Server=s;Uid=u;Pwd=Secret!;', 'select 1')"
+            ),
+            "SELECT * FROM OPENROWSET('SQLNCLI', 'Server=s;Uid=u;Pwd=***;', 'select 1')"
+        );
+        assert_eq!(
+            redact(MY, "SELECT 'DRIVER={x};PASSWORD = \"p w\";UID=u'"),
+            "SELECT 'DRIVER={x};PASSWORD = ***;UID=u'"
+        );
+        assert_eq!(
+            redact(
+                PG,
+                "SELECT dblink_connect('postgres://user:pa55@host:5432/db?sslmode=require')"
+            ),
+            "SELECT dblink_connect('postgres://user:***@host:5432/db?sslmode=require')"
+        );
+        // no password in the URI: untouched
+        assert_eq!(
+            redact(
+                PG,
+                "SELECT 'postgres://user@host/db', 'https://example.com/a:b@c'"
+            ),
+            "SELECT 'postgres://user@host/db', 'https://example.com/a:b@c'"
+        );
+        // words that merely contain the key are not secrets
+        assert_eq!(
+            redact(PG, "SELECT 'mypassword=1', 'nopwd=2'"),
+            "SELECT 'mypassword=1', 'nopwd=2'"
+        );
+        // a PASSWORD literal is hidden whole, not partially
+        assert_eq!(
+            redact(PG, "ALTER ROLE r PASSWORD 'password=abc'"),
+            "ALTER ROLE r PASSWORD '***'"
+        );
+    }
+
+    #[test]
+    fn connection_strings_in_mongo_and_redis() {
+        assert_eq!(
+            redact(
+                ScriptDialect::MongoShell,
+                "db.getMongo().connect('mongodb://admin:hunter2@h:27017/x')"
+            ),
+            "db.getMongo().connect('mongodb://admin:***@h:27017/x')"
+        );
+        assert_eq!(
+            redact(ScriptDialect::RedisCli, "SET url 'redis://u:pw@h:6379/0'"),
+            "SET url 'redis://u:***@h:6379/0'"
+        );
+        assert_eq!(
+            redact(ScriptDialect::RedisCli, "SET url redis://h:6379"),
+            "SET url redis://h:6379"
+        );
+    }
+
+    #[test]
+    fn every_listed_secret_form_is_covered() {
+        let cases: [(ScriptDialect, &str, &str); 7] = [
+            (
+                MY,
+                "CREATE USER u IDENTIFIED BY 'p'",
+                "CREATE USER u IDENTIFIED BY '***'",
+            ),
+            (
+                PG,
+                "CREATE USER u PASSWORD 'p'",
+                "CREATE USER u PASSWORD '***'",
+            ),
+            (MY, "SET PASSWORD = 'p'", "SET PASSWORD = '***'"),
+            (
+                PG,
+                "CREATE USER u WITH PASSWORD 'p'",
+                "CREATE USER u WITH PASSWORD '***'",
+            ),
+            (
+                PG,
+                "ALTER ROLE r WITH LOGIN PASSWORD 'p'",
+                "ALTER ROLE r WITH LOGIN PASSWORD '***'",
+            ),
+            (
+                ScriptDialect::MsSql,
+                "CREATE LOGIN l WITH PASSWORD = 'p'",
+                "CREATE LOGIN l WITH PASSWORD = '***'",
+            ),
+            (
+                ScriptDialect::Oracle,
+                "ALTER USER u IDENTIFIED BY p",
+                "ALTER USER u IDENTIFIED BY '***'",
+            ),
+        ];
+        for (d, input, want) in cases {
+            assert_eq!(redact(d, input), want);
+        }
     }
 }

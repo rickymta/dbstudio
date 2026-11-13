@@ -893,20 +893,74 @@ fn explain(
     )
 }
 
+/// Functions that change state although they are called from a `SELECT`.
+const VOLATILE_FUNCTIONS: &[&str] = &[
+    "NEXTVAL",
+    "SETVAL",
+    "SET_CONFIG",
+    "PG_TERMINATE_BACKEND",
+    "PG_CANCEL_BACKEND",
+    "PG_RELOAD_CONF",
+    "PG_ROTATE_LOGFILE",
+    "PG_SWITCH_WAL",
+    "PG_CREATE_RESTORE_POINT",
+    "LO_IMPORT",
+    "LO_EXPORT",
+    "LO_UNLINK",
+    "LO_CREAT",
+    "LO_CREATE",
+    "LO_FROM_BYTEA",
+    "LO_PUT",
+    "DBLINK_EXEC",
+    "DBLINK_CONNECT",
+    "PG_REPLICATION_SLOT_ADVANCE",
+    "PG_DROP_REPLICATION_SLOT",
+    "PG_CREATE_LOGICAL_REPLICATION_SLOT",
+    "PG_CREATE_PHYSICAL_REPLICATION_SLOT",
+];
+
+/// The class of a `SELECT` (or the `SELECT` of a `WITH`): anything that writes, locks or
+/// changes session state is not a plain read.
 fn select_class(d: ScriptDialect, sig: &[Sig], f: usize) -> StatementClass {
     use StatementClass as C;
     if let Some(k) = depth0_word_pos(sig, f, &["INTO"]) {
         match d {
             ScriptDialect::Postgres | ScriptDialect::MsSql => return C::Ddl,
+            // INTO OUTFILE / DUMPFILE write files, INTO @var changes session state.
             ScriptDialect::MySql { .. } => {
-                if matches!(w(sig, k + 1), "OUTFILE" | "DUMPFILE") {
-                    return C::Write;
-                }
+                let _ = k;
+                return C::Write;
             }
             _ => {}
         }
     }
+    for (k, s) in sig.iter().enumerate().skip(f) {
+        if s.kind != TokenKind::Word {
+            continue;
+        }
+        if VOLATILE_FUNCTIONS.contains(&s.up.as_str()) {
+            return C::Write;
+        }
+        // Row locks: FOR UPDATE / FOR SHARE / FOR NO KEY UPDATE / FOR KEY SHARE,
+        // MySQL LOCK IN SHARE MODE.
+        if s.up == "FOR"
+            && (matches!(w(sig, k + 1), "UPDATE" | "SHARE")
+                || (matches!(w(sig, k + 1), "NO" | "KEY")
+                    && matches!(w(sig, k + 2), "KEY" | "UPDATE" | "SHARE")))
+        {
+            return C::Write;
+        }
+        if s.up == "LOCK" && w(sig, k + 1) == "IN" && w(sig, k + 2) == "SHARE" {
+            return C::Write;
+        }
+    }
     C::Read
+}
+
+/// `READ WRITE` among the words (transaction characteristics that lift read-only).
+fn has_read_write(sig: &[Sig]) -> bool {
+    sig.windows(2)
+        .any(|p| p[0].up == "READ" && p[1].up == "WRITE" && p[0].kind == TokenKind::Word)
 }
 
 fn classify_sig(
@@ -1009,10 +1063,13 @@ fn classify_sig(
                 } else {
                     procedural(sig)
                 }
+            } else if has_read_write(sig) {
+                (C::Admin, None)
             } else {
                 tx(TxControl::Begin)
             }
         }
+        "START" if second == "TRANSACTION" && has_read_write(sig) => (C::Admin, None),
         "START" if second == "TRANSACTION" => tx(TxControl::Begin),
         "COMMIT" => tx(TxControl::Commit),
         "END" if pg => tx(TxControl::Commit),
@@ -1029,6 +1086,25 @@ fn classify_sig(
         "SAVE" if mssql && matches!(second, "TRAN" | "TRANSACTION") => tx(TxControl::Savepoint),
         "RELEASE" => tx(TxControl::Release),
         "SET" => {
+            // Settings that lift read-only mode or change how strings are lexed are not plain
+            // session statements.
+            let lifts = has_read_write(sig)
+                || sig.iter().any(|s| {
+                    s.kind == TokenKind::Word
+                        && [
+                            "TRANSACTION_READ_ONLY",
+                            "TX_READ_ONLY",
+                            "SQL_MODE",
+                            "SUPER_READ_ONLY",
+                        ]
+                        .iter()
+                        .any(|k| s.up.contains(k))
+                        || s.up == "READ_ONLY"
+                        || s.up.ends_with(".READ_ONLY")
+                });
+            if lifts {
+                return (C::Admin, None);
+            }
             if is_mysql(d) {
                 let global = matches!(second, "GLOBAL" | "PERSIST" | "PERSIST_ONLY" | "PASSWORD")
                     || sig.get(f + 1).is_some_and(|s| s.up.starts_with("@@GLOBAL"));
@@ -1304,7 +1380,7 @@ mod tests {
                 cls(d, "with a as (select 1) select * from a"),
                 (C::Read, None)
             );
-            assert_eq!(cls(d, "select * from t for update"), (C::Read, None));
+            assert_eq!(cls(d, "select * from t for update"), (C::Write, None));
         }
         assert_eq!(cls(PG, "values (1), (2)"), (C::Read, None));
         assert_eq!(cls(PG, "table t"), (C::Read, None));
@@ -1345,7 +1421,7 @@ mod tests {
             cls(MY, "select * from t into outfile '/tmp/x'"),
             (C::Write, None)
         );
-        assert_eq!(cls(MY, "select a into @v from t"), (C::Read, None));
+        assert_eq!(cls(MY, "select a into @v from t"), (C::Write, None));
         assert_eq!(cls(MS, "update statistics t"), (C::Admin, None));
     }
 
@@ -1376,7 +1452,7 @@ mod tests {
         );
         assert_eq!(
             cls(PG, "with a as (select 1) select * from a for update"),
-            (C::Read, None)
+            (C::Write, None)
         );
     }
 
@@ -1911,7 +1987,7 @@ mod tests {
             cls(ORA, "create or replace procedure p is begin null; end;\n/").0,
             C::Ddl
         );
-        assert_eq!(cls(ORA, "select * from t for update").0, C::Read);
+        assert_eq!(cls(ORA, "select * from t for update").0, C::Write);
         assert_eq!(
             cls(
                 ORA,
