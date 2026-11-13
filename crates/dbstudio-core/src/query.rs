@@ -153,6 +153,33 @@ pub trait ResultSink: Send {
     fn on_statement_end(&mut self, end: StatementEnd) -> Result<()>;
 }
 
+/// Event streamed to the frontend (through a Tauri channel) while a query or table fetch runs.
+/// Mirrors the [`ResultSink`] callbacks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum QueryEvent {
+    /// A result set begins.
+    Columns {
+        /// Column metadata of the rows that follow.
+        columns: Vec<ColumnMeta>,
+    },
+    /// A batch of rows.
+    Rows {
+        /// Row-major cells.
+        rows: Vec<Vec<Value>>,
+    },
+    /// A notice or warning.
+    Message {
+        /// Message text.
+        message: String,
+    },
+    /// The current statement finished.
+    StatementEnd {
+        /// End-of-statement details.
+        end: StatementEnd,
+    },
+}
+
 /// A [`ResultSink`] that gathers all events into [`StatementResult`]s (for tests and small
 /// results; large results should be streamed instead).
 #[derive(Debug, Default)]
@@ -242,5 +269,25 @@ mod tests {
         let back: StatementOutcome =
             serde_json::from_value(serde_json::to_value(&rs).unwrap()).unwrap();
         assert_eq!(back, rs);
+    }
+
+    #[test]
+    fn query_event_shape() {
+        let e = QueryEvent::Rows {
+            rows: vec![vec![Value::Int(1)]],
+        };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({"type": "rows", "rows": [[{"t": "int", "v": 1}]]})
+        );
+        let e = QueryEvent::StatementEnd {
+            end: StatementEnd {
+                outcome: EndOutcome::Done,
+                elapsed_ms: 1,
+            },
+        };
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["type"], "statementEnd");
+        assert_eq!(serde_json::from_value::<QueryEvent>(v).unwrap(), e);
     }
 }

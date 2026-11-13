@@ -23,7 +23,7 @@ describe('App shell (browser mock IPC)', () => {
     renderApp();
     expect(screen.getByText('Connections')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /new connection/i })).toBeDisabled();
-    expect(await screen.findByTestId('driver-postgres')).toHaveTextContent('Phase 1');
+    expect(await screen.findByTestId('driver-postgres')).toHaveTextContent('Ready');
     expect(screen.getByTestId('driver-clickhouse')).toHaveTextContent('Phase 10');
     expect(screen.getAllByRole('listitem')).toHaveLength(9);
   });

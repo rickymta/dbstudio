@@ -1,0 +1,17 @@
+{
+  "tls": {
+    "label": "TLS mode"
+  },
+  "tlsMode": {
+    "disable": "Disable",
+    "prefer": "Prefer",
+    "require": "Require",
+    "verifyCa": "Verify CA",
+    "verifyFull": "Verify full (CA and host name)"
+  },
+  "environment": {
+    "development": "Development",
+    "staging": "Staging",
+    "production": "Production"
+  }
+}

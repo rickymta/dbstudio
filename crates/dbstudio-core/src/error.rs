@@ -32,6 +32,15 @@ pub enum Error {
     /// The operation exceeded its time limit.
     #[error("operation timed out")]
     Timeout,
+    /// TLS setup or handshake failure (bad certificate files, verification failure...).
+    #[error("tls error: {0}")]
+    Tls(String),
+    /// A referenced object (connection, session, table...) does not exist.
+    #[error("not found: {0}")]
+    NotFound(String),
+    /// Failure of local persistent storage (settings database, keychain...).
+    #[error("storage error: {0}")]
+    Storage(String),
     /// Local I/O failure.
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
@@ -50,6 +59,9 @@ impl Error {
             Error::Unsupported(_) => "unsupported",
             Error::Cancelled => "cancelled",
             Error::Timeout => "timeout",
+            Error::Tls(_) => "tls",
+            Error::NotFound(_) => "notFound",
+            Error::Storage(_) => "storage",
             Error::Io(_) => "io",
             Error::Other(_) => "other",
         }
@@ -113,5 +125,17 @@ mod tests {
         );
         let io: Error = std::io::Error::other("boom").into();
         assert_eq!(serde_json::to_value(&io).unwrap()["kind"], "io");
+        assert_eq!(
+            serde_json::to_value(Error::Tls("x".into())).unwrap()["kind"],
+            "tls"
+        );
+        assert_eq!(
+            serde_json::to_value(Error::NotFound("x".into())).unwrap()["kind"],
+            "notFound"
+        );
+        assert_eq!(
+            serde_json::to_value(Error::Storage("x".into())).unwrap()["kind"],
+            "storage"
+        );
     }
 }

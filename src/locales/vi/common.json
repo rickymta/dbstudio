@@ -1,5 +1,7 @@
 {
-  "app": { "name": "DBStudio" },
+  "app": {
+    "name": "DBStudio"
+  },
   "sidebar": {
     "connections": "Kết nối",
     "empty": "Chưa có kết nối nào",
@@ -7,7 +9,10 @@
     "newConnection": "Kết nối mới",
     "availableInPhase": "Có ở giai đoạn {{phase}}"
   },
-  "tabs": { "welcome": "Chào mừng" },
+  "tabs": {
+    "welcome": "Chào mừng",
+    "close": "Đóng tab"
+  },
   "welcome": {
     "title": "Chào mừng đến với DBStudio",
     "subtitle": "Một công cụ để quản trị nhiều hệ cơ sở dữ liệu.",
@@ -49,5 +54,24 @@
     "light": "Sáng",
     "dark": "Tối"
   },
-  "language": { "label": "Ngôn ngữ", "vi": "Tiếng Việt", "en": "English" }
+  "language": {
+    "label": "Ngôn ngữ",
+    "vi": "Tiếng Việt",
+    "en": "English"
+  },
+  "actions": {
+    "ok": "OK",
+    "cancel": "Hủy",
+    "confirm": "Xác nhận",
+    "close": "Đóng",
+    "save": "Lưu",
+    "delete": "Xóa",
+    "retry": "Thử lại"
+  },
+  "toast": {
+    "dismiss": "Đóng thông báo"
+  },
+  "errors": {
+    "unknown": "Đã xảy ra lỗi"
+  }
 }

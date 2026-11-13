@@ -11,8 +11,12 @@ pub enum ObjectKind {
     Schema,
     /// Table.
     Table,
-    /// View or materialized view.
+    /// View.
     View,
+    /// Materialized view.
+    MaterializedView,
+    /// Database role or user.
+    Role,
     /// Table column or document field.
     Column,
     /// Index.
@@ -31,6 +35,33 @@ pub enum ObjectKind {
     Key,
     /// Purely organisational grouping node (e.g. "Tables").
     Folder,
+}
+
+/// Stable keys used as the `name` of [`ObjectKind::Folder`] path segments. The UI translates
+/// these keys, so they must never be localized or renamed.
+pub mod folder {
+    /// Tables folder.
+    pub const TABLES: &str = "tables";
+    /// Views folder.
+    pub const VIEWS: &str = "views";
+    /// Materialized views folder.
+    pub const MATERIALIZED_VIEWS: &str = "materializedViews";
+    /// Functions folder.
+    pub const FUNCTIONS: &str = "functions";
+    /// Procedures folder.
+    pub const PROCEDURES: &str = "procedures";
+    /// Triggers folder.
+    pub const TRIGGERS: &str = "triggers";
+    /// Sequences folder.
+    pub const SEQUENCES: &str = "sequences";
+    /// Indexes folder.
+    pub const INDEXES: &str = "indexes";
+    /// Columns folder.
+    pub const COLUMNS: &str = "columns";
+    /// Roles folder.
+    pub const ROLES: &str = "roles";
+    /// Schemas folder (databases of schema-capable servers).
+    pub const SCHEMAS: &str = "schemas";
 }
 
 /// One step of an [`ObjectPath`].
@@ -108,5 +139,15 @@ mod tests {
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["segments"][0]["kind"], "database");
         assert_eq!(serde_json::from_value::<ObjectPath>(json).unwrap(), p);
+    }
+
+    #[test]
+    fn new_kinds_serialize_camel_case() {
+        assert_eq!(
+            serde_json::to_value(ObjectKind::MaterializedView).unwrap(),
+            "materializedView"
+        );
+        assert_eq!(serde_json::to_value(ObjectKind::Role).unwrap(), "role");
+        assert_eq!(folder::MATERIALIZED_VIEWS, "materializedViews");
     }
 }

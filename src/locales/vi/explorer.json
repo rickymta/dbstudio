@@ -1,0 +1,32 @@
+{
+  "folder": {
+    "tables": "Bảng",
+    "views": "View",
+    "materializedViews": "Materialized view",
+    "functions": "Hàm",
+    "procedures": "Thủ tục",
+    "triggers": "Trigger",
+    "sequences": "Sequence",
+    "indexes": "Chỉ mục",
+    "columns": "Cột",
+    "roles": "Vai trò",
+    "schemas": "Schema"
+  },
+  "kind": {
+    "database": "Cơ sở dữ liệu",
+    "schema": "Schema",
+    "table": "Bảng",
+    "view": "View",
+    "materializedView": "Materialized view",
+    "role": "Vai trò",
+    "column": "Cột",
+    "index": "Chỉ mục",
+    "function": "Hàm",
+    "procedure": "Thủ tục",
+    "trigger": "Trigger",
+    "sequence": "Sequence",
+    "collection": "Collection",
+    "key": "Khóa",
+    "folder": "Thư mục"
+  }
+}

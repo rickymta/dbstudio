@@ -1,5 +1,7 @@
 {
-  "app": { "name": "DBStudio" },
+  "app": {
+    "name": "DBStudio"
+  },
   "sidebar": {
     "connections": "Connections",
     "empty": "No connections yet",
@@ -7,7 +9,10 @@
     "newConnection": "New connection",
     "availableInPhase": "Available in phase {{phase}}"
   },
-  "tabs": { "welcome": "Welcome" },
+  "tabs": {
+    "welcome": "Welcome",
+    "close": "Close tab"
+  },
   "welcome": {
     "title": "Welcome to DBStudio",
     "subtitle": "One tool to administer many databases.",
@@ -49,5 +54,24 @@
     "light": "Light",
     "dark": "Dark"
   },
-  "language": { "label": "Language", "vi": "Tiếng Việt", "en": "English" }
+  "language": {
+    "label": "Language",
+    "vi": "Tiếng Việt",
+    "en": "English"
+  },
+  "actions": {
+    "ok": "OK",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "close": "Close",
+    "save": "Save",
+    "delete": "Delete",
+    "retry": "Retry"
+  },
+  "toast": {
+    "dismiss": "Dismiss notification"
+  },
+  "errors": {
+    "unknown": "Something went wrong"
+  }
 }

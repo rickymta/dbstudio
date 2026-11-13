@@ -1,17 +1,22 @@
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { ConnectionsSidebar } from '@/features/connections/ConnectionsSidebar';
 import { TabBar } from '@/features/tabs/TabBar';
-import { WelcomeTab } from '@/features/welcome/WelcomeTab';
 import { useTabsStore } from '@/stores/tabs';
+import { Toaster } from '@/components/ui/Toast';
 import { StatusBar } from './StatusBar';
+import { renderTab } from './tabRegistry';
 
 function MainArea() {
-  const activeId = useTabsStore((s) => s.activeId);
+  const activeTab = useTabsStore((s) => s.tabs.find((t) => t.id === s.activeId));
   return (
     <div className="flex h-full min-w-0 flex-col bg-background">
       <TabBar />
       <main className="min-h-0 flex-1" role="tabpanel">
-        {activeId === 'welcome' && <WelcomeTab />}
+        {activeTab && (
+          <div key={activeTab.id} className="h-full">
+            {renderTab(activeTab)}
+          </div>
+        )}
       </main>
     </div>
   );
@@ -32,6 +37,7 @@ export function App() {
         </Group>
       </div>
       <StatusBar />
+      <Toaster />
     </div>
   );
 }

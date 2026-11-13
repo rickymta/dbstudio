@@ -1,7 +1,7 @@
-import type { AppInfo, Capabilities, DbFamily, DbKind, DriverDescriptor } from './types';
+import type { AppInfo, Capabilities, DbFamily, DbKind, DriverDescriptor } from '../types';
 
-// Mirrors `DriverRegistry::descriptors()` with no drivers registered (phase 0), so the UI works
-// when opened in a plain browser without the Tauri runtime.
+// Mirrors `DriverRegistry::descriptors()` with the PostgreSQL and MySQL drivers registered
+// (phase 1), so the UI works when opened in a plain browser without the Tauri runtime.
 
 const none: Capabilities = {
   sql: false,
@@ -27,7 +27,7 @@ const row = (
   displayName: string,
   defaultPort: number,
   family: DbFamily,
-  phase: number,
+  phase: number | 'available',
   capabilities: Capabilities,
 ): DriverDescriptor => ({
   kind,
@@ -35,7 +35,7 @@ const row = (
   defaultPort,
   family,
   capabilities,
-  status: { state: 'planned', phase },
+  status: phase === 'available' ? { state: 'available' } : { state: 'planned', phase },
 });
 
 export const mockDrivers: DriverDescriptor[] = [
@@ -44,7 +44,7 @@ export const mockDrivers: DriverDescriptor[] = [
     'PostgreSQL',
     5432,
     'relational',
-    1,
+    'available',
     caps({
       sql: true,
       transactions: true,
@@ -67,7 +67,7 @@ export const mockDrivers: DriverDescriptor[] = [
     'MySQL',
     3306,
     'relational',
-    1,
+    'available',
     caps({
       sql: true,
       transactions: true,
@@ -195,6 +195,13 @@ export const mockDrivers: DriverDescriptor[] = [
     }),
   ),
 ];
+
+/** Descriptor of the driver for `kind` (mock registry). */
+export function mockDriverFor(kind: DbKind): DriverDescriptor {
+  const d = mockDrivers.find((x) => x.kind === kind);
+  if (!d) throw new Error(`unknown kind ${kind}`);
+  return d;
+}
 
 export const mockAppInfo: AppInfo = {
   name: 'DBStudio',

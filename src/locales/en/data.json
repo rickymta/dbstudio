@@ -1,0 +1,17 @@
+{
+  "filterOp": {
+    "eq": "equals",
+    "ne": "not equal",
+    "lt": "less than",
+    "le": "less or equal",
+    "gt": "greater than",
+    "ge": "greater or equal",
+    "contains": "contains",
+    "notContains": "does not contain",
+    "startsWith": "starts with",
+    "endsWith": "ends with",
+    "isNull": "is null",
+    "isNotNull": "is not null",
+    "in": "in list"
+  }
+}

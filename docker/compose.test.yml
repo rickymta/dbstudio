@@ -1,0 +1,84 @@
+# Test databases for DBStudio integration tests. Local/CI use only: fixed throw-away credentials,
+# bound to 127.0.0.1 on non-default ports so they never clash with real servers.
+#
+#   sh docker/gen-certs.sh
+#   docker compose -f docker/compose.test.yml up -d --wait
+#   DBSTUDIO_IT=1 cargo test --workspace
+#   docker compose -f docker/compose.test.yml down -v
+name: dbstudio-test
+
+x-pg-env: &pg-env
+  POSTGRES_USER: dbstudio
+  POSTGRES_PASSWORD: dbstudio_test
+  POSTGRES_DB: dbstudio
+
+x-my-env: &my-env
+  MYSQL_ROOT_PASSWORD: dbstudio_test
+  MYSQL_DATABASE: dbstudio
+  MYSQL_USER: dbstudio
+  MYSQL_PASSWORD: dbstudio_test
+
+services:
+  # PostgreSQL 16 with TLS (server cert signed by docker/certs/ca.crt).
+  pg16:
+    image: postgres:16
+    environment: *pg-env
+    ports: ['127.0.0.1:54316:5432']
+    volumes: ['./certs:/certs:ro']
+    entrypoint:
+      - sh
+      - -c
+      - >
+        cp /certs/server.crt /certs/server.key /var/lib/postgresql/ &&
+        chown postgres:postgres /var/lib/postgresql/server.crt /var/lib/postgresql/server.key &&
+        chmod 600 /var/lib/postgresql/server.key &&
+        exec docker-entrypoint.sh postgres -c ssl=on
+        -c ssl_cert_file=/var/lib/postgresql/server.crt
+        -c ssl_key_file=/var/lib/postgresql/server.key
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U dbstudio -d dbstudio']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Oldest supported PostgreSQL, no TLS.
+  pg12:
+    image: postgres:12
+    environment: *pg-env
+    ports: ['127.0.0.1:54312:5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U dbstudio -d dbstudio']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # MySQL 8 with TLS (server cert signed by docker/certs/ca.crt).
+  mysql8:
+    image: mysql:8
+    environment: *my-env
+    ports: ['127.0.0.1:33068:3306']
+    volumes: ['./certs:/certs:ro']
+    command:
+      - --ssl-ca=/certs/ca.crt
+      - --ssl-cert=/certs/server.crt
+      - --ssl-key=/certs/server.key
+    healthcheck:
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -udbstudio -pdbstudio_test --silent']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  # MariaDB (MySQL-protocol compatible), no TLS.
+  mariadb:
+    image: mariadb:10.6
+    environment: *my-env
+    ports: ['127.0.0.1:33106:3306']
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'healthcheck.sh --connect --innodb_initialized || mysqladmin ping -h 127.0.0.1 -udbstudio -pdbstudio_test --silent',
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 40

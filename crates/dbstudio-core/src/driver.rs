@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::{
     Capabilities, CollectingSink, ConnectionConfig, DbFamily, DbKind, Error, ExecSummary,
     ObjectNode, ObjectPath, QueryRequest, Result, ResultSink, Secret, StatementResult,
+    TableCountRequest, TableDataRequest, TableDetails,
 };
 
 /// Implementation status of a driver.
@@ -111,7 +112,11 @@ pub trait Driver: Send + Sync {
     ) -> Result<Box<dyn Session>>;
 }
 
-/// One live connection to a server.
+/// One live session on a server.
+///
+/// A session represents the whole server: the driver manages its internal connections itself
+/// (including connections to several databases of the same server), and all methods may be
+/// called concurrently.
 #[async_trait]
 pub trait Session: Send + Sync {
     /// Check that the connection is alive.
@@ -132,6 +137,43 @@ pub trait Session: Send + Sync {
 
     /// List the children of `parent` in the object tree (`ObjectPath::root()` for the top level).
     async fn list_children(&self, parent: &ObjectPath) -> Result<Vec<ObjectNode>>;
+
+    /// DDL text (`CREATE ...`) that recreates the object at `path`. Unsupported by default.
+    async fn object_ddl(&self, path: &ObjectPath) -> Result<String> {
+        let _ = path;
+        Err(Error::Unsupported("object_ddl".into()))
+    }
+
+    /// Columns, indexes, foreign keys and statistics of the table or view at `path`.
+    /// Unsupported by default.
+    async fn table_details(&self, path: &ObjectPath) -> Result<TableDetails> {
+        let _ = path;
+        Err(Error::Unsupported("table_details".into()))
+    }
+
+    /// Stream one page of table rows into `sink`: `on_columns`, any number of `on_rows`
+    /// (batches of `req.batch_size`), then `on_statement_end`. Unsupported by default.
+    ///
+    /// Contract for implementors: the driver quotes every identifier and escapes every filter
+    /// value according to its own dialect. Filter values are strings typed by the user; the
+    /// database coerces them to the column type. `req.raw_where` is a `WHERE` clause body typed
+    /// by the user and is appended verbatim (it is trusted, not escaped). The fetch can be
+    /// cancelled with [`Session::cancel`] using `req.query_id`.
+    async fn fetch_table(
+        &self,
+        req: TableDataRequest,
+        sink: &mut dyn ResultSink,
+    ) -> Result<ExecSummary> {
+        let _ = (req, sink);
+        Err(Error::Unsupported("fetch_table".into()))
+    }
+
+    /// Number of rows matching the filters of `req` (same quoting/escaping contract as
+    /// [`Session::fetch_table`]). Unsupported by default.
+    async fn count_table(&self, req: TableCountRequest) -> Result<u64> {
+        let _ = req;
+        Err(Error::Unsupported("count_table".into()))
+    }
 
     /// Close the connection and release resources.
     async fn close(&self) -> Result<()>;

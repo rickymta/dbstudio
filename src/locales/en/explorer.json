@@ -1,0 +1,32 @@
+{
+  "folder": {
+    "tables": "Tables",
+    "views": "Views",
+    "materializedViews": "Materialized views",
+    "functions": "Functions",
+    "procedures": "Procedures",
+    "triggers": "Triggers",
+    "sequences": "Sequences",
+    "indexes": "Indexes",
+    "columns": "Columns",
+    "roles": "Roles",
+    "schemas": "Schemas"
+  },
+  "kind": {
+    "database": "Database",
+    "schema": "Schema",
+    "table": "Table",
+    "view": "View",
+    "materializedView": "Materialized view",
+    "role": "Role",
+    "column": "Column",
+    "index": "Index",
+    "function": "Function",
+    "procedure": "Procedure",
+    "trigger": "Trigger",
+    "sequence": "Sequence",
+    "collection": "Collection",
+    "key": "Key",
+    "folder": "Folder"
+  }
+}

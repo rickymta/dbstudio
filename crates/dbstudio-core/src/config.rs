@@ -17,8 +17,27 @@ pub enum TlsMode {
     Prefer,
     /// Require TLS but do not verify the certificate chain.
     Require,
+    /// Require TLS and verify the certificate chain against the CA, but not the host name.
+    VerifyCa,
     /// Require TLS and verify certificate chain and host name.
     VerifyFull,
+}
+
+/// TLS settings of a connection: the policy plus optional certificate files (paths on disk).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsConfig {
+    /// TLS policy.
+    pub mode: TlsMode,
+    /// PEM file with the CA certificate(s) used to verify the server.
+    #[serde(default)]
+    pub ca_cert_path: Option<String>,
+    /// PEM file with the client certificate (mutual TLS).
+    #[serde(default)]
+    pub client_cert_path: Option<String>,
+    /// PEM file with the client private key (mutual TLS).
+    #[serde(default)]
+    pub client_key_path: Option<String>,
 }
 
 /// Deployment environment label, used for visual safeguards (e.g. red production tabs).
@@ -51,8 +70,11 @@ pub struct ConnectionConfig {
     pub database: Option<String>,
     /// Login user.
     pub username: Option<String>,
-    /// TLS policy.
-    pub tls: TlsMode,
+    /// TLS settings.
+    pub tls: TlsConfig,
+    /// Connect timeout in milliseconds; the driver picks a default when `None`.
+    #[serde(default)]
+    pub connect_timeout_ms: Option<u64>,
     /// Refuse statements that modify data or schema.
     pub read_only: bool,
     /// Optional environment label.
@@ -73,7 +95,8 @@ impl ConnectionConfig {
             port: kind.default_port(),
             database: None,
             username: None,
-            tls: TlsMode::default(),
+            tls: TlsConfig::default(),
+            connect_timeout_ms: None,
             read_only: false,
             environment: None,
             options: BTreeMap::new(),
@@ -131,7 +154,26 @@ mod tests {
         assert_eq!(json["readOnly"], false);
         assert_eq!(json["kind"], "postgres");
         assert!(json.get("password").is_none());
+        assert_eq!(json["tls"]["mode"], "prefer");
+        assert!(json["connectTimeoutMs"].is_null());
         let back: ConnectionConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn tls_config_serializes_camel_case() {
+        let tls = TlsConfig {
+            mode: TlsMode::VerifyCa,
+            ca_cert_path: Some("/ca.pem".into()),
+            ..TlsConfig::default()
+        };
+        let json = serde_json::to_value(&tls).unwrap();
+        assert_eq!(json["mode"], "verifyCa");
+        assert_eq!(json["caCertPath"], "/ca.pem");
+        assert!(json["clientKeyPath"].is_null());
+        // Optional fields may be omitted by the frontend.
+        let back: TlsConfig =
+            serde_json::from_value(serde_json::json!({"mode": "disable"})).unwrap();
+        assert_eq!(back.mode, TlsMode::Disable);
     }
 }

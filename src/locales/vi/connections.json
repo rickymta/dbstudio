@@ -1,0 +1,17 @@
+{
+  "tls": {
+    "label": "Chế độ TLS"
+  },
+  "tlsMode": {
+    "disable": "Tắt",
+    "prefer": "Ưu tiên",
+    "require": "Bắt buộc",
+    "verifyCa": "Xác minh CA",
+    "verifyFull": "Xác minh đầy đủ (CA và tên máy chủ)"
+  },
+  "environment": {
+    "development": "Phát triển",
+    "staging": "Thử nghiệm",
+    "production": "Sản xuất"
+  }
+}

@@ -28,26 +28,30 @@
 //! field names. [`Value`] uses an explicit tagged representation so that 64-bit integers, decimals
 //! and binary data never lose precision in JavaScript.
 
+mod browse;
 mod capabilities;
 mod config;
 mod driver;
 mod error;
 mod kind;
+mod metadata;
 mod object;
 mod query;
 mod value;
 
+pub use browse::{ColumnFilter, FilterOp, SortKey, TableCountRequest, TableDataRequest};
 pub use capabilities::Capabilities;
-pub use config::{ConnectionConfig, Environment, Secret, TlsMode};
+pub use config::{ConnectionConfig, Environment, Secret, TlsConfig, TlsMode};
 pub use driver::{
     Driver, DriverDescriptor, DriverRegistry, DriverStatus, ServerInfo, Session, execute_collect,
     planned_descriptors,
 };
 pub use error::{Error, Result};
 pub use kind::{DbFamily, DbKind};
-pub use object::{ObjectKind, ObjectNode, ObjectPath, PathSegment};
+pub use metadata::{ColumnDetail, ForeignKeyDetail, IndexDetail, TableDetails};
+pub use object::{ObjectKind, ObjectNode, ObjectPath, PathSegment, folder};
 pub use query::{
-    CollectingSink, ColumnMeta, EndOutcome, ExecSummary, QueryRequest, ResultSet, ResultSink,
-    StatementEnd, StatementOutcome, StatementResult,
+    CollectingSink, ColumnMeta, EndOutcome, ExecSummary, QueryEvent, QueryRequest, ResultSet,
+    ResultSink, StatementEnd, StatementOutcome, StatementResult,
 };
 pub use value::{Value, ValueKind};

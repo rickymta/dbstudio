@@ -1,0 +1,17 @@
+{
+  "filterOp": {
+    "eq": "bằng",
+    "ne": "khác",
+    "lt": "nhỏ hơn",
+    "le": "nhỏ hơn hoặc bằng",
+    "gt": "lớn hơn",
+    "ge": "lớn hơn hoặc bằng",
+    "contains": "chứa",
+    "notContains": "không chứa",
+    "startsWith": "bắt đầu bằng",
+    "endsWith": "kết thúc bằng",
+    "isNull": "là null",
+    "isNotNull": "không null",
+    "in": "trong danh sách"
+  }
+}
