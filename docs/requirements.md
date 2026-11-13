@@ -22,7 +22,7 @@ Năng lực chính: quản lý kết nối, duyệt đối tượng, xem/sửa d
   - **Could** — làm khi có thời gian hoặc ở giai đoạn sau.
 - **Đề xuất** — mục do người viết tài liệu thêm ngoài yêu cầu gốc, cần chủ dự án xác nhận trước khi đưa vào phạm vi.
 - "SQL DB" = PostgreSQL, MySQL, MSSQL, Oracle và các DB tương thích giao thức của chúng.
-- Cột **Trạng thái** (đối chiếu với code trên nhánh `feature/quandh/phase2_complete`): **Đã làm** = có code và test tự động (unit hoặc integration với Docker); **Một phần** = thiếu phần ghi kèm; **Chưa** = không có code; **Chờ gói H** = backup/restore đang làm ở nhánh riêng. "Đã làm" không có nghĩa đã kiểm tay trên app Tauri thật — xem mục 7. Với Oracle, integration test với DB thật chưa chạy được (mục 7), nên mọi "Đã làm" áp cho Oracle chỉ dựa trên unit test.
+- Cột **Trạng thái** (đối chiếu với code trên nhánh `feature/quandh/phase2_complete`): **Đã làm** = có code và test tự động (unit hoặc integration với Docker); **Một phần** = thiếu phần ghi kèm; **Chưa** = không có code. "Đã làm" không có nghĩa đã kiểm tay trên app Tauri thật — xem mục 7. Với Oracle, integration test với DB thật chưa chạy được (mục 7), nên mọi "Đã làm" áp cho Oracle chỉ dựa trên unit test.
 - "Lệnh phá huỷ" = `DROP`, `TRUNCATE`, `DELETE`/`UPDATE` không có `WHERE`, `ALTER ... DROP`; Redis `FLUSHDB`/`FLUSHALL`/`DEL` theo pattern; MongoDB `drop`/`deleteMany({})`.
 
 ## 2. Yêu cầu chức năng
@@ -165,21 +165,21 @@ Cách hiểu yêu cầu gốc "tạo schema - data - hoặc cả 2": xuất **ch
 
 | Mã | Yêu cầu | Ưu tiên | Trạng thái |
 |---|---|---|---|
-| BACKUP-01 | Backup thủ công: toàn database hoặc các đối tượng được chọn. | Must | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-02 | Engine backup logic tích hợp sẵn (không phụ thuộc tool ngoài): schema + data ra định dạng của DBStudio (SQL theo dialect, kèm manifest). | Must | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-03 | Tuỳ chọn dùng tool native khi có trên máy: `pg_dump`/`pg_restore`, `mysqldump`, `mongodump`/`mongorestore`, MSSQL `BACKUP DATABASE`/`RESTORE` (file nằm phía server), Oracle `expdp`/`impdp`, Redis RDB (`BGSAVE`/tải RDB). Tự dò đường dẫn, cho cấu hình tay. | Should | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-04 | Nén gzip hoặc zstd. | Must | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-05 | Mã hoá tuỳ chọn (AES-256-GCM, khoá dẫn xuất từ passphrase lưu trong keychain). | Should | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-06 | Restore: chọn file, xem trước nội dung (manifest: DB nguồn, thời điểm, đối tượng), chọn đích, xác nhận (xác nhận bổ sung nếu đích là prod). | Must | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-07 | Lịch backup tự động dạng cron (có trình tạo lịch trực quan: hằng ngày/tuần/tháng + biểu thức cron nâng cao). | Must | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-08 | Chính sách giữ lại: giữ N bản gần nhất và/hoặc xoá bản cũ hơn X ngày. | Must | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-09 | Đích lưu: thư mục local (gồm ổ mạng đã mount). S3/SFTP về sau. | Must (local) / Could (S3, SFTP) | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-10 | Thông báo thành công/thất bại qua thông báo hệ điều hành. | Must | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-11 | Nhật ký lịch sử backup/restore: thời điểm, thời lượng, kích thước, trạng thái, lỗi. | Must | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-12 | Lần chạy bị lỡ (máy tắt/app đóng): khi app mở lại, chạy bù một lần hoặc bỏ qua theo cấu hình từng lịch. | Must | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-13 | App chạy nền qua tray icon (đóng cửa sổ không thoát app khi có lịch); tuỳ chọn autostart cùng hệ điều hành. | Must | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-14 | Kiểm tra tính toàn vẹn file backup (checksum trong manifest). | Should | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
-| BACKUP-15 | CLI headless (`dbstudio-cli backup --job <id>`) để gắn vào scheduler của OS (cron, launchd, Task Scheduler). | Could | Chờ gói H — nhánh này chỉ có khung, sẽ cập nhật sau khi merge. |
+| BACKUP-01 | Backup thủ công: toàn database hoặc các đối tượng được chọn. | Must | Đã làm — toàn database hoặc đối tượng chọn; IT với PG/MySQL. |
+| BACKUP-02 | Engine backup logic tích hợp sẵn (không phụ thuộc tool ngoài): schema + data ra định dạng của DBStudio (SQL theo dialect, kèm manifest). | Must | Một phần — `.dbsbak` (SQL theo dialect từ `generate_ddl` + export engine, preamble + manifest) cho SQL DB; IT với PG 12/16, MySQL/MariaDB; MSSQL/Oracle chưa test; MongoDB/Redis chưa có engine logic. |
+| BACKUP-03 | Tuỳ chọn dùng tool native khi có trên máy: `pg_dump`/`pg_restore`, `mysqldump`, `mongodump`/`mongorestore`, MSSQL `BACKUP DATABASE`/`RESTORE` (file nằm phía server), Oracle `expdp`/`impdp`, Redis RDB (`BGSAVE`/tải RDB). Tự dò đường dẫn, cho cấu hình tay. | Should | Một phần — `pg_dump`→`pg_restore`/`psql`, `mysqldump`→`mysql`, `mongodump`→`mongorestore`, `redis-cli --rdb` (chỉ backup), MSSQL `BACKUP DATABASE` vào thư mục trên server; chưa có `expdp`/`impdp`; tự dò + cấu hình tay. IT chỉ với PG/MySQL qua shim. |
+| BACKUP-04 | Nén gzip hoặc zstd. | Must | Đã làm. |
+| BACKUP-05 | Mã hoá tuỳ chọn (AES-256-GCM, khoá dẫn xuất từ passphrase lưu trong keychain). | Should | Đã làm — AES-256-GCM theo khối, Argon2id; passphrase lưu keychain theo job. |
+| BACKUP-06 | Restore: chọn file, xem trước nội dung (manifest: DB nguồn, thời điểm, đối tượng), chọn đích, xác nhận (xác nhận bổ sung nếu đích là prod). | Must | Đã làm — xem preamble, chọn đích, xác nhận gõ tên DB với production/`clean`; không restore một phần backup logical. |
+| BACKUP-07 | Lịch backup tự động dạng cron (có trình tạo lịch trực quan: hằng ngày/tuần/tháng + biểu thức cron nâng cao). | Must | Đã làm — trình tạo lịch + cron 5 trường, xem trước các lần chạy. |
+| BACKUP-08 | Chính sách giữ lại: giữ N bản gần nhất và/hoặc xoá bản cũ hơn X ngày. | Must | Đã làm — luôn giữ bản mới nhất; chỉ xoá file do job tạo. |
+| BACKUP-09 | Đích lưu: thư mục local (gồm ổ mạng đã mount). S3/SFTP về sau. | Must (local) / Could (S3, SFTP) | Đã làm (local); S3/SFTP chưa. |
+| BACKUP-10 | Thông báo thành công/thất bại qua thông báo hệ điều hành. | Must | Đã làm — chưa kiểm tay trên OS thật; nội dung chỉ tiếng Anh. |
+| BACKUP-11 | Nhật ký lịch sử backup/restore: thời điểm, thời lượng, kích thước, trạng thái, lỗi. | Must | Đã làm (`backup_runs`, lịch sử chạy trong tab Backup). |
+| BACKUP-12 | Lần chạy bị lỡ (máy tắt/app đóng): khi app mở lại, chạy bù một lần hoặc bỏ qua theo cấu hình từng lịch. | Must | Đã làm — chạy bù đúng một lần hoặc bỏ qua; kiểm bằng đồng hồ giả. |
+| BACKUP-13 | App chạy nền qua tray icon (đóng cửa sổ không thoát app khi có lịch); tuỳ chọn autostart cùng hệ điều hành. | Must | Đã làm — tray, close-to-tray, autostart (`--background`), single-instance; chưa kiểm tay. |
+| BACKUP-14 | Kiểm tra tính toàn vẹn file backup (checksum trong manifest). | Should | Đã làm (`backup_verify`, `dbstudio-cli verify`). |
+| BACKUP-15 | CLI headless (`dbstudio-cli backup --job <id>`) để gắn vào scheduler của OS (cron, launchd, Task Scheduler). | Could | Đã làm — `backup`/`restore`/`verify`/`tools`, khoá file chung với app. |
 
 ### 2.9 Chung (APP)
 
@@ -189,11 +189,11 @@ Cách hiểu yêu cầu gốc "tạo schema - data - hoặc cả 2": xuất **ch
 | APP-02 | Theme sáng/tối/theo hệ thống. | Must | Đã làm. |
 | APP-03 | Khung giao diện: sidebar (kết nối + cây đối tượng), vùng tab, status bar (kết nối hiện hành, môi trường, trạng thái transaction, tác vụ nền). | Must | Đã làm. |
 | APP-04 | Phím tắt cho thao tác chính (chạy query, tab mới, đóng tab, format, tìm đối tượng), có bảng tra phím tắt; tuỳ biến phím tắt là Could. | Must | Đã làm — bảng tra phím tắt; chưa tuỳ biến (Could). |
-| APP-05 | Trang cài đặt: ngôn ngữ, theme, font editor, giới hạn dòng mặc định, timeout, hành vi đóng cửa sổ. | Must | Một phần — có ngôn ngữ, theme, trần lưới, hiển thị thời gian, mức log; chưa có font editor, giới hạn dòng editor, timeout query, hành vi đóng cửa sổ (gói H). |
+| APP-05 | Trang cài đặt: ngôn ngữ, theme, font editor, giới hạn dòng mặc định, timeout, hành vi đóng cửa sổ. | Must | Một phần — có ngôn ngữ, theme, trần lưới, hiển thị thời gian, mức log; chưa có font editor, giới hạn dòng editor, timeout query. Hành vi đóng cửa sổ và autostart nằm ở tab Backup, chưa ở trang Cài đặt. |
 | APP-06 | Auto-update (kiểm tra, tải, cài bản mới, có chữ ký). | Should | Chưa (GĐ9). |
 | APP-07 | Log ứng dụng ra file xoay vòng, mức log cấu hình được; không ghi secret; nút "mở thư mục log". | Must | Đã làm. |
 | APP-08 | Command palette (tìm lệnh/đối tượng nhanh). | Could | Chưa. |
-| APP-09 | Trung tâm tác vụ nền (export, backup, restore): tiến độ, huỷ, xem lỗi. | Should | Đã làm (export, import, xoá khoá theo pattern; backup/restore theo gói H). |
+| APP-09 | Trung tâm tác vụ nền (export, backup, restore): tiến độ, huỷ, xem lỗi. | Should | Đã làm (export, import, xoá khoá theo pattern, backup, restore, verify). |
 
 ## 3. Yêu cầu phi chức năng (NFR)
 
@@ -210,7 +210,7 @@ Cách hiểu yêu cầu gốc "tạo schema - data - hoặc cả 2": xuất **ch
 | NFR-SEC-03 | Read-only mode và xác nhận lệnh phá huỷ (CONN-10, CONN-11) được thực thi ở phía Rust, không chỉ ở UI. | Đã làm. |
 | NFR-SEC-04 | Tauri capabilities tối thiểu (chỉ cấp plugin/quyền thật sự dùng); CSP chặt, không tải script từ xa. | Đã làm. |
 | NFR-SEC-05 | Không gửi telemetry mặc định. Nếu có về sau: opt-in, mô tả rõ dữ liệu gửi đi. | Đã làm (không có telemetry). |
-| NFR-SEC-06 | Dữ liệu cục bộ (SQLite) không chứa secret; file backup mã hoá được (BACKUP-05). | Một phần — SQLite không chứa secret; mã hoá backup chờ gói H. |
+| NFR-SEC-06 | Dữ liệu cục bộ (SQLite) không chứa secret; file backup mã hoá được (BACKUP-05). | Đã làm — SQLite không chứa secret; file backup mã hoá được (BACKUP-05). |
 | NFR-EXT-01 | Thêm một hệ quản trị = thêm một crate driver hiện thực trait chung (`Driver`, `Session`) + khai báo `Capabilities`; không sửa code UI cho từng DB ngoài các view chuyên biệt (document, key-value). | Đã làm — 6 driver, mỗi driver một crate. |
 | NFR-EXT-02 | UI tự bật/tắt tính năng theo `Capabilities` của driver (vd. ẩn ERD với Redis). | Đã làm. |
 | NFR-REL-01 | **Đề xuất:** sửa dữ liệu không bao giờ tự commit ngầm; mọi lỗi giữa chừng của commit lô phải rollback toàn bộ. | Đã làm (SQL DB); Mongo standalone và Redis không nguyên tử, UI báo `atomic=false`. |
@@ -294,10 +294,10 @@ Rủi ro kỹ thuật:
 
 Những phần dưới đây có code (và thường có test tự động) nhưng **chưa được kiểm chứng trong môi trường thật**:
 
-- **GUI thật trong cửa sổ Tauri**: giao diện GĐ2–GĐ8 mới được thao tác trong trình duyệt với mock IPC hoặc dev bridge. Chưa kiểm: tray icon, close-to-tray, autostart, thông báo OS (BACKUP-10/13, gói H), xuất PNG/PDF của ERD và plan trên WebView (`html-to-image`/`jspdf`, rủi ro R7 của thiết kế).
+- **GUI thật trong cửa sổ Tauri**: giao diện GĐ2–GĐ8 mới được thao tác trong trình duyệt với mock IPC hoặc dev bridge. Chưa kiểm: tray icon, close-to-tray, autostart, thông báo OS (BACKUP-10/13), xuất PNG/PDF của ERD và plan trên WebView (`html-to-image`/`jspdf`, rủi ro R7 của thiết kế).
 - **Windows và Linux**: chưa build/chạy lần nào; chưa kiểm WebView2, WebKitGTK, Credential Manager, Secret Service, ssh-agent qua named pipe.
 - **SQL Server**: NTLM với domain thật, Integrated (Windows), Azure SQL.
 - **Oracle**: integration test với DB thật chưa chạy (container `oraclefree` cần ~3 GB RAM cho Docker, đang chờ); hiện chỉ có unit test và test vi sai splitter.
 - **CI GitHub**: workflow (matrix 3 OS + job `integration`) chưa chạy lần nào (repo chưa có remote).
-- **Backup/restore**: chờ merge gói H; mục này sẽ cập nhật sau khi merge.
+- **Backup/restore**: mới có IT cho PG và MySQL/MariaDB (tool native qua shim, qua SSH tunnel); MSSQL, Oracle, MongoDB, Redis chưa test. Tray, close-to-tray, autostart, single-instance và thông báo OS chưa kiểm tay.
 - **Hiệu năng**: chưa benchmark lưới 1 triệu dòng trên 3 webview, chưa đo thời gian khởi động.

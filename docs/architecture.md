@@ -1,6 +1,6 @@
 # DBStudio — Kiến trúc & công nghệ
 
-> Trạng thái: v0.3 (cập nhật sau khi hiện thực GĐ2–GĐ8 theo [design/phase2-8.md](design/phase2-8.md)). Mô tả hiện thực thật trên nhánh `feature/quandh/phase2_complete`; chỗ nào còn là thiết kế thì ghi rõ. Riêng backup/restore (mục 12) đang được hoàn thiện ở nhánh riêng — mục đó **sẽ cập nhật sau khi merge gói H**. Mã yêu cầu tham chiếu [requirements.md](requirements.md); thứ tự xây dựng xem [roadmap.md](roadmap.md). Chi tiết kiểu/serde của hợp đồng GĐ2–GĐ8 nằm ở tài liệu thiết kế, tài liệu này chỉ tóm tắt và ghi những chỗ hiện thực khác thiết kế.
+> Trạng thái: v0.3 (cập nhật sau khi hiện thực GĐ2–GĐ8 theo [design/phase2-8.md](design/phase2-8.md)). Mô tả hiện thực thật trên nhánh `feature/quandh/phase2_complete`; chỗ nào còn là thiết kế thì ghi rõ. Backup/restore (gói H) đã merge (mục 12). Mã yêu cầu tham chiếu [requirements.md](requirements.md); thứ tự xây dựng xem [roadmap.md](roadmap.md). Chi tiết kiểu/serde của hợp đồng GĐ2–GĐ8 nằm ở tài liệu thiết kế, tài liệu này chỉ tóm tắt và ghi những chỗ hiện thực khác thiết kế.
 
 ## 1. Nguyên tắc
 
@@ -27,7 +27,7 @@ flowchart TB
         CMD["commands/*"]
         GUARD["guard.rs + ConfirmTokens"]
         STATE["AppState: DriverRegistry, SessionManager, LeaseManager, JobManager, PathGrants"]
-        BG["tray, scheduler, background (gói H)"]
+        BG["tray, scheduler, background"]
         CMD --> GUARD --> STATE
         BG --> STATE
     end
@@ -86,7 +86,7 @@ dbstudio/
 │   │   ├── keyvalue/          # Redis: viewer 6 kiểu + JSON, TTL, xoá theo pattern
 │   │   ├── plan/, erd/        # sơ đồ xyflow + elk (worker), xuất SVG/PNG(/PDF cho ERD)
 │   │   ├── export/, jobs/     # wizard export/import, preset, trung tâm job
-│   │   ├── backup/            # UI backup (khung; hoàn thiện ở gói H)
+│   │   ├── backup/            # job (CronBuilder), restore, lịch sử chạy, tool native, chạy nền
 │   │   └── settings/, tabs/, welcome/
 │   ├── lib/types/, lib/ipc/   # kiểu viết tay khớp Rust + wrapper invoke (types.ts, ipc.ts re-export)
 │   ├── lib/mock/              # IPC giả khi chạy ngoài Tauri (catalog theo từng DB)
@@ -94,7 +94,7 @@ dbstudio/
 ├── src-tauri/src/
 │   ├── lib.rs, state.rs, session.rs (SessionManager + tunnel), lease.rs (LeaseManager),
 │   ├── guard.rs, history.rs, jobs.rs (JobManager), grants.rs (PathGrants), events.rs, host.rs,
-│   ├── redact.rs, logging.rs, bridge.rs (dev), scheduler.rs/tray.rs/background.rs (gói H)
+│   ├── redact.rs, logging.rs, bridge.rs (dev), scheduler.rs, tray.rs, background.rs
 │   └── commands/{app,connections,sessions,browse,editor,history,changes,plan,erd,files,
 │                 export,jobs,backup,background,keyvalue,ssh,uri}.rs
 ├── crates/
@@ -217,11 +217,18 @@ flowchart LR
 
 ## 12. Backup/restore, lịch tự động, tray, CLI
 
-> Trạng thái trên nhánh này: `dbstudio-backup`, `dbstudio-cli`, `src-tauri/src/{scheduler,tray,background}.rs` và các command `backup_*`/`restore_start` vẫn là **khung hợp đồng** (trả `Unsupported` hoặc không làm gì; `schedule_preview`, `backup_tools_detect`/`backup_tool_set_path` có hiện thực tối thiểu). Gói H đang hoàn thiện ở nhánh riêng; nội dung dưới đây là thiết kế đã chốt, **sẽ cập nhật sau khi merge**.
+`dbstudio-backup` (thuần, không Tauri) gồm `container` (định dạng file), `crypto`, `logical` (engine tích hợp), `native` (tool ngoài), `ops` (backup/restore/verify/inspect), `runner` (job đã lưu: bản ghi chạy, khoá, retention — dùng chung app và CLI), `scheduler` (logic lịch thuần). Phần app: `src-tauri/src/{scheduler,tray,background}.rs` + `commands/{backup,background}.rs`; CLI: `dbstudio-cli`.
 
-- Container `.dbsbak` v1: `"DBSBAK1\0"` + header JSON (rõ) + payload `encrypt?(compress(tar(preamble.json, schema/pre.sql, data/…, schema/post.sql, manifest.json)))`. Nén gzip/zstd; mã hoá AES-256-GCM theo khối 1 MiB, khoá Argon2id từ passphrase (keychain theo job); manifest chứa SHA-256 từng entry (BACKUP-14). Sai passphrase hay file bị sửa → `Error::Integrity`.
-- Engine logic dùng lại `generate_ddl` (PreData/PostData) + export engine (writer SQL, stream qua lease); Mongo → EJSON NDJSON + index, Redis → NDJSON theo kiểu. Tool native (`pg_dump`, `mysqldump`, `mongodump`, `expdp`, `redis-cli --rdb`, MSSQL `BACKUP DATABASE`) dò theo cấu hình → `PATH` → thư mục biết trước; secret không bao giờ trên dòng lệnh.
-- Scheduler trong tiến trình app (tick 30 s, cron 5 trường, múi giờ local/UTC), chạy bù một lần hoặc bỏ qua, khoá file theo job chia với CLI, retention chỉ xoá file nằm trong `backup_runs` của job; tray + close-to-tray + autostart + single-instance + thông báo OS. `dbstudio-cli backup --job | restore | verify | tools` dùng chung store, keychain và khoá file.
+- **Container `.dbsbak`**: `"DBSBAK1\0" | u32 LE header_len | header JSON (rõ) | payload`, payload = `encrypt?(compress(tar(preamble.json, <entries>, manifest.json)))`. Nén none/gzip/zstd. Mã hoá `aes-256-gcm-chunked`: khối 1 MiB, nonce = prefix ‖ số khối ‖ cờ khối cuối, AAD = SHA-256 của header; khoá Argon2id từ passphrase, **tham số KDF đọc từ header bị chặn trên** (m ≤ 1 GiB, t ≤ 10, p ≤ 16) để file lạ không làm treo máy. `manifest.json` có SHA-256 + kích thước từng entry (BACKUP-14). Sai passphrase hay file bị sửa → `Error::Integrity`. File ghi với quyền 0600 vào file tạm tên duy nhất rồi **publish bằng hard-link** sang tên đích chưa tồn tại (hai lần chạy đồng thời không ghi đè nhau).
+- **Spool**: dữ liệu trung gian (script dump, output tool) ghi vào thư mục riêng `<data_dir>/tmp/run-*` quyền 0700; thư mục mồ côi do crash được dọn khi app khởi động.
+- **Engine logic** (`logical.rs`): mỗi database một script `data/dump.sql` do **export engine** viết — cấu trúc từ `generate_ddl` (PreData → dữ liệu → PostData), dữ liệu stream qua lease snapshot read-only repeatable-read (mục 11). Áp cho SQL DB (PG, MySQL/MariaDB đã có IT; MSSQL/Oracle đi cùng đường nhưng chưa test); MongoDB/Redis chưa có backup logic (chỉ native). Preamble ghi nguồn, danh sách đối tượng và phạm vi **không** gồm (role/grant, thiết lập server, MySQL events, large object PG, user/mật khẩu); preamble logical mang `formatVersion: 2` — file logical `formatVersion` 1 (bố cục cũ của bản dựng trước) không verify/restore được.
+- **Restore logic** chạy trên **một lease**: đặt múi giờ UTC, tách script bằng `StreamSplitter`; PG chạy cả script **trong một transaction** (lỗi → giữ nguyên dữ liệu cũ), MySQL **không nguyên tử** (DDL tự commit). `clean`: PG `DROP SCHEMA … CASCADE` các schema của backup **bên trong transaction đó**; MySQL `DROP DATABASE` + `CREATE DATABASE` **giữ charset/collation** của database cũ. `continue_on_error` ghi `RowError` theo số câu. Chỉ restore vào cùng họ DB; **không restore một phần** (`objects`) backup logical.
+- **Tool native** (`native.rs`): `pg_dump` (custom/plain) → `pg_restore`/`psql`, `mysqldump` → `mysql`, `mongodump` → `mongorestore` (archive), `redis-cli --rdb` (chỉ backup; RDB phải được đặt vào thư mục dữ liệu của server để khôi phục), MSSQL `BACKUP DATABASE` vào thư mục **trên server** (`Destination::ServerDir`). Oracle Data Pump chưa có (cần DIRECTORY trên server). Mặc định `mysqldump --single-transaction --routines --triggers --events --default-character-set=utf8mb4`. Dò tool: cấu hình → `PATH` → thư mục biết trước; tham số chỉ dựng từ spec + allow-list `options`; secret không bao giờ trên dòng lệnh (`PGPASSWORD`, file `--defaults-extra-file`/`--config` tạm 0600, `REDISCLI_AUTH`). Trước khi restore script plain bằng `psql`/`mysql`, file được **quét meta-command nguy hiểm** (psql `\!`, `\i`, `\o |…`, `\copy … program`…; mysql `system`, `source`, `\!`, `tee`…) và bị từ chối nếu có.
+- **SSH**: mỗi lần chạy job mở tunnel riêng (cùng known hosts); session kết nối qua đầu local, tool native nhận `tunnel_addr`.
+- **Xác nhận**: `restore_start` vào kết nối production hoặc với `clean` đi qua `ConfirmTokens` (gõ tên database đích).
+- **Scheduler**: tick 30 s, cron 5 trường (`croner`), múi giờ local/UTC. Khi khởi động: run còn `running` → `interrupted`; job lỡ lịch khi app tắt → chạy bù **đúng một lần** (`catchUp`) hoặc bỏ qua theo `MissedRunPolicy`. Mỗi job một khoá file (`fd-lock`) **chung giữa app và CLI**; tới lịch mà job đang chạy (khoá bị giữ) → ghi một run `failed` (kind `busy`) và gửi thông báo. Retention (giữ N bản / bỏ bản cũ hơn X ngày) chỉ xoá file nằm trong `backup_runs` của job (không glob) và **luôn giữ bản mới nhất**. Thông báo OS theo `NotifyPolicy` (nội dung hiện chỉ có tiếng Anh).
+- **Chạy nền**: tray (Open/Quit, click mở cửa sổ), close-to-tray theo `closeToTray` (`auto` = khi có job bật lịch), autostart (`tauri-plugin-autostart`, khởi động kèm `--background` = ẩn cửa sổ), single-instance (lần mở thứ hai đưa cửa sổ đang chạy lên). Cài đặt ở tab Backup (`BackgroundSettings`).
+- **CLI** `dbstudio-cli`: `backup --job <id> | --list`, `restore --file F --connection ID [--database D] [--create-database] [--clean] [--continue-on-error] [--yes] [--confirm-text TEXT]`, `verify --file F`, `tools`; `--data-dir` toàn cục; passphrase qua biến môi trường (mặc định `DBSTUDIO_PASSPHRASE`). Restore vào production hoặc `--clean` cần `--yes --confirm-text <db>` và **bắt buộc chỉ rõ database đích**. Ctrl-C/SIGTERM huỷ lần chạy (dọn file tạm). Mã thoát 0 ok, 1 lỗi, 2 sai tham số, 3 job đang chạy. Dùng chung store, keychain (service `dev.dbstudio.desktop`) và khoá file với app.
 
 ## 13. SSH tunnel và known hosts
 
@@ -294,12 +301,12 @@ Driver Oracle giữ splitter riêng (`crates/drivers/oracle/src/script.rs`): kh�
 | v1–v2 (GĐ1) | `connection_groups`, `connections`, `settings` |
 | v3 | `query_history`, `saved_query_folders`, `saved_queries`, `editor_tabs` |
 | v4 | `erd_layouts`, `export_presets` |
-| v5 | `backup_jobs`, `backup_runs` (repository hoàn thiện ở gói H) |
+| v5 | `backup_jobs`, `backup_runs` |
 | v6 | cột `connections.ssh`, `ssh_known_hosts` |
 
 - Lịch sử: văn bản đã redact, giữ tối đa `historyMaxPerConnection` (mặc định 5.000) bản/kết nối, tìm bằng `LIKE`; tắt được qua `historyEnabled`.
 - `AppSettings` thêm `editorMaxRows` (1000), `queryTimeoutMs`, `historyEnabled`, `historyMaxPerConnection`, `maxLobBytes` (16 MiB), `planMisestimateFactor`, `closeToTray`; key riêng `native_tools`, `oracle_client`.
-- Keychain: service `dev.dbstudio.desktop`; account = id kết nối, `<id>#ssh` (mật khẩu/passphrase SSH), `backup:<jobId>` (passphrase backup, gói H). Không có dự phòng plaintext.
+- Keychain: service `dev.dbstudio.desktop`; account = id kết nối, `<id>#ssh` (mật khẩu/passphrase SSH), `backup:<jobId>` (passphrase của job backup), `backup:manual:<connId>` (passphrase backup thủ công khi chọn lưu). Không có dự phòng plaintext.
 - Import profile (CONN-09) giữ quy tắc GĐ1 (allow-list `options`, giới hạn kích thước).
 
 ## 17. IPC, bảo mật, log, kiểm thử
@@ -314,13 +321,13 @@ Driver Oracle giữ splitter riêng (`crates/drivers/oracle/src/script.rs`): kh�
 | Read-only / phá huỷ | Mục 7. |
 | File | `PathGrants` (mục 11). |
 | SSH | Kiểm host key trước xác thực; chỉ tin khoá quan sát được (mục 13). |
-| Tauri | `capabilities/default.json` chỉ `core:default`, `dialog:allow-open`, `dialog:allow-save`; plugin `opener`, `notification`, `autostart` chỉ gọi từ Rust, không cấp quyền cho webview. |
+| Tauri | `capabilities/default.json` chỉ `core:default`, `dialog:allow-open`, `dialog:allow-save`; plugin `opener`, `notification`, `autostart`, `single-instance` chỉ dùng từ Rust, không cấp quyền cho webview. |
 | CSP | `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; ...` (như GĐ1). |
 | Telemetry | Không có. |
 
 **Log (APP-07).** `tracing` + file xoay vòng theo ngày (giữ 7), mức log đổi được lúc chạy từ trang Cài đặt, nút mở thư mục log (`open_log_dir`). Log của thư viện driver/TLS giữ ở `info`.
 
-**Kiểm thử.** Unit test từng crate (classifier `dbstudio-sql` có proptest/fuzz và test vi sai splitter; parser plan theo fixture; writer export theo định dạng; store; guard với đồng hồ giả). Integration test với Docker (`docker/compose.test.yml`, chỉ khi `DBSTUDIO_IT=1`) cho mọi driver, SSH, export/import và lớp command; Oracle chạy trong container `oracle-it` (`docker/oracle-it/run-tests.sh`). Frontend: Vitest + Testing Library, test quét khoá dịch và chuỗi cứng, test hợp đồng với `contract/fixtures`. CI (`.github/workflows/ci.yml`): matrix 3 OS + job `integration` (dựng compose, chạy cả `oracle-it`) — **chưa chạy lần nào trên GitHub** (repo chưa có remote).
+**Kiểm thử.** Unit test từng crate (classifier `dbstudio-sql` có proptest/fuzz và test vi sai splitter; parser plan theo fixture; writer export theo định dạng; store; guard với đồng hồ giả). Integration test với Docker (`docker/compose.test.yml`, chỉ khi `DBSTUDIO_IT=1`) cho mọi driver, SSH, export/import, backup/restore (PG/MySQL) và lớp command; scheduler/retention/khoá kiểm bằng đồng hồ giả; CLI có test riêng; Oracle chạy trong container `oracle-it` (`docker/oracle-it/run-tests.sh`). Frontend: Vitest + Testing Library, test quét khoá dịch và chuỗi cứng, test hợp đồng với `contract/fixtures`. CI (`.github/workflows/ci.yml`): matrix 3 OS + job `integration` (dựng compose, chạy cả `oracle-it`) — **chưa chạy lần nào trên GitHub** (repo chưa có remote).
 
 ## 18. Quyết định & giới hạn đã biết
 
@@ -363,5 +370,12 @@ Giữ TanStack Virtual hay canvas grid (chưa benchmark 1 triệu dòng trên 3 
 - `json` của MariaDB về text; JSON MySQL bị server chuẩn hoá; `timestamptz` hiển thị UTC hoặc theo tuỳ chọn hiển thị; LOB vượt `maxLobBytes` thành `Ext truncated*` không sửa được.
 - Export: chưa có nguồn `Keys` (Redis) và làm phẳng document Mongo cho CSV/XLSX; import CSV chỉ coi ô rỗng không ngoặc là NULL (không nhận `null_text` tuỳ chỉnh).
 
+**Backup/restore**
+- File logical `formatVersion` 1 (bố cục của bản dựng trước) không verify/restore được; không restore một phần backup logical.
+- Chưa có backup logic cho MongoDB (chỉ `mongodump`) và Redis (chỉ `redis-cli --rdb`, restore RDB phải làm tay trên server); Oracle Data Pump chưa có.
+- MySQL restore không nguyên tử (DDL tự commit); chỉ PG chạy restore trong một transaction.
+- Backup/restore mới có IT cho PG (12, 16) và MySQL/MariaDB (+ tool native qua shim, SSH tunnel); MSSQL, Oracle, MongoDB, Redis chưa test.
+- Thông báo OS chỉ có tiếng Anh.
+
 **Nền tảng / kiểm chứng**
-- Chỉ kiểm trên macOS (unit + IT Docker + UI qua mock/dev bridge). Chưa kiểm: cửa sổ Tauri thật cho tính năng GĐ2–GĐ8 (tray, autostart, thông báo OS, xuất PNG/PDF trên WebView), Windows/Linux, NTLM thật, Azure, Oracle IT với DB thật (chờ RAM Docker), CI GitHub.
+- Chỉ kiểm trên macOS (unit + IT Docker + UI qua mock/dev bridge). Chưa kiểm: cửa sổ Tauri thật cho tính năng GĐ2–GĐ8 (tray, close-to-tray, autostart, single-instance, thông báo OS, xuất PNG/PDF trên WebView), Windows/Linux, NTLM thật, Azure, Oracle IT với DB thật (chờ RAM Docker), CI GitHub.

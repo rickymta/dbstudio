@@ -1,6 +1,6 @@
 # DBStudio — Lộ trình
 
-> Trạng thái: v0.3 — GĐ0–GĐ1 xong; GĐ2–GĐ7 đã hiện thực trên nhánh `feature/quandh/phase2_complete` (còn phần chưa kiểm chứng, ghi ở từng giai đoạn); GĐ8 (backup) đang hoàn thiện ở nhánh riêng, mục GĐ8 **sẽ cập nhật sau khi merge**. Mã yêu cầu theo [requirements.md](requirements.md) (cột Trạng thái); kiến trúc theo [architecture.md](architecture.md); hợp đồng GĐ2–GĐ8 theo [design/phase2-8.md](design/phase2-8.md).
+> Trạng thái: v0.3 — GĐ0–GĐ1 xong; GĐ2–GĐ8 đã hiện thực trên nhánh `feature/quandh/phase2_complete` (còn phần chưa kiểm chứng, ghi ở từng giai đoạn). Mã yêu cầu theo [requirements.md](requirements.md) (cột Trạng thái); kiến trúc theo [architecture.md](architecture.md); hợp đồng GĐ2–GĐ8 theo [design/phase2-8.md](design/phase2-8.md).
 
 ## 1. Cách làm việc
 
@@ -27,7 +27,7 @@ flowchart LR
     G2 --> G5["GĐ5 Xuất/nhập ✓"]
     G2 --> G6["GĐ6 ERD ✓"]
     G2 --> G7["GĐ7 Plan ✓"]
-    G5 --> G8["GĐ8 Backup (gói H, chờ merge)"]
+    G5 --> G8["GĐ8 Backup/Restore ✓"]
     G3 --> G9["GĐ9 Đóng gói & phát hành"]
     G4 --> G9
     G6 --> G9
@@ -38,7 +38,7 @@ flowchart LR
 
 \* Oracle: integration test với DB thật chưa chạy.
 
-**Trạng thái kiểm chứng chung của GĐ2–GĐ8**: unit test + integration test với Docker (PG 12/16, MySQL 5.7/8, MariaDB 10.4/10.6, SQL Server 2022, MongoDB 4.4/7, Redis 6.2/7.4, Valkey 8, sshd) + Vitest, clippy/fmt sạch — tất cả **chạy cục bộ trên macOS**. Chưa kiểm chứng: giao diện trong cửa sổ Tauri thật (tray, autostart, thông báo OS, xuất PNG/PDF trên WebView), Windows/Linux, NTLM thật, Azure SQL, Oracle IT với DB thật (chờ RAM Docker), CI trên GitHub.
+**Trạng thái kiểm chứng chung của GĐ2–GĐ8**: unit test + integration test với Docker (PG 12/16, MySQL 5.7/8, MariaDB 10.4/10.6, SQL Server 2022, MongoDB 4.4/7, Redis 6.2/7.4, Valkey 8, sshd; backup/restore với PG và MySQL/MariaDB) + Vitest, clippy/fmt sạch — tất cả **chạy cục bộ trên macOS**. Chưa kiểm chứng: giao diện trong cửa sổ Tauri thật (tray, close-to-tray, autostart, thông báo OS, xuất PNG/PDF trên WebView), backup/restore với MSSQL/Oracle/MongoDB/Redis, Windows/Linux, NTLM thật, Azure SQL, Oracle IT với DB thật (chờ RAM Docker), CI trên GitHub.
 
 ---
 
@@ -153,19 +153,19 @@ Gói E (`dbstudio-plan`, explain PG/MySQL, plan tab); explain MSSQL/Oracle/Mongo
 
 ---
 
-## GĐ8 — Backup/Restore + lịch tự động *(gói H — chờ merge)*
+## GĐ8 — Backup/Restore + lịch tự động *(đã hiện thực; GUI nền chưa kiểm tay)*
 
-> Trên nhánh này `dbstudio-backup`, `dbstudio-cli`, scheduler/tray/background mới là khung hợp đồng. Gói H (container `.dbsbak`, mã hoá, engine logic dùng `generate_ddl` + export engine, tool native, scheduler, retention, CLI, tray, autostart, single-instance, thông báo OS, UI) đang hoàn thiện ở nhánh riêng. Mục này **sẽ cập nhật sau khi merge**.
+Gói H: `dbstudio-backup` (container `.dbsbak`, mã hoá, engine logic = `generate_ddl` + export engine, tool native, retention, scheduler), `dbstudio-cli`, tray/autostart/single-instance/thông báo OS, UI tab Backup. Chi tiết: architecture §12.
 
-Tiêu chí (giữ nguyên, chưa đánh giá):
-- [ ] Backup tích hợp rồi restore vào database trống: số bảng, số dòng, checksum khớp — cho từng DB đã hỗ trợ.
-- [ ] Tool native có trong PATH: backup + restore qua tool thành công; không có: UI báo và gợi ý engine tích hợp.
-- [ ] Nén zstd/gzip và mã hoá: sai passphrase không restore được; checksum phát hiện file bị sửa.
-- [ ] Lịch `*/5 * * * *` chạy đúng giờ khi cửa sổ đóng (app ở tray); "giữ 3 bản" xoá bản cũ đúng.
-- [ ] Tắt app qua một lần chạy, mở lại → chạy bù đúng một lần (nếu cấu hình).
-- [ ] Thông báo OS khi thành công/thất bại; nhật ký ghi đủ thời lượng, kích thước, lỗi.
-- [ ] Autostart bật/tắt được trên cả 3 OS.
-- [ ] Restore vào kết nối production bắt buộc xác nhận bổ sung.
+- [x] Backup tích hợp rồi restore vào database trống: số dòng/dữ liệu khớp — IT PG 12/16, MySQL 8, MariaDB (gồm identity, partition, DB lớn không bị cắt, qua SSH tunnel). *MSSQL, Oracle chưa test; MongoDB/Redis chưa có engine logic.*
+- [x] Tool native: `pg_dump`/`mysqldump` backup + restore thành công (IT qua shim chạy tool trong container); không có tool → `problem` hiển thị. *`mongodump`, `redis-cli --rdb`, MSSQL `BACKUP DATABASE` chưa test; Oracle Data Pump chưa có.*
+- [x] Nén zstd/gzip và mã hoá: sai passphrase / file bị sửa / bị cắt → `integrity` — unit test.
+- [x] Lịch `*/5 * * * *` đúng giờ, chạy bù đúng một lần, retention "giữ N" xoá đúng file và giữ bản mới nhất — unit test với đồng hồ giả.
+- [ ] Lịch chạy khi cửa sổ đã đóng (app ở tray). — *Code có (close-to-tray, scheduler trong tiến trình); chưa kiểm tay.*
+- [ ] Thông báo OS khi thành công/thất bại. — *Code có, nội dung chỉ tiếng Anh; chưa kiểm tay.* Nhật ký `backup_runs` ghi thời lượng, kích thước, lỗi — có test.
+- [ ] Autostart bật/tắt được trên cả 3 OS. — *Code có (`--background`); chưa kiểm trên OS nào.*
+- [x] Restore vào kết nối production (hoặc `clean`) bắt buộc gõ tên database; CLI cần `--yes --confirm-text` và database đích chỉ rõ.
+- [x] CLI `backup --job` dùng chung khoá file với app (job đang chạy → mã thoát 3).
 
 ---
 
@@ -173,7 +173,7 @@ Tiêu chí (giữ nguyên, chưa đánh giá):
 
 **Kiểm chứng (không cần code mới):**
 1. Chạy integration test Oracle với DB thật (`docker/oracle-it/run-tests.sh`, cần ~3 GB RAM cho Docker) và sửa lỗi phát sinh.
-2. Kiểm tay trong cửa sổ Tauri thật trên macOS với DB Docker: editor/lease/transaction, sửa dữ liệu, document/key view, plan, ERD (xuất PNG/PDF), export/import, SSH (hộp thoại host key); sau khi merge gói H: tray, close-to-tray, autostart, thông báo OS.
+2. Kiểm tay trong cửa sổ Tauri thật trên macOS với DB Docker: editor/lease/transaction, sửa dữ liệu, document/key view, plan, ERD (xuất PNG/PDF), export/import, SSH (hộp thoại host key), backup/restore + lịch, tray, close-to-tray, autostart, single-instance, thông báo OS.
 3. Đẩy repo lên remote, cho CI (3 OS + `integration`) chạy xanh.
 4. Build và chạy trên Windows, Linux; benchmark lưới 1 triệu dòng trên WKWebView, WebView2, WebKitGTK → chốt TanStack Virtual hay canvas grid.
 5. MSSQL: NTLM với domain thật; quyết định Azure AD (requirements §6 câu 6).
@@ -194,6 +194,7 @@ Tiêu chí (giữ nguyên, chưa đánh giá):
 - Menu ngữ cảnh: sinh SELECT/INSERT mẫu, mở DDL trong editor (BROWSE-05/07); ERD: tuỳ chọn hiện comment (ERD-07), đánh dấu quan hệ suy luận của Mongo (ERD-08); lịch sử plan (PLAN-07).
 - Import vào MongoDB/Redis; `Skip` khi import vào Oracle.
 - Oracle: chưa có UI chọn thư mục Instant Client (setting `oracle_client` chỉ đọc lúc khởi động; hiện dùng `DBSTUDIO_ORACLE_CLIENT_LIB_DIR`).
+- Backup: engine logic cho MongoDB (EJSON) và Redis; Oracle Data Pump (`expdp`/`impdp`); test backup/restore với MSSQL, Oracle, MongoDB, Redis; restore một phần backup logical; thông báo OS theo ngôn ngữ giao diện (hiện chỉ tiếng Anh); đưa hành vi đóng cửa sổ/autostart vào trang Cài đặt. File logical `formatVersion` 1 (bản dựng trước) không verify/restore được — chấp nhận, ghi ở architecture §18.3.
 - Command palette (APP-08, Could).
 
 **Giữ mở, chưa gắn giai đoạn:** phân trang keyset thay OFFSET; hạn chế TLS của `mysql_async` và R6 (MySQL/MongoDB/Redis qua SSH với `verify-full`); chế độ TLS mặc định (requirements §6 câu 8); Redis Cluster/Sentinel; phương án Oracle thuần Rust (`oracle-rs`).
@@ -238,7 +239,7 @@ Tiêu chí (mỗi DB): driver mới chỉ thêm crate + đăng ký + view chuyê
 | PLAN-01..07 | GĐ7 | Xong trừ lịch sử plan |
 | ERD-01..08 | GĐ6 | Xong; ERD-07/08 một phần |
 | EXPORT-01..10, IMPORT-01..03 | GĐ5 | Xong cho SQL DB; Mongo flatten, Redis export, import NoSQL chưa |
-| BACKUP-01..15 | GĐ8 | Chờ gói H |
+| BACKUP-01..15 | GĐ8 | Xong cho SQL DB (IT PG/MySQL); BACKUP-02/03 một phần (Mongo/Redis logic, Data Pump chưa) |
 | APP-01..05, 07, 09 | GĐ0–GĐ5 | Xong; APP-05 một phần |
 | APP-06 | GĐ9 | Chưa |
 | APP-08 | — | Chưa (Could) |

@@ -9,15 +9,16 @@ Rust + Tauri 2 and a React + TypeScript frontend.
 of them: SQL/Mongo/Redis statement classification as the safety layer (read-only connections,
 typed confirmation for destructive statements on production), query history, saved queries and
 restored editor tabs, EXPLAIN diagrams (8 plan formats), ERD with DDL generation, export/import
-(SQL, CSV, JSON, XLSX) as background jobs, and SSH tunnels. Backup/restore (`.dbsbak` container,
-scheduler, tray, CLI) is being finished on a separate branch; on this branch `dbstudio-backup` and
-`dbstudio-cli` are still the contract scaffold.
+(SQL, CSV, JSON, XLSX) as background jobs, SSH tunnels, and backup/restore: the `.dbsbak` container
+(gzip/zstd, optional AES-256-GCM), the integrated engine for SQL databases, native tools
+(`pg_dump`, `mysqldump`, `mongodump`, `redis-cli --rdb`, SQL Server `BACKUP DATABASE`), cron
+schedules with catch-up and retention, tray/autostart, and a headless CLI.
 
 Verified so far only on macOS, through unit tests, integration tests against Docker databases and
 the UI in a browser (mock IPC / dev bridge). Not verified yet: the real Tauri window for the new
 features (tray, autostart, OS notifications, PNG/PDF export on the WebView), Windows and Linux,
 SQL Server NTLM against a domain, Azure SQL, the Oracle integration tests against a running
-database, and CI on GitHub. Details: [docs/roadmap.md](docs/roadmap.md).
+database, backup/restore against SQL Server, Oracle, MongoDB and Redis, and CI on GitHub. Details: [docs/roadmap.md](docs/roadmap.md).
 
 ## Layout
 
@@ -27,8 +28,8 @@ database, and CI on GitHub. Details: [docs/roadmap.md](docs/roadmap.md).
 | `crates/dbstudio-sql`     | Lexer, splitter, parameters, statement classifier, guard policy, redaction (all dialects). |
 | `crates/dbstudio-plan`    | EXPLAIN parsers (PG, MySQL JSON v1/v2/tree, MariaDB, SHOWPLAN XML, Oracle, Mongo) + rules. |
 | `crates/dbstudio-export`  | Export engine (SQL, CSV, JSON, XLSX) and import (CSV, XLSX, JSON, SQL script).             |
-| `crates/dbstudio-backup`  | `.dbsbak` backup/restore, native tools, scheduler logic (scaffold here, see Status).       |
-| `crates/dbstudio-cli`     | `dbstudio-cli` binary: backup/restore/verify/tools without the GUI (scaffold here).        |
+| `crates/dbstudio-backup`  | `.dbsbak` backup/restore, native tools, scheduler and retention logic.                     |
+| `crates/dbstudio-cli`     | `dbstudio-cli` binary: backup/restore/verify/tools without the GUI.                        |
 | `crates/dbstudio-ssh`     | SSH tunnel (russh): password, private key + passphrase, agent; host key check.             |
 | `crates/dbstudio-store`   | SQLite store (profiles, history, saved queries, tabs, ERD layouts, presets) + keychain.    |
 | `crates/drivers/postgres` | PostgreSQL (`tokio-postgres`).                                                             |
@@ -78,6 +79,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
 cargo run -p dbstudio-cli -- --help   # headless CLI (backup/restore/verify/tools)
+```
+
+`dbstudio-cli` shares the app's SQLite store (`--data-dir`, default: the app data directory), the
+keychain and the per-job lock files, so a job run from cron / launchd / Task Scheduler never
+overlaps with the same job in the app:
+
+```sh
+dbstudio-cli backup --list
+dbstudio-cli backup --job <job-id>                       # exit code 3 = job already running
+dbstudio-cli verify --file backup.dbsbak                 # passphrase from $DBSTUDIO_PASSPHRASE
+dbstudio-cli restore --file backup.dbsbak --connection <id> --database app \
+  --yes --confirm-text app                               # production target or --clean
+dbstudio-cli tools                                       # native tools that were found
 ```
 
 `src-tauri` embeds the frontend, so `cargo build -p dbstudio`, `cargo clippy --workspace` and
@@ -152,6 +166,7 @@ Running one group at a time (start the listed services first):
 | Redis / Valkey driver       | `redis6`, `redis7`, `valkey8`                | `DBSTUDIO_IT=1 cargo test -p dbstudio-driver-redis`    |
 | SSH tunnel                  | `sshd` + `pg16`, `mysql8`, `mssql2022`       | `DBSTUDIO_IT=1 cargo test -p dbstudio-ssh`             |
 | Export / import             | `pg16`, `pg12`, `mysql8`, `mariadb`          | `DBSTUDIO_IT=1 cargo test -p dbstudio-export`          |
+| Backup / restore            | `pg16`, `pg12`, `mysql8`, `mariadb`, `sshd`  | `DBSTUDIO_IT=1 cargo test -p dbstudio-backup`          |
 | Command layer (`src-tauri`) | `pg16`, `mysql8`, `redis6`                   | `DBSTUDIO_IT=1 cargo test -p dbstudio`                 |
 | Oracle driver               | `oraclefree`                                 | `docker/oracle-it/run-tests.sh` (see below)            |
 
