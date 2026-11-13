@@ -1,33 +1,45 @@
-//! DBStudio desktop shell. Wires `dbstudio-core` into Tauri; no business logic lives here.
+//! DBStudio desktop shell. Wires `dbstudio-core` and `dbstudio-store` into Tauri; business logic
+//! lives in those crates and in the plain functions behind each command.
 
 mod commands;
+mod logging;
+mod session;
+mod sink;
 mod state;
 
-use tracing_subscriber::EnvFilter;
+use std::sync::Arc;
 
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "info"
-        })
-    });
-    // Ignore the error: a global subscriber may already be installed (e.g. in tests).
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .try_init();
+use dbstudio_store::{ConnectionService, KeyringSecretStore, Store};
+use tauri::{Manager, RunEvent};
+
+/// File name of the SQLite database inside the app data directory.
+const DATABASE_FILE: &str = "dbstudio.sqlite";
+
+/// Open the profile database and wire the keychain; called once from `setup`.
+fn build_state(app: &tauri::App) -> Result<state::AppState, Box<dyn std::error::Error>> {
+    let data_dir = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&data_dir)?;
+    let db_path = data_dir.join(DATABASE_FILE);
+    let store =
+        Store::open(&db_path).map_err(|e| format!("cannot open {}: {e}", db_path.display()))?;
+    let connections = ConnectionService::new(store, Arc::new(KeyringSecretStore::new()));
+    tracing::info!(database = %db_path.display(), "profile database ready");
+    Ok(state::AppState::new(state::build_registry(), connections))
 }
 
 /// Build and run the Tauri application.
 pub fn run() {
-    init_tracing();
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting DBStudio");
-
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(state::AppState::default())
+        .setup(|app| {
+            let log_dir = app.path().app_log_dir().ok();
+            logging::init(log_dir.as_deref());
+            tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting DBStudio");
+            let state =
+                build_state(app).inspect_err(|e| tracing::error!(error = %e, "startup failed"))?;
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::app::app_info,
             commands::app::list_drivers,
@@ -49,6 +61,18 @@ pub fn run() {
             commands::browse::table_fetch,
             commands::browse::table_count,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running DBStudio");
+        .build(tauri::generate_context!())
+        .expect("error while building DBStudio");
+
+    app.run(|handle, event| {
+        if matches!(event, RunEvent::Exit) {
+            if let Some(state) = handle.try_state::<state::AppState>() {
+                tauri::async_runtime::block_on(state.sessions.close_all());
+            }
+            tracing::info!("DBStudio exited");
+        }
+    });
 }
+
+#[cfg(test)]
+mod tests;

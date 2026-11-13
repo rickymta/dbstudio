@@ -28,5 +28,19 @@
     "collection": "Collection",
     "key": "Khóa",
     "folder": "Thư mục"
+  },
+  "treeLabel": "Cây đối tượng",
+  "expand": "Mở rộng",
+  "collapse": "Thu gọn",
+  "empty": "(trống)",
+  "loadError": "Không tải được",
+  "retry": "Thử lại",
+  "copied": "Đã sao chép",
+  "action": {
+    "openData": "Mở dữ liệu",
+    "viewDdl": "Xem DDL",
+    "copyName": "Sao chép tên",
+    "copyFullName": "Sao chép tên đầy đủ",
+    "refresh": "Làm mới"
   }
 }

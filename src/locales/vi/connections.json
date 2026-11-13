@@ -1,6 +1,11 @@
 {
   "tls": {
-    "label": "Chế độ TLS"
+    "label": "Chế độ TLS",
+    "mode": "Chế độ TLS",
+    "caCert": "Chứng chỉ CA",
+    "clientCert": "Chứng chỉ client",
+    "clientKey": "Khoá client",
+    "browse": "Chọn tệp cho {{field}}"
   },
   "tlsMode": {
     "disable": "Tắt",
@@ -13,5 +18,139 @@
     "development": "Phát triển",
     "staging": "Thử nghiệm",
     "production": "Sản xuất"
+  },
+  "sidebar": {
+    "title": "Kết nối",
+    "search": "Lọc kết nối và đối tượng",
+    "clearSearch": "Xoá bộ lọc",
+    "loading": "Đang tải kết nối...",
+    "loadError": "Không tải được danh sách kết nối",
+    "noResults": "Không có kết quả",
+    "empty": "Chưa có kết nối nào",
+    "emptyHint": "Tạo kết nối để bắt đầu duyệt cơ sở dữ liệu."
+  },
+  "toolbar": {
+    "newConnection": "Kết nối mới",
+    "newGroup": "Nhóm mới",
+    "more": "Thêm thao tác",
+    "import": "Nhập kết nối...",
+    "export": "Xuất kết nối...",
+    "collapseAll": "Thu gọn tất cả"
+  },
+  "row": {
+    "retry": "Thử kết nối lại",
+    "connected": "Đã kết nối",
+    "readOnly": "Chỉ đọc"
+  },
+  "menu": {
+    "connect": "Kết nối",
+    "disconnect": "Ngắt kết nối",
+    "edit": "Sửa...",
+    "duplicate": "Nhân bản",
+    "moveToGroup": "Chuyển vào nhóm",
+    "noGroup": "Không nhóm",
+    "delete": "Xoá",
+    "rename": "Đổi tên...",
+    "newConnectionInGroup": "Kết nối mới trong nhóm...",
+    "newSubgroup": "Nhóm con mới..."
+  },
+  "confirm": {
+    "deleteProfileTitle": "Xoá kết nối \"{{name}}\"?",
+    "deleteProfileBody": "Kết nối sẽ bị xoá và, nếu đang mở, sẽ được ngắt trước. Không thể hoàn tác.",
+    "deleteGroupTitle": "Xoá nhóm \"{{name}}\"?",
+    "deleteGroupBody": "Kết nối và nhóm con bên trong không bị xoá; chúng được chuyển lên nhóm cha."
+  },
+  "toast": {
+    "duplicated": "Đã nhân bản kết nối",
+    "imported": "Đã nhập kết nối",
+    "exported": "Đã xuất {{count}} kết nối"
+  },
+  "group": {
+    "newTitle": "Nhóm mới",
+    "renameTitle": "Đổi tên nhóm",
+    "name": "Tên nhóm",
+    "create": "Tạo"
+  },
+  "password": {
+    "title": "Cần mật khẩu",
+    "description": "\"{{name}}\" không lưu mật khẩu. Nhập mật khẩu để kết nối.",
+    "connect": "Kết nối"
+  },
+  "errorKind": {
+    "connection": "Không kết nối được",
+    "authentication": "Xác thực thất bại",
+    "query": "Lỗi truy vấn",
+    "unsupported": "Không được hỗ trợ",
+    "cancelled": "Đã huỷ",
+    "timeout": "Hết thời gian chờ",
+    "tls": "Lỗi TLS",
+    "notFound": "Không tìm thấy",
+    "storage": "Lỗi lưu trữ",
+    "io": "Lỗi vào/ra",
+    "other": "Lỗi"
+  },
+  "dialog": {
+    "newTitle": "Kết nối mới",
+    "editTitle": "Sửa kết nối",
+    "test": "Kiểm tra kết nối",
+    "cancel": "Huỷ",
+    "save": "Lưu"
+  },
+  "section": {
+    "general": "Chung",
+    "auth": "Xác thực",
+    "tls": "TLS",
+    "advanced": "Nâng cao"
+  },
+  "phase": "Giai đoạn {{phase}}",
+  "field": {
+    "kind": "Loại cơ sở dữ liệu",
+    "name": "Tên",
+    "host": "Máy chủ",
+    "port": "Cổng",
+    "database": "Cơ sở dữ liệu",
+    "serviceName": "Tên dịch vụ",
+    "dbIndex": "Chỉ số database",
+    "keyspace": "Keyspace",
+    "group": "Nhóm",
+    "noGroup": "Không nhóm",
+    "environment": "Môi trường",
+    "noEnvironment": "Không",
+    "color": "Màu",
+    "readOnly": "Chỉ đọc",
+    "readOnlyHint": "Chặn mọi câu lệnh ghi dữ liệu.",
+    "username": "Tên đăng nhập",
+    "password": "Mật khẩu",
+    "passwordKeep": "Để trống để giữ mật khẩu đã lưu",
+    "passwordRemoved": "Mật khẩu đã lưu sẽ bị xoá",
+    "showPassword": "Hiện mật khẩu",
+    "hidePassword": "Ẩn mật khẩu",
+    "clearPassword": "Xoá mật khẩu đã lưu",
+    "undoClearPassword": "Giữ mật khẩu đã lưu",
+    "savePassword": "Lưu mật khẩu",
+    "savePasswordHint": "Lưu trong keychain của hệ điều hành. Khi tắt, mỗi lần kết nối sẽ hỏi mật khẩu.",
+    "timeout": "Thời gian chờ kết nối (giây)",
+    "timeoutDefault": "Mặc định"
+  },
+  "color": {
+    "default": "Mặc định theo môi trường",
+    "green": "Xanh lá",
+    "blue": "Xanh dương",
+    "purple": "Tím",
+    "pink": "Hồng",
+    "red": "Đỏ",
+    "orange": "Cam",
+    "yellow": "Vàng",
+    "teal": "Xanh ngọc"
+  },
+  "validation": {
+    "nameRequired": "Cần nhập tên",
+    "hostRequired": "Cần nhập máy chủ",
+    "portRange": "Cổng phải là số từ 1 đến 65535",
+    "timeoutPositive": "Thời gian chờ phải là số nguyên dương"
+  },
+  "test": {
+    "running": "Đang kiểm tra kết nối...",
+    "success": "Đã kết nối tới {{product}} {{version}}"
   }
 }

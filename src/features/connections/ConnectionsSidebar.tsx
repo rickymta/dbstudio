@@ -1,31 +1,466 @@
-import { Database, Plus } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import {
+  ChevronsDownUp,
+  Database,
+  Download,
+  Ellipsis,
+  FolderPlus,
+  Plus,
+  Search,
+  Upload,
+  X,
+} from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/DropdownMenu';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { IconButton } from '@/components/ui/IconButton';
 import { Button } from '@/components/ui/Button';
-import { Tooltip } from '@/components/ui/Tooltip';
+import { Input } from '@/components/ui/Input';
+import { Spinner } from '@/components/ui/Spinner';
+import { toast } from '@/components/ui/toastStore';
+import { pickFile, pickSavePath } from '@/lib/dialog';
+import { ipc, toIpcError } from '@/lib/ipc';
+import type { ConnectionGroup, ConnectionProfile, ObjectNode, Uuid } from '@/lib/types';
+import { useSessionsStore } from '@/stores/sessions';
+import { ObjectTree } from '@/features/explorer/ObjectTree';
+import { treeHasMatch, useAnyTreeCacheVersion } from '@/features/explorer/queries';
+import { nodeLabel } from '@/features/explorer/treeModel';
+import { ConnectionDialog } from './ConnectionDialog';
+import {
+  buildConnectionsTree,
+  filterConnectionsTree,
+  groupPathOptions,
+  needsPassword,
+  type GroupNode,
+} from './connectionsTree';
+import { describeError } from './errors';
+import { GroupDialog } from './GroupDialog';
+import { PasswordDialog } from './PasswordDialog';
+import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
+import { GroupRow, ProfileRow, type RowActions } from './SidebarRows';
 
-/** Left sidebar. Phase 0: only the empty state; real connections arrive in phase 1. */
+const COLLAPSED_KEY = 'dbstudio.connections.collapsedGroups';
+const JSON_FILTER = [{ name: 'JSON', extensions: ['json'] }];
+
+function loadCollapsed(): Set<Uuid> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsed(ids: Set<Uuid>) {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...ids]));
+  } catch {
+    // storage unavailable
+  }
+}
+
+type Modal =
+  | { type: 'connection'; profile?: ConnectionProfile; groupId?: Uuid | null }
+  | { type: 'group'; mode: 'create'; parentId: Uuid | null }
+  | { type: 'group'; mode: 'rename'; group: ConnectionGroup }
+  | { type: 'deleteProfile'; profile: ConnectionProfile }
+  | { type: 'deleteGroup'; group: ConnectionGroup }
+  | { type: 'password'; profile: ConnectionProfile };
+
+/** Left sidebar: connection groups and profiles, each connected profile with its object tree. */
 export function ConnectionsSidebar() {
-  const { t } = useTranslation();
+  const { t } = useTranslation('connections');
+  const qc = useQueryClient();
+  const query = useConnectionsSnapshot();
+  const snapshot = query.data;
+
+  const [filter, setFilter] = useState('');
+  const [collapsed, setCollapsed] = useState<Set<Uuid>>(loadCollapsed);
+  const [expandedProfiles, setExpandedProfiles] = useState<Set<Uuid>>(() => new Set());
+  const [errors, setErrors] = useState<Record<Uuid, string>>({});
+  const [modal, setModal] = useState<Modal | null>(null);
+
+  const filtering = filter.trim().length > 0;
+  useAnyTreeCacheVersion(filtering);
+
+  const { t: te } = useTranslation('explorer');
+  const explorerLabel = useCallback((n: ObjectNode) => nodeLabel(te, n), [te]);
+
+  const tree = useMemo(() => {
+    if (!snapshot) return null;
+    return buildConnectionsTree(snapshot);
+  }, [snapshot]);
+
+  const groupOptions = useMemo(() => (snapshot ? groupPathOptions(snapshot) : []), [snapshot]);
+
+  const refresh = useCallback(() => qc.invalidateQueries({ queryKey: connectionsQueryKey }), [qc]);
+
+  /** Run a backend mutation, refresh the list and toast failures. */
+  const run = useCallback(
+    async (fn: () => Promise<unknown>, success?: string) => {
+      try {
+        await fn();
+        await refresh();
+        if (success) toast.success(success);
+      } catch (e) {
+        toast.error(describeError(t, e));
+        await refresh();
+      }
+    },
+    [refresh, t],
+  );
+
+  const setProfileExpanded = (id: Uuid, expanded: boolean) =>
+    setExpandedProfiles((prev) => {
+      const next = new Set(prev);
+      if (expanded) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
+  const connect = useCallback(
+    async (profile: ConnectionProfile, password?: string) => {
+      const sessions = useSessionsStore.getState();
+      if (sessions.sessionsByConnection[profile.id]) {
+        setProfileExpanded(profile.id, true);
+        return;
+      }
+      if (password === undefined && needsPassword(profile)) {
+        setModal({ type: 'password', profile });
+        return;
+      }
+      setErrors((e) => {
+        const rest = { ...e };
+        delete rest[profile.id];
+        return rest;
+      });
+      try {
+        await sessions.open(profile.id, password ?? null);
+        setProfileExpanded(profile.id, true);
+      } catch (e) {
+        const message = describeError(t, toIpcError(e));
+        setErrors((prev) => ({ ...prev, [profile.id]: message }));
+        toast.error(`${profile.name}: ${message}`);
+      }
+    },
+    [t],
+  );
+
+  const actions: RowActions = {
+    connect: (p) => void connect(p),
+    disconnect: (p) => {
+      setProfileExpanded(p.id, false);
+      void useSessionsStore.getState().close(p.id);
+    },
+    edit: (profile) => setModal({ type: 'connection', profile }),
+    duplicate: (p) => void run(() => ipc.connectionDuplicate(p.id), t('toast.duplicated')),
+    moveTo: (p, groupId) =>
+      void run(() => ipc.connectionSave({ ...p, groupId }, { action: 'keep' })),
+    remove: (profile) => setModal({ type: 'deleteProfile', profile }),
+    toggleProfile: (id) => setProfileExpanded(id, !expandedProfiles.has(id)),
+    toggleGroup: (id) =>
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        saveCollapsed(next);
+        return next;
+      }),
+    newInGroup: (groupId) => {
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        next.delete(groupId);
+        saveCollapsed(next);
+        return next;
+      });
+      setModal({ type: 'connection', groupId });
+    },
+    newSubgroup: (parentId) => setModal({ type: 'group', mode: 'create', parentId }),
+    renameGroup: (group) => setModal({ type: 'group', mode: 'rename', group }),
+    removeGroup: (group) => setModal({ type: 'deleteGroup', group }),
+  };
+
+  const collapseAll = () => {
+    const ids = new Set(snapshot?.groups.map((g) => g.id) ?? []);
+    setCollapsed(ids);
+    saveCollapsed(ids);
+    setExpandedProfiles(new Set());
+  };
+
+  const importConnections = async () => {
+    const path = await pickFile({ title: t('toolbar.import'), filters: JSON_FILTER });
+    if (!path) return;
+    await run(() => ipc.connectionsImport(path), t('toast.imported'));
+  };
+
+  const exportConnections = async () => {
+    const path = await pickSavePath({
+      title: t('toolbar.export'),
+      defaultPath: 'dbstudio-connections.json',
+      filters: JSON_FILTER,
+    });
+    if (!path) return;
+    try {
+      const count = await ipc.connectionsExport(path);
+      toast.success(t('toast.exported', { count }));
+    } catch (e) {
+      toast.error(describeError(t, e));
+    }
+  };
+
+  const sessionsByConnection = useSessionsStore((s) => s.sessionsByConnection);
+  const profileMatches = (p: ConnectionProfile): boolean => {
+    const f = filter.trim().toLowerCase();
+    if (p.name.toLowerCase().includes(f)) return true;
+    const session = sessionsByConnection[p.id];
+    return session !== undefined && treeHasMatch(qc, session.sessionId, f, explorerLabel);
+  };
+
+  const visible = tree ? filterConnectionsTree(tree, filter, profileMatches) : null;
+  const isEmpty = !!snapshot && snapshot.groups.length === 0 && snapshot.profiles.length === 0;
+
+  const renderProfile = (p: ConnectionProfile, depth: number) => {
+    const session = sessionsByConnection[p.id];
+    const expanded = expandedProfiles.has(p.id);
+    // While filtering, connected profiles show their (filtered) tree if it has matches.
+    const treeVisible = session
+      ? filtering
+        ? treeHasMatch(qc, session.sessionId, filter.trim().toLowerCase(), explorerLabel)
+        : expanded
+      : false;
+    return (
+      <ProfileRow
+        key={p.id}
+        profile={p}
+        depth={depth}
+        expanded={treeVisible}
+        error={errors[p.id]}
+        groupOptions={groupOptions}
+        actions={actions}
+      >
+        {session && (
+          <div
+            role="group"
+            hidden={!treeVisible}
+            className="pb-0.5"
+            style={{ paddingLeft: 6 + depth * 12 + 8 }}
+          >
+            <ObjectTree connectionId={p.id} filter={filter} />
+          </div>
+        )}
+      </ProfileRow>
+    );
+  };
+
+  const renderGroup = (node: GroupNode, depth: number) => {
+    const open = filtering || !collapsed.has(node.group.id);
+    return (
+      <GroupRow key={node.group.id} group={node.group} depth={depth} open={open} actions={actions}>
+        {node.groups.map((g) => renderGroup(g, depth + 1))}
+        {node.profiles.map((p) => renderProfile(p, depth + 1))}
+      </GroupRow>
+    );
+  };
+
+  const deleteProfile = (profile: ConnectionProfile) =>
+    run(async () => {
+      if (useSessionsStore.getState().sessionsByConnection[profile.id]) {
+        await useSessionsStore.getState().close(profile.id);
+      }
+      setProfileExpanded(profile.id, false);
+      await ipc.connectionDelete(profile.id);
+    });
+
+  const deleteGroup = (group: ConnectionGroup) =>
+    run(async () => {
+      await ipc.groupDelete(group.id);
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        next.delete(group.id);
+        saveCollapsed(next);
+        return next;
+      });
+    });
+
+  const createGroup = (name: string, parentId: Uuid | null) => {
+    const siblings = snapshot?.groups.filter((g) => (g.parentId ?? null) === parentId).length ?? 0;
+    void run(() => ipc.groupSave({ id: crypto.randomUUID(), name, parentId, sortOrder: siblings }));
+  };
+
   return (
-    <aside className="flex h-full flex-col bg-surface" aria-label={t('sidebar.connections')}>
-      <header className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {t('sidebar.connections')}
+    <aside
+      className="flex h-full flex-col bg-surface"
+      aria-label={t('sidebar.title')}
+      data-nav-root
+    >
+      <header className="flex h-9 shrink-0 items-center gap-1 border-b border-border pr-2 pl-3">
+        <h2 className="mr-auto text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {t('sidebar.title')}
         </h2>
+        <IconButton
+          label={t('toolbar.newConnection')}
+          icon={<Plus size={14} />}
+          onClick={() => setModal({ type: 'connection' })}
+        />
+        <IconButton
+          label={t('toolbar.newGroup')}
+          icon={<FolderPlus size={14} />}
+          onClick={() => setModal({ type: 'group', mode: 'create', parentId: null })}
+        />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label={t('toolbar.more')}
+              title={t('toolbar.more')}
+            >
+              <Ellipsis size={14} />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => void importConnections()}>
+              <Upload size={13} />
+              {t('toolbar.import')}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void exportConnections()}>
+              <Download size={13} />
+              {t('toolbar.export')}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={collapseAll}>
+              <ChevronsDownUp size={13} />
+              {t('toolbar.collapseAll')}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </header>
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-4 text-center">
-        <Database size={28} className="text-muted-foreground" aria-hidden />
-        <div>
-          <p className="font-medium">{t('sidebar.empty')}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{t('sidebar.emptyHint')}</p>
-        </div>
-        <Tooltip content={t('sidebar.availableInPhase', { phase: 1 })}>
-          <Button variant="primary" disabled>
-            <Plus size={14} />
-            {t('sidebar.newConnection')}
-          </Button>
-        </Tooltip>
+
+      <div className="relative shrink-0 border-b border-border px-2 py-1.5">
+        <Search
+          size={13}
+          aria-hidden
+          className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          type="search"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          onKeyDown={(e) => e.key === 'Escape' && setFilter('')}
+          placeholder={t('sidebar.search')}
+          aria-label={t('sidebar.search')}
+          className="h-6 pr-6 pl-6 text-xs [&::-webkit-search-cancel-button]:hidden"
+        />
+        {filter && (
+          <button
+            type="button"
+            aria-label={t('sidebar.clearSearch')}
+            onClick={() => setFilter('')}
+            className="absolute top-1/2 right-3.5 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+          >
+            <X size={12} />
+          </button>
+        )}
       </div>
+
+      <div
+        role="tree"
+        aria-label={t('sidebar.title')}
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-1"
+      >
+        {query.isPending && (
+          <div className="flex items-center justify-center gap-2 p-4 text-xs text-muted-foreground">
+            <Spinner size={14} />
+            {t('sidebar.loading')}
+          </div>
+        )}
+        {query.isError && (
+          <EmptyState
+            title={t('sidebar.loadError')}
+            description={toIpcError(query.error).message}
+            action={<Button onClick={() => void query.refetch()}>{t('row.retry')}</Button>}
+          />
+        )}
+        {isEmpty && (
+          <EmptyState
+            icon={<Database size={28} aria-hidden />}
+            title={t('sidebar.empty')}
+            description={t('sidebar.emptyHint')}
+            action={
+              <Button variant="primary" onClick={() => setModal({ type: 'connection' })}>
+                <Plus size={14} />
+                {t('toolbar.newConnection')}
+              </Button>
+            }
+          />
+        )}
+        {visible && !isEmpty && (
+          <>
+            {visible.groups.map((g) => renderGroup(g, 0))}
+            {visible.profiles.map((p) => renderProfile(p, 0))}
+            {filtering && visible.groups.length === 0 && visible.profiles.length === 0 && (
+              <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                {t('sidebar.noResults')}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+
+      <ConnectionDialog
+        open={modal?.type === 'connection'}
+        onOpenChange={(o) => !o && setModal(null)}
+        profile={modal?.type === 'connection' ? modal.profile : undefined}
+        groupId={modal?.type === 'connection' ? modal.groupId : undefined}
+      />
+      <GroupDialog
+        open={modal?.type === 'group'}
+        onOpenChange={(o) => !o && setModal(null)}
+        mode={modal?.type === 'group' ? modal.mode : 'create'}
+        initialName={modal?.type === 'group' && modal.mode === 'rename' ? modal.group.name : ''}
+        onSubmit={(name) => {
+          if (modal?.type !== 'group') return;
+          if (modal.mode === 'create') createGroup(name, modal.parentId);
+          else void run(() => ipc.groupSave({ ...modal.group, name }));
+        }}
+      />
+      <PasswordDialog
+        open={modal?.type === 'password'}
+        onOpenChange={(o) => !o && setModal(null)}
+        connectionName={modal?.type === 'password' ? modal.profile.name : ''}
+        onSubmit={(password) => {
+          if (modal?.type === 'password') void connect(modal.profile, password);
+        }}
+      />
+      <ConfirmDialog
+        open={modal?.type === 'deleteProfile'}
+        onOpenChange={(o) => !o && setModal(null)}
+        title={t('confirm.deleteProfileTitle', {
+          name: modal?.type === 'deleteProfile' ? modal.profile.name : '',
+        })}
+        description={t('confirm.deleteProfileBody')}
+        confirmLabel={t('menu.delete')}
+        destructive
+        onConfirm={() => modal?.type === 'deleteProfile' && void deleteProfile(modal.profile)}
+      />
+      <ConfirmDialog
+        open={modal?.type === 'deleteGroup'}
+        onOpenChange={(o) => !o && setModal(null)}
+        title={t('confirm.deleteGroupTitle', {
+          name: modal?.type === 'deleteGroup' ? modal.group.name : '',
+        })}
+        description={t('confirm.deleteGroupBody')}
+        confirmLabel={t('menu.delete')}
+        destructive
+        onConfirm={() => modal?.type === 'deleteGroup' && void deleteGroup(modal.group)}
+      />
     </aside>
   );
 }

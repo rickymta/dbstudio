@@ -1,6 +1,11 @@
 {
   "tls": {
-    "label": "TLS mode"
+    "label": "TLS mode",
+    "mode": "TLS mode",
+    "caCert": "CA certificate",
+    "clientCert": "Client certificate",
+    "clientKey": "Client key",
+    "browse": "Choose file for {{field}}"
   },
   "tlsMode": {
     "disable": "Disable",
@@ -13,5 +18,139 @@
     "development": "Development",
     "staging": "Staging",
     "production": "Production"
+  },
+  "sidebar": {
+    "title": "Connections",
+    "search": "Filter connections and objects",
+    "clearSearch": "Clear filter",
+    "loading": "Loading connections...",
+    "loadError": "Could not load connections",
+    "noResults": "No matches",
+    "empty": "No connections yet",
+    "emptyHint": "Create a connection to start browsing a database."
+  },
+  "toolbar": {
+    "newConnection": "New connection",
+    "newGroup": "New group",
+    "more": "More actions",
+    "import": "Import connections...",
+    "export": "Export connections...",
+    "collapseAll": "Collapse all"
+  },
+  "row": {
+    "retry": "Retry connecting",
+    "connected": "Connected",
+    "readOnly": "Read-only"
+  },
+  "menu": {
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "edit": "Edit...",
+    "duplicate": "Duplicate",
+    "moveToGroup": "Move to group",
+    "noGroup": "No group",
+    "delete": "Delete",
+    "rename": "Rename...",
+    "newConnectionInGroup": "New connection here...",
+    "newSubgroup": "New sub-group..."
+  },
+  "confirm": {
+    "deleteProfileTitle": "Delete connection \"{{name}}\"?",
+    "deleteProfileBody": "The connection is removed and, if it is currently open, disconnected first. This cannot be undone.",
+    "deleteGroupTitle": "Delete group \"{{name}}\"?",
+    "deleteGroupBody": "Connections and groups inside it are not deleted; they move up to the parent group."
+  },
+  "toast": {
+    "duplicated": "Connection duplicated",
+    "imported": "Connections imported",
+    "exported": "Exported {{count}} connection(s)"
+  },
+  "group": {
+    "newTitle": "New group",
+    "renameTitle": "Rename group",
+    "name": "Group name",
+    "create": "Create"
+  },
+  "password": {
+    "title": "Password required",
+    "description": "\"{{name}}\" does not store a password. Enter it to connect.",
+    "connect": "Connect"
+  },
+  "errorKind": {
+    "connection": "Connection failed",
+    "authentication": "Authentication failed",
+    "query": "Query error",
+    "unsupported": "Not supported",
+    "cancelled": "Cancelled",
+    "timeout": "Timed out",
+    "tls": "TLS error",
+    "notFound": "Not found",
+    "storage": "Storage error",
+    "io": "I/O error",
+    "other": "Error"
+  },
+  "dialog": {
+    "newTitle": "New connection",
+    "editTitle": "Edit connection",
+    "test": "Test connection",
+    "cancel": "Cancel",
+    "save": "Save"
+  },
+  "section": {
+    "general": "General",
+    "auth": "Authentication",
+    "tls": "TLS",
+    "advanced": "Advanced"
+  },
+  "phase": "Phase {{phase}}",
+  "field": {
+    "kind": "Database type",
+    "name": "Name",
+    "host": "Host",
+    "port": "Port",
+    "database": "Database",
+    "serviceName": "Service name",
+    "dbIndex": "Database index",
+    "keyspace": "Keyspace",
+    "group": "Group",
+    "noGroup": "No group",
+    "environment": "Environment",
+    "noEnvironment": "None",
+    "color": "Color",
+    "readOnly": "Read-only",
+    "readOnlyHint": "Block every statement that writes data.",
+    "username": "Username",
+    "password": "Password",
+    "passwordKeep": "Leave empty to keep the saved password",
+    "passwordRemoved": "Saved password will be removed",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "clearPassword": "Remove saved password",
+    "undoClearPassword": "Keep saved password",
+    "savePassword": "Save password",
+    "savePasswordHint": "Stored in the system keychain. When off, you are asked each time you connect.",
+    "timeout": "Connect timeout (seconds)",
+    "timeoutDefault": "Default"
+  },
+  "color": {
+    "default": "Default for environment",
+    "green": "Green",
+    "blue": "Blue",
+    "purple": "Purple",
+    "pink": "Pink",
+    "red": "Red",
+    "orange": "Orange",
+    "yellow": "Yellow",
+    "teal": "Teal"
+  },
+  "validation": {
+    "nameRequired": "Name is required",
+    "hostRequired": "Host is required",
+    "portRange": "Port must be a number from 1 to 65535",
+    "timeoutPositive": "Timeout must be a positive whole number"
+  },
+  "test": {
+    "running": "Testing connection...",
+    "success": "Connected to {{product}} {{version}}"
   }
 }

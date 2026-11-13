@@ -1,10 +1,30 @@
-//! PostgreSQL driver for DBStudio. The connection logic is implemented in phase 1.
+//! PostgreSQL driver for DBStudio (PostgreSQL 12 and newer).
+//!
+//! * Connections use `tokio-postgres` with TLS through `rustls` (`ring` provider). A
+//!   [`PostgresSession`] stands for a whole server: it keeps a small lazily-created pool per
+//!   database (at most 4 connections each).
+//! * Result values are fetched in PostgreSQL's *text* format and decoded by type (see
+//!   [`decode`]); unknown types stay text, so no column can make a query fail.
+//! * Large results are streamed through server-side cursors in batches (see [`exec`]).
+
+mod browse;
+mod conn;
+mod ddl;
+mod decode;
+mod details;
+mod error;
+mod exec;
+mod session;
+mod sql;
+mod tls;
 
 use async_trait::async_trait;
 use dbstudio_core::{
-    Capabilities, ConnectionConfig, DbKind, Driver, DriverDescriptor, DriverStatus, Error, Result,
-    Secret, Session,
+    Capabilities, ConnectionConfig, DbKind, Driver, DriverDescriptor, DriverStatus, Result, Secret,
+    Session,
 };
+
+pub use session::PostgresSession;
 
 /// Driver for PostgreSQL servers.
 #[derive(Debug, Default, Clone, Copy)]
@@ -29,10 +49,11 @@ impl Driver for PostgresDriver {
 
     async fn connect(
         &self,
-        _config: &ConnectionConfig,
-        _secret: Option<&Secret>,
+        config: &ConnectionConfig,
+        secret: Option<&Secret>,
     ) -> Result<Box<dyn Session>> {
-        Err(Error::Unsupported("not implemented".into()))
+        let shared = conn::Shared::new(config, secret)?;
+        Ok(Box::new(PostgresSession::new(shared).await?))
     }
 }
 

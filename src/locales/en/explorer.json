@@ -28,5 +28,19 @@
     "collection": "Collection",
     "key": "Key",
     "folder": "Folder"
+  },
+  "treeLabel": "Object tree",
+  "expand": "Expand",
+  "collapse": "Collapse",
+  "empty": "(empty)",
+  "loadError": "Could not load",
+  "retry": "Retry",
+  "copied": "Copied to clipboard",
+  "action": {
+    "openData": "Open data",
+    "viewDdl": "View DDL",
+    "copyName": "Copy name",
+    "copyFullName": "Copy full name",
+    "refresh": "Refresh"
   }
 }
