@@ -15,6 +15,8 @@ import type { Value } from '@/lib/types';
 // ---------------------------------------------------------------------------------------------
 
 const INDENT = 2;
+const INT32_MIN = -2147483648;
+const INT32_MAX = 2147483647;
 
 /** Pretty EJSON text of a value (documents print with two-space indentation). */
 export function toEjson(v: Value, indent = INDENT): string {
@@ -77,10 +79,6 @@ function extText(type: string, text: string): string {
       const options = text.startsWith('/') && last > 0 ? text.slice(last + 1) : '';
       return `{"$regularExpression": {"pattern": ${str(pattern)}, "options": ${str(options)}}}`;
     }
-    case 'javascript':
-      return wrapper('$code', str(text));
-    case 'symbol':
-      return wrapper('$symbol', str(text));
     case 'minKey':
       return wrapper('$minKey', '1');
     case 'maxKey':
@@ -88,8 +86,79 @@ function extText(type: string, text: string): string {
     case 'undefined':
       return wrapper('$undefined', 'true');
     default:
-      // Kinds without an EJSON form (dbPointer ...): show the server's text.
+      // Kinds without an EJSON form: show the server's text.
       return str(text);
+  }
+}
+
+/** Ext kinds whose `text` is already the canonical EJSON of the value (written by the backend). */
+const CANONICAL_TEXT = new Set(['javascript', 'javascriptWithScope', 'symbol', 'dbPointer']);
+
+/** The wrapper key a canonical-text kind must carry to be re-embedded as is. */
+const CANONICAL_KEY: Record<string, string> = {
+  javascript: '$code',
+  javascriptWithScope: '$code',
+  symbol: '$symbol',
+};
+
+/** Embeds the canonical JSON text of an ext value, re-indented; plain text is wrapped. */
+function writeCanonicalExt(
+  type: string,
+  text: string,
+  depth: number,
+  indent: number,
+  out: string[],
+) {
+  let node: Node | null = null;
+  try {
+    node = parseText(text);
+  } catch {
+    node = null;
+  }
+  const key = CANONICAL_KEY[type];
+  if (node && node.k === 'obj' && (key === undefined || node.v.some(([k]) => k === key))) {
+    writeNode(node, depth, indent, out);
+    return;
+  }
+  // Not canonical JSON (legacy plain text): code and symbols get their wrapper, others stay text.
+  if (key !== undefined) out.push(wrapper(key, str(text)));
+  else out.push(str(text));
+}
+
+function writeNode(n: Node, depth: number, indent: number, out: string[]): void {
+  switch (n.k) {
+    case 'null':
+      out.push('null');
+      return;
+    case 'bool':
+      out.push(n.v ? 'true' : 'false');
+      return;
+    case 'num':
+      out.push(n.raw);
+      return;
+    case 'str':
+      out.push(str(n.v));
+      return;
+    case 'arr':
+      if (n.v.length === 0) return void out.push('[]');
+      out.push('[');
+      n.v.forEach((item, i) => {
+        if (i > 0) out.push(',');
+        out.push(nl(depth + 1, indent));
+        writeNode(item, depth + 1, indent, out);
+      });
+      out.push(`${nl(depth, indent)}]`);
+      return;
+    case 'obj':
+      if (n.v.length === 0) return void out.push('{}');
+      out.push('{');
+      n.v.forEach(([k, item], i) => {
+        if (i > 0) out.push(',');
+        out.push(nl(depth + 1, indent), str(k), indent > 0 ? ': ' : ':');
+        writeNode(item, depth + 1, indent, out);
+      });
+      out.push(`${nl(depth, indent)}}`);
+      return;
   }
 }
 
@@ -102,8 +171,12 @@ function write(v: Value, depth: number, indent: number, out: string[]): void {
       out.push(v.v ? 'true' : 'false');
       return;
     case 'int':
-      // Beyond 2^53 the wire carries a decimal string: it must stay a 64-bit integer.
-      out.push(typeof v.v === 'string' ? wrapper('$numberLong', str(v.v)) : String(v.v));
+      // Beyond 2^53 the wire carries a decimal string: it must stay a 64-bit integer. A bare
+      // negative number would be read back as Int64, so negative Int32 values keep a wrapper.
+      if (typeof v.v === 'string') out.push(wrapper('$numberLong', str(v.v)));
+      else if (v.v < 0) {
+        out.push(wrapper(v.v >= INT32_MIN ? '$numberInt' : '$numberLong', str(String(v.v))));
+      } else out.push(String(v.v));
       return;
     case 'uInt':
       out.push(typeof v.v === 'string' ? wrapper('$numberLong', str(v.v)) : String(v.v));
@@ -133,7 +206,9 @@ function write(v: Value, depth: number, indent: number, out: string[]): void {
       out.push(v.v.trim() === '' ? 'null' : v.v);
       return;
     case 'ext':
-      out.push(extText(v.v.type, v.v.text));
+      if (CANONICAL_TEXT.has(v.v.type)) {
+        writeCanonicalExt(v.v.type, v.v.text, depth, indent, out);
+      } else out.push(extText(v.v.type, v.v.text));
       return;
     case 'array': {
       if (v.v.length === 0) return void out.push('[]');
@@ -362,9 +437,6 @@ export function validateEjson(text: string): EjsonCheck {
 
 // -- tree -> Value ----------------------------------------------------------------------------
 
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
-
 function numberValue(raw: string): Value {
   if (/[.eE]/.test(raw)) return { t: 'float', v: Number(raw) };
   const n = Number(raw);
@@ -387,8 +459,21 @@ function uuidFromBase64(b64: string): string | null {
   }
 }
 
+/** Compact canonical JSON of an object node. */
+function compactText(entries: [string, Node][]): string {
+  const out: string[] = [];
+  writeNode({ k: 'obj', v: entries }, 0, 0, out);
+  return out.join('');
+}
+
 /** The extension value an object like `{"$oid": ...}` stands for, or `null` for a plain document. */
 function extended(entries: [string, Node][]): Value | null {
+  if (entries.length === 2 && entries[0]![0] === '$code' && entries[1]![0] === '$scope') {
+    // JavaScript with scope: `text` is the compact canonical JSON of the whole value.
+    const scope = entries[1]![1];
+    if (entries[0]![1].k !== 'str' || scope.k !== 'obj') return null;
+    return { t: 'ext', v: { type: 'javascriptWithScope', text: compactText(entries) } };
+  }
   if (entries.length !== 1) return null;
   const [key, node] = entries[0]!;
   if (!key.startsWith('$')) return null;
@@ -445,9 +530,14 @@ function extended(entries: [string, Node][]): Value | null {
         : null;
     }
     case '$code':
-      return s !== null ? { t: 'ext', v: { type: 'javascript', text: s } } : null;
+      return s !== null
+        ? { t: 'ext', v: { type: 'javascript', text: compactText(entries) } }
+        : null;
     case '$symbol':
-      return s !== null ? { t: 'ext', v: { type: 'symbol', text: s } } : null;
+      return s !== null ? { t: 'ext', v: { type: 'symbol', text: compactText(entries) } } : null;
+    case '$dbPointer':
+      // Display only: the server cannot rebuild a DBPointer from text.
+      throw new Error('$dbPointer values cannot be edited; remove the field or leave it out');
     case '$minKey':
       return { t: 'ext', v: { type: 'minKey', text: 'MinKey' } };
     case '$maxKey':

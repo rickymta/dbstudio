@@ -16,7 +16,12 @@ const samples: [string, Value][] = [
   ['binary', ext('binary', '80:AAEC')],
   ['bsonTimestamp', ext('bsonTimestamp', '1700000000,3')],
   ['regex', ext('regex', '/^a.*b$/i')],
-  ['javascript', ext('javascript', 'function(){}')],
+  ['javascript', ext('javascript', '{"$code":"function(){}"}')],
+  [
+    'javascriptWithScope',
+    ext('javascriptWithScope', '{"$code":"x+y","$scope":{"y":{"$numberInt":"2"}}}'),
+  ],
+  ['symbol', ext('symbol', '{"$symbol":"sym"}')],
   ['minKey', ext('minKey', 'MinKey')],
   ['maxKey', ext('maxKey', 'MaxKey')],
   ['float', { t: 'float', v: 1 }],
@@ -75,6 +80,50 @@ describe('toEjson / fromEjson round trip', () => {
     expect(text).toContain('{"$timestamp": {"t": 1, "i": 2}}');
     expect(text).toContain('{"$regularExpression": {"pattern": "a", "options": "i"}}');
     expect(text).toContain('"f": 2.0');
+  });
+
+  it('keeps Int32, negative Int32 and Int64 distinct', () => {
+    const doc: Value = {
+      t: 'document',
+      v: [
+        field('a', { t: 'int', v: 5 }),
+        field('b', { t: 'int', v: -5 }),
+        field('c', ext('int64', '-5')),
+      ],
+    };
+    const text = toEjson(doc);
+    expect(text).toContain('"a": 5');
+    expect(text).toContain('"b": {"$numberInt": "-5"}');
+    expect(text).toContain('"c": {"$numberLong": "-5"}');
+    expect(fromEjson(text)).toEqual(doc);
+  });
+
+  it('embeds the canonical text of code, scope and symbol values', () => {
+    const doc = fromEjson(
+      toEjson({
+        t: 'document',
+        v: [field('s', ext('javascriptWithScope', '{"$code":"a","$scope":{"k":1}}'))],
+      }),
+    );
+    expect(doc).toEqual({
+      t: 'document',
+      v: [['s', ext('javascriptWithScope', '{"$code":"a","$scope":{"k":1}}')]],
+    });
+    expect(
+      toEjson({ t: 'document', v: [field('j', ext('javascript', '{"$code":"f()"}'))] }),
+    ).toMatch(/"j": \{\s+"\$code": "f\(\)"\s+\}/);
+    expect(toEjson({ t: 'document', v: [field('y', ext('symbol', '{"$symbol":"q"}'))] })).toMatch(
+      /"y": \{\s+"\$symbol": "q"\s+\}/,
+    );
+  });
+
+  it('shows dbPointer text but refuses to parse it back', () => {
+    const text = toEjson({
+      t: 'document',
+      v: [field('p', ext('dbPointer', '{"$dbPointer":{"$ref":"c","$id":{"$oid":"a"}}}'))],
+    });
+    expect(text).toContain('"$dbPointer"');
+    expect(() => fromEjson(text)).toThrow(/dbPointer/);
   });
 
   it('keeps 64-bit integers carried as strings as $numberLong', () => {
