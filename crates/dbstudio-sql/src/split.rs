@@ -30,12 +30,15 @@ pub struct Unit {
 pub(crate) struct SplitState {
     /// Active MySQL delimiter.
     delimiter: Vec<char>,
+    /// The next character is at the start of a line (only blanks before it on its line).
+    line_start: bool,
 }
 
 impl Default for SplitState {
     fn default() -> Self {
         SplitState {
             delimiter: vec![';'],
+            line_start: true,
         }
     }
 }
@@ -65,12 +68,28 @@ pub(crate) fn scan(
     st: &mut SplitState,
     eof: bool,
 ) -> (Vec<Unit>, usize) {
-    match d {
+    let (mut units, consumed) = match d {
         ScriptDialect::Opaque => scan_opaque(chars, eof),
         ScriptDialect::RedisCli => scan_lines(chars, eof),
         ScriptDialect::MongoShell => scan_mongo(chars, eof),
-        _ => scan_sql(d, chars, st, eof),
+        _ => {
+            let r = scan_sql(d, chars, st, eof);
+            if r.1 > 0 {
+                st.line_start = chars[r.1 - 1] == '\n';
+            }
+            r
+        }
+    };
+    // Unterminated strings / comments run to the end of the text and may swallow trailing
+    // whitespace: ranges are always trimmed.
+    for u in &mut units {
+        let mut e = u.range.end as usize;
+        while e > u.range.start as usize + 1 && chars[e - 1].is_whitespace() {
+            e -= 1;
+        }
+        u.range.end = to_u32(e);
     }
+    (units, consumed)
 }
 
 fn unit(start: usize, end: usize, repeat: u32) -> Unit {
@@ -483,7 +502,7 @@ fn scan_sql(
     let mut consumed = 0usize;
     let mut cur = Cur::default();
     let mut i = 0usize;
-    let mut line_start = true;
+    let mut line_start = st.line_start;
 
     while i < n {
         if line_start {
