@@ -1873,3 +1873,31 @@ Thứ tự merge vào `develop` khuyến nghị: A1 → B → D → E → F → 
 | R8 | Redis `apply_changes` không rollback; Mongo standalone không transaction. | `Editability.atomic=false` hiển thị rõ; WATCH + kiểm kiểu trước; dừng ở lỗi đầu và báo số đã áp. |
 | R9 | CLI đọc keychain trên macOS bị hỏi quyền cho binary khác app. | Tài liệu hướng dẫn "Always Allow"; CLI báo lỗi rõ khi bị từ chối. |
 | R10 | Mười gói chạy song song đụng file dùng chung. | Bước 0 làm hết file dùng chung; bảng vùng độc quyền 7.2; đổi hợp đồng qua PR riêng. |
+
+---
+
+## 9. Khác biệt khi triển khai
+
+> Bổ sung sau khi hiện thực (nhánh `feature/quandh/phase2_complete`). Các mục 0–8 ở trên giữ nguyên làm hồ sơ thiết kế; chỗ nào code khác thiết kế thì ghi ở đây. Kiến trúc thực tế: [architecture.md](../architecture.md).
+
+| Chủ đề | Thiết kế | Thực tế |
+|---|---|---|
+| `dbstudio-sql` | Lexer + `sqlparser` 0.64, fallback từ khoá | **Không dùng `sqlparser`** (đã gỡ dependency). Mọi bước (split, params, classify, guard, redact) chạy trên token của lexer riêng. T-SQL: `split` trả một khoảng/batch `GO`, `analyze` chia câu trong batch theo `;` ngoài `BEGIN…END` và theo **từ khoá mở đầu câu** (T-SQL không bắt buộc `;`). MySQL: comment thực thi `/*! */`, `/*!NNNNN */`, `/*M! */` được lex như code. |
+| Guard | 5 bước như 1.5 | Thêm: từ chối script MySQL có ranh giới câu khác nhau giữa hai chế độ `NO_BACKSLASH_ESCAPES` (`CLIENT_MULTI_STATEMENTS` của `mysql_async` không tắt được); `read_only_defense` chặn `READ WRITE`, `set_config`, `SET … *_read_only`, `SET sql_mode` trên kết nối read-only; production quét thêm từ khoá ở câu `Unknown`/`Procedural`. Payload token gồm cả các database câu phá huỷ thực sự tác động (`statement_databases`), `confirm_text` theo database đó. |
+| Oracle splitter | Dùng `dbstudio_sql::split` (khối PL/SQL kết thúc ở dòng `/`) | Driver giữ **splitter riêng** (`crates/drivers/oracle/src/script.rs`): khối PL/SQL kết thúc ở `END [tên];` cuối cùng (cân bằng `BEGIN/CASE/IF/LOOP`) **hoặc** dòng `/`. Test vi sai với `dbstudio-sql` (`script_diff.rs`). |
+| `tiberius` | Fork git + `[patch]` theo `rev` | Bản sao tiberius 0.13.0 trong `vendor/tiberius-patch` (`[patch.crates-io]` theo `path`), xem `DBSTUDIO-PATCH.md`. Ngoài INFO/DONE và attention: `money` giải mã chính xác (numeric scale 4), feature `winauth` bật **NTLM trên Unix qua `sspi` 0.23** (0.18 xung đột `crypto-bigint` với `russh`). |
+| Lease | Gói B viết `lease_kit`, "các driver khác dùng hoặc tự hiện thực" | Chỉ PG và MySQL dùng `lease_kit`. **MSSQL, Oracle, MongoDB, Redis tự hiện thực `Lease`**. `LeaseBackend` có thêm hook `refresh_context` (sau `USE`/`SET search_path`), `table_select` (export stream bảng), `bulk_insert`, `explain` (EXPLAIN trên lease, giữ transaction) và tự báo kết quả treo; `LeaseTuning` thêm `idle_ttl` (8 giờ) và `timeout_grace`. PG/MySQL đặt lại read-only trước mỗi request ngoài transaction. MySQL chỉ giữ treo kết quả của câu SELECT cuối. |
+| `plan_explain` với lease | — | Khi có `leaseId`, PG/MySQL chạy EXPLAIN trên lease (hook `explain`); EXPLAIN nhận đúng một câu (command + driver kiểm). |
+| MSSQL `bulk_insert` | TDS bulk load (`Error`) / `MERGE` | `INSERT … VALUES` nhiều dòng (≤ 1000 dòng/câu) cho `Error`, `INSERT … WHERE NOT EXISTS` cho `Skip`, `MERGE` cho `Update`. |
+| Export snapshot | `RepeatableRead` / `Snapshot` (MSSQL) / Serializable read-only (Oracle) | Engine luôn xin `TxOptions { read_only: true, isolation: RepeatableRead }`; MSSQL đặt `REPEATABLE READ`, Oracle dùng `SET TRANSACTION READ ONLY`. Driver không có lease → session + cảnh báo "không có snapshot". |
+| Export | `Keys` (Redis → JSON), `flatten_fields` cho Mongo CSV/XLSX | Chưa hiện thực: `Keys` trả `Unsupported("export_keys")`, `flatten_fields` chưa được engine đọc. File tạm mồ côi được dọn khi export vào cùng thư mục (chưa dọn lúc khởi động). |
+| Import | Mọi DB có `bulk_insert` | Chỉ SQL DB (PG, MySQL/MariaDB, MSSQL, Oracle); `Skip` không hỗ trợ ở Oracle. `import_preview` nhận thêm `dialect` (lấy từ session đang mở, không có thì suy từ `DbKind`). Job export/import dùng session đang mở của kết nối. |
+| Backup logic | Dùng lại writer SQL của `dbstudio-export` | Theo thiết kế: `generate_ddl` (PreData/PostData) + export engine — **xác nhận sau khi merge gói H**. |
+| `connection_parse_uri` | Bản v1: mật khẩu giữ ở `PendingSecrets`, trả `pendingSecretId` | **Bỏ `pendingSecretId`**: mật khẩu trong URI bị bỏ, trả `hasPassword`, UI hỏi nhập lại. Thêm scheme `postgres(ql)`, `mysql`, `sqlserver`, `oracle`. |
+| `connection_test` | Không đổi (chỉ `connection_save` thêm `sshSecret`) | `connection_test` cũng nhận `ssh_secret` để thử SSH với mật khẩu/passphrase vừa gõ. |
+| `ssh_trust_host` | Lưu host key do UI gửi | Chỉ lưu khoá **đã quan sát được** từ server trong lần kết nối trước (không tin fingerprint do webview gửi). |
+| `IndexDetail` | D5: không thêm field vào struct GĐ1 | Thêm `partial: bool` (index có điều kiện); tên cột index được làm sạch (PG `attname`, MySQL không còn mảnh DDL), dùng chung `key_columns` của core. |
+| TLS | MongoDB `verifyCa` = CA + `allow_invalid_hostnames` | `verifyCa` hành xử như `verifyFull` ở MySQL, MongoDB, Redis, MSSQL. `tls.server_name` chỉ được tôn trọng ở PG và MSSQL; MySQL/MongoDB/Redis qua SSH với `verifyFull` lỗi tên (R6). |
+| `JobManager` | Chưa quy định số job song song | Tối đa 3 job chạy song song, còn lại `queued` (huỷ được). |
+| Command thêm ngoài mục 4 | — | Từ đợt hoàn thiện GĐ1: `object_search`, `settings_get`/`settings_set`, `open_log_dir`, `save_cell_value`. |
+| `Error::Invalid` | — | Không có; đầu vào không hợp lệ dùng `Other`/`Query` (tồn đọng). |

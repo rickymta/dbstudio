@@ -1,32 +1,33 @@
 # DBStudio — Lộ trình
 
-> Trạng thái: v0.2 — GĐ0 xong, GĐ1 đã hiện thực (còn tồn, xem cuối mục GĐ1). Mã yêu cầu theo [requirements.md](requirements.md); thiết kế theo [architecture.md](architecture.md).
+> Trạng thái: v0.3 — GĐ0–GĐ1 xong; GĐ2–GĐ7 đã hiện thực trên nhánh `feature/quandh/phase2_complete` (còn phần chưa kiểm chứng, ghi ở từng giai đoạn); GĐ8 (backup) đang hoàn thiện ở nhánh riêng, mục GĐ8 **sẽ cập nhật sau khi merge**. Mã yêu cầu theo [requirements.md](requirements.md) (cột Trạng thái); kiến trúc theo [architecture.md](architecture.md); hợp đồng GĐ2–GĐ8 theo [design/phase2-8.md](design/phase2-8.md).
 
 ## 1. Cách làm việc
 
-- Nhánh tích hợp: `develop`. Mỗi giai đoạn (hoặc hạng mục lớn trong giai đoạn) làm trong một git worktree tại `.claude/worktrees/<ten-viec>`, nhánh `feature/quandh/<ten_viec>`, tách từ `develop` mới nhất.
-- Một giai đoạn **xong** khi: mọi yêu cầu **Must** trong phạm vi đã hiện thực, toàn bộ tiêu chí hoàn thành dưới đây kiểm chứng được, CI xanh trên 3 OS, tài liệu (`docs/`) được cập nhật nếu thiết kế thay đổi. Yêu cầu Should/Could chưa làm được ghi lại và chuyển sang giai đoạn sau.
+- Nhánh tích hợp: `develop`. Mỗi giai đoạn (hoặc gói việc trong giai đoạn) làm trong một git worktree tại `.claude/worktrees/<ten-viec>`, nhánh `feature/quandh/<ten_viec>`, tách từ `develop` mới nhất. GĐ2–GĐ8 chia thành Bước 0 (dựng khung hợp đồng) + 12 gói A–L chạy song song (design §7), gộp vào `feature/quandh/phase2_complete`.
+- Một giai đoạn **xong** khi: mọi yêu cầu **Must** trong phạm vi đã hiện thực, tiêu chí hoàn thành kiểm chứng được, CI xanh trên 3 OS, tài liệu được cập nhật. Yêu cầu Should/Could chưa làm được ghi lại và chuyển sang giai đoạn sau.
 - Với mỗi giai đoạn có driver mới: integration test với DB thật (Docker) là một phần của tiêu chí hoàn thành.
+- Quy ước trạng thái tiêu chí: `[x]` = đã kiểm chứng bằng test tự động (unit hoặc integration với Docker, chạy cục bộ trên macOS); `[ ]` kèm ghi chú = còn thiếu hoặc chưa kiểm chứng.
 
 ## 2. Vì sao thứ tự này
 
-1. **Kiểm chứng kiến trúc driver sớm trên 2 DB dễ nhất** (PostgreSQL, MySQL): driver thuần Rust, dễ chạy bằng Docker, phổ biến nhất. Nếu trait `Driver`/`Session`, `Value`, stream qua Channel có vấn đề, sửa khi mới có 2 driver rẻ hơn nhiều so với 6.
-2. **Query editor + sửa dữ liệu là lõi dùng hằng ngày**; mọi tính năng nâng cao (export, ERD, plan, backup) dựng trên nền thực thi query + metadata đã ổn định.
-3. **MSSQL + Oracle trước NoSQL** vì cùng mô hình quan hệ → tái dùng gần như toàn bộ UI; đồng thời sớm xử lý rủi ro đóng gói Oracle. SSH tunnel đi cùng vì môi trường doanh nghiệp dùng nhiều.
-4. **MongoDB + Redis** cần view riêng (document, key-value) → làm sau khi UI quan hệ ổn định để biết rõ phần nào dùng chung.
-5. **Export → ERD → Plan → Backup**: export là nền cho backup logic (cùng sinh DDL + stream dữ liệu); ERD và plan độc lập, giá trị cao, rủi ro thấp; backup tự động cần tray/autostart/scheduler nên để gần khâu đóng gói.
-6. **Đóng gói/phát hành** khi tính năng đủ; driver mở rộng (GĐ10+) chỉ là thêm crate theo kiến trúc đã kiểm chứng.
+1. **Kiểm chứng kiến trúc driver sớm trên 2 DB dễ nhất** (PostgreSQL, MySQL).
+2. **Query editor + sửa dữ liệu là lõi dùng hằng ngày**; export, ERD, plan, backup dựng trên nền thực thi query + metadata đã ổn định.
+3. **MSSQL + Oracle trước NoSQL** vì cùng mô hình quan hệ; SSH tunnel đi cùng.
+4. **MongoDB + Redis** cần view riêng (document, key-value).
+5. **Export → ERD → Plan → Backup**: export là nền cho backup logic (sinh DDL + stream dữ liệu).
+6. **Đóng gói/phát hành** khi tính năng đủ; driver mở rộng chỉ là thêm crate.
 
 ```mermaid
 flowchart LR
-    G0["GĐ0 Nền tảng"] --> G1["GĐ1 Kết nối & duyệt<br/>PostgreSQL + MySQL"]
-    G1 --> G2["GĐ2 Query editor<br/>& sửa dữ liệu"]
-    G2 --> G3["GĐ3 MSSQL + Oracle<br/>SSH tunnel"]
-    G2 --> G4["GĐ4 MongoDB + Redis"]
-    G2 --> G5["GĐ5 Xuất/nhập"]
-    G2 --> G6["GĐ6 ERD"]
-    G2 --> G7["GĐ7 Plan diagram"]
-    G5 --> G8["GĐ8 Backup/Restore<br/>+ lịch tự động"]
+    G0["GĐ0 Nền tảng ✓"] --> G1["GĐ1 Kết nối & duyệt ✓"]
+    G1 --> G2["GĐ2 Editor & sửa dữ liệu ✓"]
+    G2 --> G3["GĐ3 MSSQL + Oracle, SSH ✓*"]
+    G2 --> G4["GĐ4 MongoDB + Redis ✓"]
+    G2 --> G5["GĐ5 Xuất/nhập ✓"]
+    G2 --> G6["GĐ6 ERD ✓"]
+    G2 --> G7["GĐ7 Plan ✓"]
+    G5 --> G8["GĐ8 Backup (gói H, chờ merge)"]
     G3 --> G9["GĐ9 Đóng gói & phát hành"]
     G4 --> G9
     G6 --> G9
@@ -35,320 +36,211 @@ flowchart LR
     G9 --> G10["GĐ10+ Cassandra, ScyllaDB,<br/>ClickHouse, NewSQL"]
 ```
 
-Thứ tự mặc định là tuần tự GĐ0 → GĐ10; các nhánh song song trong sơ đồ chỉ ra giai đoạn nào có thể làm đồng thời nếu có nhiều agent.
+\* Oracle: integration test với DB thật chưa chạy.
+
+**Trạng thái kiểm chứng chung của GĐ2–GĐ8**: unit test + integration test với Docker (PG 12/16, MySQL 5.7/8, MariaDB 10.4/10.6, SQL Server 2022, MongoDB 4.4/7, Redis 6.2/7.4, Valkey 8, sshd) + Vitest, clippy/fmt sạch — tất cả **chạy cục bộ trên macOS**. Chưa kiểm chứng: giao diện trong cửa sổ Tauri thật (tray, autostart, thông báo OS, xuất PNG/PDF trên WebView), Windows/Linux, NTLM thật, Azure SQL, Oracle IT với DB thật (chờ RAM Docker), CI trên GitHub.
 
 ---
 
 ## GĐ0 — Nền tảng *(xong; còn chờ kiểm chứng trên Windows/Linux và CI GitHub)*
 
-**Mục tiêu:** repo chạy được trên 3 OS với khung giao diện trống, crate core định nghĩa hợp đồng driver, CI hoạt động.
+Workspace, `dbstudio-core` (trait `Driver`/`Session`, `Value`, `Capabilities`...), khung giao diện (sidebar, tab, status bar), theme, vi/en, Tauri capabilities tối thiểu + CSP, CI 3 OS.
 
-**Phạm vi:**
-- Cargo workspace: `src-tauri/`, `crates/dbstudio-core/`.
-- `dbstudio-core`: `DbKind`, `Capabilities`, `DriverDescriptor`, `ConnectionConfig`, trait `Driver`, `Session`, `Value`, `ResultSet`, `ResultSink`, `DriverRegistry`, `Error` (NFR-EXT-01). Có một driver giả (mock) trong test để chứng minh trait dùng được.
-- Frontend: Vite + React 19 + TS strict + Tailwind v4 + Zustand + TanStack Query + i18next.
-- Khung giao diện: sidebar, vùng tab, status bar (APP-03); theme sáng/tối/hệ thống (APP-02); vi/en (APP-01); đổi ngôn ngữ và theme ngay trên status bar (APP-05 một phần — trang cài đặt đầy đủ làm dần từ GĐ1).
-- Log ra console bằng `tracing` (log file xoay vòng APP-07 chuyển sang GĐ1, khi có thư mục dữ liệu app); Tauri capabilities tối thiểu + CSP (NFR-SEC-04).
-- Command mẫu (`app_info`, `list_drivers`) đi qua wrapper `src/lib/ipc.ts`; kiểu TS viết tay ở `src/lib/types.ts` (architecture §14).
-- CI: build + lint + test trên Windows/macOS/Linux (NFR-QUAL-02); kiểm tra khoá dịch (NFR-QUAL-03).
-
-**Ngoài phạm vi:** driver thật, SQLite store, kết nối DB.
-
-**Tiêu chí hoàn thành:**
-- [ ] `pnpm tauri dev` mở cửa sổ có sidebar/tab/status bar trên macOS, Windows, Linux. — *Đạt trên macOS; Windows và Linux chưa build/chạy lần nào.*
-- [x] Đổi ngôn ngữ vi ↔ en và theme sáng ↔ tối có hiệu lực ngay, giữ sau khi khởi động lại (lưu ở `localStorage`).
-- [x] `cargo test --workspace` pass, gồm test driver mock: connect → execute → nhận lô dòng qua `ResultSink` → cancel.
-- [x] Frontend gọi `list_drivers` và hiển thị danh sách 9 hệ quản trị kèm trạng thái/giai đoạn dự kiến, qua wrapper IPC có kiểu. (Đã thấy chạy trong app Tauri thật trên macOS.)
-- [x] `dbstudio-core` không phụ thuộc `tauri` (kiểm bằng `cargo tree -p dbstudio-core`).
-- [ ] CI xanh trên cả 3 OS: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, ESLint, `tsc --noEmit`, Vitest. — *Workflow đã có (matrix ubuntu/macos/windows) và các lệnh chạy sạch trên macOS cục bộ, nhưng workflow **chưa chạy lần nào trên GitHub** (repo chưa có remote).*
-
-**Phụ thuộc:** không.
+- [ ] `pnpm tauri dev` chạy trên macOS, Windows, Linux. — *Đạt trên macOS; Windows/Linux chưa build lần nào.*
+- [x] Đổi ngôn ngữ/theme có hiệu lực ngay và giữ sau khi khởi động lại.
+- [x] `cargo test --workspace` pass, `dbstudio-core` không phụ thuộc `tauri`.
+- [ ] CI xanh trên 3 OS. — *Workflow có đủ bước nhưng chưa chạy trên GitHub (chưa có remote).*
 
 ---
 
-## GĐ1 — Kết nối & duyệt dữ liệu (PostgreSQL + MySQL) *(đã hiện thực, còn tồn)*
+## GĐ1 — Kết nối & duyệt dữ liệu (PostgreSQL + MySQL) *(xong)*
 
-**Mục tiêu:** kết nối an toàn tới PostgreSQL và MySQL, duyệt cây đối tượng, xem dữ liệu bảng ở chế độ chỉ đọc.
+Driver PG/MySQL, `dbstudio-store` (SQLite + keychain), kết nối TLS, cây đối tượng, lưới chỉ đọc, log xoay vòng. Đợt hoàn thiện tồn đọng (commit `a06ebba`, `6dd3987`) đã làm: tìm đối tượng phía server (BROWSE-06), kéo thả profile/nhóm (CONN-02), trang cài đặt (mức log, trần lưới, hiển thị `timestamptz`, mở thư mục log), lưu giá trị ô ra file (DATA-07), ẩn/ghim/đổi thứ tự cột (DATA-12), che mật khẩu trong log + test quét mật khẩu + test keychain thật (tuỳ chọn), dev bridge, integration test MySQL 5.7 và MariaDB 10.4.
 
-**Phạm vi:**
-- Crate `drivers/postgres` (`tokio-postgres`), `drivers/mysql` (`mysql_async`), `dbstudio-store` (SQLite + migration, NFR-REL-02).
-- Kết nối: CONN-01, CONN-02, CONN-03, CONN-04, CONN-05, CONN-07, CONN-08, CONN-09.
-- Duyệt: BROWSE-01, BROWSE-02, BROWSE-05, BROWSE-06, BROWSE-07, BROWSE-08.
-- Dữ liệu (chỉ đọc): DATA-01, DATA-02, DATA-07 (chế độ xem), DATA-09; DATA-12 (Could).
-- Stream kết quả qua Channel (NFR-PERF-02); UI ẩn/hiện theo `Capabilities` (NFR-EXT-02).
-- Log file xoay vòng, không ghi secret (APP-07).
-- Benchmark lưới 1 triệu dòng trên 3 webview → chốt TanStack Virtual hay canvas grid (NFR-PERF-03).
-
-**Ngoài phạm vi:** query editor, sửa dữ liệu, SSH tunnel.
-
-**Tiêu chí hoàn thành:**
-Trạng thái kiểm chứng: 229 test Rust (gồm integration test với DB thật, chạy 2 lượt liên tiếp không flaky) + 217 test frontend, clippy/format sạch — tất cả chạy **cục bộ trên macOS**. Giao diện mới được thao tác với mock IPC trong Chromium; app Tauri thật trên macOS khởi động được nhưng **chưa ai thao tác giao diện với DB thật trong cửa sổ Tauri**.
-
-- [ ] Tạo profile PostgreSQL 12 và 16, MySQL 5.7 và 8, MariaDB 10.4+ (Docker), test connection hiển thị phiên bản server. — *Đã có: PostgreSQL 16.15 (TLS), 12.22, MySQL 8.4.11 (TLS), MariaDB 10.6.28, kiểm ở lớp driver và lớp command. Còn thiếu: MySQL 5.7 (không có image arm64) và MariaDB 10.4 chưa test; chưa thử trên giao diện app thật.*
-- [x] Kết nối TLS `verify-full` với CA tự ký thành công; sai CA báo lỗi `Tls` rõ ràng. (Test lớp command với PostgreSQL 16 và MySQL 8.4; xem hạn chế `verify-ca` của MySQL ở architecture §15.)
-- [ ] Mật khẩu nằm trong keychain; `grep` mật khẩu trong thư mục dữ liệu app và file log không có kết quả; file export profile không có secret. — *Đã có: code chỉ lưu mật khẩu qua `keyring`, không có dự phòng plaintext; test xác nhận file export không chứa secret. Còn thiếu: keychain thật chưa chạy lần nào (test dùng kho giả trong bộ nhớ); chưa có test "grep mật khẩu".*
-- [x] Cây hiển thị đủ nhóm đối tượng BROWSE-02 cho cả 2 DB; xem DDL table/view/function đúng. (Integration test driver + giao diện với mock; nhóm user/role của MySQL chỉ hiện khi tài khoản đủ quyền.)
-- [ ] Mở bảng 1 triệu dòng: dòng đầu hiển thị < 1 giây trên localhost, cuộn mượt, lọc + sắp xếp chạy phía server. — *Đã có: lọc/sắp xếp/phân trang phía server; lưới ảo hoá chạy tới 466.000 dòng với mock trong Chromium. Còn thiếu: chưa đo với bảng thật 1 triệu dòng, chưa đo trên webview của Tauri.*
-- [x] Giá trị `bigint` 9007199254740993, `numeric(38,10)`, `timestamptz` hiển thị đúng từng chữ số/múi giờ. (Driver giải mã dạng text, `Value` giữ chuỗi; `timestamptz` hiển thị theo UTC — chưa có tuỳ chọn múi giờ người dùng.)
-- [ ] Integration test cho cả 2 driver chạy trong CI (Linux, Docker). — *Đã có job `integration` trong `.github/workflows/ci.yml` và chạy đúng các bước đó cục bộ. Còn thiếu: chưa chạy trên GitHub (chưa có remote).*
-- [ ] Kết quả benchmark lưới và quyết định grid được ghi vào `docs/architecture.md`. — *Chưa benchmark; tạm giữ TanStack Virtual, quyết định vẫn mở (architecture §14).*
-
-**Phụ thuộc:** GĐ0.
-
-### Tồn đọng của GĐ1
-
-**Phải làm trước khi đóng GĐ1** (không cần code mới, chủ yếu kiểm chứng):
-1. Kiểm tra tay trên app Tauri thật (macOS) với DB Docker: tạo/sửa/xoá profile, test connection, mở session bằng mật khẩu lưu và nhập tay, duyệt cây, mở bảng, lọc/sắp xếp, đếm dòng, huỷ, xem DDL/cấu trúc. Lần này cũng là lần đầu chạy keychain thật.
-2. Sau bước 1: `grep` mật khẩu thử trong `app_data_dir` (gồm `dbstudio.sqlite`) và thư mục log → phải rỗng.
-3. Đẩy repo lên remote, cho workflow CI (matrix 3 OS + job `integration`) chạy xanh ít nhất một lần.
-
-**Đề xuất chuyển sang GĐ2:**
-- CONN-02 kéo thả profile/nhóm (hiện chỉ có menu "Chuyển vào nhóm").
-- BROWSE-06 tìm phía server cho phần cây chưa tải (hiện chỉ lọc cục bộ phần đã tải).
-- BROWSE-05/07 phần phụ thuộc editor: mở DDL trong editor, sinh SELECT/INSERT mẫu (mục "xuất" theo GĐ5).
-- DATA-07 tải blob ra file; DATA-12 (Could).
-- APP-07 nút "mở thư mục log" và chọn mức log trong giao diện (command `log_dir` đã có); làm cùng trang cài đặt APP-05.
-- NFR-PERF-03 giới hạn bộ nhớ cấu hình được (hiện là hằng số: 1.000.000 dòng hoặc 20.000.000 ô); tuỳ chọn múi giờ hiển thị cho `timestamptz`.
-- NFR-EXT-02 mở rộng ra các phần UI mới (hiện mới áp dụng ở cây và nút Dừng).
-- Test tự động "grep mật khẩu trong thư mục dữ liệu và log".
-- Thêm MySQL 5.7 và MariaDB 10.4 vào job `integration` (runner x86_64 có image).
-
-**Đề xuất chuyển sang GĐ9 (hoặc sớm hơn khi có máy/CI Windows, Linux):**
-- Build và chạy app trên Windows, Linux; kiểm thử giao diện trên WebView2 và WebKitGTK (NFR-PLAT-02).
-- Benchmark lưới 1 triệu dòng với bảng thật trên WKWebView, WebView2, WebKitGTK → chốt TanStack Virtual hay canvas grid. Nên làm sớm nhất có thể (trước khi lưới gánh thêm chế độ sửa ở GĐ2 càng tốt), hạn chót là GĐ9.
-
-**Giữ mở, chưa gắn giai đoạn:** phân trang keyset/cursor thay OFFSET; các hạn chế TLS của MySQL do `mysql_async` (architecture §15); câu hỏi chế độ TLS mặc định (requirements §6, câu 8).
-
-**Ghi chú về CONN-10:** cờ read-only đã lưu theo profile và áp vào session ở mức driver (PostgreSQL `default_transaction_read_only=on`, MySQL `SET SESSION TRANSACTION READ ONLY`; đọc bảng luôn trong transaction READ ONLY). Phân loại câu lệnh bằng parser vẫn là việc của GĐ2.
+Còn lại từ GĐ1 (chuyển vào mục "Tồn đọng" bên dưới): benchmark lưới 1 triệu dòng trên 3 webview, CI GitHub, Windows/Linux.
 
 ---
 
-## GĐ2 — Query editor & sửa dữ liệu
+## GĐ2 — Query editor & sửa dữ liệu *(đã hiện thực)*
 
-**Mục tiêu:** viết, chạy, huỷ query thoải mái; sửa dữ liệu an toàn trên lưới.
+Gói A (dbstudio-sql), B (editor backend: `lease_kit`, lease PG/MySQL, guard, lịch sử), C (editor frontend), D (sửa dữ liệu).
 
-**Phạm vi:**
-- Editor: QUERY-01 → QUERY-13, QUERY-16.
-- Sửa dữ liệu: DATA-03, DATA-04, DATA-05, DATA-06, DATA-07 (chế độ sửa), DATA-08.
-- An toàn: CONN-10, CONN-11, CONN-12; NFR-SEC-03; NFR-REL-01.
-- Phím tắt APP-04; command palette APP-08 (Could); NFR-PERF-04.
-- Tồn đọng nhận từ GĐ1 nếu chủ dự án đồng ý (xem "Tồn đọng của GĐ1"): CONN-02 kéo thả, BROWSE-06 tìm phía server, DATA-07 tải blob, DATA-12, phần UI của APP-07, giới hạn bộ nhớ cấu hình được (NFR-PERF-03).
+- [x] Autocomplete gợi ý cột theo alias (`SELECT u.| FROM users u`) — Vitest.
+- [x] Script 3 câu → 3 tab kết quả, số dòng ảnh hưởng, NOTICE PostgreSQL — IT PG/MySQL/MariaDB.
+- [x] `pg_sleep(60)` / `SLEEP(60)` huỷ < 2 s và server xác nhận — IT.
+- [x] Lỗi cú pháp đánh dấu đúng dòng/cột (kể cả ký tự ngoài BMP trước vị trí) — Vitest.
+- [x] Manual commit: kết nối khác không thấy UPDATE chưa commit, rollback hoàn tác, đóng lease khi transaction mở → rolled back; đóng tab hỏi xác nhận — IT + Vitest.
+- [x] Read-only từ chối INSERT/UPDATE/DELETE/DDL ở backend (test gọi command trực tiếp).
+- [x] Production: `DELETE FROM t` (không WHERE), `DROP TABLE` → `confirmationRequired`; token sai/hết hạn/dùng lại, gõ sai tên DB bị từ chối.
+- [x] Sửa 3 ô + thêm 1 + xoá 1 → preview SQL → commit một transaction; lỗi ở thay đổi thứ 2 → rollback toàn bộ — IT PG/MySQL (MSSQL, Oracle có code tương đương).
+- [x] Bảng không PK/unique: lưới chỉ đọc kèm lý do.
+- [x] Lịch sử query còn sau khi mở lại store.
+- [ ] Kiểm tay trong cửa sổ Tauri với DB thật. — *Mới kiểm qua mock IPC/dev bridge trong trình duyệt.*
 
-**Ngoài phạm vi:** EXPLAIN/plan (GĐ7), editor MQL/Redis (GĐ4).
-
-**Tiêu chí hoàn thành:**
-- [ ] Autocomplete gợi ý cột đúng theo alias (`SELECT u.| FROM users u`) trên PostgreSQL và MySQL.
-- [ ] Script 3 câu lệnh (SELECT, UPDATE, SELECT) cho 3 tab kết quả, kèm số dòng ảnh hưởng; NOTICE PostgreSQL hiển thị.
-- [ ] `SELECT pg_sleep(60)` / `SELECT SLEEP(60)` huỷ được trong < 2 giây và server xác nhận query đã dừng.
-- [ ] Lỗi cú pháp đánh dấu đúng dòng/cột trong editor.
-- [ ] Manual commit: sau UPDATE chưa commit, kết nối khác không thấy thay đổi; rollback hoàn tác; đóng tab cảnh báo transaction mở.
-- [ ] Kết nối read-only từ chối `INSERT/UPDATE/DELETE/DDL` ở backend (test gọi command trực tiếp, không qua UI).
-- [ ] Kết nối prod: `DELETE FROM t` (không WHERE) và `DROP TABLE` bắt buộc qua hộp thoại xác nhận gõ tên database.
-- [ ] Sửa 3 ô, thêm 1 dòng, xoá 1 dòng → xem trước SQL → commit trong một transaction; lỗi ở câu thứ 2 → rollback toàn bộ.
-- [ ] Bảng không có PK/unique: lưới chỉ đọc kèm lý do.
-- [ ] Lịch sử query lưu và tìm được sau khi khởi động lại app.
-
-**Phụ thuộc:** GĐ1.
+Chưa làm trong phạm vi: font editor, giới hạn dòng editor và timeout query trên trang Cài đặt (APP-05, QUERY-12, CONN-12 — đã có trong `AppSettings`), tự kết nối lại (CONN-12), command palette (APP-08, Could), sinh SELECT/INSERT mẫu và mở DDL trong editor (BROWSE-05/07).
 
 ---
 
-## GĐ3 — MSSQL + Oracle, SSH tunnel
+## GĐ3 — MSSQL + Oracle, SSH tunnel *(đã hiện thực; Oracle chưa có IT với DB thật)*
 
-**Mục tiêu:** đưa toàn bộ tính năng GĐ1–GĐ2 lên MSSQL và Oracle; hỗ trợ SSH tunnel cho mọi driver.
+Gói I (MSSQL + bản vá tiberius), J (Oracle), A (SSH).
 
-**Phạm vi:**
-- Crate `drivers/mssql` (`tiberius`), `drivers/oracle` (`oracle` hoặc phương án thay thế đã đánh giá).
-- Áp dụng BROWSE-01/02/05/06/07/08, DATA-01..09, QUERY-01..13 cho 2 DB mới (dialect T-SQL, PL/SQL; tách batch `GO`; block PL/SQL).
-- CONN-06 (SSH tunnel: mật khẩu, private key + passphrase, ssh-agent) cho mọi driver hiện có.
-- Đánh giá & quyết định đóng gói Oracle Instant Client (câu hỏi mở / rủi ro trong requirements §6).
+- [x] SQL Server 2022 (Docker): kết nối TLS, cây, dữ liệu, chạy + huỷ query, sửa dữ liệu, explain, schema model, DDL chạy lại được, bulk — IT `mssql2022`.
+- [ ] Oracle Free (Docker): cùng tiêu chí. — *Code đủ (kết nối, cây, dữ liệu, lease, sửa, explain, DDL, schema model) và có bộ IT trong `oracle-it`, nhưng chưa chạy được với DB thật (cần ~3 GB RAM cho Docker).*
+- [x] MSSQL: nhiều result set + `PRINT`; `GO n` chạy đúng từng batch.
+- [x] Oracle: block `BEGIN ... END;`, `CREATE PROCEDURE ... /` không bị tách sai — unit test + test vi sai với `dbstudio-sql`.
+- [x] Thiếu Instant Client: driver `unavailable` kèm chẩn đoán, không crash.
+- [x] SSH tunnel tới PG/MySQL/MSSQL sau bastion bằng mật khẩu và key có passphrase; host key lạ → `sshHostKey` — IT `sshd`.
+- [ ] Integration test MSSQL + Oracle trong CI. — *Job `integration` có cả `oracle-it`, chưa chạy trên GitHub.*
+- [ ] NTLM với domain thật, Integrated (Windows), Azure SQL. — *Chưa kiểm; Azure AD chưa hỗ trợ.*
 
-**Ngoài phạm vi:** Windows Integrated Auth cho MSSQL (chờ trả lời câu hỏi mở 6).
-
-**Tiêu chí hoàn thành:**
-- [ ] SQL Server 2016+ (hoặc 2019/2022 Docker) và Oracle Free (Docker): kết nối, duyệt cây, xem dữ liệu, chạy và huỷ query, sửa dữ liệu đạt các tiêu chí tương ứng GĐ1–GĐ2.
-- [ ] MSSQL: nhiều result set + thông điệp `PRINT`; script có `GO` chạy đúng từng batch.
-- [ ] Oracle: chạy block `BEGIN ... END;` và tạo procedure không bị tách sai câu lệnh.
-- [ ] Thiếu Instant Client: app không crash, driver Oracle báo trạng thái không khả dụng kèm hướng dẫn.
-- [ ] SSH tunnel tới PostgreSQL/MySQL/MSSQL sau bastion (container `openssh-server`) kết nối được bằng cả mật khẩu và key có passphrase.
-- [ ] Integration test MSSQL + Oracle trong CI.
-
-**Phụ thuộc:** GĐ2.
+Quyết định đóng gói Oracle: không đóng gói Instant Client, nạp lúc chạy (design Q1).
 
 ---
 
-## GĐ4 — MongoDB + Redis
+## GĐ4 — MongoDB + Redis *(đã hiện thực)*
 
-**Mục tiêu:** hỗ trợ document store và key-value store với giao diện chuyên biệt.
+Gói K (MongoDB + document UI, `connection_parse_uri`), L (Redis + key-value UI, cây phân trang).
 
-**Phạm vi:**
-- Crate `drivers/mongodb`, `drivers/redis`.
-- BROWSE-03, BROWSE-04, DATA-10, DATA-11, QUERY-14, QUERY-15; CONN-01..12 áp dụng cho 2 DB (TLS, SSH, read-only, xác nhận lệnh phá huỷ Redis/MongoDB).
-- CONN-13 (Đề xuất, Could): dán URI `mongodb://`, `mongodb+srv://`, `redis://`.
-
-**Ngoài phạm vi:** Redis Cluster/Sentinel (Should, giai đoạn sau), suy luận schema MongoDB (ERD-08).
-
-**Tiêu chí hoàn thành:**
-- [ ] MongoDB 4.4 và 7 (Docker): duyệt database/collection/index, xem document tree/JSON/bảng, sửa/thêm/xoá document; `ObjectId`, `Decimal128`, `Date` hiển thị và lưu đúng.
-- [ ] Chạy `find` có filter/projection/sort và `aggregate` pipeline nhiều stage, kết quả phân trang.
-- [ ] Redis 6+ và Valkey: duyệt 1 triệu key bằng `SCAN` không block server; xem/sửa đủ 6 kiểu; đặt/xoá TTL.
-- [ ] Console Redis: lịch sử, gợi ý lệnh; `FLUSHDB` trên kết nối prod bắt buộc xác nhận; kết nối read-only chặn lệnh ghi.
-- [ ] Menu/tính năng không áp dụng (ERD, DDL, transaction thủ công) tự ẩn theo `Capabilities`.
-- [ ] Integration test MongoDB + Redis trong CI.
-
-**Phụ thuộc:** GĐ2.
+- [x] MongoDB 4.4 và 7: duyệt database/collection/index, document tree/JSON/bảng, sửa/thêm/xoá; `ObjectId`, `Decimal128`, `Date`, `Int64` khứ hồi đúng — IT.
+- [x] `find` có filter/projection/sort, `aggregate` nhiều stage — IT.
+- [x] Redis 6/7.4 và Valkey 8: duyệt bằng `SCAN` (KEYS bị vô hiệu trên `redis6`), đủ 6 kiểu xem/sửa, TTL — IT (bài 1 triệu khoá khi `DBSTUDIO_IT_BIG=1`).
+- [x] Console Redis: lịch sử, gợi ý lệnh; `FLUSHDB` trên production cần xác nhận; read-only chặn lệnh ghi.
+- [x] Tính năng không áp dụng tự ẩn theo `Capabilities`.
+- [x] CONN-13: dán URI `mongodb://`, `mongodb+srv://`, `redis://` (cả `postgres`, `mysql`, `sqlserver`, `oracle`).
+- [ ] Integration test MongoDB + Redis trong CI. — *Chưa chạy trên GitHub.*
 
 ---
 
-## GĐ5 — Xuất/nhập schema & dữ liệu
+## GĐ5 — Xuất/nhập schema & dữ liệu *(đã hiện thực)*
 
-**Mục tiêu:** xuất schema/data/cả hai ra SQL, XLSX, CSV, JSON; nhập dữ liệu nếu được xác nhận.
+Gói G (`dbstudio-export`, `JobManager`, `PathGrants`, wizard, trung tâm job). Import được làm theo mặc định đề xuất (requirements §6 câu 1).
 
-**Phạm vi:**
-- Crate `dbstudio-export`.
-- EXPORT-01 → EXPORT-10; APP-09 (trung tâm tác vụ nền).
-- IMPORT-01 → IMPORT-03 **chỉ khi chủ dự án xác nhận** (requirements §6, câu hỏi 1).
-
-**Ngoài phạm vi:** export Cassandra/ClickHouse (theo GĐ10+), đích cloud.
-
-**Tiêu chí hoàn thành:**
-- [ ] Với mỗi DB đã hỗ trợ: xuất "cả hai" ra SQL rồi chạy lại vào database trống cùng loại → số bảng, số dòng, checksum dữ liệu khớp nguồn.
-- [ ] XLSX: mỗi bảng một sheet, có sheet data dictionary; bảng > 1.048.576 dòng tự tách sheet.
-- [ ] CSV nhiều bảng gom `.zip`; mở bằng Excel với UTF-8 BOM không lỗi tiếng Việt.
-- [ ] JSON array và NDJSON; schema JSON mô tả đủ cột/kiểu/khoá/index.
-- [ ] Xuất bảng 10 triệu dòng: bộ nhớ tiến trình không tăng tuyến tính theo số dòng; có tiến độ; huỷ giữa chừng không để lại file hỏng (xoá file tạm).
-- [ ] Xuất từ kết quả query hoạt động cho mọi định dạng.
-- [ ] (Nếu IMPORT trong phạm vi) Nhập CSV 1 triệu dòng có mapping cột vào PostgreSQL/MySQL, lỗi dòng được báo kèm số dòng.
-
-**Phụ thuộc:** GĐ2 (tối thiểu); áp dụng cho MSSQL/Oracle/MongoDB/Redis khi GĐ3–GĐ4 đã xong.
+- [x] PG/MySQL: "cả hai" ra SQL → chạy lại vào DB trống → số bảng/dòng/checksum khớp — IT.
+- [x] XLSX mỗi bảng một sheet + data dictionary, tách sheet khi vượt giới hạn (test với giới hạn hạ).
+- [x] CSV nhiều bảng → `.zip`, UTF-8 BOM.
+- [x] JSON array / NDJSON + `schema.json`.
+- [x] Huỷ giữa chừng không để lại file (file tạm + đổi tên); bảng lớn chạy stream (`DBSTUDIO_IT_BIG=1`).
+- [x] Xuất từ kết quả query (đúng một câu) cho mọi định dạng.
+- [x] Import CSV có mapping cột vào PG/MySQL, lỗi báo kèm số dòng.
+- [ ] Ma trận MSSQL/Oracle/Mongo/Redis. — *MSSQL/Oracle/Mongo export dùng chung engine (stream qua lease); chưa có IT export riêng cho các DB này. Redis export (`Keys`) và làm phẳng Mongo cho CSV/XLSX chưa làm.*
 
 ---
 
-## GĐ6 — ERD
+## GĐ6 — ERD *(đã hiện thực)*
 
-**Mục tiêu:** sơ đồ quan hệ thực thể từ schema có sẵn.
+Gói F (`schema_model` + `generate_ddl` PG/MySQL; MSSQL/Oracle/Mongo do gói I/J/K), ERD tab.
 
-**Phạm vi:** ERD-01 → ERD-07; ERD-08 (Could, chỉ khi GĐ4 xong).
-
-**Ngoài phạm vi:** forward-engineering (sinh DDL từ ERD).
-
-**Tiêu chí hoàn thành:**
-- [ ] Schema mẫu (vd. Sakila/Pagila, AdventureWorks nếu có MSSQL) hiển thị đủ bảng, PK, FK với ký hiệu crow's foot đúng bản số.
-- [ ] Auto layout 100 bảng trong < 3 giây, không chồng lấn; kéo thả/zoom mượt.
-- [ ] "Bảng X + liên quan 1 bậc" chọn đúng tập bảng.
-- [ ] Lưu và mở lại giữ nguyên vị trí; bảng bị xoá khỏi schema được đánh dấu.
-- [ ] Xuất PNG, SVG, PDF đọc được, chữ không vỡ ở cả theme sáng/tối.
-
-**Phụ thuộc:** GĐ1 (metadata); hưởng lợi từ GĐ3 cho MSSQL/Oracle.
+- [x] Schema mẫu Pagila (PG) / Sakila (MySQL): đủ bảng, PK, FK, bản số crow's foot đúng — IT.
+- [x] `generate_ddl` toàn DB chạy lại vào DB trống tạo đủ đối tượng (FK ở PostData) — IT.
+- [x] "Bảng X + liên quan N bậc" (1–3 bậc).
+- [x] Lưu/mở lại giữ vị trí; bảng/cột đã đổi được đánh dấu; xung đột phiên bản layout được phát hiện.
+- [ ] Auto layout 100 bảng < 3 s đo trên app thật. — *Layout chạy trong Web Worker (elk); chưa đo trên WebView Tauri.*
+- [ ] Xuất PNG/SVG/PDF trên WebView của app. — *Có test sinh file trong jsdom; chưa kiểm trên WKWebView/WebView2/WebKitGTK (rủi ro R7).*
 
 ---
 
-## GĐ7 — Phân tích query dạng sơ đồ
+## GĐ7 — Phân tích query dạng sơ đồ *(đã hiện thực)*
 
-**Mục tiêu:** biến EXPLAIN của từng DB thành sơ đồ trực quan, chỉ ra chỗ tốn kém.
+Gói E (`dbstudio-plan`, explain PG/MySQL, plan tab); explain MSSQL/Oracle/Mongo do gói I/J/K.
 
-**Phạm vi:** crate `dbstudio-plan`; PLAN-01 → PLAN-05; PLAN-06, PLAN-07 (Could). Parser cho mọi DB đã hỗ trợ tại thời điểm làm (PostgreSQL, MySQL, MSSQL, Oracle, MongoDB).
-
-**Ngoài phạm vi:** gợi ý index tự động; ClickHouse/Cassandra (GĐ10+).
-
-**Tiêu chí hoàn thành:**
-- [ ] Mỗi DB: ít nhất 5 file plan mẫu (fixture) parse thành cây chuẩn hoá, có unit test.
-- [ ] Sơ đồ hiển thị cost, rows ước tính vs thực tế, thời gian; nhánh tốn kém nhất được tô đậm.
-- [ ] Query cố ý không có index trên bảng lớn sinh cảnh báo full scan; ước lượng lệch ≥ 10× sinh cảnh báo.
-- [ ] Chọn node ở sơ đồ đồng bộ với dạng bảng và raw.
-- [ ] EXPLAIN ANALYZE cho `UPDATE` chạy trong transaction được rollback, dữ liệu không đổi (có test).
-
-**Phụ thuộc:** GĐ2; bao phủ đủ DB khi GĐ3–GĐ4 đã xong.
+- [x] Fixture cho 8 định dạng (PG JSON, MySQL JSON v1/v2/tree, MariaDB JSON, SHOWPLAN XML, Oracle plan rows, Mongo explain) parse thành cây chuẩn hoá — unit test.
+- [x] Sơ đồ hiển thị cost, rows ước tính/thực tế, thời gian; nhánh nóng tô đậm.
+- [x] Cảnh báo full scan bảng lớn, ước lượng lệch ≥ 10×, spill, nested loop nhiều dòng.
+- [x] Chọn node đồng bộ sơ đồ / bảng / raw — Vitest.
+- [x] `EXPLAIN ANALYZE UPDATE` trong transaction rollback, dữ liệu không đổi (IT PG); MySQL ANALYZE câu ghi → `unsupported`.
+- [x] So sánh 2 plan (PLAN-06); lưu/mở `.dbplan.json`. Lịch sử plan (phần còn lại của PLAN-07) chưa làm.
 
 ---
 
-## GĐ8 — Backup/Restore + lịch tự động
+## GĐ8 — Backup/Restore + lịch tự động *(gói H — chờ merge)*
 
-**Mục tiêu:** sao lưu/khôi phục thủ công và tự động, chạy nền qua tray.
+> Trên nhánh này `dbstudio-backup`, `dbstudio-cli`, scheduler/tray/background mới là khung hợp đồng. Gói H (container `.dbsbak`, mã hoá, engine logic dùng `generate_ddl` + export engine, tool native, scheduler, retention, CLI, tray, autostart, single-instance, thông báo OS, UI) đang hoàn thiện ở nhánh riêng. Mục này **sẽ cập nhật sau khi merge**.
 
-**Phạm vi:** crate `dbstudio-backup`; BACKUP-01 → BACKUP-14; BACKUP-15 (CLI, Could); đích local (BACKUP-09 Must), S3/SFTP chỉ khi được xác nhận (câu hỏi 2).
-
-**Ngoài phạm vi:** service/daemon độc lập ngoài app (chờ câu hỏi 3), backup incremental/PITR.
-
-**Tiêu chí hoàn thành:**
+Tiêu chí (giữ nguyên, chưa đánh giá):
 - [ ] Backup tích hợp rồi restore vào database trống: số bảng, số dòng, checksum khớp — cho từng DB đã hỗ trợ.
-- [ ] Tool native: khi có `pg_dump`/`mysqldump`/`mongodump` trong PATH, backup + restore qua tool thành công; khi không có, UI báo và gợi ý engine tích hợp.
-- [ ] Nén zstd/gzip và mã hoá: file mã hoá không restore được khi sai passphrase; checksum phát hiện file bị sửa.
-- [ ] Lịch `*/5 * * * *` chạy đúng giờ khi cửa sổ đóng (app ở tray); chính sách "giữ 3 bản" xoá bản cũ đúng.
-- [ ] Tắt app qua một lần chạy, mở lại → chạy bù đúng một lần (nếu cấu hình chạy bù).
+- [ ] Tool native có trong PATH: backup + restore qua tool thành công; không có: UI báo và gợi ý engine tích hợp.
+- [ ] Nén zstd/gzip và mã hoá: sai passphrase không restore được; checksum phát hiện file bị sửa.
+- [ ] Lịch `*/5 * * * *` chạy đúng giờ khi cửa sổ đóng (app ở tray); "giữ 3 bản" xoá bản cũ đúng.
+- [ ] Tắt app qua một lần chạy, mở lại → chạy bù đúng một lần (nếu cấu hình).
 - [ ] Thông báo OS khi thành công/thất bại; nhật ký ghi đủ thời lượng, kích thước, lỗi.
 - [ ] Autostart bật/tắt được trên cả 3 OS.
-- [ ] Restore vào kết nối prod bắt buộc xác nhận bổ sung.
-
-**Phụ thuộc:** GĐ5 (sinh DDL + stream dữ liệu dùng chung).
+- [ ] Restore vào kết nối production bắt buộc xác nhận bổ sung.
 
 ---
 
-## GĐ9 — Đóng gói & phát hành
+## Tồn đọng (sau GĐ2–GĐ8)
 
-**Mục tiêu:** bản cài đặt ký số, tự cập nhật, phát hành qua CI.
+**Kiểm chứng (không cần code mới):**
+1. Chạy integration test Oracle với DB thật (`docker/oracle-it/run-tests.sh`, cần ~3 GB RAM cho Docker) và sửa lỗi phát sinh.
+2. Kiểm tay trong cửa sổ Tauri thật trên macOS với DB Docker: editor/lease/transaction, sửa dữ liệu, document/key view, plan, ERD (xuất PNG/PDF), export/import, SSH (hộp thoại host key); sau khi merge gói H: tray, close-to-tray, autostart, thông báo OS.
+3. Đẩy repo lên remote, cho CI (3 OS + `integration`) chạy xanh.
+4. Build và chạy trên Windows, Linux; benchmark lưới 1 triệu dòng trên WKWebView, WebView2, WebKitGTK → chốt TanStack Virtual hay canvas grid.
+5. MSSQL: NTLM với domain thật; quyết định Azure AD (requirements §6 câu 6).
 
-**Phạm vi:** NFR-PLAT-01, NFR-PLAT-02, APP-06; installer Windows (MSI/NSIS), macOS (DMG, universal hoặc 2 bản), Linux (deb, rpm, AppImage); ký Windows, ký + notarize macOS; CI release tạo artifact + manifest updater; chốt tên/identifier sản phẩm (câu hỏi 7).
+**Code còn thiếu / cần sửa:**
+- MySQL `ANSI_QUOTES` chưa được lexer mô hình hoá (`"x"` luôn là chuỗi).
+- Import CSV chưa nhận `null_text` tuỳ chỉnh (chỉ ô rỗng không ngoặc là NULL), nên CSV export với `null_text` khác rỗng không khứ hồi được.
+- Export Mongo ra CSV/XLSX chưa làm phẳng document (`flatten_fields` có trong spec nhưng engine chưa đọc).
+- Export nguồn `Keys` (Redis → JSON) chưa hiện thực (engine trả `Unsupported("export_keys")`), wizard chưa có nguồn Redis.
+- `KeyChange` cho list (`ListSet`, `ListRemoveAt`) chưa mang giá trị kỳ vọng: phần tử ở index đã bị client khác đổi vẫn bị ghi/xoá.
+- `dbstudio-core::Error` chưa có biến thể `Invalid` cho đầu vào không hợp lệ (đang dùng `Other`/`Query`).
+- Lưu danh sách thư mục export gần đây để dọn file tạm mồ côi (`.dbstudio-tmp-*`) khi khởi động app; hiện chỉ dọn khi có export kế tiếp vào cùng thư mục.
+- Xem trước import khi kết nối MariaDB chưa mở session: dialect suy từ `DbKind` nên coi là MySQL (`mariadb: false`).
+- Lease keepalive: lease nhàn rỗi bị đóng sau `idle_ttl` (8 giờ) và kết nối có thể bị server/NAT cắt trước đó; chưa có ping định kỳ.
+- `DocumentTable` (bảng phẳng của document view) chỉ ảo hoá hàng, chưa ảo hoá cột (tối đa 200 cột phẳng).
+- Trang Cài đặt: thêm font editor, `editorMaxRows`, `queryTimeoutMs`, `historyEnabled`, hành vi đóng cửa sổ (APP-05).
+- Tự kết nối lại khi mất kết nối (CONN-12); nhãn môi trường tuỳ chỉnh (CONN-03).
+- Menu ngữ cảnh: sinh SELECT/INSERT mẫu, mở DDL trong editor (BROWSE-05/07); ERD: tuỳ chọn hiện comment (ERD-07), đánh dấu quan hệ suy luận của Mongo (ERD-08); lịch sử plan (PLAN-07).
+- Import vào MongoDB/Redis; `Skip` khi import vào Oracle.
+- Oracle: chưa có UI chọn thư mục Instant Client (setting `oracle_client` chỉ đọc lúc khởi động; hiện dùng `DBSTUDIO_ORACLE_CLIENT_LIB_DIR`).
+- Command palette (APP-08, Could).
 
-**Ngoài phạm vi:** cửa hàng ứng dụng (Microsoft Store, Mac App Store, Flathub) — trừ khi được yêu cầu.
+**Giữ mở, chưa gắn giai đoạn:** phân trang keyset thay OFFSET; hạn chế TLS của `mysql_async` và R6 (MySQL/MongoDB/Redis qua SSH với `verify-full`); chế độ TLS mặc định (requirements §6 câu 8); Redis Cluster/Sentinel; phương án Oracle thuần Rust (`oracle-rs`).
 
-**Tiêu chí hoàn thành:**
+---
+
+## GĐ9+ — Tiếp theo
+
+### GĐ9 — Đóng gói & phát hành
+
+**Phạm vi:** NFR-PLAT-01, NFR-PLAT-02, APP-06; installer Windows (MSI/NSIS), macOS (DMG), Linux (deb, rpm, AppImage); ký Windows, ký + notarize macOS; CI release + manifest updater; chốt tên/identifier (requirements §6 câu 7); hướng dẫn cài Oracle Instant Client.
+
 - [ ] Push tag `vX.Y.Z` → CI tạo đủ installer cho 3 OS và bản phát hành nháp.
-- [ ] Cài trên máy sạch Windows 10/11, macOS 12+ (Intel + Apple Silicon), Ubuntu 22.04 & Fedora: không cảnh báo chưa ký (Windows SmartScreen có thể cần thời gian tích luỹ uy tín), app chạy được.
-- [ ] Bản cũ tự phát hiện và cập nhật lên bản mới; chữ ký cập nhật sai bị từ chối.
-- [ ] Dữ liệu cục bộ và mật khẩu keychain còn nguyên sau khi cập nhật.
-- [ ] Khởi động < 2 giây (NFR-PERF-01) đo trên bản release.
+- [ ] Cài trên máy sạch Windows 10/11, macOS 12+ (Intel + Apple Silicon), Ubuntu 22.04 & Fedora: app chạy được, không cảnh báo chưa ký.
+- [ ] Bản cũ tự cập nhật lên bản mới; chữ ký cập nhật sai bị từ chối.
+- [ ] Dữ liệu cục bộ và keychain còn nguyên sau khi cập nhật.
+- [ ] Khởi động < 2 giây (NFR-PERF-01) trên bản release.
 
-**Phụ thuộc:** GĐ3, GĐ4, GĐ6, GĐ7, GĐ8 (có thể phát hành sớm bản beta sau GĐ2 nếu cần).
+### GĐ10+ — Cassandra, ScyllaDB, ClickHouse, NewSQL
 
----
-
-## GĐ10+ — Cassandra, ScyllaDB, ClickHouse, NewSQL
-
-**Mục tiêu:** mở rộng hệ quản trị bằng cách thêm crate driver, không sửa kiến trúc.
-
-**Phạm vi:**
+Mở rộng theo yêu cầu gốc bằng cách thêm crate driver, không sửa kiến trúc:
 - `drivers/cassandra` (crate `scylla`, dùng chung cho Cassandra 4+ và ScyllaDB 5+): keyspace/table/MV, CQL editor, paging, tracing cho PLAN.
 - `drivers/clickhouse` (HTTP): database/table/engine, SQL, `EXPLAIN PLAN/PIPELINE`.
-- NewSQL qua driver sẵn có: CockroachDB, YugabyteDB (driver PostgreSQL), TiDB (driver MySQL) — nhận diện qua `server_info`, chỉnh `Capabilities` và truy vấn metadata khác biệt.
-- Áp dụng các nhóm CONN, BROWSE, DATA, QUERY, PLAN, ERD, EXPORT, BACKUP theo ma trận requirements §4.
+- NewSQL qua driver sẵn có: CockroachDB, YugabyteDB (driver PostgreSQL), TiDB (driver MySQL) — nhận diện qua `server_info`, chỉnh `Capabilities` và truy vấn metadata.
+- Mỗi DB mới cần: `ScriptDialect`/classifier trong `dbstudio-sql` (CQL), plan parser trong `dbstudio-plan` nếu có, IT bằng Docker; áp các nhóm CONN, BROWSE, DATA, QUERY, PLAN, ERD, EXPORT, BACKUP theo ma trận requirements §4.
 
-**Tiêu chí hoàn thành (mỗi DB):**
-- [ ] Driver mới chỉ thêm crate + đăng ký trong registry + view chuyên biệt nếu cần; không sửa trait core (nếu phải sửa → ghi lý do trong `docs/architecture.md`).
-- [ ] Đạt các tiêu chí kết nối/duyệt/xem/chạy query tương đương GĐ1–GĐ2 trong phạm vi ma trận tính năng.
-- [ ] Integration test bằng Docker trong CI.
-
-**Phụ thuộc:** GĐ9 (hoặc GĐ2 nếu cần sớm).
+Tiêu chí (mỗi DB): driver mới chỉ thêm crate + đăng ký + view chuyên biệt nếu cần (sửa trait core thì ghi lý do trong `architecture.md`); đạt tiêu chí tương đương GĐ1–GĐ2 trong phạm vi ma trận; IT bằng Docker trong CI.
 
 ---
 
 ## 3. Bảng truy vết yêu cầu → giai đoạn
 
-| Nhóm | GĐ chính | Ghi chú |
+| Nhóm | GĐ | Trạng thái (chi tiết: requirements, cột Trạng thái) |
 |---|---|---|
-| CONN-01..05, 07..09 | GĐ1 | Mở rộng cho DB mới ở GĐ3, GĐ4. Phần kéo thả của CONN-02 đề xuất chuyển GĐ2 |
-| CONN-06 | GĐ3 | |
-| CONN-10..12 | GĐ2 | CONN-10: GĐ1 đã áp read-only ở mức session của driver; phân loại câu lệnh ở GĐ2 |
-| CONN-13 *(Đề xuất)* | GĐ4 | Could |
-| BROWSE-01, 02, 05..08 | GĐ1 | Đề xuất chuyển GĐ2: BROWSE-06 phần tìm phía server; BROWSE-05/07 phần cần editor (mở DDL trong editor, sinh SELECT/INSERT mẫu) |
-| BROWSE-03, 04 | GĐ4 | |
-| DATA-01, 02, 07 (xem), 09, 12 | GĐ1 | Đề xuất chuyển GĐ2: DATA-07 tải blob ra file, DATA-12 (Could) |
-| DATA-03..06, 07 (sửa), 08 | GĐ2 | |
-| DATA-10, 11 | GĐ4 | |
-| QUERY-01..13, 16 | GĐ2 | Dialect MSSQL/Oracle ở GĐ3 |
-| QUERY-14, 15 | GĐ4 | |
-| EXPORT-01..10 | GĐ5 | |
-| IMPORT-01..03 *(Đề xuất)* | GĐ5 | Chờ xác nhận |
-| ERD-01..07 | GĐ6 | ERD-08 cần GĐ4 |
-| PLAN-01..07 | GĐ7 | ClickHouse/Cassandra ở GĐ10+ |
-| BACKUP-01..15 | GĐ8 | |
-| APP-01, 02, 03, 05 (một phần) | GĐ0 | APP-05 bổ sung dần theo giai đoạn |
-| APP-07 | GĐ1 | GĐ0 mới log ra console. GĐ1 có log file xoay vòng + command `log_dir`; nút "mở thư mục log" và chọn mức log trong UI đề xuất chuyển GĐ2 (cùng APP-05) |
-| APP-04, 08 | GĐ2 | |
-| APP-09 | GĐ5 | Dùng lại ở GĐ8 |
-| APP-06 | GĐ9 | |
-| NFR-EXT-01, NFR-SEC-04, NFR-QUAL-02, 03 | GĐ0 | Duy trì suốt dự án |
-| NFR-PERF-02, 03, NFR-EXT-02, NFR-REL-02, NFR-SEC-01, 02 | GĐ1 | NFR-SEC-02 (SSH) hoàn tất ở GĐ3. NFR-PERF-03: giới hạn cấu hình được đề xuất chuyển GĐ2, benchmark 3 webview chậm nhất ở GĐ9. NFR-EXT-02 tiếp tục áp dụng cho UI mới |
-| NFR-PERF-04, NFR-SEC-03, NFR-REL-01 | GĐ2 | |
-| NFR-SEC-06 | GĐ8 | Mã hoá backup |
-| NFR-PLAT-01, 02, NFR-PERF-01 | GĐ9 | Kiểm thử liên tục từ GĐ0 qua CI |
-| NFR-SEC-05, NFR-QUAL-01 | Mọi GĐ | |
+| CONN-01..05, 07..09 | GĐ1 (+GĐ3, GĐ4 cho DB mới) | Xong; CONN-03 thiếu nhãn tuỳ chỉnh |
+| CONN-06 | GĐ3 | Xong (giới hạn R6) |
+| CONN-10..12 | GĐ2 | CONN-10/11 xong; CONN-12 một phần (không tự kết nối lại) |
+| CONN-13 | GĐ4 | Xong |
+| BROWSE-01..08 | GĐ1, GĐ4 | Xong trừ phần editor của BROWSE-05/07 |
+| DATA-01..12 | GĐ1, GĐ2, GĐ4 | Xong |
+| QUERY-01..16 | GĐ2–GĐ4 | Xong; QUERY-12 thiếu ô cài đặt |
+| PLAN-01..07 | GĐ7 | Xong trừ lịch sử plan |
+| ERD-01..08 | GĐ6 | Xong; ERD-07/08 một phần |
+| EXPORT-01..10, IMPORT-01..03 | GĐ5 | Xong cho SQL DB; Mongo flatten, Redis export, import NoSQL chưa |
+| BACKUP-01..15 | GĐ8 | Chờ gói H |
+| APP-01..05, 07, 09 | GĐ0–GĐ5 | Xong; APP-05 một phần |
+| APP-06 | GĐ9 | Chưa |
+| APP-08 | — | Chưa (Could) |
+| NFR-PLAT-01/02, NFR-PERF-01 | GĐ9 | Chưa kiểm |
+| NFR khác | Mọi GĐ | Xem requirements §3 |

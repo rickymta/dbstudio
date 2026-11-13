@@ -1,42 +1,45 @@
 # DBStudio — Kiến trúc & công nghệ
 
-> Trạng thái: v0.2 (cập nhật sau khi hiện thực Giai đoạn 1). Các mục 3–5, 8–10, 13–15 mô tả hiện thực thật; mục nào còn là dự kiến thì ghi rõ. Mã yêu cầu tham chiếu [requirements.md](requirements.md); thứ tự xây dựng xem [roadmap.md](roadmap.md).
+> Trạng thái: v0.3 (cập nhật sau khi hiện thực GĐ2–GĐ8 theo [design/phase2-8.md](design/phase2-8.md)). Mô tả hiện thực thật trên nhánh `feature/quandh/phase2_complete`; chỗ nào còn là thiết kế thì ghi rõ. Riêng backup/restore (mục 12) đang được hoàn thiện ở nhánh riêng — mục đó **sẽ cập nhật sau khi merge gói H**. Mã yêu cầu tham chiếu [requirements.md](requirements.md); thứ tự xây dựng xem [roadmap.md](roadmap.md). Chi tiết kiểu/serde của hợp đồng GĐ2–GĐ8 nằm ở tài liệu thiết kế, tài liệu này chỉ tóm tắt và ghi những chỗ hiện thực khác thiết kế.
 
 ## 1. Nguyên tắc
 
-1. **Core không phụ thuộc Tauri.** `dbstudio-core` và các crate driver/export/plan/backup chỉ phụ thuộc Rust thuần + tokio, để tái dùng cho CLI headless (BACKUP-15) và test không cần cửa sổ.
-2. **`src-tauri` mỏng.** Chỉ chứa command IPC, quản lý state, cửa sổ, tray, lịch chạy. Không có logic SQL/dialect trong `src-tauri`.
-3. **Capability-driven UI.** Mỗi driver khai báo `Capabilities`; frontend bật/tắt tính năng theo đó, không `if (kind === 'redis')` rải rác (NFR-EXT-02).
-4. **Secret không bao giờ rời Rust.** Mật khẩu/passphrase đọc từ keychain ngay trước khi kết nối, không trả về frontend, không vào log, không vào SQLite (NFR-SEC-01).
-5. **An toàn được thực thi ở backend.** Read-only, xác nhận lệnh phá huỷ, giới hạn dòng được kiểm tra ở Rust; UI chỉ hiển thị (NFR-SEC-03).
-6. **Stream, không gom.** Kết quả query, export, backup đi theo lô; không nạp toàn bộ vào RAM (NFR-PERF-02).
-7. **Mọi thao tác dài huỷ được** qua id tác vụ (query id / job id).
+1. **Core không phụ thuộc Tauri.** `dbstudio-core` và các crate `sql`/`plan`/`export`/`backup`/`ssh`/`store`/driver chỉ phụ thuộc Rust thuần + tokio, để tái dùng cho CLI headless (BACKUP-15) và test không cần cửa sổ.
+2. **`src-tauri` mỏng.** Command IPC, state, guard, lease, job, cửa sổ, tray, lịch chạy. Không có logic SQL/dialect trong `src-tauri` (guard gọi `dbstudio-sql`).
+3. **Capability-driven UI.** Mỗi driver khai báo `Capabilities`; frontend bật/tắt tính năng theo đó (NFR-EXT-02).
+4. **Secret không bao giờ rời Rust.** Mật khẩu/passphrase đọc từ keychain ngay trước khi kết nối, không trả về frontend, không vào log, không vào SQLite (NFR-SEC-01). URI dán vào (CONN-13) được parse ở Rust, mật khẩu trong URI bị bỏ.
+5. **An toàn được thực thi ở backend.** Read-only, xác nhận lệnh phá huỷ, giới hạn dòng, quyền đọc/ghi file được kiểm ở Rust; UI chỉ hiển thị (NFR-SEC-03).
+6. **Stream, không gom.** Kết quả query, export, import đi theo lô (NFR-PERF-02).
+7. **Mọi thao tác dài huỷ được** qua `query_id` (query, explain, đọc bảng) hoặc `job_id` (export, import, xoá khoá theo pattern, backup).
 
 ## 2. Sơ đồ tổng quan
 
 ```mermaid
 flowchart TB
     subgraph FE["Frontend — React + TypeScript (webview)"]
-        UI["Views: Sidebar, Editor, Grid, ERD, Plan, Backup"]
+        UI["Views: Sidebar/cây, Editor/Console, Grid, Document, Key, Plan, ERD, Export/Import, Jobs, Backup"]
         ST["Zustand stores + TanStack Query"]
-        IPC_TS["ipc/ — wrapper có kiểu cho invoke & Channel"]
+        IPC_TS["lib/ipc — wrapper có kiểu cho invoke, Channel, event"]
         UI --> ST --> IPC_TS
     end
 
     subgraph TAURI["src-tauri — app Tauri 2 (mỏng)"]
         CMD["commands/*"]
-        STATE["AppState: DriverRegistry, SessionManager, JobManager"]
-        TRAY["Tray, cửa sổ, scheduler backup"]
-        CMD --> STATE
-        TRAY --> STATE
+        GUARD["guard.rs + ConfirmTokens"]
+        STATE["AppState: DriverRegistry, SessionManager, LeaseManager, JobManager, PathGrants"]
+        BG["tray, scheduler, background (gói H)"]
+        CMD --> GUARD --> STATE
+        BG --> STATE
     end
 
     subgraph CORE["Crates Rust (không phụ thuộc Tauri)"]
-        C["dbstudio-core: trait Driver/Session, Value, ResultSet, Capabilities"]
-        EXP["dbstudio-export"]
+        C["dbstudio-core: Driver/Session/Lease, Value, lease_kit, fallback"]
+        SQL["dbstudio-sql"]
         PLAN["dbstudio-plan"]
+        EXP["dbstudio-export"]
         BK["dbstudio-backup"]
-        STORE["dbstudio-store (SQLite)"]
+        SSH["dbstudio-ssh"]
+        STORE["dbstudio-store (SQLite + keychain)"]
         CLI["dbstudio-cli"]
     end
 
@@ -47,7 +50,6 @@ flowchart TB
         OR["oracle"]
         MG["mongodb"]
         RD["redis"]
-        MORE["cassandra / clickhouse ..."]
     end
 
     KC[("OS keychain")]
@@ -55,260 +57,311 @@ flowchart TB
     DBS[("Database servers")]
 
     IPC_TS <-->|"invoke / Channel / events"| CMD
-    STATE --> C
-    STATE --> EXP & PLAN & BK & STORE
+    GUARD --> SQL
+    STATE --> C & PLAN & EXP & BK & STORE & SSH
     CLI --> C & BK & STORE
-    EXP & PLAN & BK --> C
-    C --> PG & MY & MS & OR & MG & RD & MORE
-    PG & MY & MS & OR & MG & RD & MORE -->|"TLS / SSH tunnel"| DBS
-    STATE --> KC
-    STORE --> SQLITE
+    EXP & BK --> C
+    BK --> EXP
+    C --> PG & MY & MS & OR & MG & RD
+    SSH -->|"tunnel 127.0.0.1"| DBS
+    PG & MY & MS & OR & MG & RD -->|"TLS"| DBS
+    STORE --> SQLITE & KC
 ```
 
 ## 3. Cấu trúc repository
 
-Cấu trúc thực tế sau GĐ1 (mục đánh dấu *dự kiến* chưa tồn tại):
-
 ```
 dbstudio/
-├── Cargo.toml                 # workspace: src-tauri, crates/dbstudio-*, crates/drivers/*
-├── package.json, pnpm-lock.yaml, vite.config.ts, tsconfig.json
+├── Cargo.toml                 # workspace; [patch.crates-io] tiberius = vendor/tiberius-patch
+├── package.json, vite.config.ts, tsconfig*.json, .prettierrc
 ├── src/                       # frontend React
-│   ├── app/                   # App, StatusBar, providers, tabRegistry (không dùng router)
+│   ├── app/                   # App, StatusBar (+ slot jobs), tabRegistry
 │   ├── features/
-│   │   ├── connections/       # thanh bên kết nối, dialog kết nối/nhóm/mật khẩu, cảnh báo TLS
-│   │   ├── explorer/          # cây đối tượng ảo hoá
-│   │   ├── data/              # tab bảng: lưới, bộ lọc, trình xem ô, tab Cấu trúc, DDL
-│   │   ├── tabs/, welcome/
-│   │   └── (dự kiến) editor, erd, plan, export, backup, settings
-│   ├── components/ui/         # UI dùng chung
-│   ├── lib/                   # ipc.ts (wrapper invoke/Channel), types.ts (kiểu viết tay khớp Rust),
-│   │                          # objectPath.ts, i18n.ts, dialog.ts, mock/ (IPC giả trong bộ nhớ khi chạy ngoài Tauri)
-│   ├── stores/                # Zustand: sessions, tabs, theme
-│   ├── locales/{vi,en}/       # common, connections, explorer, data (.json); test quét khoá
-│   └── test/                  # setup Vitest
-├── src-tauri/                 # app Tauri (crate binary)
-│   ├── src/{main.rs, lib.rs, state.rs, session.rs (SessionManager), sink.rs (EventSink),
-│   │        logging.rs, commands/{app,connections,sessions,browse}.rs, tests.rs, it.rs}
-│   ├── capabilities/default.json   # core:default + dialog open/save
-│   └── tauri.conf.json
+│   │   ├── connections/       # sidebar (kéo thả), dialog kết nối, SshSection, HostKeyDialog, UriPaste
+│   │   ├── explorer/          # cây ảo hoá, cây phân trang (Redis), tìm phía server, menu ngữ cảnh
+│   │   ├── data/              # lưới, bộ lọc, trình xem ô, sửa dữ liệu (pending changes, preview), copy định dạng
+│   │   ├── editor/            # CM6, nhiều tab, kết quả nhiều tab, TxBar, params, autocomplete, lịch sử, saved, console Redis/Mongo
+│   │   ├── safety/            # ConfirmDestructiveDialog, useGuardedCall
+│   │   ├── document/          # MongoDB: bảng phẳng / tree / EJSON, sửa document
+│   │   ├── keyvalue/          # Redis: viewer 6 kiểu + JSON, TTL, xoá theo pattern
+│   │   ├── plan/, erd/        # sơ đồ xyflow + elk (worker), xuất SVG/PNG(/PDF cho ERD)
+│   │   ├── export/, jobs/     # wizard export/import, preset, trung tâm job
+│   │   ├── backup/            # UI backup (khung; hoàn thiện ở gói H)
+│   │   └── settings/, tabs/, welcome/
+│   ├── lib/types/, lib/ipc/   # kiểu viết tay khớp Rust + wrapper invoke (types.ts, ipc.ts re-export)
+│   ├── lib/mock/              # IPC giả khi chạy ngoài Tauri (catalog theo từng DB)
+│   └── stores/, locales/{vi,en}/
+├── src-tauri/src/
+│   ├── lib.rs, state.rs, session.rs (SessionManager + tunnel), lease.rs (LeaseManager),
+│   ├── guard.rs, history.rs, jobs.rs (JobManager), grants.rs (PathGrants), events.rs, host.rs,
+│   ├── redact.rs, logging.rs, bridge.rs (dev), scheduler.rs/tray.rs/background.rs (gói H)
+│   └── commands/{app,connections,sessions,browse,editor,history,changes,plan,erd,files,
+│                 export,jobs,backup,background,keyvalue,ssh,uri}.rs
 ├── crates/
-│   ├── dbstudio-core/         # GĐ0, mở rộng ở GĐ1
-│   ├── dbstudio-store/        # GĐ1: SQLite + keychain + import/export
-│   ├── drivers/{postgres,mysql}/   # GĐ1 (crate dbstudio-driver-postgres/-mysql); mssql, oracle (GĐ3); mongodb, redis (GĐ4); ...
-│   └── (dự kiến) dbstudio-export (GĐ5), dbstudio-plan (GĐ7), dbstudio-backup (GĐ8), dbstudio-cli (GĐ8+)
-├── docker/                    # compose.test.yml + gen-certs.sh (DB cho integration test)
-├── .github/workflows/ci.yml
+│   ├── dbstudio-core, dbstudio-sql, dbstudio-plan, dbstudio-export, dbstudio-backup,
+│   ├── dbstudio-cli, dbstudio-ssh, dbstudio-store
+│   └── drivers/{postgres,mysql,mssql,oracle,mongodb,redis}
+├── vendor/tiberius-patch/     # bản vá tiberius 0.13.0 (DBSTUDIO-PATCH.md)
+├── contract/fixtures/         # mẫu JSON dùng chung cho test hợp đồng Rust ↔ TS
+├── docker/                    # compose.test.yml, gen-certs.sh, gen-ssh-keys.sh, oracle-it/
 └── docs/
 ```
 
-Chưa có `tray.rs` (GĐ8). Driver bật/tắt qua cargo feature `postgres`, `mysql` của `src-tauri`.
+Driver bật/tắt qua cargo feature `postgres`, `mysql`, `mssql`, `oracle`, `mongodb`, `redis` của `src-tauri` (đều bật mặc định).
 
 ## 4. `dbstudio-core` — mô hình miền
 
-Các kiểu chính như đã hiện thực ở GĐ1 (nguồn sự thật: doc comment trong `crates/dbstudio-core/src/`). Mọi kiểu đi qua IPC serialize camelCase.
+Nguồn sự thật: doc comment trong `crates/dbstudio-core/src/`. Mọi kiểu đi qua IPC serialize camelCase; mẫu JSON ở `contract/fixtures` (test `crates/dbstudio-core/tests/contract.rs` ↔ `src/lib/types/contract.test.ts`).
 
-| Kiểu | Vai trò |
+| Kiểu / module | Vai trò |
 |---|---|
-| `DbKind` | Enum loại DB: `Postgres`, `MySql`, `SqlServer`, `Oracle`, `MongoDb`, `Redis`, `Cassandra`, `ScyllaDb`, `ClickHouse`, ... NewSQL dùng lại driver theo giao thức, phân biệt bằng `server_info`. |
-| `Capabilities` | Tập cờ bool: `sql`, `transactions`, `schemas`, `multiple_databases`, `explain`, `explain_analyze`, `foreign_keys`, `cancel_query`, `logical_backup`, `data_editing`, `stored_routines`, `triggers`, `views`, `sequences`. Thêm cờ khi giai đoạn sau cần (document/key-value view...). |
-| `DriverDescriptor` | `kind`, `Capabilities`, `DriverStatus` (`Available` / `Planned` kèm giai đoạn dự kiến). `DriverRegistry` trộn driver đã đăng ký với descriptor `Planned` để UI luôn liệt kê đủ 9 hệ. Schema form cấu hình theo driver và dialect editor chưa có (form hiện cấu hình ở frontend, `src/features/connections/kindConfig.ts`). |
-| `ConnectionConfig` | Không chứa secret: `id`, `name`, `kind`, `host`, `port`, `database`, `username`, `tls: TlsConfig { mode, ca_cert_path, client_cert_path, client_key_path }`, `connect_timeout_ms`, `read_only`, `environment`, `options: BTreeMap<String,String>`. Không có `secret_ref`: secret tra keychain theo `id` của kết nối (mục 9). `TlsMode`: `disable`/`prefer` (mặc định)/`require`/`verifyCa`/`verifyFull`. SSH chưa có (GĐ3). |
-| `Secret` | Bọc chuỗi bí mật; `Debug` in `***`, chỉ `Deserialize` (không `Serialize`) để nhận mật khẩu từ dialog nhưng không bao giờ gửi ngược ra frontend. Đi riêng khỏi config: `Driver::connect(&config, Option<&Secret>)`. |
-| `Driver` (trait) | `descriptor()`, `connect(config, secret) -> Box<dyn Session>`. |
-| `Session` (trait) | Một session đại diện cho **cả server**: driver tự quản lý kết nối bên trong (kể cả nhiều database), mọi method gọi đồng thời được. Bắt buộc: `ping`, `server_info`, `execute(req, sink)`, `list_children(path)`, `close`. Có mặc định trả `Unsupported`: `cancel(query_id)`, `object_ddl(path)`, `table_details(path)`, `fetch_table(req, sink)`, `count_table(req)`. Thiết kế `as_ddl()`/`as_explain()` trả `Option` ở bản nháp v0.1 **không dùng**; năng lực tuỳ chọn là method mặc định + cờ `Capabilities`. |
-| `ObjectPath` / `ObjectNode` | `ObjectPath { segments: [{ kind, name }] }`; `ObjectNode { path, kind, name, has_children, detail }`. Xem hợp đồng đường dẫn bên dưới. |
-| `Value` | Tagged `{ "t": tag, "v": payload }`: `null`, `bool`, `int`/`uInt` (số JSON khi trong ±(2^53−1), ngoài khoảng đó là **chuỗi**), `float` (`NaN`/`Infinity` dạng chuỗi), `decimal`/`text`/`date`/`time`/`dateTime`/`timestamp`/`uuid` (chuỗi), `bytes` (base64), `json` (**văn bản JSON gốc** do DB trả về), `array`, `document` (DATA-09). |
-| `ColumnMeta` / `QueryEvent` | `ColumnMeta { name, type_name, value_kind, nullable? }`. `QueryEvent` là sự kiện stream: `columns`, `rows`, `message`, `statementEnd { end: { outcome: rows/affected/done, elapsed_ms } }`. |
-| `QueryRequest` | `text`, `query_id`, `max_rows`, `timeout_ms`, `batch_size`, `database`. Chưa có tham số và chế độ transaction (GĐ2). |
-| `TableDataRequest` / `TableCountRequest` | Đọc bảng có cấu trúc: `table`, `filters: [ColumnFilter { column, op, values }]` (AND), `raw_where`, `sort: [SortKey]`, `offset`, `limit`, `batch_size`; `query_id` để huỷ (với count là tuỳ chọn). |
-| `TableDetails` | Cột, index, foreign key, thống kê ước tính (BROWSE-08). |
-| `Error` | `Connection`, `Authentication`, `Query { message, position }`, `Unsupported`, `Cancelled`, `Timeout`, `Tls`, `NotFound`, `Storage`, `Io`, `Other`. Chưa có `ReadOnlyViolation`/`Permission` (thêm ở GĐ2 khi có phân loại câu lệnh). |
+| `DbKind`, `Capabilities`, `DriverDescriptor` | `Capabilities` có thêm 15 cờ của GĐ2 (`leases`, `manual_transactions`, `query_params`, `explain_analyze_writes`, `document_store`, `key_value_store`, `ddl_generation`, `schema_model`, `schema_inference`, `table_stream`, `bulk_insert`, `native_backup`, `paged_tree`, `read_only_session`, `ssh_tunnel`). `DriverStatus::Unavailable { reason }` dùng cho Oracle thiếu Instant Client. |
+| `ConnectionConfig` | Thêm `ssh: Option<SshConfig>` và `tls.server_name` (SNI/tên kiểm chứng khi đi qua tunnel). |
+| `Value` | Như GĐ1, cộng `Document(Vec<(String, Value)>)` (giữ thứ tự khoá) và `Ext { type, text }` cho kiểu riêng (ObjectId, Int64 Mongo, `truncatedText` của LOB, `rowid`, `interval`...). |
+| `Error` | Thêm `ReadOnlyViolation`, `ConfirmationRequired`, `Busy`, `Permission`, `DriverUnavailable`, `SshHostKey`, `Integrity`, `ChangeFailed`. Lỗi đầu vào không hợp lệ hiện đi qua `Other`/`Query` (chưa có biến thể `Invalid`, xem roadmap "Tồn đọng"). |
+| `Session` (trait) | GĐ1 + method mặc định: `script_dialect`, `open_lease`, `list_children_page`, `search_objects`, `editability`, `preview_changes`, `apply_changes`, `explain`, `schema_model`, `generate_ddl`, `read_key`. `fallback.rs` cho driver cũ: phân trang cây, editability từ `table_details`, schema model qua `table_details`. |
+| `Lease` (trait) + `lease_kit` | Mục 5. |
+| `script.rs` | `ScriptDialect`, `ScriptAnalysis`, `StatementClass`, `DestructiveReason`, tham số, `ConfirmationRequest/Grant`, `ExecuteRequest/Result`. |
+| `edit.rs` | `Editability`, `ChangeSet` (mục 8). |
+| `keyvalue.rs` | `KeyReadRequest`, `KeyValuePage`, `KeyEntries` (Redis). |
+| `plan.rs` | `ExplainRequest`, `RawPlan`, `PlanFormat` (8 định dạng). |
+| `model.rs` | `SchemaModel`, `DdlItem`/`DdlSection`, `TableStreamRequest`, `BulkInsertRequest`. |
+| `job.rs` | `JobInfo`, `JobProgress`, `JobEvent`, `CancelToken`, `JobReporter`. |
+| `ssh.rs` | `SshConfig`, `SshAuth` (`password` / `privateKey` / `agent`). |
+| `metadata.rs` | `TableDetails`; `IndexDetail` có thêm `partial` (index có điều kiện). |
 
-Hợp đồng đã chốt ở GĐ1 (driver mới phải tuân theo):
+Hợp đồng đã chốt ở GĐ1 vẫn giữ nguyên: path phản ánh đúng cây kể cả đoạn `Folder` (driver chấp nhận có/không Folder); `Value::Json` là văn bản gốc; `fetch_table` luôn thêm khoá vào cuối `ORDER BY`; ngữ nghĩa `FilterOp`; `raw_where` là **một biểu thức**; `Error::Query.position` là char offset (Unicode scalar) trong toàn văn bản; `cancel` id lạ → `Ok(())`; lỗi sang frontend dạng `{ kind, message, ... }` không tiền tố.
 
-- **Đường dẫn phản ánh đúng cây, kể cả đoạn `Folder`.** Path của một nút = path cha (path đã truyền vào `list_children`) + đoạn của chính nút, vd. `[Database db, Folder tables, Table t, Folder columns, Column c]`. Tên đoạn Folder là khoá cố định (`folder::TABLES = "tables"`, ...) để UI dịch, không bao giờ bản địa hoá. Driver phải chấp nhận path **có hoặc không có** đoạn Folder ở mọi method. Frontend chỉ dùng lại `path` mà backend trả về, không tự dựng.
-- **`Value::Json` mang văn bản gốc**: thứ tự khoá và chữ số giữ nguyên; frontend parse bằng `lossless-json` để không mất độ chính xác số lớn.
-- **`fetch_table` luôn thêm khoá chính** (không có thì một unique `NOT NULL`) vào cuối `ORDER BY`, kể cả khi `sort` rỗng, để phân trang OFFSET xác định. Bảng/view không có khoá như vậy thì thứ tự giữa các trang không được đảm bảo.
-- **Ngữ nghĩa bộ lọc** (`FilterOp`): `contains`/`notContains`/`startsWith`/`endsWith` không phân biệt hoa thường, so trên dạng text của cột, `%`/`_` người dùng gõ là ký tự thường; phân biệt dấu và so sánh `=`/`<>`/thứ tự trên chuỗi theo collation của DB nên có thể khác nhau giữa các DB; `notContains` theo `NOT LIKE` (loại cả dòng NULL); `in` rỗng không khớp dòng nào.
-- **`raw_where`** là phần thân WHERE người dùng gõ, được tin cậy (không escape) nhưng phải là **một biểu thức duy nhất**; driver phải chặn việc chèn thêm câu lệnh (mục 5).
-- Lỗi `Query` từ `fetch_table`/`count_table` có `position: None` (SQL do app sinh). Với `execute`, `position` là offset ký tự (từ 0) trong **toàn bộ** `req.text`.
-- **`cancel`**: id lạ hoặc đã xong trả `Ok(())`. `count_table` huỷ được khi có `query_id`.
-- **`Error` sang frontend** dạng `{ kind, message }` (+ `position` khi có, + `capability` với `Unsupported`); `message` **không kèm tiền tố tiếng Anh** của `Display` ("connection error: ..."), UI tự dịch `kind`.
+## 5. Lease — kết nối riêng cho tab editor / console
 
-`ResultSink` nhận `on_columns`, `on_rows(batch)`, `on_message`, `on_statement_end`; trả `Err` để yêu cầu driver dừng. `src-tauri` hiện thực bằng `EventSink` (đẩy `QueryEvent` qua Tauri Channel); `CollectingSink`/`execute_collect` gom kết quả nhỏ cho test.
+Tab editor (và console Mongo/Redis) không mở session mới mà mượn một **lease**: một kết nối vật lý ngoài pool, cùng TLS/SSH/read-only của session (`Session::open_lease`). Session vẫn đại diện cả server + pool như GĐ1.
 
-## 5. Driver
+- `LeaseManager` (`src-tauri/src/lease.rs`): ánh xạ `lease_id` → lease, tối đa 32 lease/session; đóng session thì đóng mọi lease của nó trước; lease hỏng phát event `lease://state`.
+- Ngữ nghĩa: một lô câu lệnh mỗi lúc (gọi song song → `Error::Busy`); auto-commit hoặc manual (transaction mở lười trước câu đầu tiên); `cancel(query_id)` chỉ trúng câu đang chạy; kết quả treo (`pending_result`) cho `fetch_more`; `close()` = huỷ (chờ ≤ 5 s) → rollback (≤ 5 s) → đóng socket, quá hạn thì `forced`.
+- **`lease_kit`** (`crates/dbstudio-core/src/lease_kit.rs`): `ActorLease<B: LeaseBackend>` — một tokio task sở hữu kết nối, nhận lệnh qua `mpsc`, lo busy, khớp `query_id`, cache `LeaseState`, thứ tự close. Kết quả treo tự huỷ sau `pending_ttl` 10 phút (rủi ro R4); lease không nhận lệnh trong `idle_ttl` 8 giờ bị rollback + đóng; timeout → huỷ, quá `timeout_grace` thì `broken`. Backend còn có hook `refresh_context` (sau `USE`/`SET search_path`), `table_select` (export stream bảng ngay trên lease), `bulk_insert` (import trong transaction của lease) và `explain` (EXPLAIN trên lease, giữ transaction đang mở).
+- Driver dùng `lease_kit`: **PostgreSQL, MySQL/MariaDB**. **MSSQL, Oracle, MongoDB, Redis tự hiện thực `Lease`** (MSSQL cần huỷ bằng attention của bản vá tiberius; Oracle chạy API đồng bộ trên thread riêng; Mongo dựa `ClientSession`; Redis một `MultiplexedConnection` riêng, huỷ bằng `CLIENT KILL ID` làm lease `broken`).
+- Read-only ở lease: PG và MySQL **đặt lại read-only trước mỗi request ngoài transaction** (`SET SESSION default_transaction_read_only = on` / `SET SESSION TRANSACTION READ ONLY`), nên một `SET` lọt qua trước đó cũng không giữ hiệu lực sang lệnh sau.
+
+## 6. `dbstudio-sql` — phân tích & phân loại câu lệnh (lớp bảo vệ chính)
+
+Crate thuần Rust, không I/O, **không dùng `sqlparser`** (khác thiết kế): mọi phân tích chạy trên token của lexer riêng theo dialect, nên chuỗi/comment/định danh có ngoặc không đánh lừa được bộ phân loại. Module: `lexer`, `split` (+ `StreamSplitter` cho import file lớn), `params` (`find_params`, `bind` + `OffsetMap`), `classify` (`analyze`), `guard` (`Policy`, `Verdict`, `check_with_text`, `confirm_text_for`, `statement_databases`), `dialect` (quote/literal theo dialect), `ddl` (`create_table` cho import bảng mới), `mongo_shell`, `redis_cli`, `vocabulary` (gợi ý editor), `redact`.
+
+- **Tách câu**: PG giữ tương đương splitter GĐ1 (dollar-quote, `BEGIN ATOMIC`; có test vi sai); MySQL `;` + `DELIMITER`; **comment thực thi MySQL** `/*! ... */`, `/*!50000 ... */`, `/*M! ... */` được coi là code (để `/*!50000 DROP TABLE t */` không lọt); T-SQL: `split` trả một khoảng cho mỗi batch `GO [n]`, còn `analyze` chia câu **bên trong** batch theo `;` ngoài `BEGIN…END` **và theo từ khoá mở đầu câu** (T-SQL cho phép câu không có `;`), để guard xét từng câu; Oracle `;` cho SQL, khối PL/SQL kết thúc ở dòng `/`, lệnh SQL*Plus kết thúc ở cuối dòng; Mongo shell `;`/xuống dòng ngoài ngoặc; Redis mỗi dòng một lệnh.
+- **Phân loại**: `Read`/`Write`/`Ddl`/`Transaction`/`Session`/`Procedural`/`Explain{analyze,writes}`/`Admin`/`Empty`/`Unknown`; `destructive` theo bảng phá huỷ (requirements §1.1). Không hiểu → `Unknown` (guard coi là ghi). `Procedural`/`Unknown`, hoặc khi lexer báo lỗi, vẫn quét từ khoá `DROP`/`TRUNCATE` (cả trong chuỗi/dollar body) để đánh dấu phá huỷ.
+- **Redact**: trước khi ghi lịch sử, literal sau `PASSWORD`, `IDENTIFIED BY`, Redis `AUTH`/`CONFIG SET requirepass`/`ACL SETUSER`, Mongo `pwd:`/`db.auth(...)` bị thay bằng `'***'`.
+- Dialect MySQL lấy từ `sql_mode` (`NO_BACKSLASH_ESCAPES`). **`ANSI_QUOTES` chưa được mô hình hoá**: `"x"` luôn lex như chuỗi.
+
+## 7. Guard ở lớp command
+
+`src-tauri/src/guard.rs` (gọi `dbstudio_sql`) chạy cho `query_execute`, `lease_execute`, `plan_explain`, import script và các lệnh console:
+
+```mermaid
+flowchart LR
+    T["text + params"] --> B["1. bind<br/>(literal phía Rust)"]
+    B --> S{"MySQL: split khác nhau<br/>giữa 2 chế độ<br/>NO_BACKSLASH_ESCAPES?"}
+    S -- có --> X1["từ chối (Query)"]
+    S -- không --> A["2. analyze"]
+    A --> P["3. policy<br/>read_only, production,<br/>confirm_text"]
+    P --> R{"read-only?"}
+    R -- có --> D["read_only_defense<br/>(READ WRITE, set_config,<br/>*_read_only, SET sql_mode)"]
+    D --> C["4. check_with_text"]
+    R -- không --> C
+    C --> V{"5. verdict"}
+    V -- Allow --> F{"production và có câu<br/>Unknown/Procedural chứa<br/>DROP/TRUNCATE/ALTER/DELETE/<br/>UPDATE không WHERE?"}
+    F -- không --> RUN["ghi lịch sử (đã redact)<br/>→ gọi driver<br/>→ ánh xạ ngược vị trí lỗi"]
+    F -- có --> CF
+    V -- Deny --> X2["ReadOnlyViolation<br/>(position theo văn bản gốc)"]
+    V -- Confirm --> CF["ConfirmTokens: token hợp lệ?"]
+    CF -- có --> RUN
+    CF -- không --> X3["ConfirmationRequired<br/>{token, confirmText, statements}"]
+```
+
+- **`ConfirmTokens`**: token 32 hex, dùng một lần, hết hạn 120 s, gắn với `sha256(target ‖ payload)`; payload gồm ngữ cảnh (session/lease), chuỗi phải gõ, **các database mà câu phá huỷ thực sự tác động** (một `USE` trước đó trong script đổi đích) và văn bản đã bind. Gõ sai (phân biệt hoa thường), hết hạn, khác văn bản/đích → từ chối và token bị huỷ. Cùng kho token phục vụ `import_start` (ghi đè/script phá huỷ), `keys_delete_pattern`, `restore_start`, xác nhận ANALYZE câu ghi trên production.
+- `confirm_text`: database hiện hành của lease, hoặc `config.database`, hoặc `db<N>` (Redis).
+- `ensure_writable` cho `changes_preview`/`changes_apply` (driver tự sinh câu lệnh): kết nối read-only bị từ chối trước khi gọi driver (preview vẫn cho xem).
+
+### 7.1 Các lớp phòng thủ read-only (CONN-10)
+
+1. **Guard** (mọi DB): chỉ cho `Read`, `Explain{writes:false}`, `Transaction`, `Session`, `Empty`; cộng `read_only_defense` chặn câu tắt chế độ read-only.
+2. **Driver**: PG `default_transaction_read_only=on` lúc kết nối và đặt lại trước mỗi request của lease; MySQL `SET SESSION TRANSACTION READ ONLY` tương tự; đọc bảng luôn trong transaction READ ONLY (PG/MySQL/Oracle; MSSQL chỉ là một câu SELECT do app sinh). MSSQL không có tương đương T-SQL (chỉ guard + driver từ chối sửa dữ liệu). Oracle, MongoDB, Redis kiểm thêm ở driver: Oracle `read_only_violation` theo phân loại câu; Mongo chặn câu ghi trong `execute`/lease/`bulk_insert`; Redis tra cờ `write` qua `COMMAND INFO` (+ danh sách lệnh luôn coi là ghi như `CONFIG SET`). Cờ `read_only_session` chỉ bật cho PG và MySQL — UI ghi "read-only chỉ được chặn ở ứng dụng" với DB khác.
+3. **Đúng một câu** ở các đường không đi qua editor: `plan_explain` (EXPLAIN nhận đúng một câu, driver kiểm lại), export từ query (engine từ chối nếu không phải đúng một câu) và `raw_where` (một biểu thức: PG `prepare` qua extended protocol, MySQL lexer + `COM_STMT_PREPARE`, MSSQL lexer + `SET PARSEONLY ON`, Oracle lexer + `prepare`, Mongo một object filter).
+
+## 8. Sửa dữ liệu — `ChangeSet`
+
+`ChangeSet` là enum `Rows` (SQL), `Documents` (Mongo), `Keys` (Redis). `preview_changes` trả văn bản sẽ chạy (thứ tự: Delete → Update → Insert); `apply_changes`:
+
+- **Rows** (PG, MySQL, MSSQL, Oracle): một transaction trên kết nối pool; mỗi Update/Delete phải trúng **đúng 1 dòng**, khác → rollback, `ChangeFailed { index }` (NFR-REL-01). Cột identity/generated/computed bị từ chối trước. Bảng không có PK hoặc unique NOT NULL → `editable=false, reason=noUniqueKey`.
+- **Documents**: replica set → transaction; standalone → tuần tự, dừng ở lỗi đầu, `atomic=false`. Update theo diff (`$set`/`$unset` theo đường dẫn), khoá chỉ theo `_id` (không kiểm giá trị cũ, nên ghi đè được thay đổi đồng thời của người khác trên cùng trường).
+- **Keys**: `WATCH` + kiểm `TYPE`, rồi `MULTI/EXEC`; khoá bị đổi → `ChangeFailed`. Redis không rollback lỗi lúc chạy → `atomic=false`, UI ghi rõ. Thao tác list theo index chưa mang giá trị kỳ vọng (xem roadmap).
+
+## 9. Plan — `PlanTree`
+
+- Driver: `explain` của PG (`PostgresJson`), MySQL (`MySqlJson`, `MySqlJsonV2` 8.3+, `MySqlTree` cho ANALYZE), MariaDB (`MariaDbJson`), MSSQL (`MsSqlShowplanXml`), Oracle (`OraclePlanRows` + `DBMS_XPLAN` ở `extra`), Mongo (`MongoExplain`). Redis không có.
+- ANALYZE luôn bọc trong transaction rồi rollback (PG, MSSQL, Oracle); MySQL ANALYZE câu ghi → `Unsupported("explain_analyze_writes")`; Mongo `executionStats` không ghi. Khi tab có lease, `plan_explain` chạy EXPLAIN trên lease (PG/MySQL qua hook `explain` của `lease_kit`) nên thấy được bảng tạm/transaction của tab.
+- `dbstudio-plan`: parser thuần cho 8 định dạng → `PlanTree { root: PlanNode, totals, warnings, hot_path }`; `analyze` tính self cost/time, nhánh nóng, cảnh báo PLAN-04 (`FullScanLargeTable`, `Misestimate` ≥ 10×, `SpillToDisk`, `NestedLoopManyRows`). Fixture ở `crates/dbstudio-plan/tests/fixtures`.
+- Frontend: sơ đồ xyflow + elk (Web Worker), bảng cây thụt lề, raw, so sánh 2 plan, lưu/mở `.dbplan.json`, xuất SVG/PNG.
+
+## 10. Schema model, ERD và sinh DDL
+
+- `schema_model`: override bằng truy vấn catalog hàng loạt ở PG, MySQL, MSSQL, Oracle; Mongo suy luận bằng `$sample` (mặc định 1000 document/collection, quan hệ `xxxId → xxx(s)` đánh dấu `inferred`). Dùng cho ERD, autocomplete, data dictionary của export.
+- `generate_ddl` (PG, MySQL, MSSQL, Oracle; Mongo sinh `createCollection`/`createIndex` dạng shell) trả `Vec<DdlItem>` theo thứ tự tạo, chia **`PreData`** (schema → type → sequence → bảng có PK/unique/check nhưng **không FK** → view theo phụ thuộc → routine) và **`PostData`** (index → FK → trigger → reseed identity/sequence → comment). Export/backup chèn dữ liệu giữa hai phần nên FK vòng không còn là vấn đề.
+- ERD: layout lưu trong `erd_layouts` (kiểm phiên bản để phát hiện ghi đè), so snapshot để đánh dấu bảng/cột đã đổi; xuất SVG (dựng từ dữ liệu, không qua foreignObject), PNG, PDF (`jspdf` + `svg2pdf.js`) qua `file_save_bytes`.
+
+## 11. Job nền, file và export/import
+
+- **`JobManager`** (`src-tauri/src/jobs.rs`): job chỉ trong bộ nhớ (giữ 100 job xong gần nhất), tối đa **3 job chạy song song**, còn lại `queued` (huỷ được khi đang chờ); tiến độ phát qua event `job://progress` (≤ 4 lần/s/job). `job_cancel` → `CancelToken` + huỷ truy vấn đang chạy; engine xoá file tạm.
+- **`PathGrants`** (`src-tauri/src/grants.rs`): chỉ đường dẫn đi ra từ dialog native (`file_pick_*`, `sql_file_*`, `plan_file_*`) mới được backend đọc/ghi (dạng canonical, mục đích read/write/dir, hết hạn 1 giờ). `export_start`, `import_*`, `backup_*`, `restore_start` từ chối path chưa cấp — webview bị chiếm quyền không ghi được file tuỳ ý.
+- **Export engine** (`dbstudio-export`): mở **một lease** cho cả export, `begin(read_only, RepeatableRead)` → một snapshot nhất quán cho nhiều bảng; stream từng bảng qua `Lease::stream_table` (PG/MySQL qua `table_select`, MSSQL/Oracle/Mongo tự hiện thực); driver không có lease → session + cảnh báo "không có snapshot". Schema lấy từ `generate_ddl` (PreData/PostData) và `schema_model`. Writer SQL (INSERT gộp theo dialect nguồn), CSV (zip khi nhiều bảng, BOM, `null_text`), JSON (array/NDJSON + `schema.json`), XLSX (bộ nhớ hằng, tách sheet ở 1.048.575 dòng, sheet data dictionary). Ghi vào `.<tên>.dbstudio-tmp-<id>` rồi đổi tên; huỷ/lỗi → xoá; file tạm mồ côi (> 1 giờ) trong thư mục đích được dọn khi export kế tiếp vào thư mục đó.
+- **Import**: CSV/XLSX/JSON (mapping cột, transform, xem trước, bảng mới bằng `dbstudio_sql::ddl::create_table`, `OnConflict` Error/Skip/Update, `SingleTransaction` hoặc `Batches`, lô lỗi → chạy lại từng dòng để báo `RowError{line}`) và SQL script (`StreamSplitter`, mỗi câu qua guard; production: quét trước cả file, có câu phá huỷ → `ConfirmationRequired` trước khi tạo job). Ghi qua `Lease::bulk_insert` trong transaction của lease: PG `COPY ... FROM STDIN` (khi `on_conflict=Error`, ngược lại `INSERT ... ON CONFLICT`), MySQL `INSERT [IGNORE] … [ON DUPLICATE KEY UPDATE]` nhiều dòng, MSSQL `INSERT ... VALUES` ≤ 1000 dòng / `INSERT ... WHERE NOT EXISTS` / `MERGE`, Oracle array DML (`Skip` không hỗ trợ), Mongo `insertMany`/`bulkWrite`. Đích Mongo/Redis chưa nhận import.
+- Export nguồn `Keys` (Redis) và làm phẳng document Mongo cho CSV/XLSX (`flatten_fields`) **chưa hiện thực**.
+
+## 12. Backup/restore, lịch tự động, tray, CLI
+
+> Trạng thái trên nhánh này: `dbstudio-backup`, `dbstudio-cli`, `src-tauri/src/{scheduler,tray,background}.rs` và các command `backup_*`/`restore_start` vẫn là **khung hợp đồng** (trả `Unsupported` hoặc không làm gì; `schedule_preview`, `backup_tools_detect`/`backup_tool_set_path` có hiện thực tối thiểu). Gói H đang hoàn thiện ở nhánh riêng; nội dung dưới đây là thiết kế đã chốt, **sẽ cập nhật sau khi merge**.
+
+- Container `.dbsbak` v1: `"DBSBAK1\0"` + header JSON (rõ) + payload `encrypt?(compress(tar(preamble.json, schema/pre.sql, data/…, schema/post.sql, manifest.json)))`. Nén gzip/zstd; mã hoá AES-256-GCM theo khối 1 MiB, khoá Argon2id từ passphrase (keychain theo job); manifest chứa SHA-256 từng entry (BACKUP-14). Sai passphrase hay file bị sửa → `Error::Integrity`.
+- Engine logic dùng lại `generate_ddl` (PreData/PostData) + export engine (writer SQL, stream qua lease); Mongo → EJSON NDJSON + index, Redis → NDJSON theo kiểu. Tool native (`pg_dump`, `mysqldump`, `mongodump`, `expdp`, `redis-cli --rdb`, MSSQL `BACKUP DATABASE`) dò theo cấu hình → `PATH` → thư mục biết trước; secret không bao giờ trên dòng lệnh.
+- Scheduler trong tiến trình app (tick 30 s, cron 5 trường, múi giờ local/UTC), chạy bù một lần hoặc bỏ qua, khoá file theo job chia với CLI, retention chỉ xoá file nằm trong `backup_runs` của job; tray + close-to-tray + autostart + single-instance + thông báo OS. `dbstudio-cli backup --job | restore | verify | tools` dùng chung store, keychain và khoá file.
+
+## 13. SSH tunnel và known hosts
+
+- `dbstudio-ssh` (`russh`): `Tunnel::open` kết nối bastion, **kiểm host key qua `KnownHosts` trước khi gửi bất kỳ thông tin xác thực nào**, xác thực bằng mật khẩu, private key (+ passphrase) hoặc ssh-agent (Unix socket / named pipe Windows), lắng nghe `127.0.0.1:0` và forward mỗi kết nối qua kênh `direct-tcpip`. Drop tunnel → đóng hết.
+- `SessionManager::connect`: profile có `ssh` → mở tunnel → clone config với `host=127.0.0.1`, `port=local`, `tls.server_name=host gốc` → `Driver::connect`; tunnel sống cùng session (lease và job dùng chung). Secret SSH ở keychain account `<connId>#ssh`; `connection_test` nhận thêm `ssh_secret` để thử mật khẩu vừa gõ.
+- Host key lạ/đổi → `Error::SshHostKey { host, port, keyType, fingerprint, changed }`; UI hỏi → `ssh_trust_host` lưu vào bảng `ssh_known_hosts` — **chỉ lưu khoá thực sự vừa quan sát được** từ server (không tin fingerprint do webview gửi lên).
+- `tls.server_name` được tôn trọng ở PG và MSSQL. MySQL, MongoDB, Redis không có cách đổi tên kiểm chứng (R6) — xem mục 18.
+
+## 14. Luồng chính
+
+```mermaid
+sequenceDiagram
+    participant UI as Editor tab
+    participant CMD as lease_execute
+    participant G as guard
+    participant L as Lease (driver)
+    participant H as history
+    UI->>CMD: ExecuteRequest {text, params, confirm?} + Channel
+    CMD->>G: bind → analyze → policy → check
+    alt read-only vi phạm
+        G-->>UI: readOnly {position}
+    else phá huỷ trên production, chưa có token hợp lệ
+        G-->>UI: confirmationRequired {token, confirmText}
+        UI->>UI: hộp thoại gõ tên database
+        UI->>CMD: gọi lại kèm confirm {token, typed}
+    end
+    CMD->>H: ghi lịch sử (redact)
+    CMD->>L: execute(bound text)
+    L-->>UI: statementStart / columns / rows / message / statementEnd (Channel)
+    CMD-->>UI: ExecuteResult {summary, state: LeaseState}
+```
+
+Export: `export_start` (kiểm `PathGrants`) → `JobManager` → `run_export` (lease snapshot → DDL PreData → stream bảng → PostData) → file tạm → đổi tên → `job://progress` `finished`.
+
+## 15. Driver
 
 | DB | Crate | Ghi chú |
 |---|---|---|
-| PostgreSQL (+ CockroachDB, YugabyteDB) | `tokio-postgres` + `tokio-postgres-rustls` (rustls/`ring`) | **Đã hiện thực ở GĐ1**, chi tiết bên dưới. Kiểm soát giao thức tốt hơn `sqlx` cho query động: simple query nhiều câu lệnh, cancel token, NOTICE, kiểu không biết trước. |
-| MySQL/MariaDB (+ TiDB) | `mysql_async` 0.37 (feature `default-rustls-ring`) | **Đã hiện thực ở GĐ1**, chi tiết bên dưới. `KILL QUERY` qua kết nối riêng để huỷ. |
-| MSSQL | `tiberius` | TDS thuần Rust; nhiều result set, PRINT/info message. Huỷ qua attention packet. Xác thực Windows hạn chế ngoài Windows (câu hỏi mở 6). |
-| Oracle | `oracle` (ODPI-C) | **Cần Oracle Instant Client** khi chạy → rủi ro đóng gói. Nạp động, driver báo `Unavailable` kèm hướng dẫn nếu thiếu. Đánh giá phương án thuần Rust ở GĐ3. |
-| MongoDB | `mongodb` (chính thức) | BSON ↔ `Value::Document`, Extended JSON cho UI. |
-| Redis / Valkey | `redis` (redis-rs, tokio) | `SCAN` để duyệt key; cluster là Should về sau. |
-| Cassandra / ScyllaDB | `scylla` | CQL, paging native, tracing cho PLAN. |
-| ClickHouse | `clickhouse` (HTTP) | Có thể cần HTTP thô cho query động/định dạng tuỳ ý — đánh giá ở GĐ10. |
+| PostgreSQL | `tokio-postgres` + rustls | Như GĐ1 (mục 15.1); lease qua `lease_kit`, `COPY` cho bulk. |
+| MySQL/MariaDB | `mysql_async` 0.37 (rustls) | Như GĐ1; lease qua `lease_kit`. `CLIENT_MULTI_STATEMENTS` không tắt được → guard so split ở hai chế độ `sql_mode` (mục 7) và chỉ "giữ treo" (park) kết quả của câu SELECT cuối. |
+| SQL Server | `tiberius` 0.13 qua `vendor/tiberius-patch` | Bản vá: `QueryItem::Info`/`Done` (PRINT, số dòng từng câu), `CancelHandle` gửi attention (kết nối dùng tiếp được), `money` chính xác, NTLM trên Unix qua `sspi` 0.23. Xác thực SQL login, `auth=windows` (NTLM), `auth=integrated` (chỉ Windows). Pool lười theo database, lease tự hiện thực, `SET PARSEONLY` cho `raw_where`, explain bằng SHOWPLAN XML. |
+| Oracle | `oracle` 0.6 (ODPI-C) | Instant Client nạp lúc chạy từ setting `oracle_client` hoặc `DBSTUDIO_ORACLE_CLIENT_LIB_DIR`; thiếu → `Unavailable` + `driver_diagnostics`. API đồng bộ chạy trên thread riêng. Splitter riêng trong driver (mục 15.2). TCPS qua Easy Connect, wallet PEM tạm từ file CA; `connect_as`, `wallet_dir`. |
+| MongoDB | `mongodb` 3 + `bson` 3 | Collection trả một cột `$document`; editor/console dùng `mongo_shell` của `dbstudio-sql` (không chạy JavaScript); huỷ bằng `killOp` theo `comment = query_id`; transaction chỉ trên replica set. |
+| Redis/Valkey | `redis` 1.x | Cây `paged_tree` bằng `SCAN` (không `KEYS`), `read_key` cho 6 kiểu + RedisJSON, console theo token redis-cli; xoá theo pattern là job `KeyDelete` (`SCAN` + `UNLINK` theo lô). Cluster/Sentinel chưa hỗ trợ. |
 
-Mỗi driver là một crate riêng trong `crates/drivers/<tên>`, bật/tắt qua cargo feature ở `src-tauri` để giảm thời gian build khi phát triển.
+TLS chung (GĐ1): `disable` không mã hoá; `prefer` thử TLS không kiểm và lùi về plain; `require` mã hoá không kiểm chứng thư; `verify-ca` kiểm chuỗi; `verify-full` kiểm chuỗi + tên host. Ngoại lệ: MySQL, MongoDB, Redis, MSSQL không tách được kiểm tên → `verify-ca` hành xử như `verify-full`. MSSQL `prefer` = `On` + trust cert (TDS không lùi về plain khi server đòi mã hoá).
 
-### 5.1 Lựa chọn hiện thực của hai driver GĐ1
+### 15.1 Lựa chọn hiện thực PG / MySQL (từ GĐ1, còn hiệu lực)
 
-| Chủ đề | PostgreSQL (`crates/drivers/postgres`) | MySQL/MariaDB (`crates/drivers/mysql`) |
+| Chủ đề | PostgreSQL | MySQL/MariaDB |
 |---|---|---|
-| Phiên bản đã test | 16.15 (TLS), 12.22 | MySQL 8.4.11 (TLS), MariaDB 10.6.28. Truy vấn metadata tránh tính năng chỉ có ở 8.x nhưng **chưa test 5.7** và MariaDB 10.4. |
-| Kết nối / pool | Pool lười theo **từng database**: tối đa 4 kết nối dữ liệu + 2 kết nối dành riêng cho truy vấn catalog (cây, DDL, chi tiết, ping) để đọc dữ liệu chậm không chặn duyệt cây. Option `application_name` được dùng. | Một pool `mysql_async`: `pool_max` 1–32 (mặc định 8) qua `options`; option `init_command` chạy trên mỗi kết nối mới (bị loại khi nhập profile, mục 9). |
-| Giải mã giá trị | Định dạng **text** của server (simple query) + kiểu cột lấy từ `prepare`. Không mất mát (numeric, int8, NaN); kiểu không có bộ giải mã riêng (enum, range, inet, composite, extension...) giữ nguyên text nên không cột nào làm query lỗi. Session đặt `TimeZone=UTC`, `DateStyle=ISO`, `extra_float_digits=3`, `bytea_output=hex`. | Giao thức **text** (`query_iter`), giải mã theo kiểu cột. `json` của MySQL → `Value::Json` (về text nếu không parse được); `json` của MariaDB là alias `longtext` → `Value::Text`. |
-| Stream | Server-side cursor (`DECLARE ... NO SCROLL CURSOR` + `FETCH FORWARD n`) theo lô (mặc định 1.000 dòng). | `query_iter` đọc từng dòng từ socket, đẩy theo lô (mặc định 1.000) → bộ nhớ chặn theo kích thước lô. |
-| Huỷ | Cancel request của giao thức (`CancelToken`, đi qua TLS nếu có). Một "cổng" tuần tự hoá giữa gửi cancel và kết thúc request; kết nối đã/đang bị cancel không trả về pool, nên cancel muộn không trúng câu lệnh sau. | `KILL QUERY <id>` qua một kết nối ngắn hạn riêng (không lấy từ pool); sau khi kill, xả phần dữ liệu còn lại rồi mới trả kết nối về pool (quá thời gian thì đóng). Mutex theo câu lệnh đảm bảo `KILL` muộn không trúng câu sau. |
-| Đọc bảng (`fetch_table`/`count_table`) | Trong transaction `BEGIN READ ONLY`. | Trong `START TRANSACTION READ ONLY`. |
-| `raw_where` | Câu SELECT được `prepare` trước (extended protocol từ chối nhiều câu lệnh), chỉ khi qua bước này mới `DECLARE` cursor bằng simple query; `count_table` chạy bằng extended protocol. Raw được bọc ngoặc + xuống dòng để `-- comment` cuối không nuốt phần sau. Lớp phụ: transaction READ ONLY. | **Hai lớp**: lexer từ chối `;` và ngoặc không cân (ngoài chuỗi/comment), sau đó `COM_STMT_PREPARE` để server xác nhận đó là một câu lệnh. Bổ sung sau khi review tái hiện được việc xoá dữ liệu qua `raw_where`. |
-| DDL | Dựng từ catalog (`ddl.rs`). | `SHOW CREATE ...`. |
-| Cây | Gốc: các database + nhóm roles. Database → Folder schemas → schema → nhóm tables/views/materialized views/functions/procedures/sequences; bảng → columns/indexes/triggers. | Gốc: các database + nhóm user (chỉ khi tài khoản đủ quyền đọc). Database → nhóm tables/views/sequences (khi server có, vd. MariaDB)/functions/procedures; bảng → columns/indexes/triggers. |
-| Read-only (CONN-10, mức driver) | Tham số khởi động `default_transaction_read_only=on`. | `SET SESSION TRANSACTION READ ONLY` khi mở kết nối. |
-| Tách câu lệnh (`execute`) | Bộ tách riêng (`sql.rs`) hiểu chuỗi, định danh có ngoặc, dollar-quote, comment và thân `BEGIN ATOMIC`. `execute` sẽ được dùng nhiều ở GĐ2. | Chạy qua giao thức text (`query_iter`); `execute` sẽ được dùng nhiều ở GĐ2. |
-| TLS | rustls/`ring`; khi không có file CA dùng **kho chứng thư của OS** (`rustls-native-certs`). | rustls/`ring` qua `mysql_async`; khi không có file CA dùng **bộ CA gốc đóng sẵn `webpki-roots`**, không dùng kho của OS. |
+| Kết nối / pool | Pool lười theo database: 4 kết nối dữ liệu + 2 catalog. | Một pool `mysql_async` (`pool_max` 1–32, mặc định 8). |
+| Giải mã giá trị | Định dạng text + kiểu cột từ `prepare`; session `TimeZone=UTC`, `DateStyle=ISO`, `extra_float_digits=3`, `bytea_output=hex`. | Giao thức text (`query_iter`), giải mã theo kiểu cột; `json` của MariaDB là text. |
+| Stream | Server-side cursor `FETCH FORWARD n`. | `query_iter` theo lô. |
+| Huỷ | `CancelToken`, cổng tuần tự hoá để cancel muộn không trúng câu sau. | `KILL QUERY` qua kết nối ngắn hạn riêng, xả phần còn lại. |
+| `raw_where` | `prepare` (extended protocol từ chối nhiều câu) rồi mới `DECLARE`. | Lexer từ chối `;`/ngoặc không cân + `COM_STMT_PREPARE`. |
+| DDL | Dựng từ catalog (`ddl.rs`, `ddl_gen.rs`). | `SHOW CREATE` (đọc với `sql_mode` trơn), tách FK ra PostData. |
+| TLS khi thiếu file CA | Kho chứng thư của OS. | `webpki-roots` đóng sẵn. |
 
-Ngữ nghĩa TLS chung cho cả hai: `disable` không mã hoá; `prefer` thử TLS **không kiểm chứng thư** và rơi về kết nối không mã hoá (kể cả khi bắt tay lỗi); `require` mã hoá nhưng **không kiểm chứng thư kể cả khi đã cấu hình CA** (giống libpq); `verify-ca` kiểm chuỗi chứng thư; `verify-full` kiểm chuỗi + tên host. Chỉ `verify-ca`/`verify-full` chống được tấn công chặn giữa. Hạn chế riêng của MySQL xem mục 15.
+### 15.2 Oracle — splitter riêng
 
-## 6. Thư viện Rust khác
+Driver Oracle giữ splitter riêng (`crates/drivers/oracle/src/script.rs`): khối PL/SQL kết thúc ở `END [tên];` cuối cùng (cân bằng `BEGIN`/`CASE`/`IF`/`LOOP`/subprogram lồng) **hoặc** ở dòng `/`; `dbstudio-sql` chỉ kết thúc khối ở `/`. Test vi sai `script_diff.rs` so hai splitter trên các script có `/`.
 
-| Mục đích | Crate |
+## 16. Lưu trữ cục bộ
+
+`dbstudio-store` (không phụ thuộc Tauri): SQLite `dbstudio.sqlite` (WAL, `foreign_keys`, migration nối thêm theo `PRAGMA user_version`, mỗi bước một transaction — NFR-REL-02) + keychain.
+
+| Migration | Bảng |
 |---|---|
-| Async runtime | `tokio` |
-| Secret | `keyring` |
-| Lưu trữ cục bộ | `rusqlite` (feature `bundled`) + migration có phiên bản (NFR-REL-02) |
-| SSH tunnel | `russh` (+ `russh-keys`) — forward cổng local → DB |
-| TLS | `rustls` với provider `ring` (không OpenSSL). `rustls-native-certs` (kho chứng thư hệ thống) hiện chỉ driver PostgreSQL dùng; MySQL dùng `webpki-roots` qua `mysql_async` (mục 15) |
-| Phân tích SQL | `sqlparser` — tách câu lệnh, phân loại đọc/ghi/phá huỷ (CONN-10/11), tìm câu lệnh tại con trỏ. Fallback tách thủ công khi parser không hiểu dialect (PL/SQL block, T-SQL `GO`). |
-| XLSX | `rust_xlsxwriter` (ghi), `calamine` (đọc, cho IMPORT) |
-| CSV / JSON | `csv`, `serde_json` |
-| Nén / mã hoá | `flate2`, `zstd`, `zip`; `aes-gcm` + `argon2` (BACKUP-05) |
-| Lịch | `cron` (parse biểu thức) + vòng lặp tokio trong tiến trình app |
-| Log | `tracing` + `tracing-appender` (file xoay vòng), lớp lọc che secret |
-| Kiểu cho TS | Viết tay `src/lib/types.ts` khớp struct Rust (`tauri-specta` 2.x mới có bản rc); GĐ1 tiếp tục viết tay — xem mục 14. |
+| v1–v2 (GĐ1) | `connection_groups`, `connections`, `settings` |
+| v3 | `query_history`, `saved_query_folders`, `saved_queries`, `editor_tabs` |
+| v4 | `erd_layouts`, `export_presets` |
+| v5 | `backup_jobs`, `backup_runs` (repository hoàn thiện ở gói H) |
+| v6 | cột `connections.ssh`, `ssh_known_hosts` |
 
-Plugin Tauri dự kiến: `dialog`, `fs` (giới hạn phạm vi), `notification`, `autostart`, `updater`, `window-state`, `single-instance`, `log`.
+- Lịch sử: văn bản đã redact, giữ tối đa `historyMaxPerConnection` (mặc định 5.000) bản/kết nối, tìm bằng `LIKE`; tắt được qua `historyEnabled`.
+- `AppSettings` thêm `editorMaxRows` (1000), `queryTimeoutMs`, `historyEnabled`, `historyMaxPerConnection`, `maxLobBytes` (16 MiB), `planMisestimateFactor`, `closeToTray`; key riêng `native_tools`, `oracle_client`.
+- Keychain: service `dev.dbstudio.desktop`; account = id kết nối, `<id>#ssh` (mật khẩu/passphrase SSH), `backup:<jobId>` (passphrase backup, gói H). Không có dự phòng plaintext.
+- Import profile (CONN-09) giữ quy tắc GĐ1 (allow-list `options`, giới hạn kích thước).
 
-## 7. Frontend
+## 17. IPC, bảo mật, log, kiểm thử
 
-| Mục đích | Lựa chọn |
-|---|---|
-| Nền tảng | React 19 + TypeScript (strict) + Vite, pnpm |
-| Style | Tailwind CSS v4; biến CSS cho theme sáng/tối |
-| State | Zustand (UI state: tab, layout, kết nối đang mở) + TanStack Query (cache dữ liệu lấy qua IPC: cây đối tượng, metadata) |
-| Editor | CodeMirror 6 + `@codemirror/lang-sql` (dialect PostgreSQL, MySQL, MSSQL, PLSQL, Cassandra có sẵn; autocomplete theo schema). Nhẹ hơn Monaco, hợp webview. |
-| Lưới | GĐ1: lưới tự viết trên TanStack Virtual (ảo hoá cả dòng và cột; thanh cuộn co tỉ lệ khi chiều cao vượt 8.000.000 px, tức khoảng 333.000 dòng). `@tanstack/react-table` có trong `package.json` nhưng lưới **không dùng**. Benchmark 1 triệu dòng trên 3 webview **chưa làm**; nếu không đạt NFR-PERF-03 → chuyển canvas grid (vd. Glide Data Grid) — quyết định còn mở (mục 14). |
-| Sơ đồ | React Flow (`@xyflow/react`) + `elkjs` (layout) cho ERD và plan; xuất SVG/PNG qua `html-to-image`, PDF qua thư viện tạo PDF (chốt ở GĐ6). |
-| i18n | i18next + react-i18next; khoá dịch theo feature; mặc định theo ngôn ngữ hệ thống, fallback en, lựa chọn lưu ở `localStorage`. |
-| Test | Vitest + Testing Library; E2E là Could (WebdriverIO + tauri-driver). |
+**IPC.** Command có kiểu, mỗi command có `*_impl` không phụ thuộc Tauri (test lớp lệnh không cần cửa sổ). Nhóm command theo file `commands/*.rs`: GĐ1 (`app`, `connections`, `sessions`, `browse`) + `editor` (script/lease/sql file), `history` (lịch sử, saved, tab), `changes`, `plan`, `erd` (schema model, layout, DDL), `files`, `export`, `jobs`, `backup`, `background`, `keyvalue`, `ssh`, `uri`, `app::driver_diagnostics`. Command stream (`table_fetch`, `query_execute`, `lease_execute`, `lease_fetch_more`) theo quy tắc GĐ1: frontend chỉ kết thúc khi có cả kết quả `invoke` và sự kiện `statementEnd` (chờ tối đa 5 s). Event toàn cục: `job://progress`, `lease://state`, `backup://changed`. Dev bridge: `POST /ipc/<command>` (stream NDJSON cho command có Channel) và `GET /events`.
 
-## 8. IPC
-
-- **Command có kiểu**: mỗi command Tauri nhận/trả struct serde; kiểu TS tương ứng viết tay ở `src/lib/types.ts` (review GĐ1 đã đối chiếu từng kiểu với serde, không thấy lệch), frontend chỉ gọi qua `src/lib/ipc.ts`. Ngoài Tauri (trình duyệt thường), `ipc.ts` chuyển sang mock IPC trong bộ nhớ (`src/lib/mock/`) để chạy và test giao diện.
-- **Danh sách command (GĐ1)**, ở `src-tauri/src/commands/`:
-  - `app`: `app_info`, `list_drivers` (từ GĐ0), `log_dir`.
-  - `connections`: `connections_list`, `connection_save`, `connection_delete`, `connection_duplicate` (sao cả secret đã lưu), `group_save`, `group_delete`, `connection_test`, `connections_export`, `connections_import`.
-  - `sessions`: `session_open`, `session_close`, `object_children`, `object_ddl`, `query_cancel`.
-  - `browse`: `table_details`, `table_fetch`, `table_count`.
-  - Phần lõi mỗi command là hàm `*_impl` không phụ thuộc kiểu Tauri, để test lớp lệnh không cần cửa sổ (`tests.rs`, `it.rs`).
-- **Stream kết quả (`table_fetch`)**: frontend tự sinh `query_id` trong `TableDataRequest` và truyền một `Channel<QueryEvent>`; command chạy `Session::fetch_table` với `EventSink` (mỗi callback của sink → một `QueryEvent` gửi qua Channel; Channel đã đóng → sink trả `Cancelled`, driver dừng đọc) và **resolve khi fetch xong** với `ExecSummary`. Driver luôn gửi `statementEnd` sau lô `rows` cuối.
-  - **Lưu ý thứ tự sự kiện:** Tauri gửi payload Channel lớn (≥ 8 KB) qua một vòng IPC riêng, nên sự kiện `rows` có thể tới **sau** khi promise `invoke` đã resolve. Vì vậy `ipc.tableFetch` chỉ kết thúc khi đã có **cả** kết quả `invoke` **và** sự kiện `statementEnd` (Channel giữ thứ tự, nên nhận `statementEnd` nghĩa là đã nhận đủ dòng); chờ tối đa `STATEMENT_END_TIMEOUT_MS` (5 s) sau khi `invoke` resolve, quá hạn thì vẫn resolve và ghi cảnh báo console. Sự kiện tới sau khi lời gọi đã kết thúc bị bỏ. Command stream khác (GĐ2 `execute`) phải theo cùng quy tắc.
-  - Lưới tải theo trang tăng dần 1.000 → 5.000 → 20.000 dòng (lô stream 1.000 dòng), dừng ở trần 1.000.000 dòng hoặc 20.000.000 ô (hằng số trong `src/features/data/gridModel.ts`) và báo cho người dùng.
-- **Huỷ**: `query_cancel(session_id, query_id)` → `Session::cancel` (dùng cho cả `table_fetch` và `table_count`). Dự kiến `cancel_job(job_id)` cho export/backup.
-- **Tác vụ nền** *(dự kiến, GĐ5)*: `JobManager` trong `AppState` giữ job export/backup/restore; tiến độ phát qua event toàn cục `job://progress`.
-- **Phiên**: `SessionManager` (`src-tauri/src/session.rs`, Rust thuần) ánh xạ `session_id` → `Arc<dyn Session>`, mở kết nối có timeout (mặc định 15 s nếu profile không đặt) và đóng hết khi app thoát. Vì một `Session` đại diện cho cả server và tự có pool (mục 4–5), frontend hiện giữ **tối đa một session cho mỗi kết nối**, dùng chung cho cây và các tab bảng. Phiên riêng cho từng tab editor (transaction thủ công) sẽ xét ở GĐ2.
-- **Lỗi**: `Error` serialize thành `{ kind, message, position?, capability? }`, `message` không có tiền tố tiếng Anh; UI dịch `kind` qua i18n.
-
-## 9. Lưu trữ cục bộ
-
-Crate `dbstudio-store` (không phụ thuộc Tauri): `Store` (SQLite), `SecretStore` (keychain), `ConnectionService` (kết hợp hai lớp + import/export).
-
-- **SQLite**: file `dbstudio.sqlite` trong `app_data_dir`, `rusqlite` feature `bundled`, `journal_mode=WAL`, bật `foreign_keys`. Migration là danh sách câu lệnh chỉ được nối thêm, phiên bản lưu ở `PRAGMA user_version`, mỗi bước chạy trong một transaction (NFR-REL-02). GĐ1 có bảng `connection_groups` (nhóm lồng nhau qua `parent_id`) và `connections`. Các bảng `query_history`, `saved_queries`, `erd_layouts`, `backup_jobs`, `backup_runs`, `settings` sẽ thêm bằng migration ở giai đoạn tương ứng.
-- **Secret**: không cột nào chứa secret (chỉ cờ `save_password`, `has_password`). Mật khẩu nằm trong OS keychain qua `keyring`: service `dev.dbstudio.desktop` (trùng bundle identifier), account = id kết nối. Lỗi keychain trả `Error::Storage`; **không có phương án dự phòng plaintext**. Khi không lưu mật khẩu (CONN-08), UI hỏi mỗi lần mở session và mật khẩu chỉ đi vào bộ nhớ Rust cho lần kết nối đó. Test dùng `MemorySecretStore`; `KeyringSecretStore` (keychain thật) **chưa được chạy lần nào** tính tới hết GĐ1.
-- **Export profile** (CONN-09): JSON `{ format: "dbstudio-connections", version: 1, ... }`, không kèm secret; chỉ ghi ra đường dẫn có đuôi `.json`, ghi qua file tạm rồi đổi tên.
-- **Import profile**: file tối đa 5 MB (tối đa 5.000 profile, 2.000 nhóm); `options` chỉ giữ khoá trong danh sách cho phép `application_name`, `pool_max` (loại `init_command` và mọi khoá khác — file nhập là dữ liệu không tin cậy); màu phải là `#hex` hợp lệ, sai thì bỏ; độ dài trường bị giới hạn. Kết quả báo số option bị loại và số màu bị đặt lại.
-- Trạng thái UI nhẹ: ngôn ngữ và theme lưu ở `localStorage`; tab đang mở chưa được khôi phục (QUERY-01, GĐ2). Không lưu nội dung nhạy cảm ở `localStorage`.
-
-## 10. Bảo mật
+**Bảo mật.**
 
 | Chủ đề | Cách làm |
 |---|---|
-| Secret | Keychain qua `keyring` (mục 9); kiểu `Secret` có `Debug` che giá trị và không `Serialize`. Mật khẩu chỉ đi một chiều frontend → Rust (dialog nhập, `connection_save`/`connection_test` với `SecretChange`, `session_open`), không bao giờ trả ngược ra. **Chưa có** lớp `tracing` che chuỗi giống connection string như dự kiến; thay vào đó command chỉ log định danh (id kết nối/session/query), và log của thư viện driver/TLS (`tokio_postgres`, `mysql_async`, `mysql_common`, `rustls`, ...) bị giữ ở mức `info` vì ở `debug` chúng có thể in SQL/tham số. Chưa có test tự động "grep mật khẩu trong thư mục dữ liệu và log". |
-| TLS | 5 chế độ, ngữ nghĩa ở mục 5.1. Mặc định của profile mới là `prefer` (giống libpq) — **không** chống tấn công chặn giữa; dialog kết nối cảnh báo khi chọn `disable`/`prefer`/`require` với host không phải loopback (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`). Có nên đổi mặc định hay không là câu hỏi mở (requirements §6, câu 8). |
-| `raw_where` | Được coi là SQL người dùng tin cậy nhưng phải là một biểu thức; mỗi driver chặn nhiều câu lệnh (mục 5.1). Đọc bảng luôn trong transaction READ ONLY. |
-| Read-only / phá huỷ | GĐ1: cờ `read_only` theo profile được áp ở mức session của driver (mục 5.1) — chưa phải chặn ở tầng ứng dụng. Dự kiến GĐ2: `sqlparser` phân loại câu lệnh trước khi gửi; với prod, command trả `ConfirmationRequired { statements }`, UI hỏi, gọi lại kèm token xác nhận dùng một lần. Không hiểu câu lệnh → coi là ghi. |
-| Tauri | `capabilities/default.json` chỉ cấp `core:default`, `dialog:allow-open`, `dialog:allow-save` cho cửa sổ `main`; chưa dùng plugin `fs` (đọc/ghi file import/export làm ở Rust theo đường dẫn người dùng chọn qua dialog); không bật `shell` trừ khi gọi tool native (GĐ8, chỉ cho phép đường dẫn đã cấu hình). |
-| CSP | Thực tế trong `tauri.conf.json`: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost`. Không script inline/remote; `style-src 'unsafe-inline'` và `img-src data: blob:` (trình xem ảnh trong ô) là nới lỏng có chủ đích. |
-| Telemetry | Không có. Kiểm tra cập nhật là kết nối mạng duy nhất ngoài DB và có thể tắt. |
+| Secret | Keychain; `Secret` che `Debug`, không `Serialize`; log chỉ ghi định danh; `src-tauri/src/redact.rs` + lớp lọc log; `leak_test.rs` quét SQLite (kể cả WAL), log và file export profile tìm mật khẩu (UTF-8 và UTF-16LE). |
+| Read-only / phá huỷ | Mục 7. |
+| File | `PathGrants` (mục 11). |
+| SSH | Kiểm host key trước xác thực; chỉ tin khoá quan sát được (mục 13). |
+| Tauri | `capabilities/default.json` chỉ `core:default`, `dialog:allow-open`, `dialog:allow-save`; plugin `opener`, `notification`, `autostart` chỉ gọi từ Rust, không cấp quyền cho webview. |
+| CSP | `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; ...` (như GĐ1). |
+| Telemetry | Không có. |
 
-**Log (APP-07)** — `src-tauri/src/logging.rs`: `tracing` + `tracing-appender`, file xoay vòng theo ngày `dbstudio.*.log` trong `app_log_dir`, giữ 7 file; console chỉ bật ở bản debug. Mức mặc định `debug` (bản debug) / `info` (bản release), các crate ồn kể trên giữ ở `info`; `RUST_LOG` ghi đè được. Thư mục log không dùng được thì chỉ còn console. Command `log_dir` trả đường dẫn thư mục log; nút "mở thư mục log" và chọn mức log trong UI chưa có.
+**Log (APP-07).** `tracing` + file xoay vòng theo ngày (giữ 7), mức log đổi được lúc chạy từ trang Cài đặt, nút mở thư mục log (`open_log_dir`). Log của thư viện driver/TLS giữ ở `info`.
 
-## 11. Backup tự động & chạy nền
+**Kiểm thử.** Unit test từng crate (classifier `dbstudio-sql` có proptest/fuzz và test vi sai splitter; parser plan theo fixture; writer export theo định dạng; store; guard với đồng hồ giả). Integration test với Docker (`docker/compose.test.yml`, chỉ khi `DBSTUDIO_IT=1`) cho mọi driver, SSH, export/import và lớp command; Oracle chạy trong container `oracle-it` (`docker/oracle-it/run-tests.sh`). Frontend: Vitest + Testing Library, test quét khoá dịch và chuỗi cứng, test hợp đồng với `contract/fixtures`. CI (`.github/workflows/ci.yml`): matrix 3 OS + job `integration` (dựng compose, chạy cả `oracle-it`) — **chưa chạy lần nào trên GitHub** (repo chưa có remote).
 
-- Scheduler chạy trong tiến trình app (tokio task), đọc `backup_jobs` từ SQLite, tính lần chạy kế tiếp bằng `cron`.
-- Đóng cửa sổ khi có lịch → ẩn xuống tray (cấu hình được); `tauri-plugin-autostart` cho khởi động cùng OS; `single-instance` để không chạy 2 scheduler.
-- Lần chạy lỡ: khi khởi động, so `last_run` với lịch → chạy bù một lần hoặc bỏ qua (BACKUP-12).
-- `dbstudio-cli` dùng lại `dbstudio-backup` + `dbstudio-store`, đọc secret từ cùng keychain → gắn vào cron/launchd/Task Scheduler khi cần chạy không có GUI.
+## 18. Quyết định & giới hạn đã biết
 
-## 12. Phân tích plan
-
-`dbstudio-plan` định nghĩa `PlanNode { op, object, est_cost, est_rows, actual_rows, actual_time_ms, loops, children, raw }` và một parser cho mỗi định dạng nguồn (JSON PostgreSQL, JSON MySQL, XML SHOWPLAN, bảng `PLAN_TABLE`, explain MongoDB, ...). Quy tắc cảnh báo (PLAN-04) chạy trên cây chuẩn hoá nên dùng chung cho mọi DB. Parser là hàm thuần → unit test bằng file plan mẫu.
-
-## 13. Kiểm thử & CI
-
-- **Unit test** trong từng crate (core, store, driver: sinh SQL, lexer, giải mã giá trị, TLS...); parser plan và export dùng fixture file (dự kiến).
-- **Integration test driver** dùng `docker compose` (chọn compose thay vì `testcontainers`): `docker/compose.test.yml` dựng `pg16` (PostgreSQL 16, TLS, `127.0.0.1:54316`), `pg12` (`:54312`), `mysql8` (image `mysql:8`, TLS, `:33068`), `mariadb` (10.6, `:33106`); chứng thư thử (CA, server, một CA khác để thử sai CA) sinh bằng `docker/gen-certs.sh`. Test chỉ chạy khi `DBSTUDIO_IT=1`, nên `cargo test` thường không cần Docker. Vị trí: `crates/drivers/postgres/tests/`, `crates/drivers/mysql/tests/`, và test đầu-cuối ở lớp command `src-tauri/src/it.rs` (kiểm tra kết nối kể cả TLS `verify-full`/sai CA/sai mật khẩu, lưu profile, mở session bằng mật khẩu lưu và nhập tay, duyệt cây chỉ bằng `path` backend trả về, đọc bảng, huỷ, xoá kết nối) với kho secret giả trong bộ nhớ.
-- **Frontend**: Vitest + Testing Library (217 test tính tới GĐ1), gồm test quét khoá dịch vi/en (`src/locales/*.test.ts`). Giao diện được kiểm tra tay trong Chromium với mock IPC; chưa có E2E trên app Tauri.
-- **Kết quả GĐ1** (cục bộ, macOS): 229 test Rust, chạy 2 lượt liên tiếp với DB thật không flaky; clippy `-D warnings` và `cargo fmt --check` sạch.
-- **CI** (`.github/workflows/ci.yml`): job `check` matrix ubuntu/macos/windows (pnpm lint/test/build, `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`); job `integration` trên ubuntu dựng compose rồi chạy `DBSTUDIO_IT=1 cargo test --workspace`. **Workflow chưa chạy lần nào trên GitHub** (repo chưa có remote). Job release ở GĐ9.
-
-## 14. Quyết định
-
-### 14.1 Đã chốt ở GĐ1
+### 18.1 Quyết định đã chốt
 
 | Quyết định | Lý do / hệ quả |
 |---|---|
-| Cả hai driver dùng **giao thức text** để lấy giá trị (PostgreSQL text format, MySQL text protocol) | Không mất mát với mọi kiểu, kiểu lạ rơi về text thay vì làm query lỗi. Đổi lại phải tự giải mã theo kiểu cột. |
-| **Stream bằng cursor/đọc từng dòng** theo lô (PostgreSQL server-side cursor, MySQL `query_iter`) | Bộ nhớ chặn theo kích thước lô; sink dừng giữa chừng không để kết nối ở trạng thái đọc dở. |
-| `ObjectPath` **gồm cả đoạn Folder**, driver chấp nhận cả hai dạng | Path của nút = path cha + đoạn của nút; frontend không phải tự dựng path. |
-| `Value::Json` là **văn bản JSON gốc**, frontend parse bằng `lossless-json` | Giữ thứ tự khoá và chữ số. |
-| Phân trang OFFSET + **luôn thêm khoá chính/unique NOT NULL vào cuối ORDER BY** | Trang xác định; keyset vẫn mở (14.2). |
-| **Kiểu TS tiếp tục viết tay** (`src/lib/types.ts`) | `tauri-specta` 2.x vẫn là rc; 20 command vẫn quản lý được bằng tay + review đối chiếu serde. Xét lại khi có bản ổn định hoặc khi số command tăng mạnh ở GĐ2. |
-| Integration test bằng `docker compose` + `DBSTUDIO_IT=1` (không dùng `testcontainers`) | Một file compose dùng chung cho dev và CI. |
+| Lease cho tab editor (không mở session mới) | Transaction thủ công, `SET`/`USE`/bảng tạm cần kết nối cố định; không lặp TLS/SSH/xác thực. |
+| Phân loại câu lệnh bằng lexer riêng, không `sqlparser` | Một bộ token dùng chung cho split/params/classify/guard ở 4 dialect SQL + Mongo + Redis; không phụ thuộc parser không hiểu PL/SQL, T-SQL không `;`, comment thực thi MySQL. |
+| Tham số bind thành literal phía Rust | Chạy được cho script nhiều câu, mọi driver; vị trí lỗi ánh xạ ngược. |
+| Xác nhận phá huỷ bằng `ConfirmationRequired` + token một lần | Dùng chung cho command stream/không stream, import, xoá khoá, restore. |
+| Fork tối thiểu tiberius trong `vendor/` | Upstream không có PRINT/số dòng từng câu/huỷ dùng lại kết nối. |
+| Oracle qua ODPI-C, không đóng gói Instant Client | Mặc định Q1 của thiết kế; `oracle-rs` thuần Rust chỉ theo dõi. |
+| Kiểu TS tiếp tục viết tay + fixture hợp đồng | `tauri-specta` 2.x vẫn rc. |
 
-### 14.2 Còn mở
+### 18.2 Còn mở
 
-| Quyết định | Khi nào / ghi chú |
-|---|---|
-| Giữ TanStack Virtual hay chuyển canvas grid | Cần benchmark 1 triệu dòng với bảng thật trên WKWebView, WebView2, WebKitGTK (chưa làm). Tạm giữ TanStack Virtual. Nên chốt trước khi thêm chế độ sửa vào lưới ở GĐ2; hạn chót GĐ9. |
-| Phân trang keyset/cursor thay OFFSET | OFFSET đã xác định nhờ khoá chính nhưng offset sâu chậm dần. Chưa gắn giai đoạn. |
-| Chế độ TLS mặc định cho profile mới (`prefer` hiện tại, hay `verify-full` / `require` cho localhost) | Chờ chủ dự án (requirements §6, câu 8). |
-| Oracle: `oracle` + Instant Client hay phương án thuần Rust | GĐ3 |
-| Định dạng file backup tích hợp (SQL thuần + manifest hay định dạng riêng) | GĐ8 |
-| Kênh auto-update và hạ tầng ký số | GĐ9 |
+Giữ TanStack Virtual hay canvas grid (chưa benchmark 1 triệu dòng trên 3 webview); phân trang keyset thay OFFSET; chế độ TLS mặc định cho profile mới (requirements §6 câu 8); kênh auto-update và ký số (GĐ9).
 
-## 15. Hạn chế đã biết (sau GĐ1)
+### 18.3 Giới hạn đã biết
 
-**TLS / xác thực**
-- MySQL `verify-ca` hiện kiểm cả tên host như `verify-full` (chặt hơn, không lỏng hơn): `mysql_async` 0.37.1 nhận diện lỗi sai tên host bằng cách so chuỗi lỗi cũ của rustls mà rustls 0.23 không còn sinh, và không cho thay verifier. Host không có trong chứng thư thì báo lỗi rõ ràng.
-- MySQL không đăng nhập được tài khoản dùng plugin `sha256_password` (cần đổi sang `caching_sha2_password` hoặc `mysql_native_password`).
-- MySQL khi không có file CA dùng bộ CA gốc đóng sẵn (`webpki-roots`), không dùng kho chứng thư của OS; PostgreSQL dùng kho của OS. CA nội bộ được cài vào OS sẽ không được MySQL tin nếu không chỉ định file CA.
-- `require` không kiểm chứng thư kể cả khi đã cấu hình CA (cả hai driver, giống libpq). `prefer` rơi về không mã hoá. Cả hai chế độ đều không chống được tấn công chặn giữa (UI chỉ cảnh báo).
-- Không có TLS, `caching_sha2_password` của MySQL có thể xin khoá công khai RSA của server qua chính kênh chưa xác thực.
+**An toàn câu lệnh**
+- MySQL: `mysql_async` luôn bật `CLIENT_MULTI_STATEMENTS`, không tắt được → guard từ chối script mà ranh giới câu khác nhau giữa hai chế độ `NO_BACKSLASH_ESCAPES` (vd. chuỗi có `\'`); người dùng phải viết `''`.
+- MySQL `ANSI_QUOTES` chưa mô hình hoá: `"x"` lex như chuỗi; chỉ ảnh hưởng văn bản trộn cả hai cách quote.
+- Phân loại vẫn là heuristic (R5): `Unknown`/`Procedural` coi là ghi; với production quét thêm từ khoá. SQL động (`EXECUTE IMMEDIATE`, `EXEC(@sql)`) chỉ được nhận diện qua từ khoá.
+- MSSQL, Oracle, MongoDB, Redis không có read-only mức session từ server (chỉ guard + kiểm ở driver).
 
-**Giá trị**
-- Cột `json` của MariaDB về dạng text (MariaDB coi `json` là `longtext`).
-- JSON của MySQL bị server chuẩn hoá lại văn bản (thứ tự khoá, khoảng trắng) trước khi gửi — "văn bản gốc" ở đây là văn bản server trả về.
-- `timestamptz` hiển thị theo UTC; chưa có tuỳ chọn múi giờ người dùng. `infinity`, ngày BC hoặc năm 5 chữ số của PostgreSQL trả dạng text.
+**Sửa dữ liệu**
+- Mongo sửa document chỉ khoá theo `_id` (không so giá trị cũ). Mongo standalone không transaction (`atomic=false`).
+- Redis không rollback lỗi lúc chạy trong `MULTI/EXEC` (`atomic=false`); thao tác list theo index không kiểm giá trị cũ.
 
-**Duyệt dữ liệu / hiệu năng**
-- Phân trang OFFSET: offset sâu chậm dần; bảng/view không có PK hoặc unique NOT NULL thì thứ tự giữa các trang không đảm bảo.
-- Trần tải trong lưới là hằng số (1.000.000 dòng hoặc 20.000.000 ô), chưa cấu hình được (NFR-PERF-03).
-- Lưới mới thử tới 466.000 dòng với mock trong Chromium; chưa đo với bảng thật, chưa đo trên webview của Tauri.
+**TLS / SSH / xác thực**
+- `verify-ca` = `verify-full` ở MySQL, MongoDB, Redis, MSSQL.
+- R6: MySQL, MongoDB, Redis qua SSH tunnel với `verify-full` lỗi tên host (thư viện kiểm chứng thư theo `127.0.0.1`, không đổi được tên) → dùng `verify-ca`/`require` hoặc chứng thư có địa chỉ đó. PG và MSSQL dùng `tls.server_name`.
+- MySQL: `verify-ca` kiểm cả tên host; không đăng nhập được tài khoản `sha256_password`; khi thiếu file CA dùng `webpki-roots` thay vì kho của OS; không TLS thì `caching_sha2_password` có thể xin khoá RSA qua kênh chưa xác thực.
+- `require` không kiểm chứng thư, `prefer` lùi về plain (giống libpq) — UI chỉ cảnh báo.
+- MSSQL NTLM chưa thử với domain thật; Azure AD chưa hỗ trợ; Integrated chỉ trên Windows.
+
+**Giá trị / dữ liệu**
+- `json` của MariaDB về text; JSON MySQL bị server chuẩn hoá; `timestamptz` hiển thị UTC hoặc theo tuỳ chọn hiển thị; LOB vượt `maxLobBytes` thành `Ext truncated*` không sửa được.
+- Export: chưa có nguồn `Keys` (Redis) và làm phẳng document Mongo cho CSV/XLSX; import CSV chỉ coi ô rỗng không ngoặc là NULL (không nhận `null_text` tuỳ chỉnh).
 
 **Nền tảng / kiểm chứng**
-- Windows và Linux chưa được build/chạy lần nào; CI chưa chạy trên GitHub.
-- Keychain thật chưa được chạy (test dùng kho giả); chưa ai thao tác giao diện với DB thật bên trong cửa sổ Tauri.
-- MySQL 5.7 (không có image arm64 để chạy cục bộ) và MariaDB 10.4 chưa test; image `mysql:8` trong compose là tag trôi (hiện ra 8.4.x).
+- Chỉ kiểm trên macOS (unit + IT Docker + UI qua mock/dev bridge). Chưa kiểm: cửa sổ Tauri thật cho tính năng GĐ2–GĐ8 (tray, autostart, thông báo OS, xuất PNG/PDF trên WebView), Windows/Linux, NTLM thật, Azure, Oracle IT với DB thật (chờ RAM Docker), CI GitHub.
