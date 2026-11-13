@@ -5,8 +5,8 @@
 //!   `money` decoding. See `vendor/tiberius-patch/DBSTUDIO-PATCH.md`.
 //! * A [`MssqlSession`] stands for a whole server: lazy pools per database (4 data + 2 catalog
 //!   connections), one dedicated connection per lease.
-//! * Scripts are split into batches at `GO [n]` lines by this crate (`batch` module);
-//!   `dbstudio_sql::split` is not used because its contract carries no repeat count.
+//! * Scripts are split into batches at `GO [n]` lines with `dbstudio_sql::split::split_batches`
+//!   (`batch` module); each batch is one request to the server.
 //!
 //! # Login and TLS
 //!

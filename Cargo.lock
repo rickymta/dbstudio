@@ -1689,13 +1689,19 @@ name = "dbstudio-driver-mssql"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
+ "chrono",
  "dbstudio-core",
  "dbstudio-sql",
- "rustls",
- "rustls-native-certs",
+ "futures-util",
+ "quick-xml 0.42.0",
+ "regex",
+ "serde_json",
  "tiberius",
  "tokio",
  "tokio-util",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
