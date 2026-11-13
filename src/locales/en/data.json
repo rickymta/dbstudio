@@ -251,5 +251,8 @@
         "insert": "SQL INSERT"
       }
     }
+  },
+  "header": {
+    "path": "Object path"
   }
 }
