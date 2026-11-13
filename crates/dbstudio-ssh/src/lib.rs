@@ -1,14 +1,27 @@
 //! SSH tunnel (local port forward) used when a connection has `ssh` configured.
 //!
-//! Scaffold status: [`Tunnel::open`] returns `Error::Unsupported("ssh_tunnel")`. The host key
-//! callback types ([`KnownHosts`], [`HostKeyStatus`]) are final. Package A implements the tunnel
-//! with `russh`.
+//! [`Tunnel::open`] connects to the bastion, verifies its host key through [`KnownHosts`]
+//! (unknown or changed keys fail with `Error::SshHostKey`, before any credential is sent),
+//! authenticates (password, private key with optional passphrase, or the SSH agent) and listens
+//! on `127.0.0.1:0`. Every accepted connection is forwarded through a `direct-tcpip` channel to
+//! the target. Dropping the [`Tunnel`] closes the listener, the forwarded connections and the
+//! SSH session.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use dbstudio_core::{Error, Result, Secret, SshConfig};
+use dbstudio_core::{Error, Result, Secret, SshAuth, SshConfig};
+use russh::client::{self, AuthResult, Handle};
+use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key};
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tokio::task::{JoinHandle, JoinSet};
+
+/// Connect timeout used when the profile does not specify one.
+const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 15_000;
 
 /// What the known-hosts table says about a host key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,26 +77,84 @@ impl KnownHosts for MemoryKnownHosts {
     }
 }
 
-/// An open tunnel. Dropping it closes the listener and the SSH session.
+/// Key seen during the handshake.
+#[derive(Debug)]
+struct Observed {
+    key_type: String,
+    fingerprint: String,
+}
+
+/// Client handler: reports the server key to [`Tunnel::open`] and waits for its verdict, so the
+/// handshake only completes for a trusted key.
+struct ClientHandler {
+    observed: Option<oneshot::Sender<Observed>>,
+    verdict: Option<oneshot::Receiver<bool>>,
+}
+
+impl client::Handler for ClientHandler {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        key: &PublicKeyOrCertificate,
+    ) -> std::result::Result<bool, Self::Error> {
+        let pk = key.public_key();
+        let observed = Observed {
+            key_type: pk.algorithm().to_string(),
+            fingerprint: pk.fingerprint(HashAlg::Sha256).to_string(),
+        };
+        let (Some(tx), Some(rx)) = (self.observed.take(), self.verdict.take()) else {
+            return Ok(false);
+        };
+        if tx.send(observed).is_err() {
+            return Ok(false);
+        }
+        Ok(rx.await.unwrap_or(false))
+    }
+}
+
+/// An open tunnel. Dropping it closes the listener, the forwarded connections and the SSH
+/// session.
 #[derive(Debug)]
 pub struct Tunnel {
     local_addr: SocketAddr,
+    task: JoinHandle<()>,
 }
 
 impl Tunnel {
     /// Connect to the bastion in `cfg`, authenticate (`secret` = password or key passphrase),
     /// verify the host key through `known`, and listen on `127.0.0.1:0` forwarding every
     /// accepted connection to `target`.
-    ///
-    /// Scaffold: `Unsupported("ssh_tunnel")`.
     pub async fn open(
         cfg: &SshConfig,
         secret: Option<&Secret>,
         target: (String, u16),
         known: &dyn KnownHosts,
     ) -> Result<Tunnel> {
-        let _ = (cfg, secret, target, known);
-        Err(Error::Unsupported("ssh_tunnel".into()))
+        let limit = Duration::from_millis(
+            cfg.connect_timeout_ms
+                .filter(|ms| *ms > 0)
+                .unwrap_or(DEFAULT_CONNECT_TIMEOUT_MS),
+        );
+        let handle = tokio::time::timeout(limit, establish(cfg, secret, known))
+            .await
+            .map_err(|_| Error::Timeout)??;
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .map_err(|e| Error::Connection(format!("ssh tunnel: cannot listen locally: {e}")))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|e| Error::Connection(format!("ssh tunnel: {e}")))?;
+        tracing::info!(
+            bastion = %cfg.host,
+            port = cfg.port,
+            target_host = %target.0,
+            target_port = target.1,
+            local = %local_addr,
+            "ssh tunnel open"
+        );
+        let task = tokio::spawn(accept_loop(listener, Arc::new(handle), target));
+        Ok(Tunnel { local_addr, task })
     }
 
     /// Local address connections are forwarded from.
@@ -92,10 +163,262 @@ impl Tunnel {
     }
 }
 
+impl Drop for Tunnel {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn accept_loop(
+    listener: TcpListener,
+    handle: Arc<Handle<ClientHandler>>,
+    target: (String, u16),
+) {
+    // Dropping the set (when this task is aborted) aborts the forwarding tasks, which drops the
+    // last references to the SSH handle and ends the session.
+    let mut set: JoinSet<()> = JoinSet::new();
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (mut sock, peer) = match accepted {
+                    Ok(x) => x,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ssh tunnel accept failed");
+                        break;
+                    }
+                };
+                let handle = Arc::clone(&handle);
+                let (host, port) = target.clone();
+                set.spawn(async move {
+                    let channel = match handle
+                        .channel_open_direct_tcpip(host, u32::from(port), peer.ip().to_string(), u32::from(peer.port()))
+                        .await
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "ssh tunnel: cannot open forwarding channel");
+                            return;
+                        }
+                    };
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut sock, &mut stream).await;
+                });
+            }
+            Some(_) = set.join_next(), if !set.is_empty() => {}
+        }
+    }
+}
+
+fn conn_err(cfg: &SshConfig, what: &str, e: impl std::fmt::Display) -> Error {
+    Error::Connection(format!("ssh {}:{}: {what}: {e}", cfg.host, cfg.port))
+}
+
+/// TCP connect, key exchange with host key verification, authentication.
+async fn establish(
+    cfg: &SshConfig,
+    secret: Option<&Secret>,
+    known: &dyn KnownHosts,
+) -> Result<Handle<ClientHandler>> {
+    let config = client::Config {
+        keepalive_interval: cfg
+            .keepalive_secs
+            .filter(|s| *s > 0)
+            .map(|s| Duration::from_secs(u64::from(s))),
+        inactivity_timeout: None,
+        ..Default::default()
+    };
+    let config = Arc::new(config);
+
+    let (obs_tx, obs_rx) = oneshot::channel();
+    let (verdict_tx, verdict_rx) = oneshot::channel();
+    let handler = ClientHandler {
+        observed: Some(obs_tx),
+        verdict: Some(verdict_rx),
+    };
+    let connect = client::connect(config, (cfg.host.as_str(), cfg.port), handler);
+    tokio::pin!(connect);
+    let mut obs_rx = obs_rx;
+    let mut verdict_tx = Some(verdict_tx);
+    let mut rejected: Option<Error> = None;
+    let result = loop {
+        tokio::select! {
+            r = &mut connect => break r,
+            seen = &mut obs_rx, if verdict_tx.is_some() => {
+                let Ok(seen) = seen else { continue };
+                let status = known.check(&cfg.host, cfg.port, &seen.key_type, &seen.fingerprint);
+                let trusted = status == HostKeyStatus::Known;
+                if !trusted {
+                    rejected = Some(Error::SshHostKey {
+                        host: cfg.host.clone(),
+                        port: cfg.port,
+                        key_type: seen.key_type,
+                        fingerprint: seen.fingerprint,
+                        changed: status == HostKeyStatus::Changed,
+                    });
+                }
+                if let Some(tx) = verdict_tx.take() {
+                    let _ = tx.send(trusted);
+                }
+            }
+        }
+    };
+    if let Some(e) = rejected {
+        return Err(e);
+    }
+    let mut handle = result.map_err(|e| conn_err(cfg, "connection failed", e))?;
+    authenticate(cfg, secret, &mut handle).await?;
+    Ok(handle)
+}
+
+fn auth_failed(cfg: &SshConfig, how: &str) -> Error {
+    Error::Authentication(format!(
+        "ssh {}@{}:{}: {how} was rejected",
+        cfg.username, cfg.host, cfg.port
+    ))
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+async fn authenticate(
+    cfg: &SshConfig,
+    secret: Option<&Secret>,
+    handle: &mut Handle<ClientHandler>,
+) -> Result<()> {
+    match &cfg.auth {
+        SshAuth::Password => {
+            let Some(secret) = secret else {
+                return Err(Error::Authentication(
+                    "ssh password authentication needs a password".into(),
+                ));
+            };
+            let r = handle
+                .authenticate_password(cfg.username.clone(), secret.expose().to_string())
+                .await
+                .map_err(|e| conn_err(cfg, "authentication failed", e))?;
+            match r {
+                AuthResult::Success => Ok(()),
+                AuthResult::Failure { .. } => Err(auth_failed(cfg, "the password")),
+            }
+        }
+        SshAuth::PrivateKey {
+            key_path,
+            has_passphrase,
+        } => {
+            let path = expand_home(key_path);
+            let passphrase = if *has_passphrase {
+                match secret {
+                    Some(s) => Some(s.expose().to_string()),
+                    None => {
+                        return Err(Error::Authentication(
+                            "the ssh private key needs its passphrase".into(),
+                        ));
+                    }
+                }
+            } else {
+                None
+            };
+            let shown = path.display().to_string();
+            let key = tokio::task::spawn_blocking(move || {
+                load_secret_key(&path, passphrase.as_deref())
+            })
+            .await
+            .map_err(|e| Error::Other(format!("ssh key loading failed: {e}")))?
+            .map_err(|e| match e {
+                russh::keys::Error::KeyIsEncrypted => Error::Authentication(format!(
+                    "the ssh private key {shown} is encrypted: a passphrase is required"
+                )),
+                russh::keys::Error::IO(io) => {
+                    Error::Authentication(format!("cannot read the ssh private key {shown}: {io}"))
+                }
+                other => Error::Authentication(format!(
+                    "cannot use the ssh private key {shown} (wrong passphrase or unsupported format): {other}"
+                )),
+            })?;
+            let hash = handle
+                .best_supported_rsa_hash()
+                .await
+                .map_err(|e| conn_err(cfg, "authentication failed", e))?
+                .flatten();
+            let r = handle
+                .authenticate_publickey(
+                    cfg.username.clone(),
+                    PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                )
+                .await
+                .map_err(|e| conn_err(cfg, "authentication failed", e))?;
+            match r {
+                AuthResult::Success => Ok(()),
+                AuthResult::Failure { .. } => Err(auth_failed(cfg, "the private key")),
+            }
+        }
+        SshAuth::Agent => authenticate_agent(cfg, handle).await,
+    }
+}
+
+#[cfg(unix)]
+async fn agent_client() -> Result<russh::keys::agent::client::AgentClient<tokio::net::UnixStream>> {
+    russh::keys::agent::client::AgentClient::connect_env()
+        .await
+        .map_err(|e| Error::Authentication(format!("cannot reach the ssh agent: {e}")))
+}
+
+#[cfg(windows)]
+async fn agent_client()
+-> Result<russh::keys::agent::client::AgentClient<tokio::net::windows::named_pipe::NamedPipeClient>>
+{
+    russh::keys::agent::client::AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent")
+        .await
+        .map_err(|e| Error::Authentication(format!("cannot reach the ssh agent: {e}")))
+}
+
+#[cfg(any(unix, windows))]
+async fn authenticate_agent(cfg: &SshConfig, handle: &mut Handle<ClientHandler>) -> Result<()> {
+    use russh::keys::agent::AgentIdentity;
+    let mut agent = agent_client().await?;
+    let identities = agent
+        .request_identities()
+        .await
+        .map_err(|e| Error::Authentication(format!("ssh agent: {e}")))?;
+    if identities.is_empty() {
+        return Err(Error::Authentication(
+            "the ssh agent holds no identities".into(),
+        ));
+    }
+    let hash = handle
+        .best_supported_rsa_hash()
+        .await
+        .map_err(|e| conn_err(cfg, "authentication failed", e))?
+        .flatten();
+    for id in identities {
+        let AgentIdentity::PublicKey { key, .. } = id else {
+            continue;
+        };
+        let r = handle
+            .authenticate_publickey_with(cfg.username.clone(), key, hash, &mut agent)
+            .await
+            .map_err(|e| Error::Authentication(format!("ssh agent: {e}")))?;
+        if matches!(r, AuthResult::Success) {
+            return Ok(());
+        }
+    }
+    Err(auth_failed(cfg, "every key of the ssh agent"))
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn authenticate_agent(_cfg: &SshConfig, _handle: &mut Handle<ClientHandler>) -> Result<()> {
+    Err(Error::Unsupported("ssh agent".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbstudio_core::SshAuth;
 
     #[test]
     fn memory_known_hosts_statuses() {
@@ -123,25 +446,12 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn stub_contract_open_is_unsupported() {
-        let cfg = SshConfig {
-            host: "bastion".into(),
-            port: 22,
-            username: "u".into(),
-            auth: SshAuth::Agent,
-            keepalive_secs: None,
-            connect_timeout_ms: None,
-        };
-        let err = Tunnel::open(&cfg, None, ("db".into(), 5432), &MemoryKnownHosts::new())
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::Unsupported(ref s) if s == "ssh_tunnel"));
-    }
-
     #[test]
-    fn russh_is_linked() {
-        // Keeps the dependency honest until the tunnel is implemented.
-        let _ = std::any::type_name::<russh::client::Config>();
+    fn home_is_expanded() {
+        assert_eq!(expand_home("/a/b"), PathBuf::from("/a/b"));
+        assert_eq!(expand_home("rel/k"), PathBuf::from("rel/k"));
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(expand_home("~/k"), PathBuf::from(home).join("k"));
+        }
     }
 }

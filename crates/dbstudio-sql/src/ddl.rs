@@ -78,4 +78,74 @@ mod tests {
         );
         assert!(create_table(ScriptDialect::MsSql, "t", &cols).starts_with("CREATE TABLE [t]"));
     }
+
+    fn col(name: &str, ty: &str, nullable: bool, pk: bool) -> NewColumn {
+        NewColumn {
+            name: name.into(),
+            type_name: ty.into(),
+            nullable,
+            primary_key: pk,
+        }
+    }
+
+    #[test]
+    fn quotes_per_dialect() {
+        let cols = vec![col("a`b", "int", false, false)];
+        let my = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+        };
+        assert_eq!(
+            create_table(my, "t`x", &cols),
+            "CREATE TABLE `t``x` (\n  `a``b` int NOT NULL\n)"
+        );
+        assert_eq!(
+            create_table(
+                ScriptDialect::Oracle,
+                "T",
+                &[col("ID", "number(19)", false, true)]
+            ),
+            "CREATE TABLE \"T\" (\n  \"ID\" number(19) NOT NULL,\n  PRIMARY KEY (\"ID\")\n)"
+        );
+        assert_eq!(
+            create_table(
+                ScriptDialect::MsSql,
+                "t]",
+                &[col("c", "nvarchar(max)", true, false)]
+            ),
+            "CREATE TABLE [t]]] (\n  [c] nvarchar(max)\n)"
+        );
+    }
+
+    #[test]
+    fn composite_and_implicit_not_null_primary_keys() {
+        let cols = vec![col("a", "int", true, true), col("b", "int", true, true)];
+        let sql = create_table(ScriptDialect::Postgres, "t", &cols);
+        assert!(sql.contains("\"a\" int NOT NULL"));
+        assert!(sql.ends_with("PRIMARY KEY (\"a\", \"b\")\n)"));
+        assert!(
+            !create_table(
+                ScriptDialect::Postgres,
+                "t",
+                &[col("a", "int", true, false)]
+            )
+            .contains("PRIMARY KEY")
+        );
+    }
+
+    #[test]
+    fn generated_sql_is_a_single_statement() {
+        for d in [
+            ScriptDialect::Postgres,
+            ScriptDialect::MsSql,
+            ScriptDialect::Oracle,
+        ] {
+            let sql = create_table(d, "we;ird", &[col("a\";b", "int", true, false)]);
+            assert_eq!(crate::split(d, &sql).len(), 1, "{d:?}");
+            assert_eq!(
+                crate::analyze(d, &sql).statements[0].class,
+                dbstudio_core::StatementClass::Ddl
+            );
+        }
+    }
 }
