@@ -501,6 +501,7 @@ mod tests {
             confirm_text: "db0",
             confirm: None,
             target_id: "session:x",
+            context: "db0",
         };
         assert!(matches!(
             run_guard(&tokens, &input),
