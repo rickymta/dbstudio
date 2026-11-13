@@ -10,15 +10,28 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { ChevronLeft, ChevronRight, Flame, Maximize, ZoomIn, ZoomOut } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileCode2,
+  Flame,
+  ImageDown,
+  Maximize,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconButton } from '@/components/ui/IconButton';
+import { toast } from '@/components/ui/toastStore';
+import { toIpcError } from '@/lib/ipc';
 import { cn } from '@/lib/cn';
 import type { PlanTree, Severity } from '@/lib/types';
 import { NODE_HEIGHT, NODE_WIDTH, layoutPlan, type PlanLayout } from './elkLayout';
 import { buildGraph, type CardNode } from './graphModel';
 import { NodeFacts, SeverityIcon } from './PlanDetails';
+import { PlanNodeIcon } from './PlanNodeIcon';
+import { exportPlan, type ExportFormat } from './planExport';
 import { flatten, formatCount, formatPercent, objectLabel } from './planModel';
 
 const BORDER: Record<Severity, string> = {
@@ -66,6 +79,7 @@ const PlanNodeCard = memo(function PlanNodeCard({ data }: NodeProps<CardNode>) {
         {hot && (
           <Flame size={12} className="shrink-0 text-accent" aria-label={t('status.hotPath')} />
         )}
+        <PlanNodeIcon kind={node.kind} />
         <span className={cn('truncate', hot ? 'font-bold' : 'font-semibold')}>{node.op}</span>
         {severity && <SeverityIcon severity={severity} size={12} />}
       </div>
@@ -107,9 +121,15 @@ const PlanNodeCard = memo(function PlanNodeCard({ data }: NodeProps<CardNode>) {
 
 const nodeTypes = { plan: PlanNodeCard };
 
-function ZoomControls() {
+function ZoomControls({ tree }: { tree: PlanTree }) {
   const { t } = useTranslation('plan');
   const flow = useReactFlow();
+  // The export always contains the whole plan, whatever is collapsed on screen.
+  const save = (format: ExportFormat) =>
+    void layoutPlan(tree.root, new Set())
+      .then((full) => exportPlan(tree, full, format))
+      .then((path) => path && toast.success(t('toolbar.exported', { path })))
+      .catch((e) => toast.error(toIpcError(e).message));
   return (
     <Panel
       position="top-right"
@@ -129,6 +149,16 @@ function ZoomControls() {
         label={t('toolbar.fit')}
         icon={<Maximize size={14} />}
         onClick={() => void flow.fitView({ padding: 0.15 })}
+      />
+      <IconButton
+        label={t('toolbar.exportSvg')}
+        icon={<FileCode2 size={14} />}
+        onClick={() => save('svg')}
+      />
+      <IconButton
+        label={t('toolbar.exportPng')}
+        icon={<ImageDown size={14} />}
+        onClick={() => save('png')}
       />
     </Panel>
   );
@@ -221,7 +251,7 @@ function Graph({ tree, selectedId, onSelect }: PlanGraphProps) {
         zoomOnDoubleClick={false}
       >
         <Background gap={20} />
-        <ZoomControls />
+        <ZoomControls tree={tree} />
         {layout && <FollowSelection selectedId={selectedId} layout={layout} />}
       </ReactFlow>
       {hovered && hover && (

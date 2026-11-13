@@ -15,7 +15,10 @@
     "expandAll": "Expand all",
     "collapseAll": "Collapse all",
     "saved": "Plan saved to {{path}}",
-    "copied": "Plan copied to the clipboard"
+    "copied": "Plan copied to the clipboard",
+    "exportSvg": "Export diagram as SVG",
+    "exportPng": "Export diagram as PNG",
+    "exported": "Diagram saved to {{path}}"
   },
   "views": {
     "label": "Plan views",
@@ -115,5 +118,28 @@
   },
   "file": {
     "openFailed": "Could not open the plan file: {{message}}"
+  },
+  "compare": {
+    "title": "Compare plans",
+    "description": "Operators are matched by type and object. The biggest changes come first.",
+    "none": "Open another plan to compare with this one.",
+    "with": "Compare with",
+    "current": "This plan",
+    "other": "Other plan",
+    "change": "Change",
+    "status": "Status",
+    "both": "In both",
+    "onlyCurrent": "Only in this plan",
+    "onlyOther": "Only in the other plan",
+    "close": "Close",
+    "open": "Compare plans",
+    "totals": {
+      "totalCost": "Total cost",
+      "planningTimeMs": "Planning time",
+      "executionTimeMs": "Execution time",
+      "rows": "Rows",
+      "nodeCount": "Operators",
+      "warnings": "Warnings"
+    }
   }
 }

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import type { PlanNode, PlanTree } from '@/lib/types';
 import { SeverityIcon } from './PlanDetails';
+import { PlanNodeIcon } from './PlanNodeIcon';
 import {
   formatCost,
   formatCount,
@@ -117,6 +118,7 @@ export function PlanTable({ tree, selectedId, onSelect, collapsed, onToggle }: P
                     {isHot && (
                       <Flame size={12} className="text-accent" aria-label={t('status.hotPath')} />
                     )}
+                    <PlanNodeIcon kind={node.kind} />
                     <span className="truncate">{node.op}</span>
                     {severity && <SeverityIcon severity={severity} size={12} />}
                   </span>

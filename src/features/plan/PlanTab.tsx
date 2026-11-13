@@ -1,4 +1,4 @@
-import { Copy, FileDown, FolderOpen, Play, RefreshCw, Gauge } from 'lucide-react';
+import { Copy, GitCompare, FileDown, FolderOpen, Play, RefreshCw, Gauge } from 'lucide-react';
 import { lazy, Suspense, useCallback, useState, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/Badge';
@@ -11,6 +11,7 @@ import { toast } from '@/components/ui/toastStore';
 import { ipc, toIpcError } from '@/lib/ipc';
 import type { PlanTabPayload } from '@/stores/tabs';
 import { openPlanFile } from './open';
+import { PlanCompare } from './PlanCompare';
 import { PlanDetails } from './PlanDetails';
 import { PlanGraph } from './PlanGraph';
 import {
@@ -46,6 +47,7 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
   const select = usePlanStore((s) => s.select);
   const [view, setView] = useState<View>('graph');
   const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(() => new Set());
+  const [comparing, setComparing] = useState(false);
   const [confirm, setConfirm] = useState<'analyze' | 'rerun' | null>(null);
 
   const onSelect = useCallback((id: number) => select(planId, id), [select, planId]);
@@ -156,6 +158,10 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
         <Button size="sm" onClick={() => void openPlanFile({ sessionId, connectionId })}>
           <FolderOpen size={13} />
           {t('toolbar.open')}
+        </Button>
+        <Button size="sm" disabled={!tree} onClick={() => setComparing(true)}>
+          <GitCompare size={13} />
+          {t('compare.open')}
         </Button>
         <Button
           size="sm"
@@ -286,6 +292,7 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
     <div className="flex h-full min-h-0 flex-col" data-testid="plan-tab">
       {header}
       {body}
+      {comparing && <PlanCompare planId={planId} open onOpenChange={setComparing} />}
       <ConfirmDialog
         open={confirm !== null}
         onOpenChange={(open) => !open && setConfirm(null)}

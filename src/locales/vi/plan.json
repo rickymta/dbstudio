@@ -15,7 +15,10 @@
     "expandAll": "Mở rộng tất cả",
     "collapseAll": "Thu gọn tất cả",
     "saved": "Đã lưu kế hoạch vào {{path}}",
-    "copied": "Đã sao chép kế hoạch"
+    "copied": "Đã sao chép kế hoạch",
+    "exportSvg": "Xuất sơ đồ SVG",
+    "exportPng": "Xuất sơ đồ PNG",
+    "exported": "Đã lưu sơ đồ vào {{path}}"
   },
   "views": {
     "label": "Kiểu xem kế hoạch",
@@ -115,5 +118,28 @@
   },
   "file": {
     "openFailed": "Không mở được tệp kế hoạch: {{message}}"
+  },
+  "compare": {
+    "title": "So sánh kế hoạch",
+    "description": "Các toán tử được ghép theo loại và đối tượng. Thay đổi lớn nhất xếp trước.",
+    "none": "Hãy mở một kế hoạch khác để so sánh với kế hoạch này.",
+    "with": "So sánh với",
+    "current": "Kế hoạch này",
+    "other": "Kế hoạch kia",
+    "change": "Thay đổi",
+    "status": "Trạng thái",
+    "both": "Có ở cả hai",
+    "onlyCurrent": "Chỉ có ở kế hoạch này",
+    "onlyOther": "Chỉ có ở kế hoạch kia",
+    "close": "Đóng",
+    "open": "So sánh kế hoạch",
+    "totals": {
+      "totalCost": "Tổng chi phí",
+      "planningTimeMs": "Thời gian lập kế hoạch",
+      "executionTimeMs": "Thời gian thực thi",
+      "rows": "Số dòng",
+      "nodeCount": "Số toán tử",
+      "warnings": "Cảnh báo"
+    }
   }
 }

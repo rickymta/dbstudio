@@ -2,6 +2,7 @@
 // Loaded lazily by PlanTab to keep the initial bundle small.
 
 import { json } from '@codemirror/lang-json';
+import { xml } from '@codemirror/lang-xml';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { EditorState, StateEffect, StateField, type Extension } from '@codemirror/state';
 import { Decoration, EditorView, lineNumbers } from '@codemirror/view';
@@ -37,7 +38,9 @@ const theme = EditorView.theme({
 });
 
 const highlight = HighlightStyle.define([
-  { tag: [t.propertyName], color: 'var(--accent)' },
+  { tag: [t.propertyName, t.tagName], color: 'var(--accent)' },
+  { tag: [t.attributeName], color: 'var(--warning)' },
+  { tag: [t.attributeValue], color: 'var(--success)' },
   { tag: [t.string, t.special(t.string)], color: 'var(--success)' },
   { tag: [t.number, t.bool, t.null], color: 'var(--warning)' },
   { tag: [t.punctuation, t.operator], color: 'var(--muted-foreground)' },
@@ -85,6 +88,7 @@ export default function PlanRaw({ raw, range }: PlanRawProps) {
       markers,
     ];
     if (language === 'json') extensions.push(json());
+    if (language === 'xml') extensions.push(xml());
     const v = new EditorView({
       parent: host.current,
       state: EditorState.create({ doc: raw.text, extensions }),
