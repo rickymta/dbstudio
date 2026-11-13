@@ -62,7 +62,7 @@
     "label": "Document (EJSON)",
     "valid": "Valid JSON",
     "parseError": "Line {{line}}, column {{col}}: {{message}}",
-    "noId": "This document has no _id, so it cannot be replaced.",
+    "noId": "This document has no _id, so it cannot be edited.",
     "preview": "Preview command",
     "previewTitle": "Command that will run",
     "previewFailed": "Preview failed",
@@ -70,6 +70,10 @@
     "saving": "Saving...",
     "cancel": "Cancel",
     "saveFailed": "Save failed",
+    "noChanges": "No changes to save.",
+    "idChanged": "The _id cannot be changed.",
+    "dollarKey": "Top-level keys starting with $ cannot be saved: the server would read them as operators.",
+    "convertFailed": "This document cannot be saved: {{message}}",
     "notAtomic": "Changes on this server are not atomic."
   },
   "delete": {

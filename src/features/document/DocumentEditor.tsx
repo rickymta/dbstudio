@@ -10,7 +10,8 @@ import {
   buildDocumentChangeSet,
   deleteChange,
   insertChange,
-  replaceChange,
+  planDocumentEdit,
+  type EditPlan,
 } from './documentChanges';
 import { toEjson, toEjsonCompact, validateEjson } from './ejson';
 import { docId } from './flatten';
@@ -73,7 +74,7 @@ function Commands({ commands }: { commands: string[] }) {
   );
 }
 
-/** Edit (replace) or add a document as Extended JSON, with live syntax checking and preview. */
+/** Edit (field-level update) or add a document as Extended JSON, with live syntax checking and preview. */
 export function DocumentEditor({
   sessionId,
   path,
@@ -91,11 +92,15 @@ export function DocumentEditor({
   const id = doc ? docId(doc) : undefined;
   const missingId = doc !== null && id === undefined;
   const check = useMemo(() => validateEjson(text), [text]);
+  const plan = useMemo<EditPlan | null>(() => {
+    if (!check.ok || doc === null || !id) return null;
+    return planDocumentEdit(doc, id, text);
+  }, [check.ok, doc, id, text]);
   const change = useMemo<DocumentChange | null>(() => {
     if (!check.ok) return null;
     if (doc === null) return insertChange(text);
-    return id ? replaceChange(id, text) : null;
-  }, [check.ok, doc, id, text]);
+    return plan?.kind === 'change' ? plan.change : null;
+  }, [check.ok, doc, plan, text]);
   const preview = usePreview(sessionId, path, change);
 
   // A new text invalidates a shown preview.
@@ -170,6 +175,16 @@ export function DocumentEditor({
               <span className="min-w-0 break-words">
                 {t('editor.parseError', { line: check.line, col: check.col, message: check.error })}
               </span>
+            </p>
+          )}
+          {plan?.kind === 'none' && (
+            <p role="status" className="text-xs text-muted-foreground">
+              {t('editor.noChanges')}
+            </p>
+          )}
+          {plan?.kind === 'error' && (
+            <p role="alert" className="text-xs break-words text-danger">
+              {t(`editor.${plan.key}`, { message: plan.message })}
             </p>
           )}
           {missingId && (

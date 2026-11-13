@@ -62,7 +62,7 @@
     "label": "Tài liệu (EJSON)",
     "valid": "JSON hợp lệ",
     "parseError": "Dòng {{line}}, cột {{col}}: {{message}}",
-    "noId": "Tài liệu này không có _id nên không thể thay thế.",
+    "noId": "Tài liệu này không có _id nên không thể sửa.",
     "preview": "Xem trước lệnh",
     "previewTitle": "Lệnh sẽ được chạy",
     "previewFailed": "Xem trước thất bại",
@@ -70,6 +70,10 @@
     "saving": "Đang lưu...",
     "cancel": "Huỷ",
     "saveFailed": "Lưu thất bại",
+    "noChanges": "Không có thay đổi để lưu.",
+    "idChanged": "Không thể đổi _id.",
+    "dollarKey": "Không thể lưu khoá cấp cao nhất bắt đầu bằng $: máy chủ sẽ hiểu nhầm là toán tử.",
+    "convertFailed": "Không thể lưu tài liệu này: {{message}}",
     "notAtomic": "Thay đổi trên máy chủ này không mang tính nguyên tử."
   },
   "delete": {

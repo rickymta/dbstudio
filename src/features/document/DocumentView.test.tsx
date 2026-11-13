@@ -124,7 +124,7 @@ describe('DocumentView (mock IPC)', () => {
 });
 
 describe('DocumentEditor flow', () => {
-  it('replaces a document with the edited EJSON', async () => {
+  it('saves an edited document as a field-level update', async () => {
     const user = userEvent.setup();
     await mount();
     const apply = vi.spyOn(ipc, 'changesApply');
@@ -136,8 +136,10 @@ describe('DocumentEditor flow', () => {
     await waitFor(() => expect(view.state.doc.toString()).toContain('"_id"'));
     expect(within(dialog).getByText('Valid JSON')).toBeInTheDocument();
 
-    await user.click(within(dialog).getByRole('button', { name: 'Preview command' }));
-    await waitFor(() => expect(within(dialog).getByText(/replaceOne/)).toBeInTheDocument());
+    const original = view.state.doc.toString();
+    // Unchanged text: nothing to save.
+    expect(await within(dialog).findByText('No changes to save.')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
 
     // Invalid JSON shows the position and blocks saving.
     const set = (text: string) =>
@@ -146,11 +148,13 @@ describe('DocumentEditor flow', () => {
     expect(await within(dialog).findByText(/Line 1, column 7/)).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
 
-    set('{"a": 1}');
+    set(original.replace('{', '{"zz": 1,'));
+    await user.click(within(dialog).getByRole('button', { name: 'Preview command' }));
+    await waitFor(() => expect(within(dialog).getByText(/updateOne/)).toBeInTheDocument());
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
     expect(apply.mock.calls[0]![1]).toMatchObject({
-      changes: [{ op: 'replace', document: { kind: 'ejson', text: '{"a": 1}' } }],
+      changes: [{ op: 'update', set: [{ path: ['zz'], value: { t: 'int', v: 1 } }] }],
     });
   });
 });

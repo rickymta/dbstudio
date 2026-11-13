@@ -109,7 +109,7 @@ function writeCanonicalExt(
   indent: number,
   out: string[],
 ) {
-  let node: Node | null = null;
+  let node: Node | null;
   try {
     node = parseText(text);
   } catch {
