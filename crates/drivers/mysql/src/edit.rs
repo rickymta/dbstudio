@@ -7,7 +7,7 @@
 
 use dbstudio_core::{
     ApplyResult, CellEdit, ChangeSet, EditValue, Editability, Error, NotEditableReason, ObjectKind,
-    ObjectPath, Result, RowChange, RowChangeSet, Session, TableDetails, Value,
+    ObjectPath, Result, RowChange, RowChangeSet, Session, Value,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, OptsBuilder};
