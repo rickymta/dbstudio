@@ -2,64 +2,27 @@
 //!
 //! `connection_parse_uri` turns `mongodb://`, `mongodb+srv://`, `redis://`, `rediss://`,
 //! `postgres(ql)://`, `mysql://`, `sqlserver://` and `oracle://` URIs into a connection profile.
-//! The password never goes to the frontend: it is kept in a small in-memory table and the
-//! command returns `pendingSecretId`; [`take_pending_secret`] hands it to the save path.
+//! The password never goes to the frontend and is not kept in memory either: the command
+//! reports `hasPassword` and the UI asks the user to type the password again (`pendingSecretId`
+//! stays `None`).
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
-
-use dbstudio_core::{ConnectionConfig, DbKind, Error, Secret, TlsMode};
+use dbstudio_core::{ConnectionConfig, DbKind, Error, TlsMode};
 use dbstudio_store::ConnectionProfile;
 use serde::Serialize;
 use tauri::State;
-use uuid::Uuid;
 
 use crate::state::AppState;
 
 type Result<T> = std::result::Result<T, Error>;
 
-/// Result of `connection_parse_uri`; the password stays in the backend (`pending_secret_id`).
+/// Result of `connection_parse_uri`. The password is dropped: `has_password` tells the UI to ask
+/// for it; `pending_secret_id` is always `None` (kept for the contract).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParsedConnectionUri {
     pub profile: ConnectionProfile,
     pub has_password: bool,
     pub pending_secret_id: Option<String>,
-}
-
-const PENDING_TTL: Duration = Duration::from_secs(600);
-const PENDING_MAX: usize = 32;
-
-static PENDING: Mutex<Option<HashMap<String, (Secret, Instant)>>> = Mutex::new(None);
-
-fn stash_secret(secret: Secret) -> String {
-    let id = Uuid::new_v4().to_string();
-    let mut guard = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-    let map = guard.get_or_insert_with(HashMap::new);
-    map.retain(|_, (_, at)| at.elapsed() < PENDING_TTL);
-    if map.len() >= PENDING_MAX {
-        if let Some(oldest) = map
-            .iter()
-            .min_by_key(|(_, (_, at))| *at)
-            .map(|(k, _)| k.clone())
-        {
-            map.remove(&oldest);
-        }
-    }
-    map.insert(id.clone(), (secret, Instant::now()));
-    id
-}
-
-/// Take (and forget) the password parsed from a URI. `None` when unknown or expired.
-///
-/// Not called yet: `connection_save` / `session_open` must accept `pendingSecretId` (contract
-/// change proposed in the package K report).
-#[allow(dead_code)]
-pub fn take_pending_secret(id: &str) -> Option<Secret> {
-    let mut guard = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-    let (secret, at) = guard.as_mut()?.remove(id)?;
-    (at.elapsed() < PENDING_TTL).then_some(secret)
 }
 
 fn invalid(msg: &str) -> Error {
@@ -147,8 +110,11 @@ fn split_uri(uri: &str) -> Result<Parts> {
         Some((r, q)) => (r, Some(q)),
         None => (rest, None),
     };
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], Some(&rest[i + 1..])),
+    // The authority ends at the first '/' after the LAST '@', so an unencoded '/' inside the
+    // password cannot leak into the host or database.
+    let search_from = rest.rfind('@').map(|i| i + 1).unwrap_or(0);
+    let (authority, path) = match rest[search_from..].find('/') {
+        Some(i) => (&rest[..search_from + i], Some(&rest[search_from + i + 1..])),
         None => (rest, None),
     };
     let (userinfo, hosts_text) = match authority.rfind('@') {
@@ -250,7 +216,14 @@ fn parse_mongo(p: &Parts) -> Result<ConnectionConfig> {
         let all: Vec<String> = p
             .hosts
             .iter()
-            .map(|(h, port)| format!("{h}:{}", port.unwrap_or(27017)))
+            .map(|(h, port)| {
+                let h = if h.contains(':') {
+                    format!("[{h}]")
+                } else {
+                    h.clone()
+                };
+                format!("{h}:{}", port.unwrap_or(27017))
+            })
             .collect();
         cfg.options.insert("hosts".into(), all.join(","));
     }
@@ -368,8 +341,8 @@ fn parse_sql(p: &Parts) -> Result<ConnectionConfig> {
     Ok(cfg)
 }
 
-/// Parse a URI into a profile and the password (if any).
-pub fn parse_uri(uri: &str) -> Result<(ConnectionProfile, Option<Secret>)> {
+/// Parse a URI into a profile and whether it carried a password (which is discarded).
+pub fn parse_uri(uri: &str) -> Result<(ConnectionProfile, bool)> {
     let parts = split_uri(uri)?;
     let cfg = match parts.scheme.as_str() {
         "mongodb" | "mongodb+srv" => parse_mongo(&parts)?,
@@ -379,18 +352,16 @@ pub fn parse_uri(uri: &str) -> Result<(ConnectionProfile, Option<Secret>)> {
         }
         other => return Err(Error::Unsupported(format!("uri_scheme:{other}"))),
     };
-    Ok((profile_of(cfg), parts.password.map(Secret::new)))
+    Ok((profile_of(cfg), parts.password.is_some()))
 }
 
 pub(crate) fn parse_uri_impl(state: &AppState, uri: &str) -> Result<ParsedConnectionUri> {
     let _ = state;
-    let (profile, secret) = parse_uri(uri)?;
-    let has_password = secret.is_some();
-    let pending_secret_id = secret.map(stash_secret);
+    let (profile, has_password) = parse_uri(uri)?;
     Ok(ParsedConnectionUri {
         profile,
         has_password,
-        pending_secret_id,
+        pending_secret_id: None,
     })
 }
 
@@ -420,7 +391,7 @@ mod tests {
         );
         assert_eq!(c.database.as_deref(), Some("app"));
         assert_eq!(c.username.as_deref(), Some("dbstudio"));
-        assert_eq!(s.unwrap().expose(), "p@ss/w:rd");
+        assert!(s, "password reported, not kept");
         assert_eq!(c.options["authSource"], "admin");
         assert_eq!(c.options["replicaSet"], "rs0");
         assert_eq!(c.options["directConnection"], "true");
@@ -437,7 +408,7 @@ mod tests {
     #[test]
     fn mongodb_srv_defaults_to_tls() {
         let (p, s) = parse_uri("mongodb+srv://u@cluster0.example.net/?retryWrites=true").unwrap();
-        assert!(s.is_none());
+        assert!(!s);
         assert_eq!(p.config.options["srv"], "true");
         assert_eq!(p.config.tls.mode, TlsMode::VerifyFull);
         assert!(p.config.database.is_none());
@@ -458,7 +429,7 @@ mod tests {
             (6380, Some("2"))
         );
         assert!(p.config.username.is_none());
-        assert_eq!(s.unwrap().expose(), "secret");
+        assert!(s);
         assert_eq!(p.config.tls.mode, TlsMode::VerifyFull);
         assert!(parse_uri("redis://h/notanumber").is_err());
 
@@ -468,7 +439,7 @@ mod tests {
         assert_eq!((p.config.kind, p.config.port), (DbKind::Postgres, 5432));
         assert_eq!(p.config.tls.mode, TlsMode::VerifyFull);
         assert_eq!(p.config.tls.ca_cert_path.as_deref(), Some("/r.pem"));
-        assert_eq!(s.unwrap().expose(), "pw");
+        assert!(s);
         let (p, _) = parse_uri("mysql://root@127.0.0.1:3307/app?ssl-mode=REQUIRED").unwrap();
         assert_eq!(
             (p.config.kind, p.config.port, p.config.tls.mode),
@@ -499,16 +470,31 @@ mod tests {
     }
 
     #[test]
-    fn password_is_kept_only_in_the_backend() {
-        let id = stash_secret(Secret::new("pw"));
-        assert_eq!(take_pending_secret(&id).unwrap().expose(), "pw");
-        assert!(take_pending_secret(&id).is_none(), "single use");
+    fn password_never_reaches_the_frontend() {
+        let (profile, has_password) = parse_uri("mongodb://u:pw@h/x").unwrap();
+        assert!(has_password);
         let json = serde_json::to_string(&ParsedConnectionUri {
-            profile: parse_uri("mongodb://u:pw@h/x").unwrap().0,
-            has_password: true,
-            pending_secret_id: Some("id".into()),
+            profile,
+            has_password,
+            pending_secret_id: None,
         })
         .unwrap();
-        assert!(!json.contains("\"pw\""));
+        assert!(!json.contains("\"pw\"") && json.contains("\"hasPassword\":true"));
+    }
+
+    #[test]
+    fn ipv6_hosts_keep_brackets_and_slash_in_password_stays_in_userinfo() {
+        let (p, _) = parse_uri("mongodb://u:p@[::1]:27017,[fe80::2]:27018/d").unwrap();
+        assert_eq!(p.config.host, "::1");
+        assert_eq!(p.config.options["hosts"], "[::1]:27017,[fe80::2]:27018");
+        let (p, has) =
+            parse_uri("mongodb://user:pa/ss@db.example.com:27018/app?authSource=admin").unwrap();
+        assert!(has);
+        assert_eq!(
+            (p.config.host.as_str(), p.config.port),
+            ("db.example.com", 27018)
+        );
+        assert_eq!(p.config.database.as_deref(), Some("app"));
+        assert_eq!(p.config.username.as_deref(), Some("user"));
     }
 }

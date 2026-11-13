@@ -62,14 +62,26 @@ fn input_doc(i: &DocInput) -> Result<Document> {
     }
 }
 
+/// A field path is sent to `$set`/`$unset` as a dotted name, so a path element that itself
+/// contains `.` or starts with `$` cannot be addressed (use Replace for such documents).
+fn check_path(path: &[String]) -> Result<()> {
+    if path.is_empty() || path.iter().any(String::is_empty) {
+        return Err(bad("empty field path"));
+    }
+    if let Some(bad_name) = path.iter().find(|n| n.contains('.') || n.starts_with('$')) {
+        return Err(bad(format!(
+            "field '{bad_name}' contains '.' or starts with '$' and cannot be edited with $set/$unset; replace the document instead"
+        )));
+    }
+    Ok(())
+}
+
 fn update_docs(set: &[FieldEdit], unset: &[Vec<String>]) -> Result<Document> {
     let mut u = Document::new();
     if !set.is_empty() {
         let mut s = Document::new();
         for f in set {
-            if f.path.is_empty() {
-                return Err(bad("empty field path"));
-            }
+            check_path(&f.path)?;
             s.insert(f.path.join("."), value_to_bson(&f.value)?);
         }
         u.insert("$set", s);
@@ -77,6 +89,7 @@ fn update_docs(set: &[FieldEdit], unset: &[Vec<String>]) -> Result<Document> {
     if !unset.is_empty() {
         let mut s = Document::new();
         for p in unset {
+            check_path(p)?;
             s.insert(p.join("."), "");
         }
         u.insert("$unset", s);
@@ -141,6 +154,11 @@ fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
             DocumentChange::Replace { id, document } => {
                 let query = q(id)?;
                 let d = input_doc(document)?;
+                if d.keys().next().is_some_and(|k| k.starts_with('$')) {
+                    return Err(bad(
+                        "a replacement document cannot start with an operator ($...) field",
+                    ));
+                }
                 updates.push(Step {
                     index,
                     text: format!(
@@ -330,6 +348,42 @@ mod tests {
                 && p[1].contains("$unset")
         );
         assert!(p[2].contains("insertOne({\"name\": \"x\"})"));
+    }
+
+    #[test]
+    fn unsafe_paths_and_operator_replacements_are_rejected() {
+        let upd = |path: &[&str]| {
+            preview(&set(vec![DocumentChange::Update {
+                id: Value::Int(1),
+                set: vec![FieldEdit {
+                    path: path.iter().map(|s| s.to_string()).collect(),
+                    value: Value::Int(1),
+                }],
+                unset: vec![],
+            }]))
+        };
+        assert!(upd(&["a", "b"]).is_ok());
+        assert!(upd(&["a", "0", "b"]).is_ok());
+        assert!(
+            upd(&["a.b"]).is_err(),
+            "dotted key would address a nested path"
+        );
+        assert!(upd(&["a", "$x"]).is_err());
+        assert!(upd(&[]).is_err());
+        let unset = preview(&set(vec![DocumentChange::Update {
+            id: Value::Int(1),
+            set: vec![],
+            unset: vec![vec!["x.y".into()]],
+        }]));
+        assert!(unset.is_err());
+        let rep = |text: &str| {
+            preview(&set(vec![DocumentChange::Replace {
+                id: Value::Int(1),
+                document: DocInput::Ejson { text: text.into() },
+            }]))
+        };
+        assert!(rep("{\"a\": 1}").is_ok());
+        assert!(rep("{\"$set\": {\"a\": 1}}").is_err());
     }
 
     #[test]

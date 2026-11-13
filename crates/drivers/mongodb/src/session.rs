@@ -77,7 +77,7 @@ pub async fn kill_op(client: &Client, running: &Running, query_id: Uuid) -> Resu
             .run_command(doc! {
                 "aggregate": 1,
                 "pipeline": [
-                    {"$currentOp": {"allUsers": true, "idleConnections": false}},
+                    {"$currentOp": {"allUsers": false, "idleConnections": false}},
                     {"$match": {"$or": [{"command.comment": &id}, {"originatingCommand.comment": &id}]}}
                 ],
                 "cursor": {}
@@ -371,6 +371,14 @@ impl Session for MongoSession {
             extra.insert("replicaSet".into(), rs.clone());
         }
         extra.insert("transactions".into(), self.conn.transactions.to_string());
+        extra.insert(
+            "tls".into(),
+            match (self.conn.tls_active, self.conn.tls_fallback) {
+                (true, _) => "true".to_string(),
+                (false, true) => "false (fallback)".to_string(),
+                (false, false) => "false".to_string(),
+            },
+        );
         Ok(ServerInfo {
             product: "MongoDB".into(),
             version: self.conn.version.clone(),

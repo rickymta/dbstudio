@@ -182,6 +182,33 @@ fn arg_doc(args: &[ShellValue], i: usize) -> Result<Document> {
     }
 }
 
+/// Filter of a write: must be an explicit document (`{}` selects everything), so a missing or
+/// null filter can never turn into "all documents".
+fn arg_write_filter(args: &[ShellValue], i: usize, method: &str) -> Result<Document> {
+    match args.get(i) {
+        None | Some(ShellValue::Null) => Err(bad(format!(
+            "{method} needs an explicit filter document (use {{}} to match every document)"
+        ))),
+        Some(v) => shell_to_doc(v),
+    }
+}
+
+/// Verbosity argument of `.explain()`.
+fn explain_verbosity(args: &[ShellValue]) -> Result<&'static str> {
+    match args.first() {
+        None => Ok("queryPlanner"),
+        Some(ShellValue::String(s)) => match s.as_str() {
+            "queryPlanner" => Ok("queryPlanner"),
+            "executionStats" => Ok("executionStats"),
+            "allPlansExecution" => Ok("allPlansExecution"),
+            other => Err(bad(format!("unknown explain verbosity '{other}'"))),
+        },
+        Some(ShellValue::Bool(true)) => Ok("allPlansExecution"),
+        Some(ShellValue::Bool(false)) => Ok("queryPlanner"),
+        _ => Err(bad("explain expects a verbosity string")),
+    }
+}
+
 fn arg_opt_doc(args: &[ShellValue], i: usize) -> Result<Option<Document>> {
     match args.get(i) {
         None | Some(ShellValue::Null) => Ok(None),
@@ -276,6 +303,17 @@ fn collection_of(stmt: &ShellStatement) -> Result<String> {
 pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Planned>> {
     let args = stmt.args.as_slice();
     let mut inserted_ids = Vec::new();
+    // Chained calls only make sense on cursors; anywhere else they would be silently ignored
+    // (`deleteMany({}).explain()` must never run the delete).
+    let cursor_method = stmt.kind == ShellKind::Collection
+        && matches!(stmt.method.as_str(), "find" | "findOne" | "aggregate");
+    if !stmt.chain.is_empty() && !cursor_method {
+        return Err(bad(format!(
+            "'.{}()' cannot be chained after {}()",
+            stmt.chain[0].0, stmt.method
+        )));
+    }
+    let mut explain: Option<&'static str> = None;
     let (cmd_db, mut cmd, kind): (String, Document, Kind) = match stmt.kind {
         ShellKind::Use | ShellKind::Show => return Ok(None),
         ShellKind::Database => match stmt.method.as_str() {
@@ -365,11 +403,15 @@ pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Pla
                                 c.insert("maxTimeMS", arg_i64(a, 0)?);
                             }
                             "count" | "itcount" | "size" => count_only = true,
+                            "explain" => explain = Some(explain_verbosity(a)?),
                             "toArray" | "pretty" | "forEach" | "map" => {}
                             other => {
                                 return Err(Error::Unsupported(format!("cursor.{other}()")));
                             }
                         }
+                    }
+                    if count_only && explain.is_some() {
+                        return Err(bad("count cannot be explained this way"));
                     }
                     if count_only {
                         let mut cc = doc! {"count": &coll, "query": c.get_document("filter").cloned().unwrap_or_default()};
@@ -394,6 +436,15 @@ pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Pla
                     );
                     if let Some(b) = opts.as_ref().and_then(|o| o.get("batchSize")) {
                         c.insert("cursor", doc! {"batchSize": b.clone()});
+                    }
+                    for (name, a) in &stmt.chain {
+                        match name.as_str() {
+                            "explain" => explain = Some(explain_verbosity(a)?),
+                            "toArray" | "pretty" | "forEach" | "map" => {}
+                            other => {
+                                return Err(Error::Unsupported(format!("cursor.{other}()")));
+                            }
+                        }
                     }
                     (db.to_string(), c, Kind::Cursor)
                 }
@@ -479,7 +530,7 @@ pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Pla
                     )
                 }
                 m @ ("updateOne" | "updateMany" | "replaceOne") => {
-                    let q = arg_doc(args, 0)?;
+                    let q = arg_write_filter(args, 0, m)?;
                     let u = match args.get(1).map(shell_to_bson).transpose()? {
                         Some(Bson::Document(d)) => Bson::Document(d),
                         Some(Bson::Array(a)) => Bson::Array(a),
@@ -498,7 +549,7 @@ pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Pla
                     )
                 }
                 m @ ("deleteOne" | "deleteMany") => {
-                    let q = arg_doc(args, 0)?;
+                    let q = arg_write_filter(args, 0, m)?;
                     let mut entry = doc! {"q": q, "limit": if m == "deleteOne" {1} else {0}};
                     merge_opts(&mut entry, &arg_opt_doc(args, 1)?, &["collation", "hint"]);
                     (
@@ -508,7 +559,8 @@ pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Pla
                     )
                 }
                 m @ ("findOneAndUpdate" | "findOneAndReplace" | "findOneAndDelete") => {
-                    let mut c = doc! {"findAndModify": &coll, "query": arg_doc(args, 0)?};
+                    let mut c =
+                        doc! {"findAndModify": &coll, "query": arg_write_filter(args, 0, m)?};
                     let opts = if m == "findOneAndDelete" {
                         c.insert("remove", true);
                         arg_opt_doc(args, 1)?
@@ -588,7 +640,17 @@ pub fn plan(stmt: &ShellStatement, db: &str, comment: &str) -> Result<Option<Pla
             }
         }
     };
-    if !comment.is_empty() && kind != Kind::Done {
+    if let Some(verbosity) = explain {
+        // The statement is explained, never executed.
+        let wrapped = doc! {"explain": cmd, "verbosity": verbosity};
+        return Ok(Some(Planned {
+            db: cmd_db,
+            cmd: wrapped,
+            kind: Kind::Command,
+            inserted_ids: vec![],
+        }));
+    }
+    if !comment.is_empty() {
         cmd.insert("comment", comment);
     }
     Ok(Some(Planned {
@@ -867,5 +929,85 @@ async fn show(cmd: &mut Cmd<'_>, db: &str, what: &str, sink: &mut dyn ResultSink
             names_result(sink, "name", names)
         }
         other => Err(Error::Unsupported(format!("show {other}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbstudio_sql::mongo_shell;
+
+    fn planned(text: &str) -> Result<Option<Planned>> {
+        let stmts = mongo_shell::parse(text).unwrap();
+        plan(&stmts[0], "app", "cid")
+    }
+
+    #[test]
+    fn chains_on_writes_are_rejected_not_ignored() {
+        for text in [
+            "db.c.deleteMany({}).explain()",
+            "db.c.updateOne({a:1},{$set:{b:1}}).limit(1)",
+            "db.c.drop().explain()",
+            "db.c.insertOne({a:1}).sort({a:1})",
+            "db.runCommand({ping:1}).explain()",
+        ] {
+            let e = planned(text).unwrap_err();
+            assert_eq!(e.kind(), "query", "{text}");
+            assert!(e.message().contains("cannot be chained"), "{text}: {e}");
+        }
+        // A plain write still plans.
+        assert!(planned("db.c.deleteMany({})").unwrap().is_some());
+    }
+
+    #[test]
+    fn explain_chain_on_cursors_wraps_and_never_executes() {
+        let p = planned("db.c.aggregate([{$match:{a:1}},{$out:'t'}]).explain()")
+            .unwrap()
+            .unwrap();
+        assert_eq!(p.kind, Kind::Command);
+        assert!(p.cmd.contains_key("explain") && !p.cmd.contains_key("aggregate"));
+        assert_eq!(p.cmd.get_str("verbosity").unwrap(), "queryPlanner");
+        let p = planned("db.c.find({a:1}).sort({a:1}).explain('executionStats')")
+            .unwrap()
+            .unwrap();
+        assert_eq!(p.cmd.get_str("verbosity").unwrap(), "executionStats");
+        assert!(p.cmd.get_document("explain").unwrap().contains_key("find"));
+        assert!(planned("db.c.find({}).explain('weird')").is_err());
+        assert!(planned("db.c.aggregate([]).sort({a:1})").is_err());
+    }
+
+    #[test]
+    fn write_filters_must_be_explicit_documents() {
+        for text in [
+            "db.c.deleteMany()",
+            "db.c.deleteOne(null)",
+            "db.c.updateMany(null, {$set:{a:1}})",
+            "db.c.updateOne(undefined, {$set:{a:1}})",
+            "db.c.replaceOne(null, {a:1})",
+            "db.c.findOneAndDelete()",
+            "db.c.findOneAndUpdate(null, {$set:{a:1}})",
+        ] {
+            let e = planned(text).unwrap_err();
+            assert!(e.message().contains("explicit filter"), "{text}: {e}");
+        }
+        assert!(planned("db.c.deleteMany({})").is_ok());
+        assert!(planned("db.c.updateMany({}, {$set:{a:1}})").is_ok());
+        // Reads keep treating a missing filter as "everything".
+        assert!(planned("db.c.find()").is_ok());
+        assert!(planned("db.c.find(null)").is_ok());
+        assert!(planned("db.c.countDocuments()").is_ok());
+    }
+
+    #[test]
+    fn commands_carry_the_query_id_comment() {
+        for text in [
+            "db.c.drop()",
+            "db.createCollection('x')",
+            "db.dropDatabase()",
+            "db.c.find({})",
+        ] {
+            let p = planned(text).unwrap().unwrap();
+            assert_eq!(p.cmd.get_str("comment").unwrap(), "cid", "{text}");
+        }
     }
 }

@@ -15,6 +15,35 @@ const DEFAULT_CONNECT_MS: u64 = 10_000;
 /// Time to try TLS before falling back to plain in `prefer` mode.
 const PREFER_TLS_MS: u64 = 2_000;
 
+/// Whether a failed TLS attempt means "the server does not speak TLS" (plain listener closed
+/// the handshake), as opposed to a timeout, a refused connection or an authentication error.
+pub fn tls_unsupported(e: &Error) -> bool {
+    let text = e.message().to_ascii_lowercase();
+    if matches!(
+        e,
+        Error::Authentication(_) | Error::Timeout | Error::Cancelled
+    ) {
+        return false;
+    }
+    if text.contains("connection refused")
+        || text.contains("timed out")
+        || text.contains("no route")
+    {
+        return false;
+    }
+    [
+        "handshake",
+        "corrupt message",
+        "close_notify",
+        "unexpected eof",
+        "invalid content type",
+        "alert",
+        "tls",
+    ]
+    .iter()
+    .any(|m| text.contains(m))
+}
+
 /// Map a driver error onto [`Error`]. Messages never contain credentials.
 pub fn map_error(err: mongodb::error::Error) -> Error {
     let text = err.to_string();
@@ -223,6 +252,12 @@ pub struct Conn {
     /// Replica set member or mongos: multi-document transactions are available.
     pub transactions: bool,
     pub set_name: Option<String>,
+    /// TLS is in use on this connection.
+    pub tls_active: bool,
+    /// `prefer` mode fell back to plain because the server refused TLS.
+    pub tls_fallback: bool,
+    /// The negotiated attempt, reused by leases (no second negotiation).
+    attempt: TlsAttempt,
     /// Keep the temporary client PEM alive while the client exists.
     _pem: Option<TempPem>,
     secret: Option<Secret>,
@@ -254,14 +289,18 @@ impl Conn {
                         major_minor: info.major_minor,
                         transactions: info.transactions,
                         set_name: info.set_name,
+                        tls_active: matches!(attempt, TlsAttempt::Tls { .. }),
+                        tls_fallback: i > 0,
+                        attempt: *attempt,
                         _pem: temp,
                         secret: secret.cloned(),
                     });
                 }
                 Err(e) => {
-                    // An authentication failure is final; other failures may mean the server
-                    // does not speak TLS (prefer mode).
-                    if matches!(e, Error::Authentication(_)) {
+                    // Only an explicit "this server does not speak TLS" may downgrade; timeouts,
+                    // refused connections and authentication failures are final.
+                    let can_retry = i + 1 < attempts.len() && tls_unsupported(&e);
+                    if !can_retry {
                         return Err(e);
                     }
                     last_err = Some(e);
@@ -271,32 +310,26 @@ impl Conn {
         Err(last_err.unwrap_or_else(|| bad("no connection attempt was made")))
     }
 
-    /// A second client for a lease: own physical connections, same TLS/auth settings.
+    /// A second client for a lease: own physical connections, the TLS setting negotiated by
+    /// [`Conn::connect`] (no new negotiation, so a lease never downgrades on its own).
     pub async fn dedicated_client(&self) -> Result<Client> {
-        let (pem_path, temp) = client_pem(&self.config)?;
-        let attempts = tls_attempts(self.config.tls.mode);
-        let mut last = None;
-        for (i, attempt) in attempts.iter().enumerate() {
-            let short = attempts.len() > 1 && i + 1 < attempts.len();
-            let mut o = build_options(
-                &self.config,
-                self.secret.as_ref(),
-                *attempt,
-                pem_path.as_ref(),
-                short,
-            )
-            .await?;
-            o.max_pool_size = Some(2);
-            let client = Client::with_options(o).map_err(map_error)?;
-            match client.database("admin").run_command(doc! {"ping": 1}).await {
-                Ok(_) => {
-                    drop(temp);
-                    return Ok(client);
-                }
-                Err(e) => last = Some(map_error(e)),
-            }
-        }
-        Err(last.unwrap_or_else(|| bad("no connection attempt was made")))
+        let (pem_path, _temp) = client_pem(&self.config)?;
+        let mut o = build_options(
+            &self.config,
+            self.secret.as_ref(),
+            self.attempt,
+            pem_path.as_ref(),
+            false,
+        )
+        .await?;
+        o.max_pool_size = Some(2);
+        let client = Client::with_options(o).map_err(map_error)?;
+        client
+            .database("admin")
+            .run_command(doc! {"ping": 1})
+            .await
+            .map_err(map_error)?;
+        Ok(client)
     }
 
     /// Default database for commands: the profile database or `admin`.
@@ -425,5 +458,28 @@ impl Cmd<'_> {
             None => database.run_command(command).await,
         }
         .map_err(map_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_explicit_tls_failures_downgrade() {
+        let tls = |m: &str| Error::Connection(format!("I/O error: {m}"));
+        assert!(tls_unsupported(&tls(
+            "received corrupt message of type InvalidContentType"
+        )));
+        assert!(tls_unsupported(&tls(
+            "peer closed connection without sending TLS close_notify"
+        )));
+        assert!(tls_unsupported(&Error::Tls("handshake failure".into())));
+        assert!(!tls_unsupported(&tls("Connection refused (os error 61)")));
+        assert!(!tls_unsupported(&tls("operation timed out")));
+        assert!(!tls_unsupported(&Error::Authentication(
+            "bad tls creds".into()
+        )));
+        assert!(!tls_unsupported(&Error::Timeout));
     }
 }

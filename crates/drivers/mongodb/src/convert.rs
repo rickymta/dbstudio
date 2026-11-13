@@ -180,17 +180,222 @@ fn ext_to_bson(e: &ExtValue) -> Result<Bson> {
         "minKey" => Bson::MinKey,
         "maxKey" => Bson::MaxKey,
         "undefined" => Bson::Undefined,
-        "javascript" | "javascriptWithScope" | "symbol" | "dbPointer" => parse_ejson_value(t)?,
+        "javascript" | "javascriptWithScope" | "symbol" => parse_ejson_value(t)?,
+        "dbPointer" => return Err(bad("DBPointer values cannot be stored")),
         other => return Err(bad(format!("value of type '{other}' cannot be stored"))),
     })
 }
 
-/// Parse relaxed/canonical Extended JSON (any value).
+/// Keys that turn a JSON object into an Extended JSON scalar wrapper.
+const WRAPPER_KEYS: [&str; 16] = [
+    "$oid",
+    "$date",
+    "$numberInt",
+    "$numberLong",
+    "$numberDouble",
+    "$numberDecimal",
+    "$binary",
+    "$uuid",
+    "$timestamp",
+    "$regularExpression",
+    "$symbol",
+    "$code",
+    "$minKey",
+    "$maxKey",
+    "$undefined",
+    "$dbPointer",
+];
+
+struct Parser<'a> {
+    src: &'a str,
+    chars: Vec<(usize, char)>,
+    pos: usize,
+}
+
+impl<'a> Parser<'a> {
+    fn err(&self, msg: &str) -> Error {
+        let at = self
+            .chars
+            .get(self.pos)
+            .map(|c| c.0)
+            .unwrap_or(self.src.len());
+        let before = &self.src[..at];
+        let line = before.matches('\n').count() + 1;
+        let col = before
+            .rsplit('\n')
+            .next()
+            .map(|l| l.chars().count())
+            .unwrap_or(0)
+            + 1;
+        bad(format!("invalid JSON: {msg} at line {line} column {col}"))
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.pos).map(|c| c.1)
+    }
+
+    fn ws(&mut self) {
+        while self.peek().is_some_and(char::is_whitespace) {
+            self.pos += 1;
+        }
+    }
+
+    fn byte_at(&self, pos: usize) -> usize {
+        self.chars.get(pos).map(|c| c.0).unwrap_or(self.src.len())
+    }
+
+    fn value(&mut self, depth: usize) -> Result<Bson> {
+        if depth > 200 {
+            return Err(self.err("nesting too deep"));
+        }
+        self.ws();
+        match self.peek() {
+            Some('{') => self.object(depth),
+            Some('[') => {
+                self.pos += 1;
+                let mut items = Vec::new();
+                self.ws();
+                if self.peek() == Some(']') {
+                    self.pos += 1;
+                    return Ok(Bson::Array(items));
+                }
+                loop {
+                    items.push(self.value(depth + 1)?);
+                    self.ws();
+                    match self.peek() {
+                        Some(',') => self.pos += 1,
+                        Some(']') => {
+                            self.pos += 1;
+                            return Ok(Bson::Array(items));
+                        }
+                        _ => return Err(self.err("expected ',' or ']'")),
+                    }
+                }
+            }
+            Some('"') => Ok(Bson::String(self.string()?)),
+            Some('t') => self.word("true", Bson::Boolean(true)),
+            Some('f') => self.word("false", Bson::Boolean(false)),
+            Some('n') => self.word("null", Bson::Null),
+            Some(c) if c == '-' || c.is_ascii_digit() => self.number(),
+            _ => Err(self.err("unexpected token")),
+        }
+    }
+
+    fn word(&mut self, w: &str, v: Bson) -> Result<Bson> {
+        for expected in w.chars() {
+            if self.peek() != Some(expected) {
+                return Err(self.err("unexpected token"));
+            }
+            self.pos += 1;
+        }
+        Ok(v)
+    }
+
+    fn number(&mut self) -> Result<Bson> {
+        let start = self.pos;
+        while self
+            .peek()
+            .is_some_and(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.' | 'e' | 'E'))
+        {
+            self.pos += 1;
+        }
+        let text = &self.src[self.byte_at(start)..self.byte_at(self.pos)];
+        if text.contains(['.', 'e', 'E']) {
+            return text
+                .parse::<f64>()
+                .map(Bson::Double)
+                .map_err(|_| self.err("invalid number"));
+        }
+        match text.parse::<i64>() {
+            // Plain integers keep the smallest integer type (Int32 when it fits).
+            Ok(i) => Ok(i32::try_from(i).map(Bson::Int32).unwrap_or(Bson::Int64(i))),
+            Err(_) => text
+                .parse::<f64>()
+                .map(Bson::Double)
+                .map_err(|_| self.err("invalid number")),
+        }
+    }
+
+    fn string(&mut self) -> Result<String> {
+        // Delegate escapes to serde_json on the exact literal.
+        let start = self.pos;
+        self.pos += 1;
+        loop {
+            match self.peek() {
+                None => return Err(self.err("unterminated string")),
+                Some('\\') => self.pos += 2,
+                Some('"') => {
+                    self.pos += 1;
+                    break;
+                }
+                Some(_) => self.pos += 1,
+            }
+        }
+        let lit = &self.src[self.byte_at(start)..self.byte_at(self.pos)];
+        serde_json::from_str::<String>(lit).map_err(|_| self.err("invalid string"))
+    }
+
+    fn object(&mut self, depth: usize) -> Result<Bson> {
+        let start = self.pos;
+        self.pos += 1;
+        let mut d = Document::new();
+        self.ws();
+        if self.peek() == Some('}') {
+            self.pos += 1;
+            return Ok(Bson::Document(d));
+        }
+        loop {
+            self.ws();
+            if self.peek() != Some('"') {
+                return Err(self.err("expected a string key"));
+            }
+            let k = self.string()?;
+            self.ws();
+            if self.peek() != Some(':') {
+                return Err(self.err("expected ':'"));
+            }
+            self.pos += 1;
+            let v = self.value(depth + 1)?;
+            d.insert(k, v);
+            self.ws();
+            match self.peek() {
+                Some(',') => self.pos += 1,
+                Some('}') => {
+                    self.pos += 1;
+                    break;
+                }
+                _ => return Err(self.err("expected ',' or '}'")),
+            }
+        }
+        let is_wrapper = d
+            .keys()
+            .next()
+            .is_some_and(|k| WRAPPER_KEYS.contains(&k.as_str()))
+            && d.keys().all(|k| k.starts_with('$'));
+        if is_wrapper {
+            // Scalar wrappers are small; let `bson` interpret exactly this slice.
+            let lit = &self.src[self.byte_at(start)..self.byte_at(self.pos)];
+            return serde_json::from_str::<Bson>(lit)
+                .map_err(|e| bad(format!("invalid Extended JSON value: {e}")));
+        }
+        Ok(Bson::Document(d))
+    }
+}
+
+/// Parse relaxed/canonical Extended JSON (any value). Field order is kept and plain integer
+/// literals become Int32 when they fit (negative ones too), Int64 otherwise.
 pub fn parse_ejson_value(text: &str) -> Result<Bson> {
-    serde_json::from_str::<Bson>(text).map_err(|e| Error::Query {
-        message: format!("invalid JSON: {e}"),
-        position: None,
-    })
+    let mut p = Parser {
+        src: text,
+        chars: text.char_indices().collect(),
+        pos: 0,
+    };
+    let v = p.value(0)?;
+    p.ws();
+    if p.pos < p.chars.len() {
+        return Err(p.err("trailing characters"));
+    }
+    Ok(v)
 }
 
 /// Parse an Extended JSON object.
@@ -485,6 +690,58 @@ mod tests {
         );
         let keys: Vec<_> = parse_ejson_doc(&relaxed).unwrap().keys().cloned().collect();
         assert_eq!(keys, ["z", "a", "o", "d"]);
+    }
+
+    #[test]
+    fn plain_integers_keep_their_type_and_order() {
+        let d = parse_ejson_doc(r#"{"z": 5, "b": -5, "c": {"$numberLong": "-5"}, "d": 3000000000, "e": -1.5, "n": [1, -2]}"#).unwrap();
+        assert_eq!(d.get("z"), Some(&Bson::Int32(5)));
+        assert_eq!(
+            d.get("b"),
+            Some(&Bson::Int32(-5)),
+            "negative Int32 stays Int32"
+        );
+        assert_eq!(d.get("c"), Some(&Bson::Int64(-5)));
+        assert_eq!(d.get("d"), Some(&Bson::Int64(3_000_000_000)));
+        assert_eq!(d.get("e"), Some(&Bson::Double(-1.5)));
+        assert_eq!(d.keys().next().unwrap(), "z");
+        // The frontend form of negative Int32 / Int64.
+        let d =
+            parse_ejson_doc(r#"{"a": 5, "b": {"$numberInt": "-5"}, "c": {"$numberLong": "-5"}}"#)
+                .unwrap();
+        assert_eq!(d.get("b"), Some(&Bson::Int32(-5)));
+        // Query operators are not wrappers.
+        let d = parse_ejson_doc(r#"{"age": {"$gt": -3, "$lt": 4}}"#).unwrap();
+        assert_eq!(
+            d.get_document("age").unwrap().get("$gt"),
+            Some(&Bson::Int32(-3))
+        );
+        assert!(parse_ejson_value("[1, 2").is_err());
+        assert!(parse_ejson_value("{\"a\": 1} x").is_err());
+        let v =
+            parse_ejson_value(r#"{"s": "q\"\u00e9\n", "o": {"$oid": "65f0a1b2c3d4e5f607182930"}}"#)
+                .unwrap();
+        assert_eq!(v.as_document().unwrap().get_str("s").unwrap(), "q\"é\n");
+    }
+
+    #[test]
+    fn code_symbol_text_is_canonical_ejson() {
+        let js = Bson::JavaScriptCode("return 1".into());
+        let v = bson_to_value(&js);
+        assert_eq!(
+            v,
+            Value::Ext(ExtValue::new("javascript", "{\"$code\":\"return 1\"}"))
+        );
+        assert_eq!(value_to_bson(&v).unwrap(), js);
+        let sym = Bson::Symbol("s".into());
+        assert_eq!(value_to_bson(&bson_to_value(&sym)).unwrap(), sym);
+        let scoped = Bson::JavaScriptCodeWithScope(bson::JavaScriptCodeWithScope {
+            code: "x".into(),
+            scope: doc! {"a": 1},
+        });
+        assert_eq!(value_to_bson(&bson_to_value(&scoped)).unwrap(), scoped);
+        let e = value_to_bson(&Value::Ext(ExtValue::new("dbPointer", "{}"))).unwrap_err();
+        assert_eq!(e.kind(), "query");
     }
 
     #[test]

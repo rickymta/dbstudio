@@ -997,3 +997,132 @@ async fn lease_on_standalone_has_no_transactions() {
     lease.ping().await.unwrap();
     lease.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn review_guards_in_the_driver() {
+    if !enabled() {
+        return;
+    }
+    let s = connect(Srv::M44).await;
+    let db = unique_db();
+    run(
+        &*s,
+        &db,
+        "db.g.insertMany([{_id: 1, a: -5}, {_id: 2, a: 5}])",
+    )
+    .await;
+    // Chained calls never turn a write into something else, and nothing is executed.
+    for text in [
+        "db.g.deleteMany({}).explain()",
+        "db.g.updateMany({}, {$set: {x: 1}}).limit(1)",
+    ] {
+        let mut req = QueryRequest::new(text);
+        req.database = Some(db.clone());
+        let e = execute_collect(&*s, req).await.unwrap_err();
+        assert_eq!(e.kind(), "query", "{text}: {e}");
+    }
+    // A null / missing filter on a write is refused.
+    for text in [
+        "db.g.deleteMany()",
+        "db.g.deleteOne(null)",
+        "db.g.updateMany(null, {$set: {x: 1}})",
+    ] {
+        let mut req = QueryRequest::new(text);
+        req.database = Some(db.clone());
+        assert!(execute_collect(&*s, req).await.is_err(), "{text}");
+    }
+    assert_eq!(
+        fetch(&*s, &db, "g", |_| {}).await.len(),
+        2,
+        "nothing was deleted"
+    );
+    // `.explain()` on cursors explains instead of running ($out must not write).
+    let r = run(
+        &*s,
+        &db,
+        "db.g.aggregate([{$match: {a: 5}}, {$out: 'copy'}]).explain()",
+    )
+    .await;
+    assert!(
+        docs(&r[0])[0].doc_get("stages").is_some()
+            || docs(&r[0])[0].doc_get("queryPlanner").is_some()
+    );
+    let r = run(&*s, &db, "show collections").await;
+    assert_eq!(docs_names(&r[0]), ["g"], "$out did not create a collection");
+    // Negative Int32 keeps its type through the EJSON insert path (plain and tagged forms).
+    let ins = ChangeSet::Documents(DocumentChangeSet {
+        collection: coll_path(&db, "g"),
+        changes: vec![DocumentChange::Insert {
+            document: DocInput::Ejson {
+                text:
+                    r#"{"_id": 3, "a": -7, "b": {"$numberInt": "-8"}, "c": {"$numberLong": "-9"}}"#
+                        .into(),
+            },
+        }],
+    });
+    s.apply_changes(ins).await.unwrap();
+    let rows = fetch(&*s, &db, "g", |r| {
+        r.filters = vec![ColumnFilter {
+            column: "_id".into(),
+            op: FilterOp::Eq,
+            values: vec!["3".into()],
+        }]
+    })
+    .await;
+    assert_eq!(ext(&rows[0], "a"), Value::Int(-7));
+    assert_eq!(ext(&rows[0], "b"), Value::Int(-8));
+    assert_eq!(ext(&rows[0], "c"), Value::Ext(ExtValue::new("int64", "-9")));
+    // Unsafe edits are refused.
+    let bad_path = ChangeSet::Documents(DocumentChangeSet {
+        collection: coll_path(&db, "g"),
+        changes: vec![DocumentChange::Update {
+            id: Value::Int(1),
+            set: vec![FieldEdit {
+                path: vec!["a.b".into()],
+                value: Value::Int(1),
+            }],
+            unset: vec![],
+        }],
+    });
+    assert_eq!(s.apply_changes(bad_path).await.unwrap_err().kind(), "query");
+    // Commands tagged with a comment still work (drop / create / rename / dropDatabase).
+    run(&*s, &db, "db.createCollection('t1'); db.t1.insertOne({a: 1}); db.t1.renameCollection('t2'); db.t2.drop()").await;
+    drop_db(&*s, &db).await;
+}
+
+#[tokio::test]
+async fn prefer_mode_reports_the_downgrade_and_never_hides_other_failures() {
+    if !enabled() {
+        return;
+    }
+    // Plain server + prefer: falls back and says so; TLS server + prefer: stays on TLS.
+    let mut cfg = config(Srv::M44);
+    cfg.tls.mode = TlsMode::Prefer;
+    let s = connect_cfg(&cfg).await.unwrap();
+    assert_eq!(
+        s.server_info().await.unwrap().extra["tls"],
+        "false (fallback)"
+    );
+    let lease = s
+        .open_lease(LeaseOptions {
+            database: None,
+            schema: None,
+            auto_commit: true,
+        })
+        .await
+        .unwrap();
+    lease.ping().await.unwrap();
+    let mut cfg = config(Srv::M7);
+    cfg.tls.mode = TlsMode::Prefer;
+    let s = connect_cfg(&cfg).await.unwrap();
+    assert_eq!(s.server_info().await.unwrap().extra["tls"], "true");
+    // A refused connection is an error, not a silent plain retry.
+    let mut cfg = config(Srv::M44);
+    cfg.tls.mode = TlsMode::Prefer;
+    cfg.port = 1;
+    cfg.connect_timeout_ms = Some(3000);
+    let t0 = Instant::now();
+    let err = connect_cfg(&cfg).await.err().expect("must fail");
+    assert_eq!(err.kind(), "connection", "{err}");
+    assert!(t0.elapsed() < Duration::from_secs(10));
+}
