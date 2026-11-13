@@ -1,8 +1,10 @@
 import { ShieldAlert } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent } from '@/components/ui/Dialog';
+import { Input } from '@/components/ui/Input';
+import { Label } from '@/components/ui/Label';
 import { Spinner } from '@/components/ui/Spinner';
 import { ipc, toIpcError } from '@/lib/ipc';
 import type { HostKeyPrompt } from './hostKeyPrompt';
@@ -43,6 +45,10 @@ function HostKeyBody({
   const { t } = useTranslation('ssh');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [typed, setTyped] = useState('');
+  const confirmId = useId();
+  // A changed key must be confirmed by typing the host name.
+  const confirmed = !prompt.changed || typed.trim() === prompt.host;
 
   const trust = async () => {
     setBusy(true);
@@ -70,7 +76,7 @@ function HostKeyBody({
           <Button onClick={onCancel} disabled={busy}>
             {t('hostKey.cancel')}
           </Button>
-          <Button variant="primary" onClick={() => void trust()} disabled={busy}>
+          <Button variant="primary" onClick={() => void trust()} disabled={busy || !confirmed}>
             {busy && <Spinner size={12} className="text-accent-foreground" />}
             {prompt.changed ? t('hostKey.trustChanged') : t('hostKey.trust')}
           </Button>
@@ -98,6 +104,17 @@ function HostKeyBody({
             </code>
           </Row>
         </dl>
+        {prompt.changed && (
+          <div className="flex flex-col gap-1">
+            <Label htmlFor={confirmId}>{t('hostKey.typeHost', { host: prompt.host })}</Label>
+            <Input
+              id={confirmId}
+              autoComplete="off"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+          </div>
+        )}
         {failure && (
           <p role="alert" className="text-xs text-danger">
             {failure}

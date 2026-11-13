@@ -96,6 +96,9 @@ impl ShellValue {
 /// One parsed statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellStatement {
+    /// Database chosen by `db.getSiblingDB("x")` / `db.getMongo().getDB("x")` at the head of
+    /// the statement; `None` = the current database (`use`).
+    pub database: Option<String>,
     /// Range in the text.
     pub range: TextRange,
     /// Shape.
@@ -253,6 +256,7 @@ impl<'a> Parser<'a> {
                     name = name[1..name.len() - 1].to_string();
                 }
                 Ok(ShellStatement {
+                    database: None,
                     range: self.range(start),
                     kind: ShellKind::Use,
                     collection: None,
@@ -268,6 +272,7 @@ impl<'a> Parser<'a> {
                     .ident()
                     .ok_or_else(|| err("`show` needs an argument", s))?;
                 Ok(ShellStatement {
+                    database: None,
                     range: self.range(start),
                     kind: ShellKind::Show,
                     collection: None,
@@ -295,6 +300,8 @@ impl<'a> Parser<'a> {
 
     fn db_statement(&mut self, start: usize) -> Result<ShellStatement> {
         let mut collection: Option<String> = None;
+        let mut database: Option<String> = None;
+        let mut mongo_seen = false;
         let mut method: Option<(String, Vec<ShellValue>)> = None;
         loop {
             if method.is_some() {
@@ -319,6 +326,24 @@ impl<'a> Parser<'a> {
                                 _ => {
                                     return Err(err("getCollection needs one string argument", at));
                                 }
+                            }
+                        } else if name == "getSiblingDB"
+                            && collection.is_none()
+                            && database.is_none()
+                        {
+                            match args.as_slice() {
+                                [ShellValue::String(s)] => database = Some(s.clone()),
+                                _ => return Err(err("getSiblingDB needs one string argument", at)),
+                            }
+                        } else if name == "getMongo" && args.is_empty() && database.is_none() {
+                            mongo_seen = true;
+                        } else if name == "getDB" && mongo_seen && database.is_none() {
+                            match args.as_slice() {
+                                [ShellValue::String(s)] => {
+                                    database = Some(s.clone());
+                                    mongo_seen = false;
+                                }
+                                _ => return Err(err("getDB needs one string argument", at)),
                             }
                         } else {
                             method = Some((name, args));
@@ -369,11 +394,17 @@ impl<'a> Parser<'a> {
                 ));
             }
             let a = self.args()?;
+            // Only cursor modifiers of reads are accepted: a chain must never turn a
+            // statement into something else (`db.c.find().drop()`).
+            if !chain_allowed(collection.is_some(), &m, &name) {
+                return Err(err(format!("`.{name}()` cannot follow `{m}()`"), at));
+            }
             chain.push((name, a));
             end = self.i;
         }
         self.i = end;
         Ok(ShellStatement {
+            database,
             range: self.range(start),
             kind: if collection.is_some() {
                 ShellKind::Collection
@@ -700,6 +731,37 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Cursor methods accepted after `method`; `explain` follows any collection method (it never
+/// changes what the statement does, and the classifier looks at the method).
+fn chain_allowed(on_collection: bool, method: &str, name: &str) -> bool {
+    if !on_collection {
+        return false;
+    }
+    if name == "explain" {
+        return true;
+    }
+    match method {
+        "find" => matches!(
+            name,
+            "sort"
+                | "limit"
+                | "skip"
+                | "project"
+                | "projection"
+                | "hint"
+                | "collation"
+                | "count"
+                | "toArray"
+                | "pretty"
+                | "batchSize"
+                | "maxTimeMS"
+                | "comment"
+        ),
+        "aggregate" => matches!(name, "toArray" | "pretty"),
+        _ => false,
+    }
+}
+
 fn num_text(v: &ShellValue) -> Option<String> {
     match v {
         ShellValue::Int(i) => Some(i.to_string()),
@@ -845,11 +907,11 @@ fn filter_is_all(stmt: &ShellStatement) -> bool {
 }
 
 fn pipeline_writes(stmt: &ShellStatement) -> bool {
+    let writes = |s: &ShellValue| s.get("$out").is_some() || s.get("$merge").is_some();
     match stmt.args.first() {
-        Some(ShellValue::Array(stages)) => stages
-            .iter()
-            .any(|s| s.get("$out").is_some() || s.get("$merge").is_some()),
-        _ => false,
+        Some(ShellValue::Array(stages)) => stages.iter().any(writes),
+        // mongosh also accepts the stages as separate arguments
+        _ => stmt.args.iter().any(writes),
     }
 }
 
@@ -1320,7 +1382,7 @@ mod tests {
             ("db.a.find({a: 'x})", 14),
             ("db.a.find({a: foo})", 14),
             ("db.a.insertOne({_id: ObjectId(\"zz\")})", 21),
-            ("db.getSiblingDB('x').a.find()", 22),
+            ("db.a.find().drop()", 12),
         ] {
             match parse(text) {
                 Err(Error::Query {

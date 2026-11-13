@@ -142,14 +142,16 @@ fn mask_connection_secrets(text: &str) -> Option<String> {
         // scheme://user:pass@host
         if c[i..].starts_with(&[':', '/', '/']) {
             let ustart = i + 3;
+            // The password may contain `@`: the user info ends at the last `@` of the authority.
             let mut j = ustart;
-            while j < n
-                && !matches!(c[j], '/' | '?' | '#' | '@' | '\'' | '"')
-                && !c[j].is_whitespace()
-            {
+            while j < n && !matches!(c[j], '/' | '?' | '#' | '\'' | '"') && !c[j].is_whitespace() {
                 j += 1;
             }
-            if j < n && c[j] == '@' {
+            let at = c[ustart..j]
+                .iter()
+                .rposition(|x| *x == '@')
+                .map(|p| ustart + p);
+            if let Some(j) = at {
                 if let Some(colon) = c[ustart..j].iter().position(|x| *x == ':') {
                     out.extend(&c[i..ustart + colon + 1]);
                     out.push_str("***");
@@ -192,7 +194,8 @@ fn redact_sql(d: ScriptDialect, text: &str) -> String {
             continue;
         }
         match x.up.as_str() {
-            "PASSWORD" | "OLD_PASSWORD" | "NEW_PASSWORD" | "PASSWD" => {
+            "PASSWORD" | "OLD_PASSWORD" | "NEW_PASSWORD" | "PASSWD" | "MASTER_PASSWORD"
+            | "SOURCE_PASSWORD" => {
                 let mut j = i + 1;
                 if t.get(j).is_some_and(|n| n.up == "FOR") {
                     // MySQL: SET PASSWORD FOR 'u'@'h' = 'x'
@@ -201,7 +204,8 @@ fn redact_sql(d: ScriptDialect, text: &str) -> String {
                         j += 1;
                     }
                 }
-                if t.get(j).is_some_and(|n| n.up == "=") {
+                // `= 'x'` and the Oracle named argument `=> 'x'`
+                while t.get(j).is_some_and(|n| n.up == "=" || n.up == ">") {
                     j += 1;
                 }
                 if t.get(j).is_some_and(|n| n.up == "(") && j == i + 1 {
@@ -210,6 +214,65 @@ fn redact_sql(d: ScriptDialect, text: &str) -> String {
                 }
                 if is_str(t.get(j)) {
                     spans.push((t[j].start, t[j].end));
+                    // MySQL: SET PASSWORD = 'new' REPLACE 'old'
+                    if t.get(j + 1).is_some_and(|n| n.up == "REPLACE") && is_str(t.get(j + 2)) {
+                        spans.push((t[j + 2].start, t[j + 2].end));
+                    }
+                }
+            }
+            "SECRET" if matches!(d, ScriptDialect::MsSql) && has_word(&t, "CREDENTIAL") => {
+                // CREATE [DATABASE SCOPED] CREDENTIAL c WITH IDENTITY = 'u', SECRET = 'x'
+                let mut j = i + 1;
+                while t.get(j).is_some_and(|n| n.up == "=") {
+                    j += 1;
+                }
+                if is_str(t.get(j)) {
+                    spans.push((t[j].start, t[j].end));
+                }
+            }
+            "@RMTPASSWORD" | "@PASSWD" | "@PASSWORD" | "@PWD" | "@SECRET" | "@NEW" | "@OLD"
+            | "@NEWPWD" | "@OLDPWD"
+                if matches!(d, ScriptDialect::MsSql)
+                    && (!matches!(x.up.as_str(), "@NEW" | "@OLD")
+                        || has_word(&t, "SP_PASSWORD")) =>
+            {
+                // named argument: @rmtpassword = 'x'
+                let mut j = i + 1;
+                while t.get(j).is_some_and(|n| n.up == "=") {
+                    j += 1;
+                }
+                if is_str(t.get(j)) {
+                    spans.push((t[j].start, t[j].end));
+                }
+            }
+            "SP_ADDLOGIN" if matches!(d, ScriptDialect::MsSql) => {
+                positional_strings(&t, i, &[1], &mut spans);
+            }
+            "SP_PASSWORD" if matches!(d, ScriptDialect::MsSql) => {
+                positional_strings(&t, i, &[0, 1], &mut spans);
+            }
+            "SP_ADDLINKEDSRVLOGIN" if matches!(d, ScriptDialect::MsSql) => {
+                positional_strings(&t, i, &[4], &mut spans);
+            }
+            "CONNECT" | "CONN"
+                if matches!(d, ScriptDialect::Oracle) && (i == 0 || t[i - 1].up == ";") =>
+            {
+                // SQL*Plus: connect user/password[@service]
+                if t.get(i + 2).is_some_and(|n| n.up == "/")
+                    && matches!(
+                        t.get(i + 1).map(|n| n.kind),
+                        Some(TokenKind::Word | TokenKind::QuotedIdent)
+                    )
+                    && let Some(sec) = t.get(i + 3)
+                    && matches!(
+                        sec.kind,
+                        TokenKind::Word
+                            | TokenKind::Number
+                            | TokenKind::String
+                            | TokenKind::QuotedIdent
+                    )
+                {
+                    spans.push((sec.start, sec.end));
                 }
             }
             "IDENTIFIED" => {
@@ -248,6 +311,52 @@ fn redact_sql(d: ScriptDialect, text: &str) -> String {
     all.retain(|c| !spans.iter().any(|s| s.0 == c.0));
     all.extend(spans.into_iter().map(|(s, e)| (s, e, MASK.to_string())));
     apply_with(&chars, all)
+}
+
+fn has_word(t: &[T], word: &str) -> bool {
+    t.iter()
+        .any(|x| x.kind == TokenKind::Word && x.up.eq_ignore_ascii_case(word))
+}
+
+/// String literals at the given positional argument indexes after the procedure name at
+/// `t[at]` (`EXEC sp_addlogin 'u', 'pw'`). Named arguments (`@x = ...`) are skipped.
+fn positional_strings(t: &[T], at: usize, which: &[usize], spans: &mut Vec<(usize, usize)>) {
+    let mut arg = 0usize;
+    let mut j = at + 1;
+    let mut arg_start = true;
+    let mut arg_tokens = 0usize;
+    while let Some(x) = t.get(j) {
+        if x.up == "," {
+            arg += 1;
+            arg_start = true;
+            arg_tokens = 0;
+            j += 1;
+            continue;
+        }
+        if arg_start {
+            // an argument starts with a literal, a variable, NULL or DEFAULT; anything else is
+            // the next statement
+            let ok = matches!(
+                x.kind,
+                TokenKind::String | TokenKind::Number | TokenKind::QuotedIdent
+            ) || (x.kind == TokenKind::Word
+                && (x.up.starts_with('@') || matches!(x.up.as_str(), "NULL" | "DEFAULT")));
+            if !ok {
+                break;
+            }
+            arg_start = false;
+        }
+        arg_tokens += 1;
+        if x.kind == TokenKind::String && arg_tokens == 1 && which.contains(&arg) {
+            let single = t
+                .get(j + 1)
+                .is_none_or(|n| n.up == "," || n.up == ";" || n.kind != TokenKind::Punct);
+            if single {
+                spans.push((x.start, x.end));
+            }
+        }
+        j += 1;
+    }
 }
 
 fn secret_at(t: &[T], j: usize, spans: &mut Vec<(usize, usize)>) {
@@ -293,6 +402,13 @@ fn redact_redis_line(line: &str) -> String {
                 hide.extend(p + 1..(p + 3).min(words.len()));
             } else if let Some(p) = words.iter().position(|w| w == "AUTH") {
                 hide.extend(p + 1..(p + 2).min(words.len()));
+            }
+        }
+        Some("SENTINEL") if words.get(1).map(String::as_str) == Some("SET") => {
+            for (k, w) in words.iter().enumerate() {
+                if w == "AUTH-PASS" && k + 1 < words.len() {
+                    hide.push(k + 1);
+                }
             }
         }
         Some("CONFIG") if words.get(1).map(String::as_str) == Some("SET") => {
@@ -343,12 +459,22 @@ fn redact_mongo(text: &str) -> String {
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let key_is = |x: &T| -> bool {
         match x.kind {
-            TokenKind::Word => matches!(x.up.as_str(), "PWD" | "PASSWORD"),
+            TokenKind::Word => {
+                let u = x.up.as_str();
+                u == "PWD"
+                    || u.ends_with("PASSWORD")
+                    || u.ends_with("PASSWD")
+                    || u.ends_with("SECRET")
+            }
             TokenKind::String => {
                 let s: String = chars[x.start + 1..x.end.saturating_sub(1).max(x.start + 1)]
                     .iter()
                     .collect();
-                matches!(s.to_ascii_lowercase().as_str(), "pwd" | "password")
+                let l = s.to_ascii_lowercase();
+                l == "pwd"
+                    || l.ends_with("password")
+                    || l.ends_with("passwd")
+                    || l.ends_with("secret")
             }
             _ => false,
         }

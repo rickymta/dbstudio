@@ -39,6 +39,7 @@
     "descriptionNew": "{{host}}:{{port}} chưa từng được thấy. Hãy đối chiếu vân tay với quản trị viên máy chủ trước khi tin cậy.",
     "descriptionChanged": "Khoá mà {{host}}:{{port}} trình ra khác với khoá bạn đã tin cậy trước đó. Có thể máy chủ đã được cài lại, hoặc có người đang chặn kết nối.",
     "warningChanged": "Chỉ tiếp tục nếu bạn biết khoá của máy chủ này đã thay đổi.",
+    "typeHost": "Gõ {{host}} để xác nhận",
     "server": "Máy chủ",
     "keyType": "Loại khoá",
     "fingerprint": "Vân tay (SHA-256)",

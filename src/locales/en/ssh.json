@@ -39,6 +39,7 @@
     "descriptionNew": "{{host}}:{{port}} has not been seen before. Check the fingerprint with the server administrator before trusting it.",
     "descriptionChanged": "The key presented by {{host}}:{{port}} is different from the one you trusted before. This can mean the server was reinstalled, or that someone is intercepting the connection.",
     "warningChanged": "Only continue if you expect the key of this server to have changed.",
+    "typeHost": "Type {{host}} to confirm",
     "server": "Server",
     "keyType": "Key type",
     "fingerprint": "Fingerprint (SHA-256)",

@@ -317,8 +317,22 @@ fn match_go(chars: &[char], i: usize) -> Option<(usize, u32, bool)> {
         let s: String = chars[ds..j].iter().collect();
         count = Some(s.parse().unwrap_or(u32::MAX));
     }
-    while j < n && matches!(chars[j], ' ' | '\t') {
-        j += 1;
+    // blanks and `/* ... */` comments that end on the same line
+    loop {
+        while j < n && matches!(chars[j], ' ' | '\t') {
+            j += 1;
+        }
+        if j + 1 < n && chars[j] == '/' && chars[j + 1] == '*' {
+            let mut k = j + 2;
+            while k + 1 < n && !(chars[k] == '*' && chars[k + 1] == '/') && chars[k] != '\n' {
+                k += 1;
+            }
+            if k + 1 < n && chars[k] == '*' && chars[k + 1] == '/' {
+                j = k + 2;
+                continue;
+            }
+        }
+        break;
     }
     if j + 1 < n && chars[j] == '-' && chars[j + 1] == '-' {
         while j < n && chars[j] != '\n' {
@@ -848,6 +862,22 @@ mod tests {
         assert_eq!(u.len(), 2);
         assert_eq!(u[0].repeat, 5);
         assert_eq!(u[1].repeat, 1);
+    }
+
+    #[test]
+    fn mssql_go_may_be_followed_by_comments() {
+        assert_eq!(
+            texts(MS, "select 1\nGO /* c */\ndrop table t"),
+            ["select 1", "drop table t"]
+        );
+        assert_eq!(
+            texts(MS, "select 1\ngo 2 /* a */ /* b */ -- c\nselect 2").len(),
+            2
+        );
+        let u = split_batches(MS, "select 1\nGO 3 /* c */\nselect 2");
+        assert_eq!(u[0].repeat, 3);
+        // a comment that spans lines is not part of the GO line
+        assert_eq!(texts(MS, "select 1\nGO /* a\nb */\nselect 2").len(), 1);
     }
 
     #[test]
