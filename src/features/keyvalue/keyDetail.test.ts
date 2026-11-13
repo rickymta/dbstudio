@@ -4,6 +4,8 @@ import {
   databaseOfKeyPath,
   defaultDeletePattern,
   displayKeyName,
+  displayKeyNameRelative,
+  escapeGlob,
   formatDuration,
   keyNameOfPath,
   parseKeyDetail,
@@ -67,5 +69,31 @@ describe('paths and helpers', () => {
     expect(formatDuration(3700)).toBe('1h 1m');
     expect(formatDuration(90000)).toBe('1d 1h');
     expect(formatDuration(-5)).toBe('0s');
+  });
+});
+
+describe('glob escaping and binary names', () => {
+  it('escapes glob metacharacters of a prefix in the suggested delete pattern', () => {
+    expect(escapeGlob('a*:')).toBe('a\\*:');
+    expect(escapeGlob('user[1]:')).toBe('user\\[1\\]:');
+    expect(escapeGlob('w?\\')).toBe('w\\?\\\\');
+    expect(defaultDeletePattern({ kind: 'keyPrefix', name: 'a*:' })).toBe('a\\*:*');
+    expect(defaultDeletePattern({ kind: 'keyPrefix', name: 'user[1]:' })).toBe('user\\[1\\]:*');
+  });
+
+  it('suggests nothing for a binary prefix', () => {
+    expect(defaultDeletePattern({ kind: 'keyPrefix', name: `${BINARY_KEY_PREFIX}AP8=` })).toBe('');
+  });
+
+  it('strips a parent prefix by bytes, also for binary names', () => {
+    // bytes 0x61 0x3a ("a:") + 0xff
+    const child = `${BINARY_KEY_PREFIX}YTr/`;
+    expect(displayKeyNameRelative(child, 'a:')).toMatch(/^<binary:/);
+    // Both binary: parent = 0xff 0x3a, child = parent + "x".
+    const parent = `${BINARY_KEY_PREFIX}/zo=`;
+    const kid = `${BINARY_KEY_PREFIX}/zp4`;
+    expect(displayKeyNameRelative(kid, parent)).toBe('x');
+    expect(displayKeyNameRelative('a:b', 'a:')).toBe('b');
+    expect(displayKeyNameRelative('zzz', 'a:')).toBe('zzz');
   });
 });

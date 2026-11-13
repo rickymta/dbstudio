@@ -104,6 +104,21 @@ export function DeleteByPatternDialog({
 
   const start = useCallback(
     async (grant?: { token: string; typed: string }) => {
+      // A pattern that matches the whole database needs a typed confirmation on any connection.
+      if (!grant && /^\*+$/.test(pattern.trim())) {
+        const name = databaseOfKeyPath(node.path).segments[0]?.name ?? '0';
+        setTyped('');
+        setStage({
+          name: 'confirm',
+          request: {
+            token: '',
+            confirmText: `db${name}`,
+            statements: [],
+            expiresInMs: 0,
+          },
+        });
+        return;
+      }
       setBusy(true);
       setError(null);
       try {

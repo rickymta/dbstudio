@@ -17,11 +17,39 @@ export const pagingKey = (sessionId: Uuid, path: ObjectPath) =>
   [ROOT, sessionId, pathKey(path), 'paging'] as const;
 
 /** Glob filters set on tree levels, by session and level; they survive a branch refresh. */
-const levelPatterns = new Map<string, string>();
+const levelPatterns = new Map<string, { path: ObjectPath; pattern: string }>();
 const patternId = (sessionId: Uuid, path: ObjectPath) => `${sessionId}\u0000${pathKey(path)}`;
 
+/** Name of the key prefix a path ends in (`''` for a database or anything else). */
+function prefixOf(path: ObjectPath): string {
+  const last = path.segments[path.segments.length - 1];
+  return last?.kind === 'keyPrefix' ? last.name : '';
+}
+
+/** Whether the first `n` characters of glob `p` are plain text (no glob syntax). */
+function isLiteral(p: string, n: number): boolean {
+  return !/[*?[\]\\]/.test(p.slice(0, n));
+}
+
+/**
+ * Pattern of the filter set directly on `path`, or the one inherited from the nearest filtered
+ * ancestor, re-expressed relative to `path` (patterns are relative to the node they are set on).
+ */
 export function getLevelPattern(sessionId: Uuid, path: ObjectPath): string {
-  return levelPatterns.get(patternId(sessionId, path)) ?? '';
+  const own = levelPatterns.get(patternId(sessionId, path));
+  if (own) return own.pattern;
+  for (let n = path.segments.length - 1; n >= 1; n--) {
+    const ancestor = levelPatterns.get(
+      patternId(sessionId, { segments: path.segments.slice(0, n) }),
+    );
+    if (!ancestor) continue;
+    const rel = prefixOf(path).slice(prefixOf(ancestor.path).length);
+    const p = ancestor.pattern;
+    if (rel && p.startsWith(rel) && isLiteral(p, rel.length)) return p.slice(rel.length) || '*';
+    if (p.startsWith('*')) return p;
+    return '';
+  }
+  return '';
 }
 
 /** Keep paging state and nodes cached while branches are collapsed. */
@@ -126,7 +154,7 @@ export function setLevelPattern(
   pattern: string,
 ): void {
   const trimmed = pattern.trim();
-  if (trimmed) levelPatterns.set(patternId(sessionId, path), trimmed);
+  if (trimmed) levelPatterns.set(patternId(sessionId, path), { path, pattern: trimmed });
   else levelPatterns.delete(patternId(sessionId, path));
   clearBranch(qc, sessionId, path);
 }

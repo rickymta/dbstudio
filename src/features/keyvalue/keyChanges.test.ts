@@ -11,6 +11,7 @@ import {
   listRemoveChange,
   listSetChange,
   mergeEntries,
+  normalizeListChanges,
   parseFieldLines,
   renameChange,
   setAddChange,
@@ -140,5 +141,24 @@ describe('mergeEntries deduplication', () => {
       },
     );
     expect(z.type === 'zSet' && z.members.length).toBe(2);
+  });
+});
+
+describe('normalizeListChanges', () => {
+  const rm = (index: number) => listRemoveChange('l', index);
+  it('removes from the highest index down so earlier removals do not shift later ones', () => {
+    const out = normalizeListChanges([rm(2), rm(3), rm(2)]);
+    expect(out.map((c) => (c.op === 'listRemoveAt' ? c.index : -1))).toEqual([3, 2]);
+  });
+  it('puts replacements before removals and pushes last, and drops sets of removed indexes', () => {
+    const t = (v: string) => ({ t: 'text' as const, v });
+    const out = normalizeListChanges([
+      listPushChange('l', t('p'), true),
+      rm(1),
+      listSetChange('l', 1, t('x')),
+      listSetChange('l', 4, t('y')),
+    ]);
+    expect(out.map((c) => c.op)).toEqual(['listSet', 'listRemoveAt', 'listPush']);
+    expect(out[0]).toMatchObject({ index: 4 });
   });
 });

@@ -2,9 +2,40 @@ import type { KeyChange, ChangeSet, KeyEntries, ObjectPath, Value } from '@/lib/
 import { databaseOfKeyPath } from './keyDetail';
 import { textValue } from './valueFormat';
 
+/**
+ * Order list edits that address elements by index. Every index refers to the list as it was
+ * loaded, but the backend applies changes one after the other: removing index 2 and then index 3
+ * would remove the wrong element. So: value replacements first, then removals from the highest
+ * index down (each removed index once, a replaced-then-removed index only removed), then pushes
+ * (a head push shifts every index). Other changes keep their relative order.
+ */
+export function normalizeListChanges(changes: KeyChange[]): KeyChange[] {
+  const other: KeyChange[] = [];
+  const sets: Extract<KeyChange, { op: 'listSet' }>[] = [];
+  const removes: Extract<KeyChange, { op: 'listRemoveAt' }>[] = [];
+  const pushes: KeyChange[] = [];
+  for (const c of changes) {
+    if (c.op === 'listSet') sets.push(c);
+    else if (c.op === 'listRemoveAt') removes.push(c);
+    else if (c.op === 'listPush') pushes.push(c);
+    else other.push(c);
+  }
+  const uniqueRemoves = removes
+    .filter((r, i) => removes.findIndex((x) => x.key === r.key && x.index === r.index) === i)
+    .sort((a, b) => (a.key === b.key ? b.index - a.index : a.key < b.key ? -1 : 1));
+  const keptSets = sets.filter(
+    (s) => !uniqueRemoves.some((r) => r.key === s.key && r.index === s.index),
+  );
+  return [...other, ...keptSets, ...uniqueRemoves, ...pushes];
+}
+
 /** Wrap key changes into the `ChangeSet` the backend applies (Redis is never atomic). */
 export function buildKeyChangeSet(path: ObjectPath, changes: KeyChange[]): ChangeSet {
-  return { model: 'keys', database: databaseOfKeyPath(path), changes };
+  return {
+    model: 'keys',
+    database: databaseOfKeyPath(path),
+    changes: normalizeListChanges(changes),
+  };
 }
 
 export const setStringChange = (key: string, value: Value, ttlMs?: number | null): KeyChange =>

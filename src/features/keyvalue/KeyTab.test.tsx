@@ -211,8 +211,9 @@ describe('KeyTab editing', () => {
     await user.click(screen.getByRole('button', { name: 'Apply' }));
     await waitFor(() => expect(spy).toHaveBeenCalled(), WAIT);
     expect(keyChanges(spy)).toEqual([
-      { op: 'listPush', key: 'user:1:recent', values: [{ t: 'text', v: 'tail' }], head: false },
+      // Index-based removals go before pushes so indexes keep referring to the loaded list.
       { op: 'listRemoveAt', key: 'user:1:recent', index: 1 },
+      { op: 'listPush', key: 'user:1:recent', values: [{ t: 'text', v: 'tail' }], head: false },
     ]);
   });
 
@@ -245,6 +246,22 @@ describe('KeyTab editing', () => {
     expect(add).toMatchObject({ op: 'streamAdd', id: null });
     expect(add!.op === 'streamAdd' && add!.fields).toHaveLength(2);
     expect(del).toMatchObject({ op: 'streamDelete', ids: ['1700000000000-0'] });
+  });
+
+  it('refuses a TTL below one millisecond (PEXPIRE 0 would delete the key)', async () => {
+    const user = userEvent.setup();
+    const spy = vi.spyOn(ipc, 'changesApply');
+    await mount('cache:product:1');
+    await screen.findByLabelText('String value', undefined, WAIT);
+    await user.click(screen.getByRole('button', { name: 'TTL' }));
+    const input = await screen.findByLabelText('Seconds');
+    await user.clear(input);
+    await user.type(input, '0.0001');
+    expect(screen.getByRole('button', { name: 'Set TTL' })).toBeDisabled();
+    await user.clear(input);
+    await user.type(input, '0.001');
+    expect(screen.getByRole('button', { name: 'Set TTL' })).toBeEnabled();
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it('sets and removes the TTL', async () => {

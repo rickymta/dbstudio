@@ -72,6 +72,20 @@ describe('DeleteByPatternDialog', () => {
     expect(screen.getByRole('button', { name: 'Delete matching keys' })).toBeDisabled();
   });
 
+  it('asks for the database name before deleting every key, even without protection', async () => {
+    const user = userEvent.setup();
+    mount(db);
+    const spy = vi.spyOn(ipc, 'keysDeletePattern');
+    await user.click(screen.getByRole('button', { name: 'Delete matching keys' }));
+    const confirm = await screen.findByRole('button', { name: 'Confirm deletion' }, WAIT);
+    expect(spy).not.toHaveBeenCalled();
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText('Confirmation text'), 'db0');
+    await user.click(confirm);
+    expect(await screen.findByText(/Done\. Keys deleted/, undefined, WAIT)).toBeInTheDocument();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   it('walks through the typed confirmation required on protected connections', async () => {
     const user = userEvent.setup();
     setMockKeyDeleteConfirmation(true);
@@ -147,7 +161,7 @@ describe('DeleteByPatternDialog', () => {
       kind: 'readOnly',
       message: 'read-only connection',
     });
-    mount(db);
+    mount(prefixNode('jobs:'));
     await user.click(screen.getByRole('button', { name: 'Delete matching keys' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('read-only connection');
   });

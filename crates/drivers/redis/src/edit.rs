@@ -63,6 +63,9 @@ fn plan(change: &KeyChange) -> Result<Plan> {
     let watch = |p: &mut Plan, k: &[u8]| p.watch.push(k.to_vec());
     match change {
         KeyChange::SetString { key, value, ttl_ms } => {
+            if *ttl_ms == Some(0) {
+                return Err(Error::Other("the TTL must be at least 1 ms".into()));
+            }
             let k = key_bytes(key)?;
             let v = value_bytes(value)?;
             watch(&mut p, &k);
@@ -240,6 +243,10 @@ fn plan(change: &KeyChange) -> Result<Plan> {
             p.affected_from = Some(0);
         }
         KeyChange::Expire { key, ttl_ms } => {
+            if *ttl_ms == Some(0) {
+                // PEXPIRE with 0 ms would delete the key instead of expiring it later.
+                return Err(Error::Other("the TTL must be at least 1 ms".into()));
+            }
             let k = key_bytes(key)?;
             watch(&mut p, &k);
             p.expects.push(Expect {
@@ -418,7 +425,7 @@ async fn apply_one(
     let replies = match exec {
         redis::Value::Nil => {
             return Err(
-                "the key was modified by another client while editing; reload and retry".into(),
+                "the key changed while the edit was being applied (WATCH aborted it); reload and retry".into(),
             );
         }
         redis::Value::Array(items) => items,

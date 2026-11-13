@@ -1,6 +1,10 @@
 import type { TFunction } from 'i18next';
 import { lastSegment, pathKey, ROOT_PATH } from '@/lib/objectPath';
-import { displayKeyName } from '@/features/keyvalue/keyDetail';
+import {
+  displayKeyName,
+  displayKeyNameRelative,
+  isBinaryKeyName,
+} from '@/features/keyvalue/keyDetail';
 import type { Capabilities, IpcError, ObjectKind, ObjectNode, ObjectPath } from '@/lib/types';
 import type { PagingState } from './paging';
 
@@ -257,7 +261,7 @@ export type NodeAction =
 
 /** Context-menu actions that apply to a node of `kind`, in display order. */
 export function nodeActions(
-  node: Pick<ObjectNode, 'kind' | 'hasChildren'>,
+  node: Pick<ObjectNode, 'kind' | 'hasChildren'> & { name?: string },
   caps?: Capabilities,
 ): NodeAction[] {
   const actions: NodeAction[] = [];
@@ -271,7 +275,10 @@ export function nodeActions(
   }
   const keyLevel = node.kind === 'keyPrefix' || (node.kind === 'database' && caps?.keyValueStore);
   if (keyLevel && caps?.pagedTree) actions.push('filterPattern');
-  if (keyLevel && caps?.keyValueStore) actions.push('deleteByPattern');
+  // A binary prefix cannot be written as a glob: no delete-by-pattern for it.
+  if (keyLevel && caps?.keyValueStore && !isBinaryKeyName(node.name ?? '')) {
+    actions.push('deleteByPattern');
+  }
   if (node.hasChildren) actions.push('refresh');
   return actions;
 }
@@ -300,11 +307,9 @@ export function nodeLabel(
     // Inside a prefix folder only the part after the folder's name is interesting.
     const segments = node.path?.segments ?? [];
     const parent = segments[segments.length - 2];
-    const rest =
-      parent?.kind === 'keyPrefix' && node.name.startsWith(parent.name) && node.name !== parent.name
-        ? node.name.slice(parent.name.length)
-        : node.name;
-    return displayKeyName(rest);
+    return parent?.kind === 'keyPrefix'
+      ? displayKeyNameRelative(node.name, parent.name)
+      : displayKeyName(node.name);
   }
   return node.name;
 }

@@ -370,7 +370,8 @@ function TtlDialog({
     currentMs === null ? '' : String(Math.max(1, Math.round(currentMs / 1000))),
   );
   const n = Number(seconds);
-  const valid = seconds.trim() !== '' && Number.isFinite(n) && n > 0;
+  // PEXPIRE with 0 ms would delete the key: at least one millisecond is required.
+  const valid = seconds.trim() !== '' && Number.isFinite(n) && Math.round(n * 1000) >= 1;
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent

@@ -53,13 +53,71 @@ fn is_write_subcommand(name: &str, sub: &str) -> bool {
     }
 }
 
+/// Query ids that may run the reserved `DBSTUDIO.*` pseudo commands (set by in-process callers
+/// such as the delete-by-pattern job; a console script cannot guess a random query id).
+fn internal_ids() -> &'static std::sync::Mutex<std::collections::HashSet<uuid::Uuid>> {
+    static IDS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<uuid::Uuid>>> =
+        std::sync::OnceLock::new();
+    IDS.get_or_init(Default::default)
+}
+
+/// Allows `DBSTUDIO.*` pseudo commands for requests with `query_id` until the guard is dropped.
+#[derive(Debug)]
+pub struct InternalGrant(uuid::Uuid);
+
+impl Drop for InternalGrant {
+    fn drop(&mut self) {
+        internal_ids()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Authorize the reserved pseudo commands for one request (see [`InternalGrant`]).
+pub fn authorize_internal(query_id: uuid::Uuid) -> InternalGrant {
+    internal_ids()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(query_id);
+    InternalGrant(query_id)
+}
+
+fn is_internal(query_id: uuid::Uuid) -> bool {
+    internal_ids()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&query_id)
+}
+
+/// Flags from one `COMMAND INFO` reply (`None` = unknown command).
+fn parse_flags(info: redis::Value) -> Option<Vec<String>> {
+    match info {
+        redis::Value::Array(items) => match items.into_iter().next() {
+            Some(redis::Value::Array(entry)) => Some(
+                entry
+                    .into_iter()
+                    .nth(2)
+                    .map(|f| match f {
+                        redis::Value::Array(flags) | redis::Value::Set(flags) => flags
+                            .iter()
+                            .map(|x| reply_text(x).to_ascii_lowercase())
+                            .collect(),
+                        _ => Vec::new(),
+                    })
+                    .unwrap_or_default(),
+            ),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 impl Shared {
-    /// Flags of `name` from `COMMAND INFO` (`None` = unknown command). Cached.
-    async fn command_flags(
-        &self,
-        conn: &mut MultiplexedConnection,
-        name: &str,
-    ) -> Option<Vec<String>> {
+    /// Flags of `name` (`cmd` or `cmd|sub`) from `COMMAND INFO`; `Ok(None)` = unknown command.
+    /// Asked on the shared connection (never inside the user's `MULTI`); only answers are cached,
+    /// a transient or ACL error is returned and retried next time.
+    async fn command_flags(&self, name: &str) -> Result<Option<Vec<String>>> {
         let key = name.to_ascii_lowercase();
         if let Some(hit) = self
             .cmd_flags
@@ -67,65 +125,57 @@ impl Shared {
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
         {
-            return hit.clone();
+            return Ok(hit.clone());
         }
-        let info: Option<redis::Value> = redis::cmd("COMMAND")
-            .arg("INFO")
-            .arg(&key)
-            .query_async(conn)
-            .await
-            .ok();
-        let flags = match info {
-            Some(redis::Value::Array(items)) => match items.into_iter().next() {
-                Some(redis::Value::Array(entry)) => entry.into_iter().nth(2).map(|f| match f {
-                    redis::Value::Array(flags) | redis::Value::Set(flags) => flags
-                        .iter()
-                        .map(|x| reply_text(x).to_ascii_lowercase())
-                        .collect(),
-                    _ => Vec::new(),
-                }),
-                _ => None,
-            },
-            _ => None,
-        };
+        let info: redis::Value = self
+            .run(self.default_db, redis::cmd("COMMAND").arg("INFO").arg(&key))
+            .await?;
+        let flags = parse_flags(info);
         self.cmd_flags
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(key, flags.clone());
-        flags
+        Ok(flags)
     }
 
     /// Defence in depth for read-only connections: the command layer already classifies
-    /// statements, the driver refuses anything that is not known to be a read.
-    async fn ensure_allowed(
-        &self,
-        conn: &mut MultiplexedConnection,
-        name: &str,
-        tokens: &[Vec<u8>],
-        position: u32,
-    ) -> Result<()> {
+    /// statements, the driver refuses anything that is not verified to be a read.
+    async fn ensure_allowed(&self, name: &str, tokens: &[Vec<u8>], position: u32) -> Result<()> {
         if !self.read_only {
             return Ok(());
         }
         let upper = name.to_ascii_uppercase();
         let sub = tokens
             .get(1)
-            .map(|t| String::from_utf8_lossy(t).into_owned())
+            .map(|t| String::from_utf8_lossy(t).to_ascii_lowercase())
             .unwrap_or_default();
         let deny = |why: &str| Error::ReadOnlyViolation {
             message: format!("{upper} {why} on a read-only connection"),
             position: Some(position),
         };
-        if upper.ends_with("_RO") {
-            return Ok(());
-        }
         if ALWAYS_WRITE.contains(&upper.as_str()) || is_write_subcommand(&upper, &sub) {
             return Err(deny("is not allowed"));
         }
-        match self.command_flags(conn, &upper).await {
-            Some(flags) if !flags.iter().any(|f| f == "write") => Ok(()),
-            Some(_) => Err(deny("is not allowed")),
+        let unverified = |_: Error| deny("cannot be verified");
+        match self.command_flags(&upper).await.map_err(unverified)? {
             None => Err(deny("is unknown and cannot be verified")),
+            Some(f) if f.iter().any(|x| x == "write") => Err(deny("is not allowed")),
+            Some(f) if !f.is_empty() => Ok(()),
+            // A container command (Redis 7 / Valkey 8: XINFO, OBJECT, CONFIG...) has no flags of
+            // its own: judge its sub-command, and refuse when that cannot be verified.
+            Some(_) => {
+                if sub.is_empty() {
+                    return Err(deny("cannot be verified"));
+                }
+                let sub_flags = self
+                    .command_flags(&format!("{upper}|{sub}"))
+                    .await
+                    .map_err(unverified)?;
+                match sub_flags {
+                    Some(f) if !f.is_empty() && !f.iter().any(|x| x == "write") => Ok(()),
+                    _ => Err(deny("cannot be verified or is not allowed")),
+                }
+            }
         }
     }
 }
@@ -235,9 +285,12 @@ pub async fn run_script(
                 "{name} is not supported in the console"
             )));
         }
-        shared
-            .ensure_allowed(conn, &name, &tokens, line.start)
-            .await?;
+        // `DBSTUDIO.*` is reserved for in-process callers: typing it must not bypass the
+        // command layer's confirmations.
+        if name.starts_with("DBSTUDIO.") && !(name == DELETE_PATTERN && is_internal(req.query_id)) {
+            return Err(Error::Permission(format!("{name} is a reserved command")));
+        }
+        shared.ensure_allowed(&name, &tokens, line.start).await?;
         sink.on_statement_start(StatementStart {
             index: index as u32,
             range: TextRange {

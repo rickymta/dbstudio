@@ -60,7 +60,50 @@ export function formatDuration(totalSeconds: number): string {
   return `${sec}s`;
 }
 
-/** Pattern suggested for a node: everything below a prefix, or every key of a database. */
+/** Escape `\ * ? [ ]` so that `text` matches literally in a Redis glob (like `escape_glob`). */
+export function escapeGlob(text: string): string {
+  return text.replace(/[\\*?[\]]/g, '\\$&');
+}
+
+/**
+ * Pattern suggested for a node: everything below a prefix, or every key of a database. The
+ * prefix is escaped; a binary prefix cannot be written as text, so it gets no suggestion.
+ */
 export function defaultDeletePattern(node: Pick<ObjectNode, 'kind' | 'name'>): string {
-  return node.kind === 'keyPrefix' ? `${node.name}*` : '*';
+  if (node.kind !== 'keyPrefix') return '*';
+  return isBinaryKeyName(node.name) ? '' : `${escapeGlob(node.name)}*`;
+}
+
+/** Raw bytes of a key or prefix segment name (decoding the base64 form of binary names). */
+export function keyNameBytes(name: string): Uint8Array {
+  if (isBinaryKeyName(name)) {
+    try {
+      const raw = atob(name.slice(BINARY_KEY_PREFIX.length));
+      return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+    } catch {
+      return new TextEncoder().encode(name);
+    }
+  }
+  return new TextEncoder().encode(name);
+}
+
+/**
+ * Display form of `name` with the leading `prefix` (a parent prefix folder) removed, comparing
+ * the raw bytes, so binary names are handled too. Names that do not start with the prefix (or are
+ * equal to it) are shown whole.
+ */
+export function displayKeyNameRelative(name: string, prefix: string): string {
+  const full = keyNameBytes(name);
+  const head = keyNameBytes(prefix);
+  const starts =
+    head.length > 0 && full.length > head.length && head.every((byte, i) => full[i] === byte);
+  if (!starts) return displayKeyName(name);
+  const rest = full.slice(head.length);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(rest);
+  } catch {
+    let bin = '';
+    rest.forEach((b) => (bin += String.fromCharCode(b)));
+    return displayKeyName(BINARY_KEY_PREFIX + btoa(bin));
+  }
 }

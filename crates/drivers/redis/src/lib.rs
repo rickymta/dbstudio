@@ -29,7 +29,7 @@ use dbstudio_core::{
 };
 
 pub use cli::{quote_arg, render_command, tokenize_line};
-pub use exec::DELETE_PATTERN;
+pub use exec::{DELETE_PATTERN, InternalGrant, authorize_internal};
 pub use session::RedisSession;
 
 /// Driver for Redis / Valkey.

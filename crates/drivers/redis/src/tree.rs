@@ -1,6 +1,7 @@
 //! Object tree: databases, virtual key prefixes and keys, paged with `SCAN`.
 
 use std::collections::{BTreeMap, HashSet};
+use std::time::{Duration, Instant};
 
 use dbstudio_core::{
     ChildrenPage, ChildrenPageRequest, Error, ObjectKind, ObjectNode, ObjectPath, Result,
@@ -14,6 +15,8 @@ use crate::convert::reply_text;
 const SCAN_COUNT: u32 = 1000;
 /// Children returned by the unpaged `list_children`.
 const UNPAGED_LIMIT: u32 = 1000;
+/// Longest time one page may keep scanning before it is returned with a cursor.
+const PAGE_BUDGET: Duration = Duration::from_secs(2);
 
 /// Escape glob metacharacters so `text` matches literally in `SCAN MATCH`.
 pub fn escape_glob(text: &[u8]) -> Vec<u8> {
@@ -137,15 +140,14 @@ impl Shared {
             .pattern
             .as_deref()
             .filter(|p| !p.is_empty() && *p != "*");
-        // A pattern matches the full key name; without one, everything under the prefix.
-        let match_arg: Vec<u8> = match pattern {
-            Some(p) => p.as_bytes().to_vec(),
-            None => {
-                let mut m = escape_glob(&prefix);
-                m.push(b'*');
-                m
-            }
+        // The pattern is relative to the node: `MATCH <escaped prefix><pattern>`; without a
+        // pattern, everything under the prefix.
+        let match_arg: Vec<u8> = {
+            let mut m = escape_glob(&prefix);
+            m.extend_from_slice(pattern.unwrap_or("*").as_bytes());
+            m
         };
+        let deadline = Instant::now() + PAGE_BUDGET;
         let delimiter = self.delimiter.as_bytes();
         let mut cursor = match req.cursor.as_deref() {
             Some(c) => c
@@ -184,7 +186,9 @@ impl Shared {
                     None => keys.push(key),
                 }
             }
-            if cursor == 0 || prefixes.len() + keys.len() >= limit {
+            // A sparse pattern on a huge database must not make one page run forever: return early
+            // with the cursor (the UI shows "load more").
+            if cursor == 0 || prefixes.len() + keys.len() >= limit || Instant::now() >= deadline {
                 break;
             }
         }

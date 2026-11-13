@@ -61,7 +61,7 @@
   "loadMore": "Tải thêm",
   "pattern": {
     "title": "Lọc {{name}}",
-    "description": "Mẫu glob áp dụng cho các khóa bên dưới nút này (* ? [..]).",
+    "description": "Mẫu glob khớp với phần tên khóa phía sau nút này (* ? [..]); các thư mục con đang mở cũng được lọc.",
     "label": "Mẫu",
     "apply": "Áp dụng",
     "clear": "Xóa bộ lọc",

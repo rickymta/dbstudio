@@ -121,6 +121,9 @@ pub(crate) async fn keys_delete_pattern_impl(
     if config.kind != DbKind::Redis {
         return Err(Error::Unsupported("key_value".into()));
     }
+    if !cfg!(feature = "redis") {
+        return Err(Error::Unsupported("key_value".into()));
+    }
     guard::ensure_writable(&config, "deleting keys")?;
     if pattern.is_empty() {
         return Err(Error::Other("the pattern must not be empty".into()));
@@ -165,6 +168,9 @@ pub(crate) async fn keys_delete_pattern_impl(
             let mut req =
                 QueryRequest::new(format!("{DELETE_PATTERN} {}", quote_cli_arg(&pattern)));
             req.database = Some(db);
+            // The pseudo command is reserved: only this request id may run it.
+            #[cfg(feature = "redis")]
+            let _grant = dbstudio_driver_redis::authorize_internal(req.query_id);
             let mut sink = DeleteSink {
                 job: ctx.clone(),
                 deleted: 0,
@@ -400,6 +406,33 @@ mod tests {
             ask(Some(grant)).await,
             Err(Error::ConfirmationRequired(_))
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn console_cannot_run_the_reserved_delete_command() {
+        if !enabled() {
+            return;
+        }
+        let _serial = SERIAL.lock().await;
+        let (state, _) = test_state(build_registry());
+        let (session, _) = open(&state, Some(Environment::Production), false).await;
+        seed(&state, session, 5).await;
+        let s = state.sessions.get(session).unwrap();
+        let mut req = QueryRequest::new("DBSTUDIO.DELPATTERN \"*\"");
+        req.database = Some("13".into());
+        let err = execute_collect(s.as_ref(), req).await.unwrap_err();
+        assert_eq!(err.kind(), "permission", "{err:?}");
+        assert_eq!(dbsize(&state, session).await, 6);
+        // The job path (own request id) still works on a non-production connection.
+        let (dev, db) = open(&state, Some(Environment::Development), false).await;
+        let job = keys_delete_pattern_impl(&state, dev, db, "tmp:*".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            wait_finished(&state, job).await.status,
+            JobStatus::Succeeded
+        );
+        assert_eq!(dbsize(&state, session).await, 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]

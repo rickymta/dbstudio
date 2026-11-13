@@ -205,10 +205,44 @@ impl Shared {
                 (Some(len), KeyEntries::Stream { entries, groups })
             }
             "ReJSON-RL" => {
-                let text: String = self
-                    .run(db, redis::cmd("JSON.GET").arg(key.as_slice()))
-                    .await?;
-                (None, KeyEntries::Json { text })
+                let max = req.max_string_bytes.unwrap_or(DEFAULT_MAX_STRING).max(1);
+                // Ask the size first (RedisJSON `JSON.DEBUG MEMORY`) so a huge document is not
+                // pulled over the wire; when that is denied, the length check below still applies.
+                let size = self
+                    .run::<u64>(
+                        db,
+                        redis::cmd("JSON.DEBUG").arg("MEMORY").arg(key.as_slice()),
+                    )
+                    .await
+                    .ok();
+                if size.is_some_and(|n| n > max) {
+                    (
+                        size,
+                        KeyEntries::Unsupported {
+                            type_name: format!(
+                                "ReJSON-RL ({} bytes, over the size limit)",
+                                size.unwrap_or(0)
+                            ),
+                        },
+                    )
+                } else {
+                    let text: String = self
+                        .run(db, redis::cmd("JSON.GET").arg(key.as_slice()))
+                        .await?;
+                    if text.len() as u64 > max {
+                        (
+                            Some(text.len() as u64),
+                            KeyEntries::Unsupported {
+                                type_name: format!(
+                                    "ReJSON-RL ({} bytes, over the size limit)",
+                                    text.len()
+                                ),
+                            },
+                        )
+                    } else {
+                        (None, KeyEntries::Json { text })
+                    }
+                }
             }
             other => (
                 None,

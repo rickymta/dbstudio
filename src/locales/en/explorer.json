@@ -61,7 +61,7 @@
   "loadMore": "Load more",
   "pattern": {
     "title": "Filter {{name}}",
-    "description": "Glob pattern applied to the keys below this node (* ? [..]).",
+    "description": "Glob pattern matched against the part of the key name after this node (* ? [..]); open sub-folders are filtered too.",
     "label": "Pattern",
     "apply": "Apply",
     "clear": "Clear filter",

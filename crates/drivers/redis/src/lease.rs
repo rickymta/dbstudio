@@ -107,13 +107,29 @@ impl Lease for RedisLease {
         let cancelled = self.cancelled.load(Ordering::SeqCst);
         self.with_state(|s| {
             s.running = None;
-            // A cancelled or timed-out call killed the connection (CLIENT KILL).
+            // A cancelled call killed the connection (CLIENT KILL).
             if cancelled {
                 s.broken = true;
             }
         });
         match result {
             Err(_) if cancelled => Err(Error::Cancelled),
+            Err(Error::Timeout) => {
+                // The server may still be running the command (BLPOP...): kill the connection
+                // so the tab does not hang, and mark the lease broken.
+                let _ = self
+                    .shared
+                    .run::<i64>(
+                        self.shared.default_db,
+                        redis::cmd("CLIENT")
+                            .arg("KILL")
+                            .arg("ID")
+                            .arg(self.client_id),
+                    )
+                    .await;
+                self.with_state(|s| s.broken = true);
+                Err(Error::Timeout)
+            }
             Err(Error::Connection(m)) => {
                 self.with_state(|s| s.broken = true);
                 Err(Error::Connection(m))

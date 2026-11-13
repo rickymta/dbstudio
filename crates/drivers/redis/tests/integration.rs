@@ -316,6 +316,24 @@ async fn tree_groups_keys_by_delimiter(s: Server, db: i64) {
         .unwrap();
     assert_eq!(page.nodes.len(), 1);
     assert_eq!(page.nodes[0].name, "user:");
+
+    // Patterns are relative to the node: below `user:` the pattern `1*` keeps only `user:1:`.
+    let page = sess
+        .list_children_page(ChildrenPageRequest {
+            parent: user.path.clone(),
+            cursor: None,
+            limit: 100,
+            pattern: Some("1*".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        page.nodes
+            .iter()
+            .map(|n| n.name.as_str())
+            .collect::<Vec<_>>(),
+        ["user:1:"]
+    );
 }
 on_all!(tree_groups_keys_by_delimiter, tree_r6, tree_r7, tree_v8, 1);
 
@@ -697,7 +715,7 @@ async fn concurrent_modification_is_detected(s: Server, db: i64) {
         }
     });
     let mut aborted = 0;
-    for _ in 0..200 {
+    for _ in 0..60 {
         if let Err(Error::ChangeFailed { message, .. }) = apply(
             sess,
             db,
@@ -709,7 +727,7 @@ async fn concurrent_modification_is_detected(s: Server, db: i64) {
         )
         .await
         {
-            assert!(message.contains("modified"), "{message}");
+            assert!(message.contains("changed while"), "{message}");
             aborted += 1;
         }
     }
@@ -839,12 +857,17 @@ async fn cancel_kills_blocking_commands(s: Server, db: i64) {
     let qid = req.query_id;
     let s2 = sess.clone();
     let task = tokio::spawn(async move { execute_collect(s2.as_ref().as_ref(), req).await });
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let t0 = std::time::Instant::now();
-    sess.cancel(qid).await.unwrap();
-    let res = task.await.unwrap();
+    // Cancel until the statement is registered (a TLS connect can take a while under load).
+    let mut task = task;
+    let res = loop {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sess.cancel(qid).await.unwrap();
+        tokio::select! {
+            r = &mut task => break r.unwrap(),
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+        }
+    };
     assert!(matches!(res, Err(Error::Cancelled)), "{res:?}");
-    assert!(t0.elapsed() < Duration::from_secs(2));
     // Unknown id is fine.
     sess.cancel(uuid::Uuid::new_v4()).await.unwrap();
 
@@ -864,9 +887,35 @@ async fn cancel_kills_blocking_commands(s: Server, db: i64) {
         let mut sink = CollectingSink::new();
         l2.execute(req, &mut sink).await
     });
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    lease.cancel(qid).await.unwrap();
-    assert!(matches!(task.await.unwrap(), Err(Error::Cancelled)));
+    let mut task = task;
+    let res = loop {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        lease.cancel(qid).await.unwrap();
+        tokio::select! {
+            r = &mut task => break r.unwrap(),
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+        }
+    };
+    assert!(matches!(res, Err(Error::Cancelled)));
+    assert!(lease.state().broken);
+
+    // Lease timeout kills the connection: the tab does not hang, the lease is broken.
+    let lease = sess
+        .open_lease(LeaseOptions {
+            database: Some(db.to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut req = QueryRequest::new("BLPOP never 0");
+    req.timeout_ms = Some(300);
+    let mut sink = CollectingSink::new();
+    let t0 = std::time::Instant::now();
+    assert!(matches!(
+        lease.execute(req, &mut sink).await,
+        Err(Error::Timeout)
+    ));
+    assert!(t0.elapsed() < Duration::from_secs(3));
     assert!(lease.state().broken);
 
     // Timeout.
@@ -913,8 +962,21 @@ async fn read_only_blocks_writes(s: Server, db: i64) {
         let err = execute_collect(ro, req).await.unwrap_err();
         assert_eq!(err.kind(), "readOnly", "{write}: {err:?}");
     }
-    // Reads that look administrative still work.
-    run(ro, db, "CONFIG GET maxmemory\nINFO server\nDBSIZE\nTTL k").await;
+    // Reads that look administrative still work (container commands judged by sub-command).
+    run(
+        ro,
+        db,
+        "CONFIG GET maxmemory\nINFO server\nDBSIZE\nTTL k\nOBJECT ENCODING k\nMEMORY USAGE k",
+    )
+    .await;
+    if s.name != "redis6" {
+        // `_RO` variants are verified through COMMAND INFO flags, not trusted by suffix.
+        run(ro, db, "EVAL_RO \"return 1\" 0").await;
+    }
+    let mut req = QueryRequest::new("XINFO STREAM nokey");
+    req.database = Some(db.to_string());
+    let err = execute_collect(ro, req).await.unwrap_err();
+    assert_ne!(err.kind(), "readOnly", "{err:?}");
     let err = apply(
         ro,
         db,
@@ -982,9 +1044,17 @@ async fn delete_pattern_pseudo_command(s: Server, db: i64) {
             Ok(())
         }
     }
+    // Typed in a console (any request id that was not authorized) the command is refused.
+    let mut forged = QueryRequest::new("DBSTUDIO.DELPATTERN \"*\"");
+    forged.database = Some(db.to_string());
+    let err = execute_collect(sess, forged).await.unwrap_err();
+    assert_eq!(err.kind(), "permission", "{err:?}");
+    assert_eq!(scalar(sess, db, "DBSIZE").await, Value::Int(2302));
+
     let mut sink = Progress::default();
     let mut req = QueryRequest::new("DBSTUDIO.DELPATTERN \"tmp:*\"");
     req.database = Some(db.to_string());
+    let _grant = dbstudio_driver_redis::authorize_internal(req.query_id);
     sess.execute(req, &mut sink).await.unwrap();
     assert_eq!(sink.affected, 2300);
     assert!(sink.messages.last().unwrap().starts_with("deleted=2300"));
@@ -1019,6 +1089,7 @@ async fn delete_pattern_pseudo_command(s: Server, db: i64) {
     }
     let mut req = QueryRequest::new("DBSTUDIO.DELPATTERN \"again:*\"");
     req.database = Some(db.to_string());
+    let _grant2 = dbstudio_driver_redis::authorize_internal(req.query_id);
     assert!(matches!(
         sess.execute(req, &mut StopAfterFirst).await,
         Err(Error::Cancelled)

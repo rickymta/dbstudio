@@ -394,10 +394,7 @@ function SessionTree({
         <PatternFilterDialog
           open
           title={nodeLabel(t, dialog.node)}
-          initial={
-            getLevelPattern(sessionId, dialog.node.path) ||
-            (dialog.node.kind === 'keyPrefix' ? `${dialog.node.name}*` : '')
-          }
+          initial={getLevelPattern(sessionId, dialog.node.path)}
           onOpenChange={(open) => !open && setDialog(null)}
           onApply={(pattern) => applyPattern(dialog.node, pattern)}
         />
