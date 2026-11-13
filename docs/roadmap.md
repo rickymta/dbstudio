@@ -1,6 +1,6 @@
 # DBStudio — Lộ trình
 
-> Trạng thái: bản nháp v0.1. Mã yêu cầu theo [requirements.md](requirements.md); thiết kế theo [architecture.md](architecture.md).
+> Trạng thái: v0.2 — GĐ0 xong, GĐ1 đã hiện thực (còn tồn, xem cuối mục GĐ1). Mã yêu cầu theo [requirements.md](requirements.md); thiết kế theo [architecture.md](architecture.md).
 
 ## 1. Cách làm việc
 
@@ -39,7 +39,7 @@ Thứ tự mặc định là tuần tự GĐ0 → GĐ10; các nhánh song song t
 
 ---
 
-## GĐ0 — Nền tảng *(đang làm)*
+## GĐ0 — Nền tảng *(xong; còn chờ kiểm chứng trên Windows/Linux và CI GitHub)*
 
 **Mục tiêu:** repo chạy được trên 3 OS với khung giao diện trống, crate core định nghĩa hợp đồng driver, CI hoạt động.
 
@@ -55,18 +55,18 @@ Thứ tự mặc định là tuần tự GĐ0 → GĐ10; các nhánh song song t
 **Ngoài phạm vi:** driver thật, SQLite store, kết nối DB.
 
 **Tiêu chí hoàn thành:**
-- [ ] `pnpm tauri dev` mở cửa sổ có sidebar/tab/status bar trên macOS, Windows, Linux.
-- [ ] Đổi ngôn ngữ vi ↔ en và theme sáng ↔ tối có hiệu lực ngay, giữ sau khi khởi động lại.
-- [ ] `cargo test --workspace` pass, gồm test driver mock: connect → execute → nhận lô dòng qua `ResultSink` → cancel.
-- [ ] Frontend gọi `list_drivers` và hiển thị danh sách 9 hệ quản trị kèm trạng thái/giai đoạn dự kiến, qua wrapper IPC có kiểu.
-- [ ] `dbstudio-core` không phụ thuộc `tauri` (kiểm bằng `cargo tree -p dbstudio-core`).
-- [ ] CI xanh trên cả 3 OS: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, ESLint, `tsc --noEmit`, Vitest.
+- [ ] `pnpm tauri dev` mở cửa sổ có sidebar/tab/status bar trên macOS, Windows, Linux. — *Đạt trên macOS; Windows và Linux chưa build/chạy lần nào.*
+- [x] Đổi ngôn ngữ vi ↔ en và theme sáng ↔ tối có hiệu lực ngay, giữ sau khi khởi động lại (lưu ở `localStorage`).
+- [x] `cargo test --workspace` pass, gồm test driver mock: connect → execute → nhận lô dòng qua `ResultSink` → cancel.
+- [x] Frontend gọi `list_drivers` và hiển thị danh sách 9 hệ quản trị kèm trạng thái/giai đoạn dự kiến, qua wrapper IPC có kiểu. (Đã thấy chạy trong app Tauri thật trên macOS.)
+- [x] `dbstudio-core` không phụ thuộc `tauri` (kiểm bằng `cargo tree -p dbstudio-core`).
+- [ ] CI xanh trên cả 3 OS: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, ESLint, `tsc --noEmit`, Vitest. — *Workflow đã có (matrix ubuntu/macos/windows) và các lệnh chạy sạch trên macOS cục bộ, nhưng workflow **chưa chạy lần nào trên GitHub** (repo chưa có remote).*
 
 **Phụ thuộc:** không.
 
 ---
 
-## GĐ1 — Kết nối & duyệt dữ liệu (PostgreSQL + MySQL)
+## GĐ1 — Kết nối & duyệt dữ liệu (PostgreSQL + MySQL) *(đã hiện thực, còn tồn)*
 
 **Mục tiêu:** kết nối an toàn tới PostgreSQL và MySQL, duyệt cây đối tượng, xem dữ liệu bảng ở chế độ chỉ đọc.
 
@@ -82,16 +82,44 @@ Thứ tự mặc định là tuần tự GĐ0 → GĐ10; các nhánh song song t
 **Ngoài phạm vi:** query editor, sửa dữ liệu, SSH tunnel.
 
 **Tiêu chí hoàn thành:**
-- [ ] Tạo profile PostgreSQL 12 và 16, MySQL 5.7 và 8, MariaDB 10.4+ (Docker), test connection hiển thị phiên bản server.
-- [ ] Kết nối TLS `verify-full` với CA tự ký thành công; sai CA báo lỗi `Tls` rõ ràng.
-- [ ] Mật khẩu nằm trong keychain; `grep` mật khẩu trong thư mục dữ liệu app và file log không có kết quả; file export profile không có secret.
-- [ ] Cây hiển thị đủ nhóm đối tượng BROWSE-02 cho cả 2 DB; xem DDL table/view/function đúng.
-- [ ] Mở bảng 1 triệu dòng: dòng đầu hiển thị < 1 giây trên localhost, cuộn mượt, lọc + sắp xếp chạy phía server.
-- [ ] Giá trị `bigint` 9007199254740993, `numeric(38,10)`, `timestamptz` hiển thị đúng từng chữ số/múi giờ.
-- [ ] Integration test cho cả 2 driver chạy trong CI (Linux, Docker).
-- [ ] Kết quả benchmark lưới và quyết định grid được ghi vào `docs/architecture.md`.
+Trạng thái kiểm chứng: 229 test Rust (gồm integration test với DB thật, chạy 2 lượt liên tiếp không flaky) + 217 test frontend, clippy/format sạch — tất cả chạy **cục bộ trên macOS**. Giao diện mới được thao tác với mock IPC trong Chromium; app Tauri thật trên macOS khởi động được nhưng **chưa ai thao tác giao diện với DB thật trong cửa sổ Tauri**.
+
+- [ ] Tạo profile PostgreSQL 12 và 16, MySQL 5.7 và 8, MariaDB 10.4+ (Docker), test connection hiển thị phiên bản server. — *Đã có: PostgreSQL 16.15 (TLS), 12.22, MySQL 8.4.11 (TLS), MariaDB 10.6.28, kiểm ở lớp driver và lớp command. Còn thiếu: MySQL 5.7 (không có image arm64) và MariaDB 10.4 chưa test; chưa thử trên giao diện app thật.*
+- [x] Kết nối TLS `verify-full` với CA tự ký thành công; sai CA báo lỗi `Tls` rõ ràng. (Test lớp command với PostgreSQL 16 và MySQL 8.4; xem hạn chế `verify-ca` của MySQL ở architecture §15.)
+- [ ] Mật khẩu nằm trong keychain; `grep` mật khẩu trong thư mục dữ liệu app và file log không có kết quả; file export profile không có secret. — *Đã có: code chỉ lưu mật khẩu qua `keyring`, không có dự phòng plaintext; test xác nhận file export không chứa secret. Còn thiếu: keychain thật chưa chạy lần nào (test dùng kho giả trong bộ nhớ); chưa có test "grep mật khẩu".*
+- [x] Cây hiển thị đủ nhóm đối tượng BROWSE-02 cho cả 2 DB; xem DDL table/view/function đúng. (Integration test driver + giao diện với mock; nhóm user/role của MySQL chỉ hiện khi tài khoản đủ quyền.)
+- [ ] Mở bảng 1 triệu dòng: dòng đầu hiển thị < 1 giây trên localhost, cuộn mượt, lọc + sắp xếp chạy phía server. — *Đã có: lọc/sắp xếp/phân trang phía server; lưới ảo hoá chạy tới 466.000 dòng với mock trong Chromium. Còn thiếu: chưa đo với bảng thật 1 triệu dòng, chưa đo trên webview của Tauri.*
+- [x] Giá trị `bigint` 9007199254740993, `numeric(38,10)`, `timestamptz` hiển thị đúng từng chữ số/múi giờ. (Driver giải mã dạng text, `Value` giữ chuỗi; `timestamptz` hiển thị theo UTC — chưa có tuỳ chọn múi giờ người dùng.)
+- [ ] Integration test cho cả 2 driver chạy trong CI (Linux, Docker). — *Đã có job `integration` trong `.github/workflows/ci.yml` và chạy đúng các bước đó cục bộ. Còn thiếu: chưa chạy trên GitHub (chưa có remote).*
+- [ ] Kết quả benchmark lưới và quyết định grid được ghi vào `docs/architecture.md`. — *Chưa benchmark; tạm giữ TanStack Virtual, quyết định vẫn mở (architecture §14).*
 
 **Phụ thuộc:** GĐ0.
+
+### Tồn đọng của GĐ1
+
+**Phải làm trước khi đóng GĐ1** (không cần code mới, chủ yếu kiểm chứng):
+1. Kiểm tra tay trên app Tauri thật (macOS) với DB Docker: tạo/sửa/xoá profile, test connection, mở session bằng mật khẩu lưu và nhập tay, duyệt cây, mở bảng, lọc/sắp xếp, đếm dòng, huỷ, xem DDL/cấu trúc. Lần này cũng là lần đầu chạy keychain thật.
+2. Sau bước 1: `grep` mật khẩu thử trong `app_data_dir` (gồm `dbstudio.sqlite`) và thư mục log → phải rỗng.
+3. Đẩy repo lên remote, cho workflow CI (matrix 3 OS + job `integration`) chạy xanh ít nhất một lần.
+
+**Đề xuất chuyển sang GĐ2:**
+- CONN-02 kéo thả profile/nhóm (hiện chỉ có menu "Chuyển vào nhóm").
+- BROWSE-06 tìm phía server cho phần cây chưa tải (hiện chỉ lọc cục bộ phần đã tải).
+- BROWSE-05/07 phần phụ thuộc editor: mở DDL trong editor, sinh SELECT/INSERT mẫu (mục "xuất" theo GĐ5).
+- DATA-07 tải blob ra file; DATA-12 (Could).
+- APP-07 nút "mở thư mục log" và chọn mức log trong giao diện (command `log_dir` đã có); làm cùng trang cài đặt APP-05.
+- NFR-PERF-03 giới hạn bộ nhớ cấu hình được (hiện là hằng số: 1.000.000 dòng hoặc 20.000.000 ô); tuỳ chọn múi giờ hiển thị cho `timestamptz`.
+- NFR-EXT-02 mở rộng ra các phần UI mới (hiện mới áp dụng ở cây và nút Dừng).
+- Test tự động "grep mật khẩu trong thư mục dữ liệu và log".
+- Thêm MySQL 5.7 và MariaDB 10.4 vào job `integration` (runner x86_64 có image).
+
+**Đề xuất chuyển sang GĐ9 (hoặc sớm hơn khi có máy/CI Windows, Linux):**
+- Build và chạy app trên Windows, Linux; kiểm thử giao diện trên WebView2 và WebKitGTK (NFR-PLAT-02).
+- Benchmark lưới 1 triệu dòng với bảng thật trên WKWebView, WebView2, WebKitGTK → chốt TanStack Virtual hay canvas grid. Nên làm sớm nhất có thể (trước khi lưới gánh thêm chế độ sửa ở GĐ2 càng tốt), hạn chót là GĐ9.
+
+**Giữ mở, chưa gắn giai đoạn:** phân trang keyset/cursor thay OFFSET; các hạn chế TLS của MySQL do `mysql_async` (architecture §15); câu hỏi chế độ TLS mặc định (requirements §6, câu 8).
+
+**Ghi chú về CONN-10:** cờ read-only đã lưu theo profile và áp vào session ở mức driver (PostgreSQL `default_transaction_read_only=on`, MySQL `SET SESSION TRANSACTION READ ONLY`; đọc bảng luôn trong transaction READ ONLY). Phân loại câu lệnh bằng parser vẫn là việc của GĐ2.
 
 ---
 
@@ -104,6 +132,7 @@ Thứ tự mặc định là tuần tự GĐ0 → GĐ10; các nhánh song song t
 - Sửa dữ liệu: DATA-03, DATA-04, DATA-05, DATA-06, DATA-07 (chế độ sửa), DATA-08.
 - An toàn: CONN-10, CONN-11, CONN-12; NFR-SEC-03; NFR-REL-01.
 - Phím tắt APP-04; command palette APP-08 (Could); NFR-PERF-04.
+- Tồn đọng nhận từ GĐ1 nếu chủ dự án đồng ý (xem "Tồn đọng của GĐ1"): CONN-02 kéo thả, BROWSE-06 tìm phía server, DATA-07 tải blob, DATA-12, phần UI của APP-07, giới hạn bộ nhớ cấu hình được (NFR-PERF-03).
 
 **Ngoài phạm vi:** EXPLAIN/plan (GĐ7), editor MQL/Redis (GĐ4).
 
@@ -296,13 +325,13 @@ Thứ tự mặc định là tuần tự GĐ0 → GĐ10; các nhánh song song t
 
 | Nhóm | GĐ chính | Ghi chú |
 |---|---|---|
-| CONN-01..05, 07..09 | GĐ1 | Mở rộng cho DB mới ở GĐ3, GĐ4 |
+| CONN-01..05, 07..09 | GĐ1 | Mở rộng cho DB mới ở GĐ3, GĐ4. Phần kéo thả của CONN-02 đề xuất chuyển GĐ2 |
 | CONN-06 | GĐ3 | |
-| CONN-10..12 | GĐ2 | |
+| CONN-10..12 | GĐ2 | CONN-10: GĐ1 đã áp read-only ở mức session của driver; phân loại câu lệnh ở GĐ2 |
 | CONN-13 *(Đề xuất)* | GĐ4 | Could |
-| BROWSE-01, 02, 05..08 | GĐ1 | |
+| BROWSE-01, 02, 05..08 | GĐ1 | Đề xuất chuyển GĐ2: BROWSE-06 phần tìm phía server; BROWSE-05/07 phần cần editor (mở DDL trong editor, sinh SELECT/INSERT mẫu) |
 | BROWSE-03, 04 | GĐ4 | |
-| DATA-01, 02, 07 (xem), 09, 12 | GĐ1 | |
+| DATA-01, 02, 07 (xem), 09, 12 | GĐ1 | Đề xuất chuyển GĐ2: DATA-07 tải blob ra file, DATA-12 (Could) |
 | DATA-03..06, 07 (sửa), 08 | GĐ2 | |
 | DATA-10, 11 | GĐ4 | |
 | QUERY-01..13, 16 | GĐ2 | Dialect MSSQL/Oracle ở GĐ3 |
@@ -313,12 +342,12 @@ Thứ tự mặc định là tuần tự GĐ0 → GĐ10; các nhánh song song t
 | PLAN-01..07 | GĐ7 | ClickHouse/Cassandra ở GĐ10+ |
 | BACKUP-01..15 | GĐ8 | |
 | APP-01, 02, 03, 05 (một phần) | GĐ0 | APP-05 bổ sung dần theo giai đoạn |
-| APP-07 | GĐ1 | GĐ0 mới log ra console |
+| APP-07 | GĐ1 | GĐ0 mới log ra console. GĐ1 có log file xoay vòng + command `log_dir`; nút "mở thư mục log" và chọn mức log trong UI đề xuất chuyển GĐ2 (cùng APP-05) |
 | APP-04, 08 | GĐ2 | |
 | APP-09 | GĐ5 | Dùng lại ở GĐ8 |
 | APP-06 | GĐ9 | |
 | NFR-EXT-01, NFR-SEC-04, NFR-QUAL-02, 03 | GĐ0 | Duy trì suốt dự án |
-| NFR-PERF-02, 03, NFR-EXT-02, NFR-REL-02, NFR-SEC-01, 02 | GĐ1 | NFR-SEC-02 (SSH) hoàn tất ở GĐ3 |
+| NFR-PERF-02, 03, NFR-EXT-02, NFR-REL-02, NFR-SEC-01, 02 | GĐ1 | NFR-SEC-02 (SSH) hoàn tất ở GĐ3. NFR-PERF-03: giới hạn cấu hình được đề xuất chuyển GĐ2, benchmark 3 webview chậm nhất ở GĐ9. NFR-EXT-02 tiếp tục áp dụng cho UI mới |
 | NFR-PERF-04, NFR-SEC-03, NFR-REL-01 | GĐ2 | |
 | NFR-SEC-06 | GĐ8 | Mã hoá backup |
 | NFR-PLAT-01, 02, NFR-PERF-01 | GĐ9 | Kiểm thử liên tục từ GĐ0 qua CI |

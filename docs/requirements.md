@@ -1,6 +1,6 @@
 # DBStudio — Yêu cầu sản phẩm
 
-> Trạng thái: bản nháp v0.1 (Giai đoạn 0). Tên sản phẩm "DBStudio" là tên tạm.
+> Trạng thái: bản nháp v0.2 (cập nhật sau Giai đoạn 1: thêm ghi chú làm rõ ở §2.3, câu hỏi 8 và rủi ro mới ở §6; bảng yêu cầu không đổi). Tên sản phẩm "DBStudio" là tên tạm.
 > Tài liệu liên quan: [architecture.md](architecture.md), [roadmap.md](roadmap.md).
 
 ## 1. Mục tiêu
@@ -73,6 +73,11 @@ Năng lực chính: quản lý kết nối, duyệt đối tượng, xem/sửa d
 | DATA-10 | MongoDB: xem document dạng tree, JSON (Extended JSON) và bảng (làm phẳng trường cấp 1); sửa/thêm/xoá document. | Must |
 | DATA-11 | Redis: trình xem theo kiểu key — string, hash, list, set, zset, stream; sửa giá trị, thêm/xoá phần tử, đặt/xoá TTL. | Must |
 | DATA-12 | Ẩn/hiện, đổi thứ tự, ghim cột; ghi nhớ theo bảng. | Could |
+
+**Ghi chú làm rõ (bổ sung sau GĐ1, không đổi nghĩa yêu cầu):**
+- *DATA-02 — WHERE thô:* phần thân mệnh đề WHERE người dùng gõ được coi là SQL tin cậy (không escape), nhưng phải là **một biểu thức duy nhất**; app từ chối mọi nội dung có thể thành câu lệnh thứ hai (`;`, ngoặc không cân, ...) và đọc dữ liệu luôn trong transaction chỉ đọc. Chi tiết theo driver: architecture.md §5.1.
+- *DATA-02 — ngữ nghĩa lọc:* các phép "chứa / không chứa / bắt đầu / kết thúc" không phân biệt hoa thường và coi `%`, `_` là ký tự thường; phân biệt dấu và phép so sánh `=`/`<>`/lớn nhỏ trên chuỗi đi theo collation của DB, nên kết quả có thể khác nhau giữa PostgreSQL và MySQL. "Không chứa" loại cả dòng có giá trị NULL (theo `NOT LIKE`).
+- *DATA-01 — phân trang:* để các trang không trùng/sót dòng, thứ tự luôn được bổ sung khoá chính (hoặc unique NOT NULL) ở cuối; bảng không có khoá như vậy thì không đảm bảo thứ tự giữa các trang.
 
 ### 2.4 Query editor (QUERY)
 
@@ -268,13 +273,17 @@ Câu hỏi cần chủ dự án trả lời (gắn với giai đoạn bị ảnh
 5. **Giấy phép sản phẩm** (mã nguồn mở hay thương mại)? Ảnh hưởng việc chọn dependency (vd. giấy phép của driver, Oracle Instant Client) và khả năng phân phối kèm. *(bổ sung)*
 6. **Xác thực MSSQL**: có cần Windows Integrated Authentication (Kerberos/NTLM) và Azure AD không? `tiberius` hỗ trợ hạn chế trên macOS/Linux. *(bổ sung, GĐ3)*
 7. Tên sản phẩm và bundle identifier hiện tạm là "DBStudio" — cần chốt trước GĐ9 (đổi identifier sau khi phát hành sẽ làm mất dữ liệu cục bộ/keychain entry và đứt chuỗi auto-update).
+8. **Chế độ TLS mặc định cho profile mới** *(bổ sung sau GĐ1, CONN-05)*. Hiện là `prefer` (giống libpq và đa số công cụ). Review bảo mật chỉ ra `prefer` và `require` không chống được tấn công chặn giữa: `prefer` có thể rơi về kết nối không mã hoá, `require` không kiểm chứng thư — mật khẩu có thể lộ. Giao diện đã cảnh báo khi chọn `disable`/`prefer`/`require` với host không phải loopback. Có nên đổi mặc định sang `verify-full` (hoặc `verify-full` cho host từ xa và `require`/`prefer` cho localhost) không? Đánh đổi: an toàn hơn nhưng nhiều server nội bộ dùng chứng thư tự ký sẽ kết nối thất bại cho tới khi người dùng chỉ định CA.
 
 Rủi ro kỹ thuật:
 
 | Rủi ro | Ảnh hưởng | Hướng xử lý |
 |---|---|---|
 | Crate `oracle` cần Oracle Instant Client (ODPI-C) | Đóng gói phức tạp, giấy phép phân phối lại, người dùng phải cài thêm | Nạp động khi cần, hướng dẫn cài; đánh giá phương án thuần Rust ở GĐ3 |
-| Hiệu năng WebKitGTK (Linux) với lưới lớn và sơ đồ lớn | Giật/lag trên Linux | Benchmark sớm ở GĐ1; dự phòng canvas grid *(bổ sung)* |
+| Hiệu năng WebKitGTK (Linux) với lưới lớn và sơ đồ lớn | Giật/lag trên Linux | Benchmark sớm; dự phòng canvas grid *(bổ sung)*. Cập nhật sau GĐ1: benchmark **chưa làm** (chưa có bản build Linux), quyết định grid còn mở |
 | Khác biệt dialect lớn (DDL, kiểu dữ liệu, plan) | Tốn công cho mỗi DB, dễ sai ở export/backup | Test integration theo từng DB + bộ dữ liệu mẫu nhiều kiểu |
 | Backup logic không đầy đủ so với tool native | Restore thiếu đối tượng | Manifest liệt kê rõ phạm vi hỗ trợ; khuyến nghị tool native cho production |
 | Keychain trên Linux phụ thuộc Secret Service đang chạy | Không lưu được mật khẩu trên một số môi trường | Phát hiện và báo rõ; fallback "hỏi mỗi lần" (CONN-08), không fallback plaintext |
+| Keychain thật chưa được kiểm thử *(bổ sung sau GĐ1)* | Test chỉ dùng kho giả trong bộ nhớ; hành vi thật (quyền truy cập Keychain macOS, Credential Manager, Secret Service, lỗi khi bị từ chối) chưa biết | Kiểm tra tay trên macOS trước khi đóng GĐ1; Windows/Linux khi có bản build; thêm test "grep mật khẩu trong thư mục dữ liệu và log" |
+| Hạn chế TLS của `mysql_async` 0.37 *(bổ sung sau GĐ1)* | `verify-ca` hoạt động như `verify-full` (không cho thay verifier); không dùng kho chứng thư của OS khi thiếu file CA (dùng `webpki-roots`); không đăng nhập được tài khoản `sha256_password` | Ghi rõ trong tài liệu và thông báo lỗi; theo dõi bản `mysql_async` mới hoặc đóng góp upstream; cân nhắc thay lớp TLS nếu người dùng cần CA nội bộ từ kho OS |
+| Chưa kiểm thử trên Windows và Linux *(bổ sung sau GĐ1)* | Lỗi build, khác biệt webview (WebView2, WebKitGTK), keychain, đường dẫn file chỉ lộ ra muộn | Cho CI matrix 3 OS chạy ngay khi repo có remote; benchmark lưới và kiểm thử giao diện trên cả 3 webview trước khi chốt grid (chậm nhất GĐ9) |
