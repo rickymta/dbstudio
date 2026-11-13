@@ -160,7 +160,7 @@ mod tests {
         let (a, b) = (tab(1, "select 1", Some(conn)), tab(0, "select 'é😀'", None));
         s.tabs_set(&[a.clone(), b.clone()]).unwrap();
         assert_eq!(s.tabs_get().unwrap(), vec![b.clone(), a.clone()]);
-        s.tabs_set(&[a.clone()]).unwrap();
+        s.tabs_set(std::slice::from_ref(&a)).unwrap();
         assert_eq!(s.tabs_get().unwrap(), vec![a]);
         s.tabs_set(&[]).unwrap();
         assert!(s.tabs_get().unwrap().is_empty());
@@ -185,7 +185,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store.db");
         let t = tab(0, "select 1", None);
-        Store::open(&path).unwrap().tabs_set(&[t.clone()]).unwrap();
+        Store::open(&path)
+            .unwrap()
+            .tabs_set(std::slice::from_ref(&t))
+            .unwrap();
         assert_eq!(Store::open(&path).unwrap().tabs_get().unwrap(), vec![t]);
     }
 }
