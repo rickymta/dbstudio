@@ -9,6 +9,7 @@ import { create } from 'zustand';
 import type { ObjectPath, Uuid } from '@/lib/types';
 import { useTabsStore } from '@/stores/tabs';
 import { GridModel } from './gridModel';
+import { EMPTY_LAYOUT, type ColumnLayout } from './columnLayout';
 import { emptyDraft, type FilterDraft } from './request';
 
 export type SubTab = 'data' | 'structure' | 'ddl';
@@ -26,8 +27,10 @@ export interface TabUiState {
   viewerPosition: ViewerPosition;
   /** Viewer size in px (width when right, height when bottom). */
   viewerSize: number;
-  /** User-resized column widths by column name. */
-  colWidths: Record<string, number>;
+  /** Column order/visibility/pinning/widths by column name; persisted per table. */
+  layout: ColumnLayout;
+  /** The persisted layout was read into `layout` for this tab. */
+  layoutLoaded: boolean;
   draft: FilterDraft;
 }
 
@@ -38,7 +41,8 @@ export function initialTabUi(): TabUiState {
     viewerOpen: false,
     viewerPosition: 'right',
     viewerSize: 360,
-    colWidths: {},
+    layout: EMPTY_LAYOUT,
+    layoutLoaded: false,
     draft: emptyDraft(),
   };
 }

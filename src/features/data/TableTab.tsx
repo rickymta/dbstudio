@@ -1,8 +1,11 @@
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { cn } from '@/lib/cn';
+import { pathKey } from '@/lib/objectPath';
+import { useAppSettings } from '@/features/settings/queries';
 import { tableTabId, type TableTabPayload } from '@/stores/tabs';
+import { layoutStorageKey, loadLayout } from './columnLayout';
 import { CellViewer } from './CellViewer';
 import { DataGrid } from './DataGrid';
 import { DdlViewer } from './DdlViewer';
@@ -33,7 +36,7 @@ export function TableTab({ sessionId, connectionId, path }: TableTabPayload) {
         </TabsList>
         {/* Radix mounts a sub-tab only while active, so each loads on first open. */}
         <TabsContent value="data" className="flex flex-col">
-          <DataPane tabId={tabId} sessionId={sessionId} path={path} />
+          <DataPane tabId={tabId} sessionId={sessionId} connectionId={connectionId} path={path} />
         </TabsContent>
         <TabsContent value="structure">
           <StructureTab sessionId={sessionId} path={path} />
@@ -49,14 +52,28 @@ export function TableTab({ sessionId, connectionId, path }: TableTabPayload) {
 function DataPane({
   tabId,
   sessionId,
+  connectionId,
   path,
 }: {
   tabId: string;
   sessionId: string;
+  connectionId: string;
   path: TableTabPayload['path'];
 }) {
   const model = getGridModel(tabId, sessionId, path);
-  const [ui] = useTabUi(tabId);
+  const [ui, patchUi] = useTabUi(tabId);
+  const settings = useAppSettings();
+  const layoutKey = layoutStorageKey(connectionId, pathKey(path));
+
+  // Row/cell budget from the settings; takes effect on the next page that gets loaded.
+  useEffect(() => {
+    model.setLimits(settings.gridMaxRows, settings.gridMaxCells);
+  }, [model, settings.gridMaxRows, settings.gridMaxCells]);
+
+  // Read the persisted column layout once per tab (the store keeps it afterwards).
+  useLayoutEffect(() => {
+    if (!ui.layoutLoaded) patchUi({ layout: loadLayout(layoutKey), layoutLoaded: true });
+  }, [ui.layoutLoaded, layoutKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     model.ensureLoaded();
@@ -72,9 +89,16 @@ function DataPane({
         )}
       >
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <DataGrid tabId={tabId} model={model} />
+          <DataGrid
+            tabId={tabId}
+            model={model}
+            layoutKey={layoutKey}
+            timestamp={settings.timestampDisplay}
+          />
         </div>
-        {ui.viewerOpen && <CellViewer tabId={tabId} model={model} />}
+        {ui.viewerOpen && (
+          <CellViewer tabId={tabId} model={model} timestamp={settings.timestampDisplay} />
+        )}
       </div>
       <GridStatusBar model={model} />
     </div>

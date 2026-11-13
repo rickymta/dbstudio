@@ -62,8 +62,8 @@ export class GridModel {
   readonly sessionId: Uuid;
   readonly table: ObjectPath;
   readonly pageSizes: readonly number[];
-  readonly maxRows: number;
-  readonly maxCells: number;
+  maxRows: number;
+  maxCells: number;
 
   columns: ColumnMeta[] = [];
   /** Mutable on purpose; read it after `getVersion()` changed. */
@@ -157,6 +157,22 @@ export class GridModel {
     this.error = null;
     this.onReset?.();
     this.fetchPage();
+  }
+
+  /**
+   * Change the row/cell budget (app settings). Applies to the next page: rows already loaded are
+   * never cut, and a model stopped at the old cap resumes if the new budget has room.
+   */
+  setLimits(maxRows: number, maxCells: number): void {
+    if (maxRows === this.maxRows && maxCells === this.maxCells) return;
+    this.maxRows = maxRows;
+    this.maxCells = maxCells;
+    if (this.capped && this.rows.length < this.rowBudget().max) {
+      this.capped = false;
+      this.capReason = null;
+      this.exhausted = false;
+      this.notify();
+    }
   }
 
   /** Fetch the next page (no-op while loading, after the end, or after stop/error). */

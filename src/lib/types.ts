@@ -30,6 +30,8 @@ export interface Capabilities {
   triggers: boolean;
   views: boolean;
   sequences: boolean;
+  /** The driver can search objects by name on the server (`object_search`). */
+  objectSearch: boolean;
 }
 
 export type DriverStatus = { state: 'available' } | { state: 'planned'; phase: number };
@@ -367,3 +369,33 @@ export interface TableCountRequest {
   /** When set, the count can be cancelled with `queryCancel` (it then fails with kind `cancelled`). */
   queryId?: string;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Object search and application settings
+// ---------------------------------------------------------------------------------------------
+
+export interface ObjectSearchRequest {
+  query: string;
+  /** Subtree to search; the root path searches the whole server. */
+  scope: ObjectPath;
+  /** Restrict results to these kinds; all searchable kinds when omitted. */
+  kinds?: ObjectKind[];
+  limit: number;
+}
+
+export type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace';
+export type TimestampDisplay = 'utc' | 'local';
+
+export interface AppSettings {
+  logLevel: LogLevel;
+  gridMaxRows: number;
+  gridMaxCells: number;
+  timestampDisplay: TimestampDisplay;
+}
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  logLevel: 'info',
+  gridMaxRows: 1_000_000,
+  gridMaxCells: 20_000_000,
+  timestampDisplay: 'utc',
+};

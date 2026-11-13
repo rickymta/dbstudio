@@ -164,5 +164,12 @@
     "disable": "Traffic is not encrypted, so the password can be read by anyone on the network. Use Verify full (CA and host name) for remote servers.",
     "prefer": "This mode can fall back to unencrypted traffic, and never verifies the server, so an attacker on the network can intercept the password. Use Verify full (CA and host name).",
     "require": "Traffic is encrypted but the server certificate is not verified, so a man-in-the-middle can still intercept the password. Use Verify full (CA and host name)."
+  },
+  "search": {
+    "serverResults": "Results from the server",
+    "noServerResults": "No matches on the server",
+    "openData": "Open data",
+    "viewDdl": "View DDL",
+    "showInTree": "Show in tree"
   }
 }

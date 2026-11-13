@@ -23,8 +23,23 @@
 //! * `raw_where` is user-trusted SQL, but must be a single expression: a lexer rejects `;` and
 //!   unbalanced parentheses and the server confirms the statement with `COM_STMT_PREPARE`.
 //!
-//! Metadata queries avoid 8.x-only features so they should also work on 5.7, but this has not
-//! been tested against a real 5.7 server.
+//! # Tested versions and version differences
+//!
+//! The integration suite runs on MySQL 8.4, MySQL 5.7.44, MariaDB 10.4.34 and MariaDB 10.6.
+//!
+//! * Metadata queries avoid 8.x-only `information_schema` columns; `SHOW INDEX` is used for
+//!   indexes (functional-index `Expression` and `Visible` are read only when present).
+//! * `SET NAMES utf8mb4` is a connection setup command: `COM_RESET_CONNECTION` restores the
+//!   server's default character set on 5.7 / 10.4 (usually latin1), which would garble text
+//!   after the first pool recycle.
+//! * `information_schema_stats_expiry` (8.x only) is attempted and ignored elsewhere.
+//! * `json` is a real type on MySQL (`Value::Json`) but an alias of `longtext` on MariaDB
+//!   (`Value::Text`).
+//! * MariaDB reports a nullable column without default as `'NULL'`; it is mapped to no default.
+//! * Roles: the `roles` folder lists `mysql.user` accounts and only appears when readable.
+//! * MySQL 5.7 may generate a self-signed certificate: `Prefer`/`Require` encrypt, the verifying
+//!   modes fail against any other CA.
+//! * `sha256_password` accounts are not supported by the client library.
 
 mod browse;
 mod connect;
@@ -168,7 +183,7 @@ mod tests {
         let d = MySqlDriver::new().descriptor();
         assert_eq!(d.kind, DbKind::MySql);
         assert_eq!(d.status, DriverStatus::Available);
-        assert!(d.capabilities.sql && d.capabilities.cancel_query);
+        assert!(d.capabilities.sql && d.capabilities.cancel_query && d.capabilities.object_search);
     }
 
     #[test]

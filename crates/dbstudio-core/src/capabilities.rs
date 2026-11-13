@@ -34,6 +34,8 @@ pub struct Capabilities {
     pub views: bool,
     /// Has sequence objects.
     pub sequences: bool,
+    /// Supports server-side object search ([`crate::Session::search_objects`]).
+    pub object_search: bool,
 }
 
 impl Capabilities {
@@ -42,6 +44,7 @@ impl Capabilities {
         let none = Capabilities::default();
         match kind {
             DbKind::Postgres => Capabilities {
+                object_search: true,
                 sql: true,
                 transactions: true,
                 schemas: true,
@@ -58,6 +61,7 @@ impl Capabilities {
                 sequences: true,
             },
             DbKind::MySql => Capabilities {
+                object_search: true,
                 sql: true,
                 transactions: true,
                 multiple_databases: true,
@@ -73,6 +77,7 @@ impl Capabilities {
                 ..none
             },
             DbKind::SqlServer => Capabilities {
+                object_search: true,
                 sql: true,
                 transactions: true,
                 schemas: true,
@@ -89,6 +94,7 @@ impl Capabilities {
                 ..none
             },
             DbKind::Oracle => Capabilities {
+                object_search: true,
                 sql: true,
                 transactions: true,
                 schemas: true,
@@ -103,6 +109,7 @@ impl Capabilities {
                 ..none
             },
             DbKind::MongoDb => Capabilities {
+                object_search: true,
                 transactions: true,
                 multiple_databases: true,
                 explain: true,
@@ -120,6 +127,7 @@ impl Capabilities {
                 ..none
             },
             DbKind::Cassandra => Capabilities {
+                object_search: true,
                 sql: true,
                 multiple_databases: true,
                 data_editing: true,
@@ -129,6 +137,7 @@ impl Capabilities {
                 ..none
             },
             DbKind::ScyllaDb => Capabilities {
+                object_search: true,
                 sql: true,
                 multiple_databases: true,
                 data_editing: true,
@@ -137,6 +146,7 @@ impl Capabilities {
                 ..none
             },
             DbKind::ClickHouse => Capabilities {
+                object_search: true,
                 sql: true,
                 multiple_databases: true,
                 explain: true,
@@ -159,6 +169,8 @@ mod tests {
         assert!(!redis.sql && !redis.foreign_keys);
         let mongo = Capabilities::planned_for(DbKind::MongoDb);
         assert!(mongo.explain && !mongo.sql);
+        assert!(mongo.object_search && !redis.object_search);
+        assert!(Capabilities::planned_for(DbKind::Postgres).object_search);
     }
 
     #[test]
@@ -166,5 +178,6 @@ mod tests {
         let json = serde_json::to_value(Capabilities::default()).unwrap();
         assert!(json.get("explainAnalyze").is_some());
         assert!(json.get("foreignKeys").is_some());
+        assert_eq!(json["objectSearch"], false);
     }
 }

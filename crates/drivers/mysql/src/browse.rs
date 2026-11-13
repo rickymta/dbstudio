@@ -8,8 +8,8 @@
 //! both accepted when resolving.
 
 use dbstudio_core::{
-    ColumnDetail, Error, ForeignKeyDetail, IndexDetail, ObjectKind, ObjectNode, ObjectPath, Result,
-    TableDetails, ValueKind, folder,
+    ColumnDetail, Error, ForeignKeyDetail, IndexDetail, ObjectKind, ObjectNode, ObjectPath,
+    ObjectSearchRequest, Result, TableDetails, ValueKind, folder,
 };
 use mysql_async::Row;
 use mysql_async::prelude::Queryable;
@@ -122,6 +122,161 @@ pub async fn list_children(
             list_table_folder(conn, parent, &db, &t, kind, &f).await
         }
     }
+}
+
+/// Rank of `name` for `query` (both lower-cased): 0 exact, 1 prefix, 2 substring.
+fn match_rank(name_lc: &str, query_lc: &str) -> u8 {
+    if name_lc == query_lc {
+        0
+    } else if name_lc.starts_with(query_lc) {
+        1
+    } else {
+        2
+    }
+}
+
+/// Server-side search of tables, views, functions and procedures by (case-insensitive)
+/// substring of the name. See [`ObjectSearchRequest`] for the contract.
+pub async fn search_objects(
+    conn: &mut mysql_async::Conn,
+    req: &ObjectSearchRequest,
+) -> Result<Vec<ObjectNode>> {
+    if req.query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = req.limit.clamp(1, 1000);
+    let kinds: Vec<ObjectKind> = if req.kinds.is_empty() {
+        vec![
+            ObjectKind::Table,
+            ObjectKind::View,
+            ObjectKind::Function,
+            ObjectKind::Procedure,
+        ]
+    } else {
+        req.kinds.clone()
+    };
+    let wants = |k: ObjectKind| kinds.contains(&k);
+    // None = every user database; Some(db) = that database only.
+    let scope_db: Option<String> = match resolve(&req.scope) {
+        Ok(Place::Root) => None,
+        Ok(Place::Database(d))
+        | Ok(Place::DbFolder(d, _))
+        | Ok(Place::Table(d, _, _))
+        | Ok(Place::TableFolder(d, _, _, _)) => Some(d),
+        Ok(Place::Roles) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let query_lc = req.query.to_lowercase();
+    let system_list = SYSTEM_DATABASES.map(|d| format!("'{d}'")).join(",");
+    let scope_sql = match &scope_db {
+        Some(_) => "AND {col} = ?".to_string(),
+        None => format!("AND LOWER({{col}}) NOT IN ({system_list})"),
+    };
+
+    // (rank, sort name, kind, database, name)
+    let mut found: Vec<(u8, String, ObjectKind, String, String)> = Vec::new();
+    let mut run = |kind_of: &dyn Fn(&str) -> Option<ObjectKind>, rows: Vec<Row>| {
+        for r in rows {
+            let (Some(db), Some(name)) = (cell(&r, 0), cell(&r, 1)) else {
+                continue;
+            };
+            let Some(kind) = kind_of(&cell(&r, 2).unwrap_or_default()) else {
+                continue;
+            };
+            let lc = name.to_lowercase();
+            found.push((match_rank(&lc, &query_lc), lc, kind, db, name));
+        }
+    };
+
+    let want_tables = wants(ObjectKind::Table);
+    let want_views = wants(ObjectKind::View);
+    if want_tables || want_views {
+        let sql = format!(
+            "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES \
+             WHERE LOCATE(LOWER(?), LOWER(TABLE_NAME)) > 0 {} \
+             AND TABLE_TYPE IN ('BASE TABLE','SYSTEM VERSIONED','SYSTEM VIEW','VIEW') \
+             ORDER BY (LOWER(TABLE_NAME) = LOWER(?)) DESC, (LOCATE(LOWER(?), LOWER(TABLE_NAME)) = 1) DESC, \
+                      TABLE_NAME, TABLE_SCHEMA LIMIT {limit}",
+            scope_sql.replace("{col}", "TABLE_SCHEMA")
+        );
+        let q = req.query.as_str();
+        let rows: Vec<Row> = match &scope_db {
+            Some(d) => rows_vec(conn, &sql, (q, d.as_str(), q, q)).await?,
+            None => rows_vec(conn, &sql, (q, q, q)).await?,
+        };
+        run(
+            &|ty| match (ty == "VIEW", want_views, want_tables) {
+                (true, true, _) => Some(ObjectKind::View),
+                (false, _, true) => Some(ObjectKind::Table),
+                _ => None,
+            },
+            rows,
+        );
+    }
+    for (kind, ty, want) in [
+        (
+            ObjectKind::Function,
+            "FUNCTION",
+            wants(ObjectKind::Function),
+        ),
+        (
+            ObjectKind::Procedure,
+            "PROCEDURE",
+            wants(ObjectKind::Procedure),
+        ),
+    ] {
+        if !want {
+            continue;
+        }
+        let sql = format!(
+            "SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES \
+             WHERE ROUTINE_TYPE = '{ty}' AND LOCATE(LOWER(?), LOWER(ROUTINE_NAME)) > 0 {} \
+             ORDER BY (LOWER(ROUTINE_NAME) = LOWER(?)) DESC, (LOCATE(LOWER(?), LOWER(ROUTINE_NAME)) = 1) DESC, \
+                      ROUTINE_NAME, ROUTINE_SCHEMA LIMIT {limit}",
+            scope_sql.replace("{col}", "ROUTINE_SCHEMA")
+        );
+        let q = req.query.as_str();
+        let rows: Vec<Row> = match &scope_db {
+            Some(d) => rows_vec(conn, &sql, (q, d.as_str(), q, q)).await?,
+            None => rows_vec(conn, &sql, (q, q, q)).await?,
+        };
+        run(&|_| Some(kind), rows);
+    }
+
+    let path_key = |kind: ObjectKind, db: &str, name: &str| format!("{db}\u{0}{kind:?}\u{0}{name}");
+    found.sort_by(|a, b| {
+        (a.0, &a.1, &a.4, path_key(a.2, &a.3, &a.4)).cmp(&(
+            b.0,
+            &b.1,
+            &b.4,
+            path_key(b.2, &b.3, &b.4),
+        ))
+    });
+    found.truncate(limit as usize);
+    Ok(found
+        .into_iter()
+        .map(|(_, _, kind, db, name)| {
+            let folder_key = match kind {
+                ObjectKind::View => folder::VIEWS,
+                ObjectKind::Function => folder::FUNCTIONS,
+                ObjectKind::Procedure => folder::PROCEDURES,
+                _ => folder::TABLES,
+            };
+            let path = ObjectPath::root()
+                .child(ObjectKind::Database, db.clone())
+                .child(ObjectKind::Folder, folder_key)
+                .child(kind, name.clone());
+            let has_children = matches!(kind, ObjectKind::Table | ObjectKind::View);
+            node(path, kind, &name, has_children, Some(db))
+        })
+        .collect())
+}
+
+async fn rows_vec<P>(conn: &mut mysql_async::Conn, sql: &str, params: P) -> Result<Vec<Row>>
+where
+    P: Into<mysql_async::Params> + Send,
+{
+    rows(conn, sql, params).await
 }
 
 /// Account name in SQL form: `'user'@'host'`.

@@ -186,4 +186,37 @@ mod tests {
         ));
         assert!(matches!(s.delete(id), Err(Error::Storage(_))));
     }
+
+    /// Removes the test credential even when an assertion fails.
+    struct Cleanup(KeyringSecretStore, Uuid);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = self.0.delete(self.1);
+        }
+    }
+
+    /// Talks to the real OS keychain: run with `DBSTUDIO_KEYCHAIN_IT=1` (macOS may prompt).
+    #[test]
+    fn real_keychain_roundtrip() {
+        if std::env::var("DBSTUDIO_KEYCHAIN_IT").as_deref() != Ok("1") {
+            return;
+        }
+        let store = KeyringSecretStore::with_service(format!("{KEYRING_SERVICE}.test"));
+        let id = Uuid::new_v4();
+        let _cleanup = Cleanup(store.clone(), id);
+
+        assert!(store.get(id).unwrap().is_none());
+        store.set(id, &Secret::new("first")).unwrap();
+        assert_eq!(store.get(id).unwrap().unwrap().expose(), "first");
+        store
+            .set(id, &Secret::new("p\u{e4}ss w\u{f6}rd \u{1f510}"))
+            .unwrap();
+        assert_eq!(
+            store.get(id).unwrap().unwrap().expose(),
+            "p\u{e4}ss w\u{f6}rd \u{1f510}"
+        );
+        store.delete(id).unwrap();
+        assert!(store.get(id).unwrap().is_none());
+        store.delete(id).unwrap();
+    }
 }

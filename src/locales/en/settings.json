@@ -1,0 +1,40 @@
+{
+  "open": "Settings",
+  "title": "Settings",
+  "description": "Application preferences.",
+  "section": {
+    "appearance": "Appearance",
+    "data": "Data",
+    "logging": "Logging"
+  },
+  "language": "Language",
+  "theme": "Theme",
+  "gridMaxRows": "Maximum rows loaded into a grid",
+  "gridMaxCells": "Maximum cells loaded into a grid",
+  "gridHint": "Loading stops when either limit is reached. Higher limits use more memory.",
+  "timestampDisplay": "Show timestamps (timestamptz) in",
+  "timestamp": {
+    "utc": "UTC",
+    "local": "Local time"
+  },
+  "logLevel": "Log level",
+  "level": {
+    "error": "Error",
+    "warn": "Warning",
+    "info": "Info",
+    "debug": "Debug",
+    "trace": "Trace"
+  },
+  "logDir": "Log folder",
+  "openLogDir": "Open log folder",
+  "copyPath": "Copy path",
+  "copied": "Path copied",
+  "logDirLoading": "Loading...",
+  "save": "Save",
+  "cancel": "Cancel",
+  "loadError": "Could not load settings",
+  "validation": {
+    "rows": "Rows must be a whole number from 1,000 to 5,000,000",
+    "cells": "Cells must be a whole number from 100,000 to 200,000,000"
+  }
+}

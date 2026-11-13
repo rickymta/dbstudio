@@ -83,24 +83,57 @@ async fn tls_modes_on_mysql8() {
 }
 
 #[tokio::test]
-async fn tls_modes_on_mariadb() {
+async fn tls_modes_without_server_tls() {
     if !it_enabled() {
         return;
     }
-    let t = MARIADB;
+    for t in [MARIADB, MARIADB104] {
+        let s = connect_cfg(&config(t, "dbstudio", TlsMode::Prefer))
+            .await
+            .unwrap();
+        assert_eq!(
+            tls_state(&*s).await,
+            "off",
+            "[{}] Prefer must fall back to plain text",
+            t.name
+        );
+        for mode in [TlsMode::Require, TlsMode::VerifyCa, TlsMode::VerifyFull] {
+            match connect_cfg(&config(t, "dbstudio", mode)).await {
+                Err(Error::Tls(_)) => {}
+                Err(e) => panic!("[{}] {mode:?}: expected Tls error, got {e:?}", t.name),
+                Ok(_) => panic!(
+                    "[{}] {mode:?}: connected although the server has no TLS",
+                    t.name
+                ),
+            }
+        }
+    }
+}
+
+/// MySQL 5.7 generates a self-signed certificate at start-up when none is configured, so
+/// encryption without verification works while verifying modes against our CA fail.
+#[tokio::test]
+async fn tls_modes_on_mysql57() {
+    if !it_enabled() {
+        return;
+    }
+    let t = MYSQL57;
+    let s = connect_cfg(&config(t, "dbstudio", TlsMode::Disable))
+        .await
+        .unwrap();
+    assert_eq!(tls_state(&*s).await, "off");
+    // Whether the auto-generated certificate is offered depends on the build; follow reality.
+    let auto_tls = connect_cfg(&config(t, "dbstudio", TlsMode::Require))
+        .await
+        .is_ok();
     let s = connect_cfg(&config(t, "dbstudio", TlsMode::Prefer))
         .await
         .unwrap();
-    assert_eq!(
-        tls_state(&*s).await,
-        "off",
-        "Prefer must fall back to plain text"
-    );
-    for mode in [TlsMode::Require, TlsMode::VerifyCa, TlsMode::VerifyFull] {
-        match connect_cfg(&config(t, "dbstudio", mode)).await {
+    assert_eq!(tls_state(&*s).await, if auto_tls { "on" } else { "off" });
+    for mode in [TlsMode::VerifyCa, TlsMode::VerifyFull] {
+        match connect_cfg(&cfg_with_ca(t, mode, "ca.crt")).await {
             Err(Error::Tls(_)) => {}
-            Err(e) => panic!("{mode:?}: expected Tls error, got {e:?}"),
-            Ok(_) => panic!("{mode:?}: connected although the server has no TLS"),
+            other => panic!("{mode:?}: expected Tls error, got {}", describe(&other)),
         }
     }
 }
@@ -194,12 +227,7 @@ async fn server_info_and_close() {
             "[{}]",
             t.name
         );
-        assert!(
-            info.version
-                .starts_with(if t.mariadb { "10.6" } else { "8.4" }),
-            "{}",
-            info.version
-        );
+        assert!(info.version.starts_with(t.version), "{}", info.version);
         assert!(!info.extra["charset"].is_empty());
         assert!(info.extra.contains_key("time_zone") && info.extra.contains_key("sql_mode"));
         s.close().await.unwrap();

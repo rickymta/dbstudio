@@ -3,6 +3,7 @@
 
 import { parse as parseLossless } from 'lossless-json';
 import type { ColumnMeta, Value, ValueKind } from '@/lib/types';
+import { toLocalTimestamp, type TimestampDisplay } from './timestamp';
 
 export type CellKind =
   'null' | 'bool' | 'number' | 'temporal' | 'text' | 'uuid' | 'binary' | 'structured';
@@ -306,7 +307,7 @@ function unknownKindText(v: Value): string {
 }
 
 /** Full text of a value, as copied to the clipboard. NULL is the empty string. */
-export function valueToText(v: Value): string {
+export function valueToText(v: Value, timestamp: TimestampDisplay = 'utc'): string {
   switch (v.t) {
     case 'null':
       return '';
@@ -324,12 +325,13 @@ export function valueToText(v: Value): string {
     case 'array':
     case 'document':
       return stringifyPlain(valueToPlain(v));
+    case 'timestamp':
+      return timestamp === 'local' ? toLocalTimestamp(v.v) : v.v;
     case 'text':
     case 'decimal':
     case 'date':
     case 'time':
     case 'dateTime':
-    case 'timestamp':
     case 'uuid':
       return String(v.v);
     default:
@@ -358,8 +360,9 @@ export function estimateValueSize(v: Value): number {
 export const LARGE_COPY_BYTES = 5 * 1024 * 1024;
 
 const displayCache = new WeakMap<object, CellDisplay>();
+const localDisplayCache = new WeakMap<object, CellDisplay>();
 
-function computeCell(v: Value, maxChars: number): CellDisplay {
+function computeCell(v: Value, maxChars: number, timestamp: TimestampDisplay): CellDisplay {
   switch (v.t) {
     case 'null':
       return { text: 'NULL', kind: 'null', align: 'left' };
@@ -372,10 +375,15 @@ function computeCell(v: Value, maxChars: number): CellDisplay {
       return { text: v.v, kind: 'number', align: 'right' };
     case 'float':
       return { text: floatText(v.v), kind: 'number', align: 'right' };
+    case 'timestamp':
+      return {
+        text: visibleWhitespace(timestamp === 'local' ? toLocalTimestamp(v.v) : v.v),
+        kind: 'temporal',
+        align: 'left',
+      };
     case 'date':
     case 'time':
     case 'dateTime':
-    case 'timestamp':
       return { text: visibleWhitespace(v.v), kind: 'temporal', align: 'left' };
     case 'uuid':
       return { text: visibleWhitespace(v.v), kind: 'uuid', align: 'left' };
@@ -412,14 +420,19 @@ function computeCell(v: Value, maxChars: number): CellDisplay {
 }
 
 /** Short, single-line rendering of a value for a grid cell (cached per value object). */
-export function formatCell(v: Value, maxChars = MAX_CELL_CHARS): CellDisplay {
+export function formatCell(
+  v: Value,
+  maxChars = MAX_CELL_CHARS,
+  timestamp: TimestampDisplay = 'utc',
+): CellDisplay {
   if (maxChars !== MAX_CELL_CHARS || typeof v !== 'object' || v === null) {
-    return computeCell(v, maxChars);
+    return computeCell(v, maxChars, timestamp);
   }
-  let d = displayCache.get(v);
+  const cache = timestamp === 'local' ? localDisplayCache : displayCache;
+  let d = cache.get(v);
   if (!d) {
-    d = computeCell(v, maxChars);
-    displayCache.set(v, d);
+    d = computeCell(v, maxChars, timestamp);
+    cache.set(v, d);
   }
   return d;
 }

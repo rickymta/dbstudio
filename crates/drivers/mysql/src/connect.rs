@@ -134,6 +134,9 @@ pub fn build_opts(
     // `setup` commands run on every new connection *and* after every pool reset (which wipes
     // session state), unlike `init`. mysql_async pops them from the end, so reverse the order.
     let mut setup: Vec<String> = Vec::new();
+    // COM_RESET_CONNECTION restores the *server's* default character set on MySQL 5.7 and
+    // MariaDB 10.4 (often latin1), not the one negotiated in the handshake.
+    setup.push("SET NAMES utf8mb4".into());
     if cfg.read_only {
         // Best effort server side guard; fetch_table additionally uses READ ONLY transactions.
         setup.push("SET SESSION TRANSACTION READ ONLY".into());

@@ -21,6 +21,10 @@ pub struct Target {
     pub port: u16,
     pub mariadb: bool,
     pub tls: bool,
+    /// Expected `server_info().version` prefix.
+    pub version: &'static str,
+    /// Emulated / slow server: tests allow more time.
+    pub slow: bool,
 }
 
 pub const MYSQL8: Target = Target {
@@ -28,14 +32,40 @@ pub const MYSQL8: Target = Target {
     port: 33068,
     mariadb: false,
     tls: true,
+    version: "8.4",
+    slow: false,
 };
 pub const MARIADB: Target = Target {
     name: "mariadb",
     port: 33106,
     mariadb: true,
     tls: false,
+    version: "10.6",
+    slow: false,
 };
-pub const TARGETS: [Target; 2] = [MYSQL8, MARIADB];
+/// MySQL 5.7 (amd64 emulation: slow). It may generate its own self-signed certificate.
+pub const MYSQL57: Target = Target {
+    name: "mysql57",
+    port: 33057,
+    mariadb: false,
+    tls: false,
+    version: "5.7",
+    slow: true,
+};
+pub const MARIADB104: Target = Target {
+    name: "mariadb104",
+    port: 33104,
+    mariadb: true,
+    tls: false,
+    version: "10.4",
+    slow: false,
+};
+pub const TARGETS: [Target; 4] = [MYSQL8, MARIADB, MYSQL57, MARIADB104];
+
+/// Scale a timing bound for slow (emulated) servers.
+pub fn slack(t: Target, d: std::time::Duration) -> std::time::Duration {
+    if t.slow { d * 4 } else { d }
+}
 
 pub fn it_enabled() -> bool {
     std::env::var("DBSTUDIO_IT").is_ok_and(|v| v == "1")
@@ -183,17 +213,18 @@ impl ResultSink for CountingSink {
     }
 }
 
-static FIXTURE_MYSQL8: OnceCell<()> = OnceCell::const_new();
-static FIXTURE_MARIADB: OnceCell<()> = OnceCell::const_new();
+static FIXTURES: [OnceCell<()>; 4] = [
+    OnceCell::const_new(),
+    OnceCell::const_new(),
+    OnceCell::const_new(),
+    OnceCell::const_new(),
+];
 
 /// Create (once per process and server) the shared read-only fixture database.
 pub async fn ensure_fixture(t: Target) {
-    let cell = if t.mariadb {
-        &FIXTURE_MARIADB
-    } else {
-        &FIXTURE_MYSQL8
-    };
-    cell.get_or_init(|| async move { build_fixture(t).await })
+    let idx = TARGETS.iter().position(|x| x.port == t.port).unwrap();
+    FIXTURES[idx]
+        .get_or_init(|| async move { build_fixture(t).await })
         .await;
 }
 
@@ -261,7 +292,7 @@ async fn build_fixture(t: Target) {
     let root = root_session(t).await;
     run(
         &*root,
-        &format!("DROP DATABASE IF EXISTS {FIXTURE_DB}; CREATE DATABASE {FIXTURE_DB}"),
+        &format!("DROP DATABASE IF EXISTS {FIXTURE_DB}; CREATE DATABASE {FIXTURE_DB} CHARACTER SET utf8mb4"),
     )
     .await;
     run(
@@ -293,7 +324,7 @@ pub async fn scratch_db(t: Target, name: &str) -> String {
     let root = root_session(t).await;
     run(
         &*root,
-        &format!("DROP DATABASE IF EXISTS `{db}`; CREATE DATABASE `{db}`"),
+        &format!("DROP DATABASE IF EXISTS `{db}`; CREATE DATABASE `{db}` CHARACTER SET utf8mb4"),
     )
     .await;
     root.close().await.unwrap();

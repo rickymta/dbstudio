@@ -22,9 +22,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dbstudio_core::{
-    ColumnMeta, EndOutcome, Error, ExecSummary, ObjectNode, ObjectPath, QueryRequest, Result,
-    ResultSink, ServerInfo, Session, StatementEnd, TableCountRequest, TableDataRequest,
-    TableDetails, Value,
+    ColumnMeta, EndOutcome, Error, ExecSummary, ObjectNode, ObjectPath, ObjectSearchRequest,
+    QueryRequest, Result, ResultSink, ServerInfo, Session, StatementEnd, TableCountRequest,
+    TableDataRequest, TableDetails, Value,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, Pool, Row};
@@ -788,6 +788,13 @@ impl Session for MySqlSession {
     async fn table_details(&self, path: &ObjectPath) -> Result<TableDetails> {
         let mut conn = self.inner.acquire().await?;
         let r = browse::table_details(&mut conn, path, self.inner.is_mariadb).await;
+        self.inner.release(conn, is_conn_error(&r)).await;
+        r
+    }
+
+    async fn search_objects(&self, req: ObjectSearchRequest) -> Result<Vec<ObjectNode>> {
+        let mut conn = self.inner.acquire().await?;
+        let r = browse::search_objects(&mut conn, &req).await;
         self.inner.release(conn, is_conn_error(&r)).await;
         r
     }

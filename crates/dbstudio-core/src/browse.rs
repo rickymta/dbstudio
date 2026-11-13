@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ObjectPath;
+use crate::{ObjectKind, ObjectPath};
 
 /// Comparison operator of a [`ColumnFilter`].
 ///
@@ -121,11 +121,50 @@ pub struct TableCountRequest {
     pub query_id: Option<Uuid>,
 }
 
+/// Request for a server-side search of objects by name, see [`crate::Session::search_objects`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectSearchRequest {
+    /// Text typed by the user: case-insensitive substring match on the object **name**.
+    pub query: String,
+    /// Where to search: the root, a `Database` node or a `Schema` node (with or without
+    /// `Folder` segments). Only objects inside are returned.
+    pub scope: ObjectPath,
+    /// Kinds to return; empty means the default set: `Table`, `View`, `MaterializedView`,
+    /// `Function`, `Procedure`, `Sequence`.
+    #[serde(default)]
+    pub kinds: Vec<ObjectKind>,
+    /// Maximum number of results (drivers clamp it to `1..=1000`).
+    pub limit: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ObjectKind;
     use serde_json::json;
+
+    #[test]
+    fn search_request_shape() {
+        let req: ObjectSearchRequest = serde_json::from_value(json!({
+            "query": "us",
+            "scope": {"segments": []},
+            "limit": 50
+        }))
+        .unwrap();
+        assert!(req.kinds.is_empty() && req.scope.is_root());
+        let req = ObjectSearchRequest {
+            kinds: vec![ObjectKind::MaterializedView],
+            ..req
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["kinds"][0], "materializedView");
+        assert_eq!(json["limit"], 50);
+        assert_eq!(
+            serde_json::from_value::<ObjectSearchRequest>(json).unwrap(),
+            req
+        );
+    }
 
     #[test]
     fn request_roundtrip_and_defaults() {

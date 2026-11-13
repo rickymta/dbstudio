@@ -14,6 +14,7 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 use crate::model::{ConnectionGroup, ConnectionProfile, ConnectionsSnapshot};
+use crate::settings::AppSettings;
 use crate::validate::{validate_group, validate_profile};
 
 /// Schema migrations. Entry `i` upgrades the database from version `i` to `i + 1`; the version
@@ -52,6 +53,11 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_connections_group ON connections(group_id);
     CREATE INDEX idx_groups_parent ON connection_groups(parent_id);",
+    // v2: application settings (key -> JSON document).
+    "CREATE TABLE settings (
+        key   TEXT PRIMARY KEY NOT NULL,
+        value TEXT NOT NULL
+    );",
 ];
 
 const PROFILE_COLUMNS: &str = "id, name, kind, host, port, database_name, username, tls_mode, \
@@ -242,6 +248,35 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(db_err)?;
         Ok(v as u32)
+    }
+
+    /// Stored settings (defaults for anything missing or unreadable), normalized.
+    pub fn get_settings(&self) -> Result<AppSettings> {
+        let text: Option<String> = self
+            .lock()
+            .query_row("SELECT value FROM settings WHERE key = 'app'", [], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(db_err)?;
+        Ok(text
+            .and_then(|t| serde_json::from_str::<AppSettings>(&t).ok())
+            .unwrap_or_default()
+            .normalized())
+    }
+
+    /// Normalize and persist settings; returns the stored value.
+    pub fn set_settings(&self, settings: AppSettings) -> Result<AppSettings> {
+        let settings = settings.normalized();
+        let json = serde_json::to_string(&settings).map_err(invalid)?;
+        self.lock()
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('app', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![json],
+            )
+            .map_err(db_err)?;
+        Ok(settings)
     }
 
     /// All groups and profiles ordered by `sort_order`, then name.
@@ -851,5 +886,38 @@ mod tests {
         };
         let s = Store::open(&path).unwrap();
         assert_eq!(s.get_profile(id).unwrap().config.name, "persist");
+    }
+
+    #[test]
+    fn v1_database_upgrades_to_v2_keeping_profiles_and_gaining_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1.sqlite");
+        let p = {
+            let s = Store::init(Connection::open(&path).unwrap(), &MIGRATIONS[..1]).unwrap();
+            assert_eq!(s.schema_version().unwrap(), 1);
+            s.save_profile(&profile("legacy")).unwrap()
+        };
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.get_profile(p.config.id).unwrap(), p);
+        assert_eq!(s.get_settings().unwrap(), AppSettings::default());
+    }
+
+    #[test]
+    fn settings_roundtrip_normalize_and_tolerate_garbage() {
+        let s = Store::open_in_memory().unwrap();
+        let saved = s
+            .set_settings(AppSettings {
+                grid_max_rows: 5,
+                log_level: crate::settings::LogLevel::Debug,
+                ..AppSettings::default()
+            })
+            .unwrap();
+        assert_eq!(saved.grid_max_rows, 1_000);
+        assert_eq!(s.get_settings().unwrap(), saved);
+        s.lock()
+            .execute("UPDATE settings SET value = 'not json'", [])
+            .unwrap();
+        assert_eq!(s.get_settings().unwrap(), AppSettings::default());
     }
 }

@@ -69,5 +69,8 @@
   },
   "spinner": {
     "loading": "Loading"
+  },
+  "transport": {
+    "hint": "Backend: {{transport}} (not the Tauri runtime)"
   }
 }

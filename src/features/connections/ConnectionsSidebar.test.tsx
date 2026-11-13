@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Providers } from '@/app/providers';
@@ -608,5 +608,223 @@ describe('ConnectionsSidebar', () => {
     await user.clear(host);
     await user.type(host, 'localhost');
     expect(within(dialog).queryByTestId('tls-warning')).toBeNull();
+  });
+
+  describe('server-side search', () => {
+    const search = () => screen.getByRole('searchbox', { name: 'Filter connections and objects' });
+
+    async function connectDev(user: ReturnType<typeof userEvent.setup>) {
+      await user.dblClick(await profileRow('PostgreSQL dev'));
+      await screen.findByTestId('object-tree', {}, WAIT);
+    }
+
+    it('searches open connections after a pause, from two characters on', async () => {
+      const spy = vi.spyOn(ipc, 'objectSearch');
+      const user = setup();
+      await connectDev(user);
+      await user.type(search(), 'o');
+      await new Promise((r) => setTimeout(r, 450));
+      expect(spy).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('server-results')).toBeNull();
+      await user.type(search(), 'rders');
+      const section = await screen.findByTestId('server-results', {}, WAIT);
+      await within(section).findByRole('treeitem', { name: 'orders - PostgreSQL dev' }, WAIT);
+      expect(spy).toHaveBeenCalledTimes(1); // debounced: one call for the final text
+      expect(spy.mock.calls[0]![1]).toMatchObject({ query: 'orders', limit: 50 });
+      expect(within(section).getByText('Results from the server')).toBeInTheDocument();
+    });
+
+    it('drops stale answers when the text changes and reports empty results', async () => {
+      const user = setup();
+      await connectDev(user);
+      await user.type(search(), 'orders');
+      const section = await screen.findByTestId('server-results', {}, WAIT);
+      await within(section).findByRole('treeitem', { name: 'orders - PostgreSQL dev' }, WAIT);
+      await user.clear(search());
+      await user.type(search(), 'zzzz');
+      await within(section).findByText('No matches on the server', {}, WAIT);
+      expect(within(section).queryByRole('treeitem', { name: /orders/ })).toBeNull();
+    });
+
+    it('shows a per-connection error', async () => {
+      vi.spyOn(ipc, 'objectSearch').mockRejectedValue({ kind: 'query', message: 'search failed' });
+      const user = setup();
+      await connectDev(user);
+      await user.type(search(), 'users');
+      const section = await screen.findByTestId('server-results', {}, WAIT);
+      expect(await within(section).findByRole('alert', {}, WAIT)).toHaveTextContent(
+        'search failed',
+      );
+    });
+
+    it('opens a result like the tree does', async () => {
+      const user = setup();
+      await connectDev(user);
+      await user.type(search(), 'users');
+      const row = await screen.findByRole('treeitem', { name: 'users - PostgreSQL dev' }, WAIT);
+      await user.dblClick(row);
+      const tab = useTabsStore.getState().tabs.find((t) => t.kind === 'table');
+      expect(tab).toMatchObject({ title: 'users' });
+      expect(tab!.payload!.path.segments.map((s) => s.kind)).toEqual([
+        'database',
+        'folder',
+        'schema',
+        'folder',
+        'table',
+      ]);
+    });
+
+    it('shows a result in the tree by expanding its ancestors', async () => {
+      const user = setup();
+      await connectDev(user);
+      await user.type(search(), 'products');
+      const row = await screen.findByRole('treeitem', { name: 'products - PostgreSQL dev' }, WAIT);
+      fireEvent.contextMenu(row);
+      await user.click(await screen.findByRole('menuitem', { name: 'Show in tree' }));
+      const tree = await screen.findByTestId('object-tree', {}, WAIT);
+      const item = await within(tree).findByRole('treeitem', { name: /^products/ }, WAIT);
+      await waitFor(() => expect(tree.getAttribute('aria-activedescendant')).toBe(item.id), WAIT);
+      expect(search()).toHaveValue(''); // the filter was cleared so nothing hides the node
+    }, 15_000);
+
+    it('moves focus between the search box and the results with the arrow keys', async () => {
+      const user = setup();
+      await connectDev(user);
+      await user.type(search(), 'users');
+      await screen.findByRole('treeitem', { name: 'users - PostgreSQL dev' }, WAIT);
+      await user.keyboard('{ArrowDown}');
+      expect(document.activeElement).toHaveAttribute('data-nav-row');
+      await user.keyboard('{ArrowUp}');
+      expect(document.activeElement).toBe(search());
+    });
+
+    it('is skipped when no open driver supports searching', async () => {
+      const spy = vi.spyOn(ipc, 'objectSearch');
+      const user = setup();
+      await connectDev(user);
+      const sessions = useSessionsStore.getState().sessionsByConnection;
+      const info = sessions[PG_DEV]!;
+      useSessionsStore.setState({
+        sessionsByConnection: {
+          [PG_DEV]: {
+            ...info,
+            descriptor: {
+              ...info.descriptor,
+              capabilities: { ...info.descriptor.capabilities, objectSearch: false },
+            },
+          },
+        },
+      });
+      await user.type(search(), 'orders');
+      await new Promise((r) => setTimeout(r, 500));
+      expect(spy).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('server-results')).toBeNull();
+    });
+  });
+
+  describe('drag and drop', () => {
+    function dataTransfer() {
+      return { setData: vi.fn(), effectAllowed: '', dropEffect: '' };
+    }
+    const withRect = (el: HTMLElement) => {
+      el.getBoundingClientRect = () => ({
+        top: 0,
+        height: 26,
+        bottom: 26,
+        left: 0,
+        right: 100,
+        width: 100,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+      return el;
+    };
+    const rowOf = (name: string) => withRect(screen.getByRole('treeitem', { name }));
+
+    // jsdom drops `clientY` from drag events, so define it on the event object.
+    function fireDrag(type: 'dragOver' | 'drop', el: HTMLElement, dt: object, clientY: number) {
+      const event = createEvent[type](el, { dataTransfer: dt });
+      Object.defineProperty(event, 'clientY', { value: clientY });
+      fireEvent(el, event);
+    }
+
+    function drag(source: HTMLElement, target: HTMLElement, clientY: number) {
+      const dt = dataTransfer();
+      fireEvent.dragStart(source, { dataTransfer: dt });
+      fireDrag('dragOver', target, dt, clientY);
+      return {
+        drop: () => fireDrag('drop', target, dt, clientY),
+        end: () => fireEvent.dragEnd(source, { dataTransfer: dt }),
+      };
+    }
+
+    const profilesNow = async () => (await ipc.connectionsList()).profiles;
+
+    it('moves a profile into a group and shows the drop highlight while hovering', async () => {
+      const save = vi.spyOn(ipc, 'connectionSave');
+      setup();
+      await profileRow('PostgreSQL prod (read-only)');
+      const group = rowOf('Work');
+      const d = drag(rowOf('PostgreSQL prod (read-only)'), group, 13);
+      expect(within(group).getByTestId('drop-into')).toBeInTheDocument();
+      d.drop();
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1), WAIT);
+      expect(save.mock.calls[0]![0]).toMatchObject({ name: 'PostgreSQL prod (read-only)' });
+      expect(save.mock.calls[0]![0].groupId).toBeTruthy();
+      await waitFor(async () => {
+        const moved = (await profilesNow()).find((p) => p.name.startsWith('PostgreSQL prod'));
+        expect(moved?.groupId).toBeTruthy();
+      }, WAIT);
+      expect(screen.queryByTestId('drop-into')).toBeNull();
+    });
+
+    it('moves a profile out of its group by dropping it on the empty list area', async () => {
+      setup();
+      await profileRow('PostgreSQL dev');
+      const tree = screen.getAllByRole('tree')[0]!;
+      const d = drag(rowOf('PostgreSQL dev'), tree, 5);
+      d.drop();
+      await waitFor(async () => {
+        const dev = (await profilesNow()).find((p) => p.name === 'PostgreSQL dev');
+        expect(dev?.groupId).toBeNull();
+      }, WAIT);
+    });
+
+    it('reorders profiles with an insertion line', async () => {
+      setup();
+      await profileRow('PostgreSQL dev');
+      const target = rowOf('PostgreSQL dev');
+      const d = drag(rowOf('MySQL staging'), target, 2);
+      expect(within(target).getByTestId('drop-before')).toBeInTheDocument();
+      d.drop();
+      await waitFor(async () => {
+        const work = (await profilesNow()).filter((p) => p.groupId);
+        const sorted = [...work].sort((a, b) => a.sortOrder - b.sortOrder).map((p) => p.name);
+        expect(sorted).toEqual(['MySQL staging', 'PostgreSQL dev']);
+      }, WAIT);
+    });
+
+    it('refuses to drop a group onto itself', async () => {
+      const groupSave = vi.spyOn(ipc, 'groupSave');
+      setup();
+      await profileRow('PostgreSQL dev');
+      const group = rowOf('Work');
+      const d = drag(group, group, 13);
+      expect(screen.queryByTestId('drop-into')).toBeNull();
+      d.drop();
+      await new Promise((r) => setTimeout(r, 150));
+      expect(groupSave).not.toHaveBeenCalled();
+    });
+
+    it('opens a collapsed group after hovering it for a moment', async () => {
+      const user = setup();
+      await profileRow('PostgreSQL dev');
+      await user.click(screen.getByRole('treeitem', { name: 'Work' }));
+      expect(screen.queryByRole('treeitem', { name: 'PostgreSQL dev' })).toBeNull();
+      drag(rowOf('PostgreSQL prod (read-only)'), rowOf('Work'), 13);
+      expect(screen.queryByRole('treeitem', { name: 'PostgreSQL dev' })).toBeNull();
+      expect(await profileRow('PostgreSQL dev')).toBeInTheDocument();
+    });
   });
 });

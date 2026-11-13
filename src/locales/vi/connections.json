@@ -164,5 +164,12 @@
     "disable": "Dữ liệu không được mã hoá nên bất kỳ ai trên mạng cũng đọc được mật khẩu. Với máy chủ từ xa hãy dùng Xác minh đầy đủ (CA và tên máy chủ).",
     "prefer": "Chế độ này có thể quay về không mã hoá và không bao giờ xác minh máy chủ, nên kẻ tấn công trên mạng có thể chặn mật khẩu. Hãy dùng Xác minh đầy đủ (CA và tên máy chủ).",
     "require": "Dữ liệu được mã hoá nhưng chứng chỉ máy chủ không được xác minh, nên kẻ chặn giữa đường vẫn có thể lấy mật khẩu. Hãy dùng Xác minh đầy đủ (CA và tên máy chủ)."
+  },
+  "search": {
+    "serverResults": "Kết quả từ máy chủ",
+    "noServerResults": "Không có kết quả trên máy chủ",
+    "openData": "Mở dữ liệu",
+    "viewDdl": "Xem DDL",
+    "showInTree": "Hiện trong cây"
   }
 }

@@ -69,6 +69,6 @@ describe('GridStatusBar Stop button', () => {
     m.capReason = 'cells';
     m.columns = [{ name: 'a', typeName: 'int', valueKind: 'int' }];
     renderWithProviders(<GridStatusBar model={m} />);
-    expect(screen.getByRole('status')).toHaveTextContent(/memory budget/);
+    expect(screen.getByRole('status')).toHaveTextContent(/Settings/);
   });
 });

@@ -1,8 +1,13 @@
-import { Check, Copy, PanelBottom, PanelRight, X } from 'lucide-react';
+import { Check, Copy, PanelBottom, PanelRight, Save, X } from 'lucide-react';
 import { memo, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { IconButton } from '@/components/ui/IconButton';
+import { useToastStore } from '@/components/ui/toastStore';
+import { ipc } from '@/lib/ipc';
+import { lastSegment } from '@/lib/objectPath';
+import { LONG_TEXT_CHARS, detectFileExtension, suggestFileName, utf8ToBase64 } from './saveFile';
+import { toLocalTimestamp, type TimestampDisplay } from './timestamp';
 import { cn } from '@/lib/cn';
 import type { ColumnMeta, Value } from '@/lib/types';
 import {
@@ -27,7 +32,7 @@ const DUMP_LIMIT = 64 * 1024;
 const MIN_SIZE = 200;
 const MAX_SIZE = 900;
 
-function useCopy() {
+function useCopy(timestamp: TimestampDisplay) {
   const { t } = useTranslation('data');
   const [copied, setCopied] = useState(false);
   const copy = (value: Value) => {
@@ -35,7 +40,7 @@ function useCopy() {
       return;
     }
     void navigator.clipboard
-      ?.writeText(valueToText(value))
+      ?.writeText(valueToText(value, timestamp))
       .then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 1200);
@@ -46,7 +51,13 @@ function useCopy() {
 }
 
 /** Full-value rendering by kind. Exported for tests. */
-export const ValueView = memo(function ValueView({ value }: { value: Value }) {
+export const ValueView = memo(function ValueView({
+  value,
+  timestamp = 'utc',
+}: {
+  value: Value;
+  timestamp?: TimestampDisplay;
+}) {
   const { t } = useTranslation('data');
   switch (value.t) {
     case 'null':
@@ -64,6 +75,8 @@ export const ValueView = memo(function ValueView({ value }: { value: Value }) {
       return <StructuredValue value={value} />;
     case 'bytes':
       return <BytesView b64={value.v} />;
+    case 'timestamp':
+      return <TimestampView raw={value.v} timestamp={timestamp} />;
     case 'text':
       return <TextView text={value.v} />;
     default:
@@ -83,6 +96,29 @@ function StructuredValue({ value }: { value: Value }) {
   }, [value]);
   if (value.t === 'json' && plain === undefined) return <TextView text={value.v} />;
   return <StructuredView plain={plain} />;
+}
+
+function TimestampView({ raw, timestamp }: { raw: string; timestamp: TimestampDisplay }) {
+  const { t } = useTranslation('data');
+  const rows: [string, string, boolean][] = [
+    [t('viewer.tsUtc'), raw, timestamp === 'utc'],
+    [t('viewer.tsLocal'), toLocalTimestamp(raw), timestamp === 'local'],
+  ];
+  return (
+    <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 p-3 font-mono text-xs select-text">
+      {rows.map(([label, text, shown]) => (
+        <div key={label} className="contents">
+          <dt className="font-sans text-muted-foreground">{label}</dt>
+          <dd className="m-0 break-all">
+            {text}
+            {shown && (
+              <span className="ml-2 font-sans text-muted-foreground">({t('viewer.tsShown')})</span>
+            )}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 function TextView({ text }: { text: string }) {
@@ -210,18 +246,50 @@ function BytesView({ b64 }: { b64: string }) {
 interface CellViewerProps {
   tabId: string;
   model: GridModel;
+  timestamp?: TimestampDisplay;
 }
 
 /** Side/bottom panel showing the full value of the selected cell. */
-export function CellViewer({ tabId, model }: CellViewerProps) {
+export function CellViewer({ tabId, model, timestamp = 'utc' }: CellViewerProps) {
   const { t } = useTranslation('data');
   useGridVersion(model);
   const [ui, patchUi] = useTabUi(tabId);
-  const [copied, copy] = useCopy();
+  const [copied, copy] = useCopy(timestamp);
   const sel = ui.selection;
   const value = sel ? model.rows[sel.row]?.[sel.col] : undefined;
   const column: ColumnMeta | undefined = sel ? model.columns[sel.col] : undefined;
   const right = ui.viewerPosition === 'right';
+  const canSave =
+    value !== undefined &&
+    (value.t === 'bytes' ||
+      ((value.t === 'text' || value.t === 'json') && value.v.length >= LONG_TEXT_CHARS));
+
+  const save = async () => {
+    if (!value || !sel) return;
+    let ext = 'bin';
+    let data = '';
+    if (value.t === 'bytes') {
+      data = value.v;
+      ext = detectFileExtension(decodeBase64(value.v.slice(0, 16)));
+    } else if (value.t === 'text' || value.t === 'json') {
+      data = utf8ToBase64(value.v);
+      ext = value.t === 'json' ? 'json' : 'txt';
+    }
+    const name = suggestFileName(
+      lastSegment(model.table)?.name ?? 'table',
+      column?.name ?? 'column',
+      sel.row + 1,
+      ext,
+    );
+    const toast = useToastStore.getState();
+    try {
+      const path = await ipc.saveCellValue(name, data);
+      if (path) toast.push('success', t('viewer.saved', { path }));
+    } catch (e) {
+      const message = e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e);
+      toast.push('error', t('viewer.saveFailed', { message }));
+    }
+  };
 
   const startResize = (e: ReactPointerEvent) => {
     e.preventDefault();
@@ -266,6 +334,12 @@ export function CellViewer({ tabId, model }: CellViewerProps) {
           {column && <span className="ml-2 text-muted-foreground">{column.typeName}</span>}
           {sel && <span className="ml-2 text-muted-foreground">#{sel.row + 1}</span>}
         </div>
+        {canSave && (
+          <Button size="sm" variant="ghost" onClick={() => void save()}>
+            <Save size={12} />
+            {t('viewer.saveToFile')}
+          </Button>
+        )}
         <Button size="sm" variant="ghost" disabled={!value} onClick={() => value && copy(value)}>
           {copied ? <Check size={12} /> : <Copy size={12} />}
           {copied ? t('viewer.copied') : t('viewer.copy')}
@@ -284,7 +358,7 @@ export function CellViewer({ tabId, model }: CellViewerProps) {
       {value ? (
         // Remount per cell so per-value view state (wrap, tree mode) does not leak across cells.
         <div key={`${sel?.row}:${sel?.col}`} className="flex min-h-0 flex-1 flex-col overflow-auto">
-          <ValueView value={value} />
+          <ValueView value={value} timestamp={timestamp} />
         </div>
       ) : (
         <div className="p-3 text-xs text-muted-foreground">{t('viewer.noSelection')}</div>

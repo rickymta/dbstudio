@@ -4,16 +4,18 @@ import enCommon from '../locales/en/common.json';
 import enConnections from '../locales/en/connections.json';
 import enData from '../locales/en/data.json';
 import enExplorer from '../locales/en/explorer.json';
+import enSettings from '../locales/en/settings.json';
 import viCommon from '../locales/vi/common.json';
 import viConnections from '../locales/vi/connections.json';
 import viData from '../locales/vi/data.json';
 import viExplorer from '../locales/vi/explorer.json';
+import viSettings from '../locales/vi/settings.json';
 
 export const LANGUAGES = ['vi', 'en'] as const;
 export type Language = (typeof LANGUAGES)[number];
 
 /** Translation namespaces, one JSON file per language each. `common` is the default. */
-export const NAMESPACES = ['common', 'connections', 'explorer', 'data'] as const;
+export const NAMESPACES = ['common', 'connections', 'explorer', 'data', 'settings'] as const;
 export type Namespace = (typeof NAMESPACES)[number];
 
 const STORAGE_KEY = 'dbstudio.language';
@@ -45,8 +47,20 @@ export function setLanguage(language: Language): void {
 
 void i18n.use(initReactI18next).init({
   resources: {
-    en: { common: enCommon, connections: enConnections, explorer: enExplorer, data: enData },
-    vi: { common: viCommon, connections: viConnections, explorer: viExplorer, data: viData },
+    en: {
+      common: enCommon,
+      connections: enConnections,
+      explorer: enExplorer,
+      data: enData,
+      settings: enSettings,
+    },
+    vi: {
+      common: viCommon,
+      connections: viConnections,
+      explorer: viExplorer,
+      data: viData,
+      settings: viSettings,
+    },
   },
   ns: [...NAMESPACES],
   defaultNS: 'common',

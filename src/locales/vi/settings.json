@@ -1,0 +1,40 @@
+{
+  "open": "Cài đặt",
+  "title": "Cài đặt",
+  "description": "Tuỳ chọn của ứng dụng.",
+  "section": {
+    "appearance": "Giao diện",
+    "data": "Dữ liệu",
+    "logging": "Nhật ký"
+  },
+  "language": "Ngôn ngữ",
+  "theme": "Chủ đề",
+  "gridMaxRows": "Số dòng tối đa nạp vào lưới",
+  "gridMaxCells": "Số ô tối đa nạp vào lưới",
+  "gridHint": "Việc nạp dừng khi chạm một trong hai giới hạn. Giới hạn cao dùng nhiều bộ nhớ hơn.",
+  "timestampDisplay": "Hiển thị thời gian (timestamptz) theo",
+  "timestamp": {
+    "utc": "UTC",
+    "local": "Giờ máy"
+  },
+  "logLevel": "Mức nhật ký",
+  "level": {
+    "error": "Lỗi",
+    "warn": "Cảnh báo",
+    "info": "Thông tin",
+    "debug": "Gỡ lỗi",
+    "trace": "Chi tiết"
+  },
+  "logDir": "Thư mục nhật ký",
+  "openLogDir": "Mở thư mục nhật ký",
+  "copyPath": "Sao chép đường dẫn",
+  "copied": "Đã sao chép đường dẫn",
+  "logDirLoading": "Đang tải...",
+  "save": "Lưu",
+  "cancel": "Huỷ",
+  "loadError": "Không tải được cài đặt",
+  "validation": {
+    "rows": "Số dòng phải là số nguyên từ 1.000 đến 5.000.000",
+    "cells": "Số ô phải là số nguyên từ 100.000 đến 200.000.000"
+  }
+}

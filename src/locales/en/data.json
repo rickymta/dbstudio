@@ -55,8 +55,8 @@
     "ariaLabel": "Data grid",
     "null": "NULL",
     "stopped": "Loading stopped. Press Refresh to start over.",
-    "cappedRows": "Loading stopped at {{max}} rows (row limit). Add a filter to narrow the result.",
-    "cappedCells": "Loading stopped after {{rows}} rows: the memory budget of {{cells}} cells ({{columns}} columns) was reached. Add a filter or sort to narrow the result.",
+    "cappedRows": "Loading stopped at {{max}} rows (the row limit in Settings). Add a filter to narrow the result, or raise the limit in Settings.",
+    "cappedCells": "Loading stopped after {{rows}} rows: the budget of {{cells}} cells ({{columns}} columns, set in Settings) was reached. Add a filter, or raise the limit in Settings.",
     "copyLarge": "This value is very large (over 5 MB). Copy it anyway?"
   },
   "status": {
@@ -105,7 +105,13 @@
     "row": "Row",
     "resize": "Resize viewer",
     "copyLarge": "This value is very large (over 5 MB). Copy it anyway?",
-    "expandLimit": "Expanded the first {{count}} nodes only; the rest stay collapsed."
+    "expandLimit": "Expanded the first {{count}} nodes only; the rest stay collapsed.",
+    "saveToFile": "Save to file...",
+    "saved": "Saved to {{path}}",
+    "saveFailed": "Could not save the file: {{message}}",
+    "tsUtc": "UTC / as stored",
+    "tsLocal": "Local time",
+    "tsShown": "shown in the grid"
   },
   "structure": {
     "summaryRows": "Estimated rows",
@@ -149,5 +155,14 @@
     "unsupported": "DDL is not available for this object on this database.",
     "ariaLabel": "DDL",
     "editorLoading": "Loading editor..."
+  },
+  "columns": {
+    "menu": "Columns",
+    "filter": "Filter columns",
+    "list": "Columns",
+    "showAll": "Show all",
+    "reset": "Reset layout",
+    "pin": "Pin left",
+    "unpin": "Unpin"
   }
 }

@@ -456,3 +456,36 @@ describe('GridModel cancellable count', () => {
     expect(ipc.queryCancel).toHaveBeenCalledWith('s1', id2);
   });
 });
+
+describe('GridModel limits from settings', () => {
+  it('uses new limits for the next page without cutting loaded rows, and resumes after a cap', async () => {
+    const m = makeModel({ pageSize: 3, maxRows: 3 });
+    m.ensureLoaded();
+    feed(calls[0]!, 0, 3);
+    calls[0]!.resolve();
+    await flush();
+    expect(m.capped).toBe(true);
+
+    m.setLimits(2, m.maxCells); // lowering never removes rows already loaded
+    expect(m.rows).toHaveLength(3);
+    expect(m.capped).toBe(true);
+
+    m.setLimits(10, m.maxCells); // raising resumes loading
+    expect(m.capped).toBe(false);
+    expect(m.exhausted).toBe(false);
+    m.loadMore();
+    expect(calls[1]!.request).toMatchObject({ offset: 3, limit: 3 });
+  });
+
+  it('applies a changed cell budget to the next page', async () => {
+    const m = makeModel({ pageSize: 4 });
+    m.ensureLoaded();
+    calls[0]!.emit({ type: 'columns', columns: [COLUMNS[0]!, COLUMNS[0]!] });
+    calls[0]!.emit({ type: 'rows', rows: rows(0, 4).map((r) => [...r, ...r]) });
+    calls[0]!.resolve();
+    await flush();
+    m.setLimits(m.maxRows, 10);
+    m.loadMore();
+    expect(calls[1]!.request.limit).toBe(1);
+  });
+});

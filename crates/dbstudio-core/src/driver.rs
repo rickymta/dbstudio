@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use crate::{
     Capabilities, CollectingSink, ConnectionConfig, DbFamily, DbKind, Error, ExecSummary,
-    ObjectNode, ObjectPath, QueryRequest, Result, ResultSink, Secret, StatementResult,
-    TableCountRequest, TableDataRequest, TableDetails,
+    ObjectNode, ObjectPath, ObjectSearchRequest, QueryRequest, Result, ResultSink, Secret,
+    StatementResult, TableCountRequest, TableDataRequest, TableDetails,
 };
 
 /// Implementation status of a driver.
@@ -178,6 +178,22 @@ pub trait Session: Send + Sync {
     async fn count_table(&self, req: TableCountRequest) -> Result<u64> {
         let _ = req;
         Err(Error::Unsupported("count_table".into()))
+    }
+
+    /// Search objects by name on the server.
+    ///
+    /// Contract: `req.query` is matched as a case-insensitive substring of the object name
+    /// (`%`, `_` and other characters are literal); an empty or all-whitespace query returns an
+    /// empty list. Results are [`ObjectNode`]s whose `path` follows the tree convention exactly
+    /// (including `Folder` segments), so the UI can open them and locate them in the tree. They
+    /// are ordered exact match, then prefix match, then substring match, each group by name then
+    /// path, and truncated to `limit` (clamped to `1..=1000`). `detail` should carry short
+    /// context such as `schema` or `database.schema`. With the root as scope a driver may
+    /// restrict itself to the session's default database when searching across databases would
+    /// need new connections (documented per driver). Unsupported by default.
+    async fn search_objects(&self, req: ObjectSearchRequest) -> Result<Vec<ObjectNode>> {
+        let _ = req;
+        Err(Error::Unsupported("object_search".into()))
     }
 
     /// Close the connection and release resources.

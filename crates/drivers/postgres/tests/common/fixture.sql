@@ -1,5 +1,7 @@
 DROP SCHEMA IF EXISTS dbs_it CASCADE;
 DROP SCHEMA IF EXISTS "Dbs It ""S""" CASCADE;
+DROP SCHEMA IF EXISTS dbs_it_search CASCADE;
+DROP SCHEMA IF EXISTS dbs_it_search2 CASCADE;
 CREATE SCHEMA dbs_it;
 CREATE SCHEMA "Dbs It ""S""";
 
@@ -102,3 +104,23 @@ ALTER TABLE dbs_it.ukey ALTER COLUMN k SET NOT NULL;
 CREATE UNIQUE INDEX ukey_k_idx ON dbs_it.ukey (k);
 CREATE TABLE dbs_it.nokey (a int);
 INSERT INTO dbs_it.nokey VALUES (1), (1), (2);
+
+CREATE SCHEMA dbs_it_search;
+CREATE SCHEMA dbs_it_search2;
+CREATE TABLE dbs_it_search."user" (id int);
+CREATE TABLE dbs_it_search.users (id int);
+CREATE TABLE dbs_it_search.my_user_log (id int);
+CREATE TABLE dbs_it_search."Super User Table" (id int);
+CREATE TABLE dbs_it_search."we""ird_user" (id int);
+CREATE TABLE dbs_it_search."p%c_t" (id int);
+CREATE TABLE dbs_it_search."a_b" (id int);
+CREATE TABLE dbs_it_search."axb" (id int);
+CREATE TABLE dbs_it_search."it's" (id int);
+CREATE TABLE dbs_it_search."back\slash" (id int);
+CREATE VIEW dbs_it_search.v_users AS SELECT * FROM dbs_it_search.users;
+CREATE MATERIALIZED VIEW dbs_it_search.mv_user AS SELECT * FROM dbs_it_search.users;
+CREATE FUNCTION dbs_it_search.find_user(id int) RETURNS int LANGUAGE sql AS 'select id';
+CREATE FUNCTION dbs_it_search.find_user(name text) RETURNS text LANGUAGE sql AS 'select name';
+CREATE PROCEDURE dbs_it_search.user_proc() LANGUAGE plpgsql AS $$ BEGIN NULL; END $$;
+CREATE SEQUENCE dbs_it_search.user_seq;
+CREATE TABLE dbs_it_search2.user_other (id int);

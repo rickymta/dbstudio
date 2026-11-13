@@ -54,6 +54,9 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # Keep the debug-only dev bridge feature compiling and tested.
+      - run: cargo clippy -p dbstudio --features dev-bridge --all-targets -- -D warnings
+      - run: cargo test -p dbstudio --features dev-bridge
 
   integration:
     name: Integration tests (PostgreSQL + MySQL)
@@ -87,8 +90,11 @@ jobs:
       - name: Generate test certificates
         run: sh docker/gen-certs.sh
 
+      # Pulls PostgreSQL 12/16, MySQL 5.7/8, MariaDB 10.4/10.6; images are large and MySQL 5.7
+      # runs under emulation, so allow generous time for pulls and health checks.
       - name: Start test databases
-        run: docker compose -f docker/compose.test.yml up -d --wait
+        timeout-minutes: 15
+        run: docker compose -f docker/compose.test.yml up -d --wait --wait-timeout 600
 
       - name: Run integration tests
         run: DBSTUDIO_IT=1 cargo test --workspace

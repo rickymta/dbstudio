@@ -10,7 +10,8 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import type { DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import {
@@ -25,6 +26,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Spinner } from '@/components/ui/Spinner';
 import { toast } from '@/components/ui/toastStore';
+import { cn } from '@/lib/cn';
 import { pickFile, pickSavePath } from '@/lib/dialog';
 import { ipc, toIpcError } from '@/lib/ipc';
 import type { ConnectionGroup, ConnectionProfile, ObjectNode, Uuid } from '@/lib/types';
@@ -32,6 +34,7 @@ import { useSessionsStore } from '@/stores/sessions';
 import { ObjectTree } from '@/features/explorer/ObjectTree';
 import { treeHasMatch, useAnyTreeCacheVersion } from '@/features/explorer/queries';
 import { nodeLabel } from '@/features/explorer/treeModel';
+import { useRevealStore } from '@/features/explorer/revealStore';
 import { ConnectionDialog } from './ConnectionDialog';
 import {
   buildConnectionsTree,
@@ -40,11 +43,14 @@ import {
   needsPassword,
   type GroupNode,
 } from './connectionsTree';
+import { dropPosition, planMove, type DragItem, type DropTarget } from './dragModel';
 import { describeError } from './errors';
 import { GroupDialog } from './GroupDialog';
 import { PasswordDialog } from './PasswordDialog';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
-import { GroupRow, ProfileRow, type RowActions } from './SidebarRows';
+import { ServerSearch } from './ServerSearch';
+import { useSearchableSessions } from './serverSearchModel';
+import { GroupRow, ProfileRow, type DndApi, type RowActions } from './SidebarRows';
 
 const COLLAPSED_KEY = 'dbstudio.connections.collapsedGroups';
 const JSON_FILTER = [{ name: 'JSON', extensions: ['json'] }];
@@ -89,6 +95,10 @@ export function ConnectionsSidebar() {
   const [modal, setModal] = useState<Modal | null>(null);
 
   const filtering = filter.trim().length > 0;
+  const asideRef = useRef<HTMLElement>(null);
+  const debouncedFilter = useDebounced(filter.trim(), 300);
+  const searchableSessions = useSearchableSessions();
+  const reveal = useRevealStore((s) => s.reveal);
   useAnyTreeCacheVersion(filtering);
 
   const { t: te } = useTranslation('explorer');
@@ -156,7 +166,84 @@ export function ConnectionsSidebar() {
     [t],
   );
 
+  // Drag and drop (CONN-02). The dragged item lives in a ref because `dragover` cannot read
+  // `dataTransfer` data.
+  const dragRef = useRef<DragItem | null>(null);
+  const [hint, setHint] = useState<DropTarget | null>(null);
+
+  const targetFor = (e: DragEvent<HTMLElement>, row: DragItem): DropTarget | null => {
+    const dragged = dragRef.current;
+    if (!dragged) return null;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const position = dropPosition(dragged.type, row.type, (e.clientY - rect.top) / rect.height);
+    return position ? { ...row, position } : null;
+  };
+
+  const sameHint = (a: DropTarget | null, b: DropTarget | null) =>
+    JSON.stringify(a) === JSON.stringify(b);
+
+  const hover = (e: DragEvent<HTMLElement>, target: DropTarget | null, onRow = false) => {
+    const dragged = dragRef.current;
+    if (!dragged || !target || !snapshot || !planMove(snapshot, dragged, target)) {
+      // An invalid drop on a row must not fall through to the "move to root" container.
+      if (onRow) e.stopPropagation();
+      setHint(null);
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    setHint((prev) => (sameHint(prev, target) ? prev : target));
+  };
+
+  const endDrag = () => {
+    dragRef.current = null;
+    setHint(null);
+  };
+
+  const dropOn = (e: DragEvent<HTMLElement>, target: DropTarget | null) => {
+    const dragged = dragRef.current;
+    const plan = dragged && target && snapshot ? planMove(snapshot, dragged, target) : null;
+    endDrag();
+    if (target && target.type !== 'root') e.stopPropagation();
+    if (!plan) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void run(async () => {
+      for (const p of plan.profiles) await ipc.connectionSave(p, { action: 'keep' });
+      for (const g of plan.groups) await ipc.groupSave(g);
+    });
+  };
+
+  const dnd: DndApi = {
+    hint,
+    start: (item, e) => {
+      dragRef.current = item;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', item.id);
+    },
+    end: endDrag,
+    over: (e, row) => hover(e, targetFor(e, row), true),
+    drop: (e, row) => dropOn(e, targetFor(e, row)),
+  };
+
+  // Hovering a collapsed group while dragging opens it after a short delay.
+  const hintedGroup = hint && hint.type === 'group' && hint.position === 'into' ? hint.id : null;
+  useEffect(() => {
+    if (!hintedGroup || !collapsed.has(hintedGroup)) return;
+    const id = setTimeout(() => {
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        next.delete(hintedGroup);
+        saveCollapsed(next);
+        return next;
+      });
+    }, 600);
+    return () => clearTimeout(id);
+  }, [hintedGroup, collapsed]);
+
   const actions: RowActions = {
+    dnd,
     connect: (p) => void connect(p),
     disconnect: (p) => {
       setProfileExpanded(p.id, false);
@@ -188,6 +275,13 @@ export function ConnectionsSidebar() {
     newSubgroup: (parentId) => setModal({ type: 'group', mode: 'create', parentId }),
     renameGroup: (group) => setModal({ type: 'group', mode: 'rename', group }),
     removeGroup: (group) => setModal({ type: 'deleteGroup', group }),
+  };
+
+  const showInTree = (connectionId: Uuid, node: ObjectNode) => {
+    // Clear the filter so the node is not filtered out, then let the tree expand down to it.
+    setFilter('');
+    setProfileExpanded(connectionId, true);
+    reveal(connectionId, node.path);
   };
 
   const collapseAll = () => {
@@ -302,6 +396,7 @@ export function ConnectionsSidebar() {
       className="flex h-full flex-col bg-surface"
       aria-label={t('sidebar.title')}
       data-nav-root
+      ref={asideRef}
     >
       <header className="flex h-9 shrink-0 items-center gap-1 border-b border-border pr-2 pl-3">
         <h2 className="mr-auto text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -355,7 +450,17 @@ export function ConnectionsSidebar() {
           type="search"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          onKeyDown={(e) => e.key === 'Escape' && setFilter('')}
+          data-search-input
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setFilter('');
+            else if (e.key === 'ArrowDown') {
+              const first = asideRef.current?.querySelector<HTMLElement>('[data-nav-row]');
+              if (first) {
+                e.preventDefault();
+                first.focus();
+              }
+            }
+          }}
           placeholder={t('sidebar.search')}
           aria-label={t('sidebar.search')}
           className="h-6 pr-6 pl-6 text-xs [&::-webkit-search-cancel-button]:hidden"
@@ -374,8 +479,13 @@ export function ConnectionsSidebar() {
 
       <div
         role="tree"
+        onDragOver={(e) => hover(e, { type: 'root' })}
+        onDrop={(e) => dropOn(e, { type: 'root' })}
         aria-label={t('sidebar.title')}
-        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-1"
+        className={cn(
+          'min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-1',
+          hint?.type === 'root' && 'bg-accent/10',
+        )}
       >
         {query.isPending && (
           <div className="flex items-center justify-center gap-2 p-4 text-xs text-muted-foreground">
@@ -414,6 +524,11 @@ export function ConnectionsSidebar() {
             )}
           </>
         )}
+        <ServerSearch
+          query={debouncedFilter}
+          sessions={searchableSessions}
+          onShowInTree={showInTree}
+        />
       </div>
 
       <ConnectionDialog
@@ -465,4 +580,14 @@ export function ConnectionsSidebar() {
       />
     </aside>
   );
+}
+
+/** `value`, but only after it stopped changing for `delayMs`. */
+function useDebounced<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(id);
+  }, [value, delayMs]);
+  return debounced;
 }

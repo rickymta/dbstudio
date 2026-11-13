@@ -69,5 +69,8 @@
   },
   "spinner": {
     "loading": "Đang tải"
+  },
+  "transport": {
+    "hint": "Backend: {{transport}} (không phải runtime Tauri)"
   }
 }

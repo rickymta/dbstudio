@@ -1,7 +1,8 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
-import { mock, mockAppInfo, mockDrivers } from './mock';
+import { mock, mockAppInfo, mockDrivers, mockLogDir } from './mock';
 import type {
   AppInfo,
+  AppSettings,
   ConnectionGroup,
   ConnectionProfile,
   ConnectionsSnapshot,
@@ -10,6 +11,7 @@ import type {
   IpcError,
   ObjectNode,
   ObjectPath,
+  ObjectSearchRequest,
   QueryEvent,
   SecretChange,
   ServerInfo,
@@ -58,9 +60,93 @@ export function toIpcError(e: unknown): IpcError {
   return { kind: 'other', message: String(e) };
 }
 
+export type IpcTransport = 'tauri' | 'bridge' | 'mock';
+
+const bridgeUrl = (): string | undefined => {
+  const url = import.meta.env.VITE_IPC_BRIDGE_URL as string | undefined;
+  return url ? url.replace(/\/+$/, '') : undefined;
+};
+
+/** How backend calls are carried: the Tauri runtime, the dev HTTP bridge, or the in-memory mock. */
+export function ipcTransport(): IpcTransport {
+  if (isTauri()) return 'tauri';
+  return bridgeUrl() ? 'bridge' : 'mock';
+}
+
+function bridgeRequest(command: string, body: unknown): Promise<Response> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const token = import.meta.env.VITE_IPC_BRIDGE_TOKEN as string | undefined;
+  if (token) headers['x-dbstudio-bridge-token'] = token;
+  return fetch(`${bridgeUrl()}/ipc/${command}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body ?? {}),
+  }).catch((e: unknown) => {
+    throw {
+      kind: 'connection',
+      message: `IPC bridge unreachable: ${e instanceof Error ? e.message : String(e)}`,
+    } satisfies IpcError;
+  });
+}
+
+async function bridgeFailure(res: Response): Promise<IpcError> {
+  const text = await res.text().catch(() => '');
+  try {
+    return toIpcError(JSON.parse(text));
+  } catch {
+    return { kind: 'other', message: text || `IPC bridge error: HTTP ${res.status}` };
+  }
+}
+
+async function bridgeCall<T>(command: string, body: unknown): Promise<T> {
+  const res = await bridgeRequest(command, body);
+  if (res.status !== 200) throw await bridgeFailure(res);
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+/** POST `table_fetch` and read the NDJSON event stream until its `result`/`error` line. */
+async function bridgeStream(body: unknown, handler: (e: QueryEvent) => void): Promise<ExecSummary> {
+  const res = await bridgeRequest('table_fetch', body);
+  if (res.status !== 200) throw await bridgeFailure(res);
+  if (!res.body) throw { kind: 'connection', message: 'IPC bridge returned no stream' };
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let summary: ExecSummary | null = null;
+
+  const handleLine = (line: string) => {
+    if (!line.trim()) return;
+    const msg = JSON.parse(line) as { type: string; summary?: ExecSummary; error?: unknown };
+    if (msg.type === 'result') summary = msg.summary ?? { statements: 0, elapsedMs: 0 };
+    else if (msg.type === 'error') throw toIpcError(msg.error);
+    else handler(msg as unknown as QueryEvent);
+  };
+
+  for (;;) {
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (e) {
+      throw { kind: 'connection', message: `IPC bridge stream failed: ${String(e)}` };
+    }
+    buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+    let newline = buffer.indexOf('\n');
+    while (newline >= 0) {
+      handleLine(buffer.slice(0, newline));
+      buffer = buffer.slice(newline + 1);
+      newline = buffer.indexOf('\n');
+    }
+    if (chunk.done) break;
+  }
+  handleLine(buffer);
+  if (!summary) throw { kind: 'connection', message: 'IPC bridge stream ended without a result' };
+  return summary;
+}
+
 /**
- * Call a backend command, or the mock when running outside Tauri. Errors are normalized to
- * [`IpcError`]. All backend access must go through this module.
+ * Call a backend command: through Tauri, the dev HTTP bridge (`VITE_IPC_BRIDGE_URL`), or the mock.
+ * Errors are normalized to [`IpcError`]. All backend access must go through this module.
  */
 async function call<T>(
   command: string,
@@ -68,8 +154,11 @@ async function call<T>(
   args?: Record<string, unknown> | (() => Record<string, unknown>),
 ): Promise<T> {
   try {
-    if (!isTauri()) return await mockFn();
-    return await invoke<T>(command, typeof args === 'function' ? args() : args);
+    const transport = ipcTransport();
+    if (transport === 'mock') return await mockFn();
+    const resolved = typeof args === 'function' ? args() : args;
+    if (transport === 'bridge') return await bridgeCall<T>(command, resolved);
+    return await invoke<T>(command, resolved);
   } catch (e) {
     throw toIpcError(e);
   }
@@ -170,6 +259,8 @@ export const ipc = {
     call('session_close', () => mock.sessionClose(sessionId), { sessionId }),
   objectChildren: (sessionId: Uuid, path: ObjectPath): Promise<ObjectNode[]> =>
     call('object_children', () => mock.objectChildren(sessionId, path), { sessionId, path }),
+  objectSearch: (sessionId: Uuid, request: ObjectSearchRequest): Promise<ObjectNode[]> =>
+    call('object_search', () => mock.objectSearch(sessionId, request), { sessionId, request }),
   objectDdl: (sessionId: Uuid, path: ObjectPath): Promise<string> =>
     call('object_ddl', () => mock.objectDdl(sessionId, path), { sessionId, path }),
   tableDetails: (sessionId: Uuid, path: ObjectPath): Promise<TableDetails> =>
@@ -178,6 +269,18 @@ export const ipc = {
     call('table_count', () => mock.tableCount(sessionId, request), { sessionId, request }),
   queryCancel: (sessionId: Uuid, queryId: Uuid): Promise<void> =>
     call('query_cancel', () => mock.queryCancel(sessionId, queryId), { sessionId, queryId }),
+
+  settingsGet: (): Promise<AppSettings> => call('settings_get', () => mock.settingsGet()),
+  settingsSet: (settings: AppSettings): Promise<AppSettings> =>
+    call('settings_set', () => mock.settingsSet(settings), { settings }),
+  logDir: (): Promise<string> => call('log_dir', () => mockLogDir),
+  openLogDir: (): Promise<void> => call('open_log_dir', () => undefined),
+  /** Save bytes (base64) through a native save dialog; resolves to the path, `null` if cancelled. */
+  saveCellValue: (suggestedName: string, dataBase64: string): Promise<string | null> =>
+    call('save_cell_value', () => mock.saveCellValue(suggestedName, dataBase64), {
+      suggestedName,
+      dataBase64,
+    }),
 
   /**
    * Stream a page of table rows; `onEvent` receives columns, row batches and the end marker.
@@ -192,7 +295,9 @@ export const ipc = {
     onEvent: (e: QueryEvent) => void,
   ): Promise<ExecSummary> =>
     streamFetch(onEvent, (handler) => {
-      if (!isTauri()) return mock.tableFetch(sessionId, request, handler);
+      const transport = ipcTransport();
+      if (transport === 'mock') return mock.tableFetch(sessionId, request, handler);
+      if (transport === 'bridge') return bridgeStream({ sessionId, request }, handler);
       const channel = new Channel<QueryEvent>();
       channel.onmessage = handler;
       return invoke<ExecSummary>('table_fetch', { sessionId, request, onEvent: channel });

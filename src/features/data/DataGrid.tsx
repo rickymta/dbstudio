@@ -12,12 +12,21 @@ import {
 } from 'react';
 import { observeElementOffset, observeElementRect, useVirtualizer } from '@tanstack/react-virtual';
 import { useTranslation } from 'react-i18next';
+import type { Value } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { Spinner } from '@/components/ui/Spinner';
+import { ColumnMenu } from './ColumnMenu';
+import {
+  moveColumn,
+  saveLayout,
+  setWidth,
+  type ColumnLayout,
+  visibleColumns,
+} from './columnLayout';
+import type { TimestampDisplay } from './timestamp';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Button } from '@/components/ui/Button';
 import {
-  clampColumnWidth,
   defaultColumnWidth,
   formatCell,
   isNumericKind,
@@ -54,13 +63,16 @@ const TONE: Record<CellKind, string> = {
 interface DataGridProps {
   tabId: string;
   model: GridModel;
+  /** localStorage key of this table's column layout. */
+  layoutKey: string;
+  timestamp?: TimestampDisplay;
 }
 
 /**
  * Virtualized read-only grid: rows and columns are virtualized with @tanstack/react-virtual.
  * Row positions come from `gridScale` so ~1M rows still scroll to the end (see that module).
  */
-export function DataGrid({ tabId, model }: DataGridProps) {
+export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGridProps) {
   const { t } = useTranslation('data');
   useGridVersion(model);
   const [ui, patchUi] = useTabUi(tabId);
@@ -72,9 +84,31 @@ export function DataGrid({ tabId, model }: DataGridProps) {
   const { columns, rows } = model;
   const rowCount = rows.length;
 
-  const widths = useMemo(
-    () => columns.map((c) => ui.colWidths[c.name] ?? defaultColumnWidth(c)),
-    [columns, ui.colWidths],
+  // Column layout is by NAME; everything below maps to real column indexes (selection, copy,
+  // sort and the viewer keep using the real index / name, never the display position).
+  const names = useMemo(() => columns.map((c) => c.name), [columns]);
+  const layout = ui.layout;
+  const vis = useMemo(() => visibleColumns(layout, names), [layout, names]);
+  const pinnedIdx = useMemo(() => vis.pinned.map((n) => names.indexOf(n)), [vis, names]);
+  const freeIdx = useMemo(() => vis.free.map((n) => names.indexOf(n)), [vis, names]);
+  const displayOrder = useMemo(() => [...pinnedIdx, ...freeIdx], [pinnedIdx, freeIdx]);
+  const widthOf = useCallback(
+    (ci: number) => {
+      const c = columns[ci];
+      return c ? (layout.widths[c.name] ?? defaultColumnWidth(c)) : 120;
+    },
+    [columns, layout.widths],
+  );
+  const pinnedWidths = pinnedIdx.map(widthOf);
+  const pinnedWidth = pinnedWidths.reduce((a, b) => a + b, 0);
+  const freeWidths = freeIdx.map(widthOf);
+
+  const commitLayout = useCallback(
+    (next: ColumnLayout, persist = true) => {
+      patchUi({ layout: next });
+      if (persist) saveLayout(layoutKey, next);
+    },
+    [patchUi, layoutKey],
   );
 
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -93,13 +127,13 @@ export function DataGrid({ tabId, model }: DataGridProps) {
 
   const colVirtualizer = useVirtualizer({
     horizontal: true,
-    count: columns.length,
+    count: freeIdx.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i) => widths[i] ?? 120,
-    getItemKey: (i) => columns[i]?.name ?? i,
+    estimateSize: (i) => freeWidths[i] ?? 120,
+    getItemKey: (i) => columns[freeIdx[i]!]?.name ?? i,
     overscan: 2,
-    paddingStart: ROWNUM_WIDTH,
-    scrollPaddingStart: ROWNUM_WIDTH,
+    paddingStart: ROWNUM_WIDTH + pinnedWidth,
+    scrollPaddingStart: ROWNUM_WIDTH + pinnedWidth,
     initialRect: FALLBACK_RECT,
     observeElementRect: (inst, cb) =>
       observeElementRect(inst, (r) => cb(r.height === 0 && r.width === 0 ? FALLBACK_RECT : r)),
@@ -121,7 +155,7 @@ export function DataGrid({ tabId, model }: DataGridProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale.ratio]);
 
-  const widthsKey = widths.join(',');
+  const widthsKey = `${freeWidths.join(',')}|${freeIdx.join(',')}|${pinnedWidth}`;
   useEffect(() => {
     colVirtualizer.measure();
   }, [widthsKey, colVirtualizer]);
@@ -157,7 +191,7 @@ export function DataGrid({ tabId, model }: DataGridProps) {
   const activeCellId =
     selection &&
     vRows.some((r) => r.index === selection.row) &&
-    vCols.some((c) => c.index === selection.col)
+    (pinnedIdx.includes(selection.col) || vCols.some((c) => freeIdx[c.index] === selection.col))
       ? cellId(selection.row, selection.col)
       : undefined;
 
@@ -171,10 +205,11 @@ export function DataGrid({ tabId, model }: DataGridProps) {
       if (!el) return;
       const top = scrollTopToRevealRow(pos.row, ROW_HEIGHT, el.scrollTop, bodyViewport, scale);
       if (top !== null) el.scrollTo({ top });
-      colVirtualizer.scrollToIndex(pos.col);
+      const free = freeIdx.indexOf(pos.col);
+      if (free >= 0) colVirtualizer.scrollToIndex(free);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [bodyViewport, scale.ratio, scale.virtualHeight, colVirtualizer],
+    [bodyViewport, scale.ratio, scale.virtualHeight, colVirtualizer, freeIdx],
   );
 
   const copySelected = useCallback(() => {
@@ -182,11 +217,11 @@ export function DataGrid({ tabId, model }: DataGridProps) {
     const value = rows[selection.row]?.[selection.col];
     if (!value) return;
     if (estimateValueSize(value) > LARGE_COPY_BYTES && !window.confirm(t('grid.copyLarge'))) return;
-    void navigator.clipboard?.writeText(valueToText(value)).catch(() => undefined);
-  }, [rows, selection, t]);
+    void navigator.clipboard?.writeText(valueToText(value, timestamp)).catch(() => undefined);
+  }, [rows, selection, t, timestamp]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const nCols = columns.length;
+    const nCols = displayOrder.length;
     if (rowCount === 0 || nCols === 0) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
       e.preventDefault();
@@ -207,13 +242,15 @@ export function DataGrid({ tabId, model }: DataGridProps) {
         ].includes(e.key)
       ) {
         e.preventDefault();
-        select({ row: 0, col: 0 }, true);
+        select({ row: 0, col: displayOrder[0]! }, true);
       }
       return;
     }
     const page = Math.max(1, Math.floor(bodyViewport / ROW_HEIGHT) - 1);
     const ctrl = e.ctrlKey || e.metaKey;
-    let { row, col } = selection;
+    let { row } = selection;
+    // Left/right/Home/End walk the display order (pinned first), not the real column order.
+    let pos = Math.max(0, displayOrder.indexOf(selection.col));
     switch (e.key) {
       case 'ArrowUp':
         row -= 1;
@@ -222,10 +259,10 @@ export function DataGrid({ tabId, model }: DataGridProps) {
         row += 1;
         break;
       case 'ArrowLeft':
-        col -= 1;
+        pos -= 1;
         break;
       case 'ArrowRight':
-        col += 1;
+        pos += 1;
         break;
       case 'PageUp':
         row -= page;
@@ -234,11 +271,11 @@ export function DataGrid({ tabId, model }: DataGridProps) {
         row += page;
         break;
       case 'Home':
-        col = 0;
+        pos = 0;
         if (ctrl) row = 0;
         break;
       case 'End':
-        col = nCols - 1;
+        pos = nCols - 1;
         if (ctrl) row = rowCount - 1;
         break;
       case 'Enter':
@@ -253,7 +290,7 @@ export function DataGrid({ tabId, model }: DataGridProps) {
     select(
       {
         row: Math.min(rowCount - 1, Math.max(0, row)),
-        col: Math.min(nCols - 1, Math.max(0, col)),
+        col: displayOrder[Math.min(nCols - 1, Math.max(0, pos))]!,
       },
       true,
     );
@@ -267,17 +304,17 @@ export function DataGrid({ tabId, model }: DataGridProps) {
 
   // -- column resize --------------------------------------------------------------------------
 
+  const dragName = useRef<string | null>(null);
   const startResize = (e: ReactPointerEvent, name: string, startWidth: number) => {
     e.preventDefault();
     e.stopPropagation();
     const startX = e.clientX;
+    const latest = () => useDataUiStore.getState().byTab[tabId]?.layout ?? layout;
     const move = (ev: PointerEvent) => {
-      const current = useDataUiStore.getState().byTab[tabId]?.colWidths ?? {};
-      patchUi({
-        colWidths: { ...current, [name]: clampColumnWidth(startWidth + ev.clientX - startX) },
-      });
+      commitLayout(setWidth(latest(), name, startWidth + ev.clientX - startX), false);
     };
     const up = () => {
+      saveLayout(layoutKey, latest());
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };
@@ -324,6 +361,105 @@ export function DataGrid({ tabId, model }: DataGridProps) {
     );
   }
 
+  const renderHeaderCell = (ci: number, left: number, width: number, key: React.Key) => {
+    const col = columns[ci];
+    if (!col) return null;
+    const sortIndex = model.sort.findIndex((x) => x.column === col.name);
+    const sortKey = sortIndex >= 0 ? model.sort[sortIndex]! : null;
+    return (
+      <div
+        key={key}
+        role="columnheader"
+        draggable
+        aria-sort={sortKey ? (sortKey.descending ? 'descending' : 'ascending') : undefined}
+        title={`${col.name} (${col.typeName})\n${t('grid.sortHint')}`}
+        onClick={(e) => model.toggleSort(col.name, e.shiftKey)}
+        onDragStart={(e) => {
+          dragName.current = col.name;
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', col.name);
+        }}
+        onDragOver={(e) => {
+          if (dragName.current) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const from = dragName.current;
+          dragName.current = null;
+          if (!from || from === col.name) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const after = rect.width > 0 && e.clientX > rect.left + rect.width / 2;
+          commitLayout(moveColumn(layout, from, col.name, after ? 'after' : 'before'));
+        }}
+        onDragEnd={() => {
+          dragName.current = null;
+        }}
+        className="absolute top-0 flex cursor-pointer items-center gap-1 border-r border-border px-2 hover:bg-border/50"
+        style={{ left, width, height: HEADER_HEIGHT }}
+      >
+        <span
+          className={cn(
+            'min-w-0 flex-1 truncate font-medium',
+            isNumericKind(col.valueKind) && 'text-right',
+          )}
+        >
+          {col.name}
+        </span>
+        {sortKey && (
+          <span className="flex shrink-0 items-center text-accent">
+            {sortKey.descending ? <ArrowDown size={12} /> : <ArrowUp size={12} />}
+            {model.sort.length > 1 && (
+              <span className="text-[10px] leading-none">{sortIndex + 1}</span>
+            )}
+          </span>
+        )}
+        <span
+          role="separator"
+          aria-label={t('grid.resize')}
+          draggable={false}
+          className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-accent/40"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.preventDefault()}
+          onPointerDown={(e) => startResize(e, col.name, width)}
+        />
+      </div>
+    );
+  };
+
+  const renderCell = (
+    r: number,
+    row: Value[],
+    ci: number,
+    left: number,
+    width: number,
+    rowSelected: boolean,
+    key: React.Key,
+  ) => {
+    const value = row[ci];
+    if (!value) return null;
+    const d = formatCell(value, undefined, timestamp);
+    const selected = rowSelected && selection?.col === ci;
+    return (
+      <div
+        key={key}
+        id={cellId(r, ci)}
+        role="gridcell"
+        aria-selected={selected || undefined}
+        data-r={r}
+        data-c={ci}
+        className={cn(
+          'absolute top-0 truncate border-r border-b border-border/60 px-2 leading-[23px] [unicode-bidi:isolate]',
+          d.align === 'right' && 'text-right',
+          TONE[d.kind],
+          selected && 'z-[5] bg-accent/15 not-italic outline-2 -outline-offset-2 outline-accent',
+        )}
+        style={{ left, width, height: ROW_HEIGHT }}
+      >
+        {d.text}
+      </div>
+    );
+  };
+
   return (
     <div className="relative min-h-0 flex-1">
       <div
@@ -346,57 +482,37 @@ export function DataGrid({ tabId, model }: DataGridProps) {
           <div
             role="row"
             aria-rowindex={1}
-            className="sticky top-0 z-20 border-b border-border bg-surface-muted"
+            className="sticky top-0 z-20 flex border-b border-border bg-surface-muted"
             style={{ width: totalWidth, height: HEADER_HEIGHT }}
           >
             <div
-              className="sticky left-0 z-30 flex items-center justify-end border-r border-border bg-surface-muted px-2 text-muted-foreground"
+              className="sticky left-0 z-30 flex shrink-0 items-center justify-center border-r border-border bg-surface-muted text-muted-foreground"
               style={{ width: ROWNUM_WIDTH, height: HEADER_HEIGHT, position: 'sticky' }}
             >
-              #
+              <ColumnMenu
+                columns={columns}
+                layout={layout}
+                onChange={(next) => commitLayout(next)}
+              />
             </div>
+            {pinnedIdx.length > 0 && (
+              <div
+                className="sticky z-[25] shrink-0 border-r-2 border-border bg-surface-muted"
+                style={{ left: ROWNUM_WIDTH, width: pinnedWidth, height: HEADER_HEIGHT }}
+              >
+                {pinnedIdx.map((ci, i) =>
+                  renderHeaderCell(
+                    ci,
+                    pinnedWidths.slice(0, i).reduce((a, b) => a + b, 0),
+                    pinnedWidths[i]!,
+                    `p${ci}`,
+                  ),
+                )}
+              </div>
+            )}
             {vCols.map((vc) => {
-              const col = columns[vc.index];
-              if (!col) return null;
-              const sortIndex = model.sort.findIndex((s) => s.column === col.name);
-              const sortKey = sortIndex >= 0 ? model.sort[sortIndex]! : null;
-              return (
-                <div
-                  key={vc.key}
-                  role="columnheader"
-                  aria-sort={
-                    sortKey ? (sortKey.descending ? 'descending' : 'ascending') : undefined
-                  }
-                  title={`${col.name} (${col.typeName})\n${t('grid.sortHint')}`}
-                  onClick={(e) => model.toggleSort(col.name, e.shiftKey)}
-                  className="absolute top-0 flex cursor-pointer items-center gap-1 border-r border-border px-2 hover:bg-border/50"
-                  style={{ left: vc.start, width: vc.size, height: HEADER_HEIGHT }}
-                >
-                  <span
-                    className={cn(
-                      'min-w-0 flex-1 truncate font-medium',
-                      isNumericKind(col.valueKind) && 'text-right',
-                    )}
-                  >
-                    {col.name}
-                  </span>
-                  {sortKey && (
-                    <span className="flex shrink-0 items-center text-accent">
-                      {sortKey.descending ? <ArrowDown size={12} /> : <ArrowUp size={12} />}
-                      {model.sort.length > 1 && (
-                        <span className="text-[10px] leading-none">{sortIndex + 1}</span>
-                      )}
-                    </span>
-                  )}
-                  <span
-                    role="separator"
-                    aria-label={t('grid.resize')}
-                    className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-accent/40"
-                    onClick={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => startResize(e, col.name, vc.size)}
-                  />
-                </div>
-              );
+              const ci = freeIdx[vc.index];
+              return ci === undefined ? null : renderHeaderCell(ci, vc.start, vc.size, vc.key);
             })}
           </div>
 
@@ -426,43 +542,41 @@ export function DataGrid({ tabId, model }: DataGridProps) {
                   key={vr.index}
                   role="row"
                   aria-rowindex={vr.index + 2}
-                  className="group absolute left-0 hover:bg-accent/5"
+                  className="group absolute left-0 flex hover:bg-accent/5"
                   style={{ top, height: ROW_HEIGHT, width: totalWidth }}
                 >
                   <div
                     className={cn(
-                      'sticky left-0 z-10 flex items-center justify-end border-r border-b border-border bg-surface-muted px-2 text-[11px] text-muted-foreground',
+                      'sticky left-0 z-10 flex shrink-0 items-center justify-end border-r border-b border-border bg-surface-muted px-2 text-[11px] text-muted-foreground',
                       rowSelected && 'text-foreground',
                     )}
                     style={{ width: ROWNUM_WIDTH, height: ROW_HEIGHT }}
                   >
                     {vr.index + 1}
                   </div>
+                  {pinnedIdx.length > 0 && (
+                    <div
+                      className="sticky z-[9] shrink-0 border-r-2 border-border bg-surface"
+                      style={{ left: ROWNUM_WIDTH, width: pinnedWidth, height: ROW_HEIGHT }}
+                    >
+                      {pinnedIdx.map((ci, i) =>
+                        renderCell(
+                          vr.index,
+                          row,
+                          ci,
+                          pinnedWidths.slice(0, i).reduce((a, b) => a + b, 0),
+                          pinnedWidths[i]!,
+                          rowSelected,
+                          `p${ci}`,
+                        ),
+                      )}
+                    </div>
+                  )}
                   {vCols.map((vc) => {
-                    const value = row[vc.index];
-                    if (!value) return null;
-                    const d = formatCell(value);
-                    const selected = rowSelected && selection?.col === vc.index;
-                    return (
-                      <div
-                        key={vc.key}
-                        id={cellId(vr.index, vc.index)}
-                        role="gridcell"
-                        aria-selected={selected || undefined}
-                        data-r={vr.index}
-                        data-c={vc.index}
-                        className={cn(
-                          'absolute top-0 truncate border-r border-b border-border/60 px-2 leading-[23px] [unicode-bidi:isolate]',
-                          d.align === 'right' && 'text-right',
-                          TONE[d.kind],
-                          selected &&
-                            'z-[5] bg-accent/15 not-italic outline-2 -outline-offset-2 outline-accent',
-                        )}
-                        style={{ left: vc.start, width: vc.size, height: ROW_HEIGHT }}
-                      >
-                        {d.text}
-                      </div>
-                    );
+                    const ci = freeIdx[vc.index];
+                    return ci === undefined
+                      ? null
+                      : renderCell(vr.index, row, ci, vc.start, vc.size, rowSelected, vc.key);
                   })}
                 </div>
               );

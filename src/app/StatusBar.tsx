@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
-import { Languages, Lock, Monitor, Moon, Sun } from 'lucide-react';
+import { Languages, Lock, Monitor, Moon, Settings, Sun } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
-import { ipc } from '@/lib/ipc';
+import { SettingsDialog } from '@/features/settings/SettingsDialog';
+import { ipc, ipcTransport } from '@/lib/ipc';
 import { setLanguage, type Language } from '@/lib/i18n';
 import { useTabsStore } from '@/stores/tabs';
 import { THEME_MODES, useThemeStore, type ThemeMode } from '@/stores/theme';
@@ -47,8 +49,22 @@ function ActiveConnection() {
 export function StatusBar() {
   const { t, i18n } = useTranslation();
   const { data: info } = useQuery({ queryKey: ['appInfo'], queryFn: ipc.appInfo });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const transport = ipcTransport();
   const mode = useThemeStore((s) => s.mode);
   const setMode = useThemeStore((s) => s.setMode);
+
+  // Cmd/Ctrl+, opens the settings.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key === ',') {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const nextMode = THEME_MODES[(THEME_MODES.indexOf(mode) + 1) % THEME_MODES.length] ?? 'system';
   const ThemeIcon = themeIcons[mode];
@@ -62,9 +78,29 @@ export function StatusBar() {
           {info ? `${info.name} v${info.version}` : t('app.name')}
           {info && info.os !== 'browser' ? ` · ${info.os}/${info.arch}` : ''}
         </span>
+        {transport !== 'tauri' && (
+          <span
+            data-testid="ipc-transport"
+            title={t('transport.hint', { transport })}
+            className="shrink-0 rounded bg-warning-soft px-1.5 py-px text-[11px] font-medium text-warning"
+          >
+            {transport}
+          </span>
+        )}
         <ActiveConnection />
       </div>
       <div className="flex items-center gap-1">
+        <Tooltip content={t('settings:open')}>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={t('settings:open')}
+            aria-keyshortcuts="Control+, Meta+,"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings size={14} />
+          </Button>
+        </Tooltip>
         <Tooltip content={`${t('theme.label')}: ${t(`theme.${mode}`)}`}>
           <Button
             variant="ghost"
@@ -88,6 +124,7 @@ export function StatusBar() {
           </Button>
         </Tooltip>
       </div>
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </footer>
   );
 }

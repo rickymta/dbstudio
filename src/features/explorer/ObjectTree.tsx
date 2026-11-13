@@ -1,25 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import {
-  Box,
-  ChevronRight,
-  Columns3,
-  Database,
-  Eye,
-  Folder,
-  Hash,
-  KeyRound,
-  Layers,
-  ListTree,
-  RefreshCw,
-  SquareFunction,
-  Table2,
-  TableProperties,
-  Terminal,
-  User,
-  Zap,
-  type LucideIcon,
-} from 'lucide-react';
+import { ChevronRight, RefreshCw } from 'lucide-react';
 import {
   memo,
   useCallback,
@@ -40,17 +21,13 @@ import {
 import { Spinner } from '@/components/ui/Spinner';
 import { toast } from '@/components/ui/toastStore';
 import { cn } from '@/lib/cn';
-import { ROOT_PATH } from '@/lib/objectPath';
-import type {
-  Capabilities,
-  ObjectKind,
-  ObjectNode,
-  ObjectPath,
-  SessionInfo,
-  Uuid,
-} from '@/lib/types';
+import { pathKey, ROOT_PATH } from '@/lib/objectPath';
+import type { Capabilities, ObjectNode, ObjectPath, SessionInfo, Uuid } from '@/lib/types';
 import { useSession } from '@/stores/sessions';
 import { ddlTabId, tableTabId, useTabsStore } from '@/stores/tabs';
+import { KindIcon } from './kindIcons';
+import { openObjectTab } from './openObject';
+import { useRevealStore } from './revealStore';
 import {
   clearBranch,
   clearSessionCache,
@@ -59,7 +36,6 @@ import {
   useTreeCacheVersion,
 } from './queries';
 import {
-  activationTab,
   flattenTree,
   navigate,
   nodeLabel,
@@ -90,24 +66,6 @@ const NAV_KEYS: ReadonlySet<string> = new Set([
   'Home',
   'End',
 ]);
-
-const KIND_ICONS: Record<ObjectKind, LucideIcon> = {
-  database: Database,
-  schema: Layers,
-  table: Table2,
-  view: Eye,
-  materializedView: TableProperties,
-  role: User,
-  column: Columns3,
-  index: ListTree,
-  function: SquareFunction,
-  procedure: Terminal,
-  trigger: Zap,
-  sequence: Hash,
-  collection: Table2,
-  key: KeyRound,
-  folder: Folder,
-};
 
 /** Lazy, virtualized object tree of an open connection. Renders nothing without a session. */
 export function ObjectTree({ connectionId, filter, nested }: ObjectTreeProps) {
@@ -164,6 +122,27 @@ function SessionTree({
     [qc, sessionId, expanded, filter, label, version],
   );
 
+  // Reveal requests ("show in tree"): expand every ancestor, then focus the target row.
+  const reveal = useRevealStore((s) => s.request);
+  const [pendingFocus, setPendingFocus] = useState<string | null>(null);
+  useEffect(() => {
+    if (!reveal || reveal.connectionId !== connectionId) return;
+    useRevealStore.getState().consume(reveal.nonce);
+    void (async () => {
+      const segments = reveal.path.segments;
+      for (let i = 1; i < segments.length; i++) {
+        const ancestor = { segments: segments.slice(0, i) };
+        setExpanded((prev) => new Set(prev).add(pathKey(ancestor)));
+        try {
+          await loadChildren(qc, sessionId, ancestor);
+        } catch {
+          return; // the error row shows where loading failed
+        }
+      }
+      setPendingFocus(pathKey(reveal.path));
+    })();
+  }, [reveal, connectionId, qc, sessionId]);
+
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -172,6 +151,16 @@ function SessionTree({
     overscan: 12,
     getItemKey: (i) => rows[i]!.key,
   });
+
+  useEffect(() => {
+    if (!pendingFocus) return;
+    const index = rows.findIndex((r) => r.key === pendingFocus);
+    if (index < 0) return;
+    setFocusKey(pendingFocus);
+    virtualizer.scrollToIndex(index, { align: 'center' });
+    scrollRef.current?.focus();
+    setPendingFocus(null);
+  }, [pendingFocus, rows, virtualizer]);
 
   const setNodeExpanded = useCallback(
     (row: NodeRow, expand: boolean) => {
@@ -204,31 +193,11 @@ function SessionTree({
 
   const activate = useCallback(
     (row: NodeRow) => {
-      const tab = activationTab(row.node.kind, capabilities);
-      if (!tab) {
-        if (row.node.hasChildren) setNodeExpanded(row, !row.expanded);
-        return;
-      }
-      const payload = { sessionId, connectionId, path: row.node.path };
-      if (tab === 'table') {
-        openTab({
-          id: tableTabId(sessionId, row.node.path),
-          kind: 'table',
-          title: row.node.name,
-          closable: true,
-          payload,
-        });
-      } else {
-        openTab({
-          id: ddlTabId(sessionId, row.node.path),
-          kind: 'ddl',
-          title: row.node.name,
-          closable: true,
-          payload,
-        });
+      if (!openObjectTab(row.node, session) && row.node.hasChildren) {
+        setNodeExpanded(row, !row.expanded);
       }
     },
-    [sessionId, connectionId, capabilities, openTab, setNodeExpanded],
+    [session, setNodeExpanded],
   );
 
   const runAction = useCallback(
@@ -293,10 +262,8 @@ function SessionTree({
   };
 
   const onFocus = () => {
-    if (!focusKey) {
-      const first = rows.find((r) => r.type === 'node');
-      if (first) setFocusKey(first.key);
-    }
+    const first = rows.find((r) => r.type === 'node');
+    if (first) setFocusKey((current) => current ?? first.key);
   };
 
   // aria-activedescendant must name an element that exists; virtualized rows may be unmounted.
@@ -402,7 +369,6 @@ const TreeNodeRow = memo(function TreeNodeRow({
 }: NodeRowProps) {
   const { t } = useTranslation('explorer');
   const { node } = row;
-  const Icon = KIND_ICONS[node.kind] ?? Box; // unknown kinds from newer backends
   const actions = nodeActions(node, capabilities);
   const content: ReactNode = (
     <div
@@ -443,7 +409,7 @@ const TreeNodeRow = memo(function TreeNodeRow({
           </button>
         ) : null}
       </span>
-      <Icon size={14} className="shrink-0 text-muted-foreground" aria-hidden />
+      <KindIcon kind={node.kind} className="shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate">{label}</span>
       {node.detail && (
         <span className="ml-auto max-w-[50%] shrink-0 truncate pl-2 text-[11px] text-muted-foreground">

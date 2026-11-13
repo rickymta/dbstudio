@@ -201,6 +201,7 @@ describe('capabilities and unknown kinds', () => {
     triggers: true,
     views: true,
     sequences: true,
+    objectSearch: true,
     ...on,
   });
 

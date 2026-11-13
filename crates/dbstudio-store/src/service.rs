@@ -72,6 +72,19 @@ impl ConnectionService {
         &self.store
     }
 
+    /// Application settings.
+    pub fn settings(&self) -> Result<crate::settings::AppSettings> {
+        self.store.get_settings()
+    }
+
+    /// Store application settings (normalized); returns what was stored.
+    pub fn set_settings(
+        &self,
+        settings: crate::settings::AppSettings,
+    ) -> Result<crate::settings::AppSettings> {
+        self.store.set_settings(settings)
+    }
+
     /// All groups and profiles.
     pub fn snapshot(&self) -> Result<ConnectionsSnapshot> {
         self.store.snapshot()

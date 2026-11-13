@@ -1,6 +1,8 @@
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { useToastStore } from '@/components/ui/toastStore';
+import { ipc } from '@/lib/ipc';
 import type { Value } from '@/lib/types';
 import { CellViewer, ValueView } from './CellViewer';
 import { GridModel } from './gridModel';
@@ -132,5 +134,97 @@ describe('CellViewer', () => {
     renderWithProviders(<CellViewer tabId={tab} model={model} />);
     expect(screen.getByText('first')).toBeInTheDocument();
     expect(screen.getByText('a')).toBeInTheDocument();
+  });
+});
+
+describe('CellViewer save to file', () => {
+  const tab = 'table:test:save';
+  const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+
+  function setup(value: Value, row = 2) {
+    const model = new GridModel({
+      sessionId: 's',
+      table: { segments: [{ kind: 'table', name: 'events' }] },
+    });
+    model.columns = [{ name: 'blob', typeName: 'bytea', valueKind: 'bytes' }];
+    model.rows = Array.from({ length: row + 1 }, () => [value]);
+    useDataUiStore.getState().patch(tab, { viewerOpen: true, selection: { row, col: 0 } });
+    const save = vi.fn();
+    (ipc as unknown as { saveCellValue: unknown }).saveCellValue = save;
+    renderWithProviders(<CellViewer tabId={tab} model={model} />);
+    return save;
+  }
+
+  afterEach(() => {
+    useToastStore.setState({ toasts: [] });
+  });
+
+  it('saves bytes with a name from table, column, row and the detected extension', async () => {
+    const user = userEvent.setup();
+    const save = setup({ t: 'bytes', v: b64(png) });
+    save.mockResolvedValue('/tmp/events_blob_3.png');
+    await user.click(screen.getByRole('button', { name: /save to file/i }));
+    expect(save).toHaveBeenCalledWith('events_blob_3.png', b64(png));
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts[0]).toMatchObject({
+        tone: 'success',
+        message: expect.stringContaining('/tmp/events_blob_3.png'),
+      }),
+    );
+  });
+
+  it('uses .bin when the type is not recognized and stays silent when the user cancels', async () => {
+    const user = userEvent.setup();
+    const save = setup({ t: 'bytes', v: b64([1, 2, 3, 4]) });
+    save.mockResolvedValue(null);
+    await user.click(screen.getByRole('button', { name: /save to file/i }));
+    expect(save.mock.calls[0]![0]).toBe('events_blob_3.bin');
+    await Promise.resolve();
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+  });
+
+  it('shows an error toast when saving fails', async () => {
+    const user = userEvent.setup();
+    const save = setup({ t: 'bytes', v: b64(png) });
+    save.mockRejectedValue({ kind: 'io', message: 'disk full' });
+    await user.click(screen.getByRole('button', { name: /save to file/i }));
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts[0]).toMatchObject({
+        tone: 'error',
+        message: expect.stringContaining('disk full'),
+      }),
+    );
+  });
+
+  it('saves long text as UTF-8 .txt and long json as .json; short text has no button', async () => {
+    const user = userEvent.setup();
+    const text = `😀${'x'.repeat(1200)}`;
+    const save = setup({ t: 'text', v: text });
+    save.mockResolvedValue('/p');
+    await user.click(screen.getByRole('button', { name: /save to file/i }));
+    expect(save.mock.calls[0]![0]).toBe('events_blob_3.txt');
+    const bytes = Uint8Array.from(atob(save.mock.calls[0]![1] as string), (c) => c.charCodeAt(0));
+    expect(new TextDecoder().decode(bytes)).toBe(text);
+  });
+
+  it('offers no save button for short text', () => {
+    setup({ t: 'text', v: 'short' });
+    expect(screen.queryByRole('button', { name: /save to file/i })).toBeNull();
+  });
+});
+
+describe('timestamp in the viewer', () => {
+  it('shows both the UTC and the local form', () => {
+    renderWithProviders(
+      <ValueView value={{ t: 'timestamp', v: '2026-11-13T15:02:10.5Z' }} timestamp="local" />,
+    );
+    expect(screen.getByText('UTC / as stored')).toBeInTheDocument();
+    expect(screen.getByText('Local time')).toBeInTheDocument();
+    expect(screen.getByText(/2026-11-13T15:02:10.5Z/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /2026-11-1[34] \d\d:02:10\.5[+-]\d\d:\d\d|2026-11-1[34] \d\d:\d\d:10\.5[+-]\d\d:\d\d/,
+      ),
+    ).toBeInTheDocument();
   });
 });

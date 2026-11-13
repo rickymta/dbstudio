@@ -82,3 +82,27 @@ services:
       interval: 3s
       timeout: 3s
       retries: 40
+
+  # Oldest supported MariaDB, no TLS.
+  mariadb104:
+    image: mariadb:10.4
+    environment: *my-env
+    ports: ['127.0.0.1:33104:3306']
+    healthcheck:
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -udbstudio -pdbstudio_test --silent']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  # Oldest supported MySQL, no TLS configured by us. The image is amd64 only: on Apple Silicon
+  # it runs under emulation (slow to start).
+  mysql57:
+    image: mysql:5.7
+    platform: linux/amd64
+    environment: *my-env
+    ports: ['127.0.0.1:33057:3306']
+    healthcheck:
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -udbstudio -pdbstudio_test --silent']
+      interval: 5s
+      timeout: 5s
+      retries: 60

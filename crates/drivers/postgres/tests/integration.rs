@@ -2228,3 +2228,253 @@ async fn close_releases_everything() {
         Err(Error::Connection(_))
     ));
 }
+
+// ------------------------------------------------------------------------------------------
+// Object search
+// ------------------------------------------------------------------------------------------
+
+fn search_req(query: &str, scope: dbstudio_core::ObjectPath) -> dbstudio_core::ObjectSearchRequest {
+    dbstudio_core::ObjectSearchRequest {
+        query: query.into(),
+        scope,
+        kinds: vec![],
+        limit: 100,
+    }
+}
+
+async fn search_names(
+    s: &dyn Session,
+    query: &str,
+    scope: dbstudio_core::ObjectPath,
+) -> Vec<String> {
+    names(&s.search_objects(search_req(query, scope)).await.unwrap())
+}
+
+fn sorted(mut v: Vec<String>) -> Vec<String> {
+    v.sort();
+    v
+}
+
+async fn search(port: u16) {
+    let s = fixture(port).await;
+    let s = &*s;
+    let sch = schema_path("dbs_it_search");
+    let db = dbstudio_core::ObjectPath::root().child(ObjectKind::Database, "dbstudio");
+
+    // Case-insensitive substring match across default kinds.
+    let all = s
+        .search_objects(search_req("USER", sch.clone()))
+        .await
+        .unwrap();
+    let got = sorted(names(&all));
+    let expect = sorted(
+        [
+            "user",
+            "users",
+            "my_user_log",
+            "Super User Table",
+            "we\"ird_user",
+            "v_users",
+            "mv_user",
+            "find_user(id integer)",
+            "find_user(name text)",
+            "user_proc()",
+            "user_seq",
+        ]
+        .iter()
+        .map(|x| x.to_string())
+        .collect(),
+    );
+    assert_eq!(got, expect);
+    // Order: exact, then prefix, then substring.
+    let rank = |n: &str| {
+        let base = n.split('(').next().unwrap().to_lowercase();
+        if base == "user" {
+            0
+        } else if base.starts_with("user") {
+            1
+        } else {
+            2
+        }
+    };
+    let ranks: Vec<_> = all.iter().map(|n| rank(&n.name)).collect();
+    assert!(ranks.windows(2).all(|w| w[0] <= w[1]), "{:?}", names(&all));
+    assert_eq!(all[0].name, "user");
+    assert!(
+        all.iter()
+            .all(|n| n.detail.as_deref().unwrap().starts_with("dbs_it_search"))
+    );
+    let t = all.iter().find(|n| n.name == "user").unwrap();
+    assert_eq!(t.kind, ObjectKind::Table);
+    assert_eq!(
+        t.path,
+        table_path("dbs_it_search", ObjectKind::Table, "user")
+    );
+
+    // Kinds filter.
+    let mut r = search_req("user", sch.clone());
+    r.kinds = vec![ObjectKind::View];
+    assert_eq!(names(&s.search_objects(r).await.unwrap()), ["v_users"]);
+    let mut r = search_req("user", sch.clone());
+    r.kinds = vec![ObjectKind::MaterializedView, ObjectKind::Sequence];
+    assert_eq!(
+        sorted(names(&s.search_objects(r).await.unwrap())),
+        ["mv_user", "user_seq"]
+    );
+    let mut r = search_req("user", sch.clone());
+    r.kinds = vec![ObjectKind::Function, ObjectKind::Procedure];
+    assert_eq!(
+        sorted(names(&s.search_objects(r).await.unwrap())),
+        [
+            "find_user(id integer)",
+            "find_user(name text)",
+            "user_proc()"
+        ]
+    );
+    let mut r = search_req("user", sch.clone());
+    r.kinds = vec![ObjectKind::Column];
+    assert!(s.search_objects(r).await.unwrap().is_empty());
+
+    // Limit.
+    let mut r = search_req("user", sch.clone());
+    r.limit = 2;
+    let two = s.search_objects(r).await.unwrap();
+    assert_eq!(two.len(), 2);
+    assert_eq!(two[0].name, "user");
+    let mut r = search_req("user", sch.clone());
+    r.limit = 0;
+    assert_eq!(s.search_objects(r).await.unwrap().len(), 1);
+
+    // Empty queries.
+    assert!(search_names(s, "", sch.clone()).await.is_empty());
+    assert!(search_names(s, "   ", sch.clone()).await.is_empty());
+
+    // Scopes.
+    assert_eq!(
+        search_names(s, "user_other", sch.clone()).await,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        search_names(s, "user_other", db.clone()).await,
+        ["user_other"]
+    );
+    assert_eq!(
+        search_names(s, "user_other", dbstudio_core::ObjectPath::root()).await,
+        ["user_other"]
+    );
+    let hit = &s
+        .search_objects(search_req("user_other", dbstudio_core::ObjectPath::root()))
+        .await
+        .unwrap()[0];
+    assert_eq!(hit.detail.as_deref(), Some("dbstudio.dbs_it_search2"));
+    let hit = &s
+        .search_objects(search_req("user_other", db.clone()))
+        .await
+        .unwrap()[0];
+    assert_eq!(hit.detail.as_deref(), Some("dbs_it_search2"));
+    assert_eq!(
+        search_names(s, "user_other", schema_path("dbs_it_search2")).await,
+        ["user_other"]
+    );
+    // Another database is only searched when it is the scope; the root uses the default one.
+    assert!(
+        search_names(s, "other_t", dbstudio_core::ObjectPath::root())
+            .await
+            .is_empty()
+    );
+    let other = dbstudio_core::ObjectPath::root().child(ObjectKind::Database, "dbs_it_other");
+    let found = s
+        .search_objects(search_req("other_t", other.clone()))
+        .await
+        .unwrap();
+    assert_eq!(names(&found), ["other_t"]);
+    assert_eq!(found[0].path.segments[0].name, "dbs_it_other");
+    // Scope given with and without folder segments.
+    let bare = dbstudio_core::ObjectPath::root()
+        .child(ObjectKind::Database, "dbstudio")
+        .child(ObjectKind::Schema, "dbs_it_search2");
+    assert_eq!(search_names(s, "user_other", bare).await, ["user_other"]);
+    assert!(matches!(
+        s.search_objects(search_req(
+            "x",
+            table_path("dbs_it_search", ObjectKind::Table, "user")
+        ))
+        .await,
+        Err(Error::NotFound(_))
+    ));
+
+    // System schemas only when named.
+    assert!(
+        search_names(s, "pg_class", dbstudio_core::ObjectPath::root())
+            .await
+            .is_empty()
+    );
+    assert!(search_names(s, "pg_class", db.clone()).await.is_empty());
+    assert!(
+        search_names(s, "pg_class", schema_path("pg_catalog"))
+            .await
+            .contains(&"pg_class".to_string())
+    );
+
+    // Special characters are literal.
+    assert_eq!(search_names(s, "p%c", sch.clone()).await, ["p%c_t"]);
+    assert_eq!(search_names(s, "%", sch.clone()).await, ["p%c_t"]);
+    assert_eq!(search_names(s, "a_b", sch.clone()).await, ["a_b"]);
+    assert_eq!(
+        search_names(s, "_", sch.clone()).await.len(),
+        10.min(search_names(s, "_", sch.clone()).await.len())
+    );
+    assert!(
+        !search_names(s, "_", sch.clone())
+            .await
+            .contains(&"axb".to_string())
+    );
+    assert_eq!(search_names(s, "it's", sch.clone()).await, ["it's"]);
+    assert_eq!(
+        search_names(s, "back\\slash", sch.clone()).await,
+        ["back\\slash"]
+    );
+    assert_eq!(search_names(s, "\\", sch.clone()).await, ["back\\slash"]);
+    assert_eq!(
+        search_names(s, "'; DROP TABLE x; --", sch.clone()).await,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        search_names(s, "we\"ird", sch.clone()).await,
+        ["we\"ird_user"]
+    );
+    assert_eq!(
+        search_names(s, "super user", sch.clone()).await,
+        ["Super User Table"]
+    );
+
+    // Every result path works with table_details / object_ddl and equals the tree's path.
+    let mut r = search_req("user", db.clone());
+    r.limit = 1000;
+    for node in s.search_objects(r).await.unwrap() {
+        s.object_ddl(&node.path)
+            .await
+            .unwrap_or_else(|e| panic!("{}: {e}", node.name));
+        if matches!(
+            node.kind,
+            ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView
+        ) {
+            s.table_details(&node.path)
+                .await
+                .unwrap_or_else(|e| panic!("{}: {e}", node.name));
+        }
+        let mut parent = node.path.clone();
+        parent.segments.pop();
+        let siblings = s.list_children(&parent).await.unwrap();
+        let sibling = siblings.iter().find(|n| n.name == node.name);
+        assert_eq!(sibling.map(|n| &n.path), Some(&node.path), "{}", node.name);
+        assert_eq!(sibling.map(|n| n.kind), Some(node.kind));
+    }
+    for name in ["we\"ird_user", "Super User Table", "back\\slash", "it's"] {
+        let p = table_path("dbs_it_search", ObjectKind::Table, name);
+        s.table_details(&p).await.unwrap();
+    }
+    let weird = s.search_objects(search_req("back", sch)).await.unwrap();
+    s.object_ddl(&weird[0].path).await.unwrap();
+}
+on_both!(search, search_pg16, search_pg12);

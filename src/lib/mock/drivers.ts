@@ -18,6 +18,7 @@ const none: Capabilities = {
   triggers: false,
   views: false,
   sequences: false,
+  objectSearch: false,
 };
 
 const caps = (on: Partial<Capabilities>): Capabilities => ({ ...none, ...on });
@@ -46,6 +47,7 @@ export const mockDrivers: DriverDescriptor[] = [
     'relational',
     'available',
     caps({
+      objectSearch: true,
       sql: true,
       transactions: true,
       schemas: true,
@@ -69,6 +71,7 @@ export const mockDrivers: DriverDescriptor[] = [
     'relational',
     'available',
     caps({
+      objectSearch: true,
       sql: true,
       transactions: true,
       multipleDatabases: true,

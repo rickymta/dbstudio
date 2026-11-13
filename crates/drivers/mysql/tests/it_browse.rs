@@ -438,3 +438,173 @@ async fn roles_folder_depends_on_privileges() {
         assert!(!top.iter().any(|n| n.name == folder::ROLES), "[{tag}]");
     }
 }
+
+fn search_req(query: &str, scope: ObjectPath) -> dbstudio_core::ObjectSearchRequest {
+    dbstudio_core::ObjectSearchRequest {
+        query: query.into(),
+        scope,
+        kinds: vec![],
+        limit: 100,
+    }
+}
+
+#[tokio::test]
+async fn server_side_object_search() {
+    if !it_enabled() {
+        return;
+    }
+    for t in TARGETS {
+        let tag = t.name;
+        ensure_fixture(t).await;
+        let db1 = scratch_db(t, "search1").await;
+        let db2 = scratch_db(t, "search2").await;
+        let root = root_session(t).await;
+        run(
+            &*root,
+            &format!(
+                "CREATE TABLE `{db1}`.`user` (a INT); CREATE TABLE `{db1}`.`users` (a INT);
+                 CREATE TABLE `{db1}`.`super_user` (a INT); CREATE TABLE `{db1}`.`xuserx` (a INT);
+                 CREATE TABLE `{db1}`.`a_b` (a INT); CREATE TABLE `{db1}`.`axb` (a INT);
+                 CREATE TABLE `{db1}`.`100%` (a INT); CREATE TABLE `{db1}`.`it's` (a INT);
+                 CREATE TABLE `{db1}`.`back\\slash` (a INT);
+                 CREATE VIEW `{db1}`.`user_view` AS SELECT 1 AS a;
+                 CREATE TABLE `{db2}`.`UserTwo` (a INT);"
+            ),
+        )
+        .await;
+        for sql in [
+            format!(
+                "CREATE DEFINER='dbstudio'@'%' FUNCTION `{db1}`.user_fn() RETURNS INT DETERMINISTIC RETURN 1"
+            ),
+            format!("CREATE DEFINER='dbstudio'@'%' PROCEDURE `{db1}`.user_proc() SELECT 1"),
+        ] {
+            run(&*root, &sql).await;
+        }
+        root.close().await.unwrap();
+        let s = user_session(t).await;
+        let search = |q: &str, scope: ObjectPath| {
+            let s = s.clone();
+            let req = search_req(q, scope);
+            async move { s.search_objects(req).await.unwrap() }
+        };
+        let in_db1 = ObjectPath::root().child(K::Database, db1.as_str());
+
+        // Ranking: exact, prefix, substring; then by name.
+        let r = search("user", in_db1.clone()).await;
+        assert_eq!(
+            names(&r),
+            [
+                "user",
+                "user_fn",
+                "user_proc",
+                "user_view",
+                "users",
+                "super_user",
+                "xuserx"
+            ],
+            "[{tag}]"
+        );
+        // Case-insensitive, and the scope may be written with a folder segment.
+        let upper = search("USER", in_db1.child(K::Folder, folder::TABLES)).await;
+        assert_eq!(names(&upper), names(&r), "[{tag}]");
+        // Whole-server search covers both scratch databases and hides system databases.
+        let all = search("user", ObjectPath::root()).await;
+        assert!(
+            all.iter()
+                .any(|n| n.name == "UserTwo" && n.detail.as_deref() == Some(db2.as_str()))
+        );
+        assert!(
+            all.iter()
+                .filter(|n| n.detail.as_deref() == Some(db1.as_str()))
+                .count()
+                >= 7
+        );
+        for n in &all {
+            let d = n.detail.as_deref().unwrap();
+            assert!(
+                !["information_schema", "mysql", "performance_schema", "sys"].contains(&d),
+                "[{tag}] {d}"
+            );
+        }
+        let only2 = search("user", ObjectPath::root().child(K::Database, db2.as_str())).await;
+        assert_eq!(names(&only2), ["UserTwo"]);
+
+        // %, _, \ and ' are ordinary characters.
+        assert_eq!(
+            names(&search("_", in_db1.clone()).await),
+            ["a_b", "super_user", "user_fn", "user_proc", "user_view"]
+        );
+        assert_eq!(names(&search("%", in_db1.clone()).await), ["100%"]);
+        assert_eq!(names(&search("'", in_db1.clone()).await), ["it's"]);
+        assert_eq!(names(&search("\\", in_db1.clone()).await), ["back\\slash"]);
+        assert!(
+            search("x'; DROP TABLE x; --", in_db1.clone())
+                .await
+                .is_empty()
+        );
+        assert!(search("", in_db1.clone()).await.is_empty());
+
+        // Kinds, limit.
+        let mut req = search_req("user", in_db1.clone());
+        req.kinds = vec![K::View];
+        assert_eq!(
+            names(&s.search_objects(req.clone()).await.unwrap()),
+            ["user_view"]
+        );
+        req.kinds = vec![K::Function, K::Procedure];
+        assert_eq!(
+            names(&s.search_objects(req.clone()).await.unwrap()),
+            ["user_fn", "user_proc"]
+        );
+        req.kinds = vec![K::MaterializedView, K::Sequence];
+        assert!(s.search_objects(req.clone()).await.unwrap().is_empty());
+        req.kinds = vec![];
+        req.limit = 3;
+        assert_eq!(
+            names(&s.search_objects(req.clone()).await.unwrap()),
+            ["user", "user_fn", "user_proc"]
+        );
+        req.limit = 0;
+        assert_eq!(
+            names(&s.search_objects(req.clone()).await.unwrap()),
+            ["user"],
+            "limit clamps to 1"
+        );
+        req.limit = 1_000_000;
+        assert_eq!(s.search_objects(req).await.unwrap().len(), 7);
+        let mut req = search_req("e", ObjectPath::root().child(K::Database, FIXTURE_DB));
+        req.limit = 1000;
+        assert!(s.search_objects(req).await.unwrap().len() >= 5);
+
+        // Paths follow the tree convention, match list_children, and work with the other calls.
+        for n in search("user", in_db1.clone())
+            .await
+            .iter()
+            .chain(all.iter())
+        {
+            let mut parent = n.path.clone();
+            parent.segments.pop();
+            let siblings = kids(&*s, &parent).await;
+            let same = siblings.iter().find(|x| x.path == n.path);
+            let same =
+                same.unwrap_or_else(|| panic!("[{tag}] {:?} not listed under its parent", n.path));
+            assert_eq!(
+                (same.kind, &same.name, same.has_children),
+                (n.kind, &n.name, n.has_children)
+            );
+            s.object_ddl(&n.path)
+                .await
+                .unwrap_or_else(|e| panic!("[{tag}] ddl {:?}: {e}", n.path));
+            if matches!(n.kind, K::Table | K::View) {
+                let d = s.table_details(&n.path).await.unwrap();
+                assert_eq!(d.path, n.path);
+            }
+        }
+        let tables = search("people", ObjectPath::root().child(K::Database, FIXTURE_DB)).await;
+        assert_eq!(
+            tables[0].path,
+            db().child(K::Folder, folder::TABLES)
+                .child(K::Table, "people")
+        );
+    }
+}

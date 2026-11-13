@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dbstudio_core::{
-    Error, ExecSummary, ObjectKind, ObjectNode, ObjectPath, QueryRequest, Result, ResultSink,
-    ServerInfo, Session, TableCountRequest, TableDataRequest, TableDetails,
+    Error, ExecSummary, ObjectKind, ObjectNode, ObjectPath, ObjectSearchRequest, QueryRequest,
+    Result, ResultSink, ServerInfo, Session, TableCountRequest, TableDataRequest, TableDetails,
 };
 use tokio_postgres::CancelToken;
 use uuid::Uuid;
@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::conn::{PooledConn, Shared};
 use crate::error::map_error;
 use crate::exec::{self, DEFAULT_BATCH, Running};
+use crate::search;
 use crate::sql;
 use crate::{browse, ddl, details};
 
@@ -336,6 +337,20 @@ impl Session for PostgresSession {
         let clean = matches!(result, Ok(_) | Err(Error::Query { .. } | Error::Cancelled));
         self.end_request(&mut conn, &running, clean).await;
         result
+    }
+
+    async fn search_objects(&self, req: ObjectSearchRequest) -> Result<Vec<ObjectNode>> {
+        let scope = search::parse_scope(&req)?;
+        let database = scope
+            .database
+            .clone()
+            .unwrap_or_else(|| self.login_db().to_string());
+        let mut conn = self.shared.acquire_catalog(&database).await?;
+        let r = search::search(&conn.client, &req, &scope, &database).await;
+        if r.is_ok() || matches!(r, Err(Error::Query { .. })) {
+            conn.mark_reusable();
+        }
+        r
     }
 
     async fn close(&self) -> Result<()> {

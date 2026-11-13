@@ -14,6 +14,7 @@ mod decode;
 mod details;
 mod error;
 mod exec;
+mod search;
 mod session;
 mod sql;
 mod tls;

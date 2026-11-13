@@ -55,8 +55,8 @@
     "ariaLabel": "Lưới dữ liệu",
     "null": "NULL",
     "stopped": "Đã dừng tải. Bấm Làm mới để tải lại từ đầu.",
-    "cappedRows": "Đã dừng tải ở {{max}} dòng (giới hạn số dòng). Hãy thêm bộ lọc để thu hẹp kết quả.",
-    "cappedCells": "Đã dừng tải sau {{rows}} dòng: đạt ngân sách bộ nhớ {{cells}} ô ({{columns}} cột). Hãy thêm bộ lọc hoặc sắp xếp để thu hẹp kết quả.",
+    "cappedRows": "Đã dừng tải ở {{max}} dòng (giới hạn số dòng trong Cài đặt). Hãy thêm bộ lọc, hoặc tăng giới hạn trong Cài đặt.",
+    "cappedCells": "Đã dừng tải sau {{rows}} dòng: đạt ngân sách {{cells}} ô ({{columns}} cột, đặt trong Cài đặt). Hãy thêm bộ lọc, hoặc tăng giới hạn trong Cài đặt.",
     "copyLarge": "Giá trị này rất lớn (trên 5 MB). Vẫn sao chép?"
   },
   "status": {
@@ -105,7 +105,13 @@
     "row": "Dòng",
     "resize": "Đổi kích thước trình xem",
     "copyLarge": "Giá trị này rất lớn (trên 5 MB). Vẫn sao chép?",
-    "expandLimit": "Chỉ mở rộng {{count}} nút đầu tiên; phần còn lại giữ thu gọn."
+    "expandLimit": "Chỉ mở rộng {{count}} nút đầu tiên; phần còn lại giữ thu gọn.",
+    "saveToFile": "Lưu ra file...",
+    "saved": "Đã lưu vào {{path}}",
+    "saveFailed": "Không lưu được file: {{message}}",
+    "tsUtc": "UTC / như lưu trữ",
+    "tsLocal": "Giờ máy",
+    "tsShown": "đang hiển thị trên lưới"
   },
   "structure": {
     "summaryRows": "Số dòng ước tính",
@@ -149,5 +155,14 @@
     "unsupported": "Đối tượng này chưa hỗ trợ xem DDL trên hệ CSDL này.",
     "ariaLabel": "DDL",
     "editorLoading": "Đang tải trình soạn thảo..."
+  },
+  "columns": {
+    "menu": "Cột",
+    "filter": "Lọc cột",
+    "list": "Danh sách cột",
+    "showAll": "Hiện tất cả",
+    "reset": "Đặt lại bố cục",
+    "pin": "Ghim trái",
+    "unpin": "Bỏ ghim"
   }
 }

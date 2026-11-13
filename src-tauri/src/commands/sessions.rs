@@ -1,6 +1,6 @@
 //! Commands managing live sessions and the object tree.
 
-use dbstudio_core::{Error, ObjectNode, ObjectPath, Secret};
+use dbstudio_core::{Error, ObjectNode, ObjectPath, ObjectSearchRequest, Secret};
 use tauri::State;
 use uuid::Uuid;
 
@@ -41,6 +41,18 @@ pub(crate) async fn ddl_impl(
     path: ObjectPath,
 ) -> Result<String> {
     state.sessions.get(session_id)?.object_ddl(&path).await
+}
+
+pub(crate) async fn search_impl(
+    state: &AppState,
+    session_id: Uuid,
+    request: ObjectSearchRequest,
+) -> Result<Vec<ObjectNode>> {
+    state
+        .sessions
+        .get(session_id)?
+        .search_objects(request)
+        .await
 }
 
 pub(crate) async fn cancel_impl(state: &AppState, session_id: Uuid, query_id: Uuid) -> Result<()> {
@@ -86,6 +98,17 @@ pub async fn object_ddl(
 ) -> Result<String> {
     tracing::debug!(command = "object_ddl", session = %session_id, "ipc call");
     ddl_impl(&state, session_id, path).await
+}
+
+/// Server-side search of objects by name.
+#[tauri::command]
+pub async fn object_search(
+    state: State<'_, AppState>,
+    session_id: Uuid,
+    request: ObjectSearchRequest,
+) -> Result<Vec<ObjectNode>> {
+    tracing::debug!(command = "object_search", session = %session_id, "ipc call");
+    search_impl(&state, session_id, request).await
 }
 
 /// Cancel a running query or table fetch.

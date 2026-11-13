@@ -39,7 +39,9 @@ mod object;
 mod query;
 mod value;
 
-pub use browse::{ColumnFilter, FilterOp, SortKey, TableCountRequest, TableDataRequest};
+pub use browse::{
+    ColumnFilter, FilterOp, ObjectSearchRequest, SortKey, TableCountRequest, TableDataRequest,
+};
 pub use capabilities::Capabilities;
 pub use config::{ConnectionConfig, Environment, Secret, TlsConfig, TlsMode};
 pub use driver::{

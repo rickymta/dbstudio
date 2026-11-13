@@ -19,12 +19,17 @@ tauri-build = { version = "2.7.4", features = [] }
 dbstudio-core.workspace = true
 dbstudio-driver-mysql = { version = "0.1.0", path = "../crates/drivers/mysql", optional = true }
 dbstudio-driver-postgres = { version = "0.1.0", path = "../crates/drivers/postgres", optional = true }
+axum = { workspace = true, optional = true }
+base64.workspace = true
 dbstudio-store = { version = "0.1.0", path = "../crates/dbstudio-store" }
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.12.5", features = [] }
 tauri-plugin-dialog = "2.8.4"
+tauri-plugin-opener = "2"
 tokio = { workspace = true, features = ["time", "rt", "sync"] }
+tokio-stream = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
@@ -34,10 +39,13 @@ uuid.workspace = true
 default = ["postgres", "mysql"]
 postgres = ["dep:dbstudio-driver-postgres"]
 mysql = ["dep:dbstudio-driver-mysql"]
+# Debug-only HTTP bridge so a browser UI can drive the real backend. Never enable in release.
+dev-bridge = ["dep:axum", "dep:tokio-stream", "tokio/net"]
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 tempfile.workspace = true
 async-trait.workspace = true

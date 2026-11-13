@@ -1,5 +1,5 @@
 import { ChevronRight, CircleAlert, Folder, FolderOpen, Lock } from 'lucide-react';
-import type { KeyboardEvent, ReactNode } from 'react';
+import type { DragEvent, KeyboardEvent, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ContextMenu,
@@ -17,8 +17,56 @@ import type { ConnectionGroup, ConnectionProfile, Uuid } from '@/lib/types';
 import { useIsOpening, useSession } from '@/stores/sessions';
 import { kindBadgeFor } from './kindConfig';
 import { connectionColor } from './queries';
+import type { DragItem, DropTarget } from './dragModel';
+import { moveFocus } from './rowNav';
+
+/** Drag-and-drop plumbing handed to every row by the sidebar (CONN-02). */
+export interface DndApi {
+  hint: DropTarget | null;
+  start: (item: DragItem, e: DragEvent<HTMLElement>) => void;
+  end: () => void;
+  over: (e: DragEvent<HTMLElement>, row: DragItem) => void;
+  drop: (e: DragEvent<HTMLElement>, row: DragItem) => void;
+}
+
+/** Spread on a row element: makes it draggable and a drop target. */
+function dndProps(dnd: DndApi, row: DragItem) {
+  return {
+    draggable: true,
+    onDragStart: (e: DragEvent<HTMLElement>) => dnd.start(row, e),
+    onDragEnd: dnd.end,
+    onDragOver: (e: DragEvent<HTMLElement>) => dnd.over(e, row),
+    onDrop: (e: DragEvent<HTMLElement>) => dnd.drop(e, row),
+  };
+}
+
+/** Insertion line / highlight for the current drop hint. */
+function DropIndicator({ dnd, row }: { dnd: DndApi; row: DragItem }) {
+  const h = dnd.hint;
+  if (!h || h.type === 'root' || h.type !== row.type || h.id !== row.id) return null;
+  if (h.position === 'into') {
+    return (
+      <span
+        aria-hidden
+        data-testid="drop-into"
+        className="pointer-events-none absolute inset-0 rounded-sm bg-accent/20 ring-1 ring-accent"
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden
+      data-testid={`drop-${h.position}`}
+      className={cn(
+        'pointer-events-none absolute inset-x-0 h-0.5 bg-accent',
+        h.position === 'before' ? 'top-0' : 'bottom-0',
+      )}
+    />
+  );
+}
 
 export interface RowActions {
+  dnd: DndApi;
   connect: (p: ConnectionProfile) => void;
   disconnect: (p: ConnectionProfile) => void;
   edit: (p: ConnectionProfile) => void;
@@ -34,24 +82,10 @@ export interface RowActions {
 }
 
 const ROW_CLASS =
-  'flex h-[26px] cursor-default items-center gap-1 pr-2 text-[13px] outline-none ' +
+  'relative flex h-[26px] cursor-default items-center gap-1 pr-2 text-[13px] outline-none ' +
   'hover:bg-surface-muted focus-visible:bg-accent/20 focus-visible:outline-none';
 
 const indent = (depth: number) => 6 + depth * 12;
-
-/** Up/down moves between rows marked `data-nav-row` inside the sidebar. */
-function moveFocus(e: KeyboardEvent<HTMLElement>, delta: number) {
-  const root = e.currentTarget.closest('[data-nav-root]');
-  if (!root) return;
-  const rows = Array.from(root.querySelectorAll<HTMLElement>('[data-nav-row]')).filter(
-    (r) => !r.closest('[hidden]'),
-  );
-  const next = rows[rows.indexOf(e.currentTarget) + delta];
-  if (next) {
-    e.preventDefault();
-    next.focus();
-  }
-}
 
 export function GroupRow({
   group,
@@ -89,6 +123,7 @@ export function GroupRow({
             tabIndex={0}
             data-nav-row
             data-testid="group-row"
+            {...dndProps(actions.dnd, { type: 'group', id: group.id })}
             title={group.name}
             onClick={() => actions.toggleGroup(group.id)}
             onKeyDown={onKeyDown}
@@ -104,6 +139,7 @@ export function GroupRow({
             />
             <Icon size={14} className="shrink-0 text-muted-foreground" aria-hidden />
             <span className="min-w-0 truncate font-medium">{group.name}</span>
+            <DropIndicator dnd={actions.dnd} row={{ type: 'group', id: group.id }} />
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -200,6 +236,7 @@ export function ProfileRow({
             tabIndex={0}
             data-nav-row
             data-testid="profile-row"
+            {...dndProps(actions.dnd, { type: 'profile', id: profile.id })}
             title={`${profile.name}\n${subtitle}`}
             onClick={() => connected && actions.toggleProfile(profile.id)}
             onDoubleClick={() => actions.connect(profile)}
@@ -236,6 +273,7 @@ export function ProfileRow({
               />
             )}
             <span className="ml-auto flex shrink-0 items-center pl-1">{status}</span>
+            <DropIndicator dnd={actions.dnd} row={{ type: 'profile', id: profile.id }} />
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>

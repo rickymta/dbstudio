@@ -44,6 +44,25 @@ cargo test --workspace
 
 `cargo build -p dbstudio` needs `dist/` to exist, so run `pnpm build` first.
 
+## Dev bridge
+
+To exercise the UI end to end against the real backend (real databases and keychain) from a
+normal browser, run the app with the debug-only `dev-bridge` feature. It starts an HTTP server on
+`127.0.0.1:1421` (change with `DBSTUDIO_DEV_BRIDGE_PORT`) inside the app process, only when a
+token is set:
+
+```sh
+DBSTUDIO_DEV_BRIDGE_TOKEN=<token> pnpm tauri dev --features dev-bridge
+# in another shell, point the frontend at it:
+VITE_IPC_BRIDGE_URL=http://127.0.0.1:1421 VITE_IPC_BRIDGE_TOKEN=<token> pnpm dev   # http://localhost:1420
+```
+
+`POST /ipc/<command>` takes the same camelCase arguments as Tauri's `invoke` and needs the
+`x-dbstudio-bridge-token` header; `table_fetch` streams NDJSON. **Development only**: the bridge
+exposes every command (including saved connections) to anything that knows the token. It is not
+compiled in release builds (enabling the feature there is a compile error) and the default build
+does not include it.
+
 ## Integration tests
 
 The driver and command-layer tests that talk to real servers only run when `DBSTUDIO_IT=1`
@@ -65,7 +84,7 @@ docker compose -f docker/compose.test.yml down -v
 | `mariadb` | MariaDB 10.6  | `127.0.0.1:33106` | no                             |
 
 Login on every server: user `dbstudio`, password `dbstudio_test`, database `dbstudio`
-(MySQL/MariaDB also have `root` with the same password). These credentials are throw-away and
+(MySQL/MariaDB also have `root` with the same password). The Keychain test of the secret store runs only with `DBSTUDIO_KEYCHAIN_IT=1 cargo test -p dbstudio-store real_keychain` and uses a separate test service name. These credentials are throw-away and
 bound to localhost only. CI runs the same steps in the `integration` job.
 
 ## IPC types
