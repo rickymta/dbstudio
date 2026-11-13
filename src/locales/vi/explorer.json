@@ -10,7 +10,11 @@
     "indexes": "Chỉ mục",
     "columns": "Cột",
     "roles": "Vai trò",
-    "schemas": "Schema"
+    "schemas": "Schema",
+    "collections": "Collection",
+    "synonyms": "Synonym",
+    "packages": "Package",
+    "types": "Kiểu"
   },
   "kind": {
     "database": "Cơ sở dữ liệu",
@@ -27,7 +31,11 @@
     "sequence": "Sequence",
     "collection": "Collection",
     "key": "Khóa",
-    "folder": "Thư mục"
+    "folder": "Thư mục",
+    "keyPrefix": "Tiền tố khóa",
+    "synonym": "Synonym",
+    "package": "Package",
+    "type": "Kiểu"
   },
   "treeLabel": "Cây đối tượng",
   "expand": "Mở rộng",
@@ -41,6 +49,10 @@
     "viewDdl": "Xem DDL",
     "copyName": "Sao chép tên",
     "copyFullName": "Sao chép tên đầy đủ",
-    "refresh": "Làm mới"
+    "refresh": "Làm mới",
+    "openEditor": "Mở trình soạn thảo",
+    "showErd": "Xem sơ đồ",
+    "exportData": "Xuất...",
+    "backup": "Sao lưu..."
   }
 }

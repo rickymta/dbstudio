@@ -9,14 +9,39 @@ use uuid::Uuid;
 /// Keychain service name under which every DBStudio secret is stored.
 pub const KEYRING_SERVICE: &str = "dev.dbstudio.desktop";
 
-/// Storage for connection secrets, keyed by connection id.
+/// Keychain account of the SSH secret (password or key passphrase) of a connection.
+pub fn ssh_secret_account(conn_id: Uuid) -> String {
+    format!("{conn_id}#ssh")
+}
+
+/// Keychain account of the encryption passphrase of a backup job.
+pub fn backup_secret_account(job_id: Uuid) -> String {
+    format!("backup:{job_id}")
+}
+
+/// Storage for secrets. The connection password of a profile lives under the account
+/// `<connId>`; other secrets use their own account names ([`ssh_secret_account`],
+/// [`backup_secret_account`]).
 pub trait SecretStore: Send + Sync + std::fmt::Debug {
-    /// The stored secret, or `None` when nothing is stored.
-    fn get(&self, id: Uuid) -> Result<Option<Secret>>;
-    /// Store or replace the secret.
-    fn set(&self, id: Uuid, secret: &Secret) -> Result<()>;
-    /// Remove the secret; succeeds when nothing was stored.
-    fn delete(&self, id: Uuid) -> Result<()>;
+    /// The secret stored under `account`, or `None` when nothing is stored.
+    fn get_account(&self, account: &str) -> Result<Option<Secret>>;
+    /// Store or replace the secret under `account`.
+    fn set_account(&self, account: &str, secret: &Secret) -> Result<()>;
+    /// Remove the secret under `account`; succeeds when nothing was stored.
+    fn delete_account(&self, account: &str) -> Result<()>;
+
+    /// The connection password, or `None` when nothing is stored.
+    fn get(&self, id: Uuid) -> Result<Option<Secret>> {
+        self.get_account(&id.to_string())
+    }
+    /// Store or replace the connection password.
+    fn set(&self, id: Uuid, secret: &Secret) -> Result<()> {
+        self.set_account(&id.to_string(), secret)
+    }
+    /// Remove the connection password; succeeds when nothing was stored.
+    fn delete(&self, id: Uuid) -> Result<()> {
+        self.delete_account(&id.to_string())
+    }
 }
 
 /// [`SecretStore`] backed by the OS credential store (macOS Keychain, Windows Credential
@@ -39,8 +64,8 @@ impl KeyringSecretStore {
         }
     }
 
-    fn entry(&self, id: Uuid) -> Result<keyring::Entry> {
-        keyring::Entry::new(&self.service, &id.to_string()).map_err(keychain_err)
+    fn entry(&self, account: &str) -> Result<keyring::Entry> {
+        keyring::Entry::new(&self.service, account).map_err(keychain_err)
     }
 }
 
@@ -57,22 +82,22 @@ fn keychain_err(e: keyring::Error) -> Error {
 }
 
 impl SecretStore for KeyringSecretStore {
-    fn get(&self, id: Uuid) -> Result<Option<Secret>> {
-        match self.entry(id)?.get_password() {
+    fn get_account(&self, account: &str) -> Result<Option<Secret>> {
+        match self.entry(account)?.get_password() {
             Ok(value) => Ok(Some(Secret::new(value))),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(keychain_err(e)),
         }
     }
 
-    fn set(&self, id: Uuid, secret: &Secret) -> Result<()> {
-        self.entry(id)?
+    fn set_account(&self, account: &str, secret: &Secret) -> Result<()> {
+        self.entry(account)?
             .set_password(secret.expose())
             .map_err(keychain_err)
     }
 
-    fn delete(&self, id: Uuid) -> Result<()> {
-        match self.entry(id)?.delete_credential() {
+    fn delete_account(&self, account: &str) -> Result<()> {
+        match self.entry(account)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(keychain_err(e)),
         }
@@ -83,7 +108,7 @@ impl SecretStore for KeyringSecretStore {
 /// unavailable keychain.
 #[derive(Default)]
 pub struct MemorySecretStore {
-    secrets: Mutex<HashMap<Uuid, Secret>>,
+    secrets: Mutex<HashMap<String, Secret>>,
     unavailable: Mutex<bool>,
 }
 
@@ -127,31 +152,31 @@ impl MemorySecretStore {
 }
 
 impl SecretStore for MemorySecretStore {
-    fn get(&self, id: Uuid) -> Result<Option<Secret>> {
+    fn get_account(&self, account: &str) -> Result<Option<Secret>> {
         self.check()?;
         Ok(self
             .secrets
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&id)
+            .get(account)
             .cloned())
     }
 
-    fn set(&self, id: Uuid, secret: &Secret) -> Result<()> {
+    fn set_account(&self, account: &str, secret: &Secret) -> Result<()> {
         self.check()?;
         self.secrets
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(id, secret.clone());
+            .insert(account.to_string(), secret.clone());
         Ok(())
     }
 
-    fn delete(&self, id: Uuid) -> Result<()> {
+    fn delete_account(&self, account: &str) -> Result<()> {
         self.check()?;
         self.secrets
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&id);
+            .remove(account);
         Ok(())
     }
 }
@@ -172,6 +197,31 @@ mod tests {
         s.delete(id).unwrap();
         s.delete(id).unwrap();
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn account_helpers_and_isolation() {
+        let id = Uuid::new_v4();
+        assert_eq!(ssh_secret_account(id), format!("{id}#ssh"));
+        assert_eq!(backup_secret_account(id), format!("backup:{id}"));
+        let s = MemorySecretStore::new();
+        s.set(id, &Secret::new("db")).unwrap();
+        s.set_account(&ssh_secret_account(id), &Secret::new("tunnel"))
+            .unwrap();
+        s.set_account(&backup_secret_account(id), &Secret::new("bk"))
+            .unwrap();
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.get(id).unwrap().unwrap().expose(), "db");
+        assert_eq!(
+            s.get_account(&ssh_secret_account(id))
+                .unwrap()
+                .unwrap()
+                .expose(),
+            "tunnel"
+        );
+        s.delete_account(&ssh_secret_account(id)).unwrap();
+        assert_eq!(s.len(), 2);
+        assert!(s.get(id).unwrap().is_some());
     }
 
     #[test]

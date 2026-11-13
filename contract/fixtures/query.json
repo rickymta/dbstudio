@@ -1,0 +1,45 @@
+{
+  "ColumnMeta": {
+    "name": "$document",
+    "nullable": false,
+    "typeName": "document",
+    "valueKind": "document"
+  },
+  "ExecSummary": {
+    "elapsedMs": 4,
+    "statements": 1
+  },
+  "QueryEvent": {
+    "start": {
+      "index": 0,
+      "range": {
+        "end": 17,
+        "start": 0
+      }
+    },
+    "type": "statementStart"
+  },
+  "QueryRequest": {
+    "batchSize": null,
+    "database": null,
+    "maxRows": null,
+    "queryId": "00000000-0000-0000-0000-000000000008",
+    "text": "SELECT 1",
+    "timeoutMs": null
+  },
+  "StatementEnd": {
+    "elapsedMs": 9,
+    "outcome": {
+      "kind": "rows",
+      "rowCount": 5,
+      "truncated": true
+    }
+  },
+  "StatementStart": {
+    "index": 1,
+    "range": {
+      "end": 30,
+      "start": 18
+    }
+  }
+}

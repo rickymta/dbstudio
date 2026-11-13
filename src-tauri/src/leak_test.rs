@@ -35,12 +35,13 @@ fn profile(kind: DbKind, save_password: bool) -> ConnectionProfile {
 
 fn state_in(root: &Path, registry: DriverRegistry) -> AppState {
     let store = Store::open(root.join("data/dbstudio.sqlite")).unwrap();
-    let service = ConnectionService::new(store, Arc::new(MemorySecretStore::new()));
+    let secrets = Arc::new(MemorySecretStore::new());
+    let service = ConnectionService::new(store, secrets.clone());
     let host = Arc::new(FakeHost {
         log_dir: root.join("logs"),
         ..Default::default()
     });
-    AppState::new(registry, service, host)
+    AppState::new(registry, service, secrets, host)
 }
 
 fn utf16le(text: &str) -> Vec<u8> {

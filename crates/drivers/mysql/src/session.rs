@@ -22,6 +22,10 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dbstudio_core::{
+    ApplyResult, ChangeSet, DdlItem, DdlRequest, Editability, ExplainRequest, Lease, LeaseOptions,
+    RawPlan, SchemaModel, SchemaModelRequest, ScriptDialect,
+};
+use dbstudio_core::{
     ColumnMeta, EndOutcome, Error, ExecSummary, ObjectNode, ObjectPath, ObjectSearchRequest,
     QueryRequest, Result, ResultSink, ServerInfo, Session, StatementEnd, TableCountRequest,
     TableDataRequest, TableDetails, Value,
@@ -122,6 +126,8 @@ pub(crate) struct Inner {
     acquire_timeout: Duration,
     secret: Option<String>,
     pub(crate) is_mariadb: bool,
+    /// `NO_BACKSLASH_ESCAPES` was off in the server's global `sql_mode` at connect time.
+    pub(crate) backslash_escapes: bool,
     /// Default database of the configuration (restored after a per-request override).
     default_db: Option<String>,
     /// Ids of pooled connections whose current database was changed by a request. The pool's
@@ -173,6 +179,7 @@ impl Inner {
         acquire_timeout: Duration,
         secret: Option<String>,
         is_mariadb: bool,
+        backslash_escapes: bool,
         default_db: Option<String>,
         search_timeout_ms: u64,
         debug_search_sleep_ms: Option<u64>,
@@ -185,6 +192,7 @@ impl Inner {
             acquire_timeout,
             secret,
             is_mariadb,
+            backslash_escapes,
             default_db,
             dirty_db: Mutex::new(HashSet::new()),
             search_timeout_ms,
@@ -718,6 +726,41 @@ impl MySqlSession {
 
 #[async_trait]
 impl Session for MySqlSession {
+    fn script_dialect(&self) -> ScriptDialect {
+        ScriptDialect::MySql {
+            mariadb: self.inner.is_mariadb,
+            backslash_escapes: self.inner.backslash_escapes,
+        }
+    }
+
+    async fn open_lease(&self, opts: LeaseOptions) -> Result<Box<dyn Lease>> {
+        crate::lease::open(self, opts).await
+    }
+
+    async fn editability(&self, path: &ObjectPath) -> Result<Editability> {
+        crate::edit::editability(self, path).await
+    }
+
+    async fn preview_changes(&self, changes: &ChangeSet) -> Result<Vec<String>> {
+        crate::edit::preview(self, changes).await
+    }
+
+    async fn apply_changes(&self, changes: ChangeSet) -> Result<ApplyResult> {
+        crate::edit::apply(self, changes).await
+    }
+
+    async fn explain(&self, req: ExplainRequest) -> Result<RawPlan> {
+        crate::explain::explain(self, req).await
+    }
+
+    async fn schema_model(&self, req: SchemaModelRequest) -> Result<SchemaModel> {
+        crate::model::schema_model(self, req).await
+    }
+
+    async fn generate_ddl(&self, req: DdlRequest) -> Result<Vec<DdlItem>> {
+        crate::ddl_gen::generate(self, req).await
+    }
+
     async fn ping(&self) -> Result<()> {
         let mut conn = self.inner.acquire().await?;
         let r = conn.ping().await.map_err(map_query_error);

@@ -4,7 +4,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::DbKind;
+use crate::{DbKind, SshConfig};
 
 /// TLS policy for a connection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +38,10 @@ pub struct TlsConfig {
     /// PEM file with the client private key (mutual TLS).
     #[serde(default)]
     pub client_key_path: Option<String>,
+    /// SNI and certificate-name override (set to the original host when connecting through an
+    /// SSH tunnel to `127.0.0.1`).
+    #[serde(default)]
+    pub server_name: Option<String>,
 }
 
 /// Deployment environment label, used for visual safeguards (e.g. red production tabs).
@@ -82,6 +86,10 @@ pub struct ConnectionConfig {
     /// Driver specific parameters.
     #[serde(default)]
     pub options: BTreeMap<String, String>,
+    /// Optional SSH tunnel. The secret (password / key passphrase) lives in the keychain under
+    /// `<connId>#ssh`.
+    #[serde(default)]
+    pub ssh: Option<SshConfig>,
 }
 
 impl ConnectionConfig {
@@ -100,6 +108,7 @@ impl ConnectionConfig {
             read_only: false,
             environment: None,
             options: BTreeMap::new(),
+            ssh: None,
         }
     }
 }
@@ -175,5 +184,34 @@ mod tests {
         let back: TlsConfig =
             serde_json::from_value(serde_json::json!({"mode": "disable"})).unwrap();
         assert_eq!(back.mode, TlsMode::Disable);
+    }
+
+    #[test]
+    fn ssh_and_server_name_are_optional_on_input() {
+        let json = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001", "name": "n", "kind": "postgres",
+            "host": "h", "port": 5432, "database": null, "username": null,
+            "tls": {"mode": "prefer"}, "readOnly": false, "environment": null
+        });
+        let cfg: ConnectionConfig = serde_json::from_value(json).unwrap();
+        assert!(cfg.ssh.is_none());
+        assert!(cfg.tls.server_name.is_none());
+        let mut cfg = cfg;
+        cfg.tls.server_name = Some("db.internal".into());
+        cfg.ssh = Some(crate::SshConfig {
+            host: "bastion".into(),
+            port: 22,
+            username: "me".into(),
+            auth: crate::SshAuth::Agent,
+            keepalive_secs: None,
+            connect_timeout_ms: None,
+        });
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["tls"]["serverName"], "db.internal");
+        assert_eq!(json["ssh"]["auth"], serde_json::json!({"method": "agent"}));
+        assert_eq!(
+            serde_json::from_value::<ConnectionConfig>(json).unwrap(),
+            cfg
+        );
     }
 }

@@ -13,7 +13,7 @@ function useTabTitle(title: TabTitle): string {
 function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
   const { t } = useTranslation();
   const activate = useTabsStore((s) => s.activate);
-  const closeTab = useTabsStore((s) => s.closeTab);
+  const closeTab = useTabsStore((s) => s.requestClose);
   const title = useTabTitle(tab.title);
   const profile = useConnectionProfile(tab.payload?.connectionId ?? '');
   const color = connectionColor(profile);
@@ -22,7 +22,7 @@ function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
   const onAuxClick = (e: MouseEvent) => {
     if (e.button === 1 && tab.closable) {
       e.preventDefault();
-      closeTab(tab.id);
+      void closeTab(tab.id);
     }
   };
 
@@ -65,7 +65,7 @@ function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
           type="button"
           aria-label={`${t('tabs.close')}: ${title}`}
           tabIndex={-1}
-          onClick={() => closeTab(tab.id)}
+          onClick={() => void closeTab(tab.id)}
           className="mr-1 rounded p-0.5 text-muted-foreground opacity-60 hover:bg-surface-muted hover:opacity-100 group-hover:opacity-100"
         >
           <X size={12} />
@@ -79,7 +79,7 @@ export function TabBar() {
   const tabs = useTabsStore((s) => s.tabs);
   const activeId = useTabsStore((s) => s.activeId);
   const activate = useTabsStore((s) => s.activate);
-  const closeTab = useTabsStore((s) => s.closeTab);
+  const closeTab = useTabsStore((s) => s.requestClose);
 
   const focusTab = (list: HTMLElement, id: string | undefined) => {
     if (!id) return;
@@ -109,7 +109,7 @@ export function TabBar() {
     else if (e.key === 'Delete' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'w')) {
       if (!tabs[index]?.closable) return;
       e.preventDefault();
-      closeTab(id);
+      void closeTab(id);
       // The store picks the neighbor; focus it once React has rendered.
       setTimeout(() => focusTab(list, useTabsStore.getState().activeId), 0);
     }

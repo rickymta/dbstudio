@@ -87,7 +87,15 @@
     "notFound": "Not found",
     "storage": "Storage error",
     "io": "I/O error",
-    "other": "Error"
+    "other": "Error",
+    "readOnly": "Read-only connection",
+    "confirmationRequired": "Confirmation required",
+    "busy": "Busy",
+    "permission": "Permission denied",
+    "driverUnavailable": "Driver unavailable",
+    "sshHostKey": "SSH host key",
+    "integrity": "Integrity check failed",
+    "changeFailed": "Change failed"
   },
   "dialog": {
     "newTitle": "New connection",
@@ -103,6 +111,7 @@
     "advanced": "Advanced"
   },
   "phase": "Phase {{phase}}",
+  "driverUnavailable": "unavailable",
   "field": {
     "kind": "Database type",
     "name": "Name",

@@ -127,6 +127,8 @@ function valueText(v: Value): string | null {
     case 'array':
     case 'document':
       return JSON.stringify(v.v);
+    case 'ext':
+      return v.v.text;
     default:
       return String(v.v);
   }

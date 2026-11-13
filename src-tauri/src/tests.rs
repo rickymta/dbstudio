@@ -325,6 +325,7 @@ async fn table_fetch_streams_events_in_order() {
             QueryEvent::Rows { .. } => "rows",
             QueryEvent::Message { .. } => "message",
             QueryEvent::StatementEnd { .. } => "end",
+            QueryEvent::StatementStart { .. } => "start",
         })
         .collect();
     assert_eq!(kinds, ["columns", "rows", "rows", "rows", "message", "end"]);

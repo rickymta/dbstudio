@@ -32,11 +32,23 @@ mod browse;
 mod capabilities;
 mod config;
 mod driver;
+mod edit;
 mod error;
+pub mod fallback;
+mod job;
+pub mod keyvalue;
 mod kind;
+mod lease;
+pub mod lease_kit;
 mod metadata;
+mod model;
 mod object;
+mod plan;
 mod query;
+mod script;
+mod ssh;
+#[cfg(feature = "testing")]
+pub mod testing;
 mod value;
 
 pub use browse::{
@@ -45,15 +57,45 @@ pub use browse::{
 pub use capabilities::Capabilities;
 pub use config::{ConnectionConfig, Environment, Secret, TlsConfig, TlsMode};
 pub use driver::{
-    Driver, DriverDescriptor, DriverRegistry, DriverStatus, ServerInfo, Session, execute_collect,
-    planned_descriptors,
+    Driver, DriverDescriptor, DriverRegistry, DriverStatus, ServerInfo, Session, UnavailableReason,
+    execute_collect, planned_descriptors,
+};
+pub use edit::{
+    ApplyResult, CellEdit, ChangeSet, DocInput, DocumentChange, DocumentChangeSet, EditValue,
+    Editability, FieldEdit, KeyChange, KeyChangeSet, NotEditableReason, RowChange, RowChangeSet,
 };
 pub use error::{Error, Result};
+pub use job::{
+    CancelToken, JobError, JobEvent, JobId, JobInfo, JobKind, JobProgress, JobReporter, JobStatus,
+};
+pub use keyvalue::{
+    BINARY_KEY_PREFIX, KeyEntries, KeyReadRequest, KeyValuePage, StreamEntry, decode_key_name,
+    encode_key_name,
+};
 pub use kind::{DbFamily, DbKind};
+pub use lease::{
+    IsolationLevel, Lease, LeaseCloseReport, LeaseContext, LeaseOptions, LeaseState, TxOptions,
+    TxStatus,
+};
+pub use lease_kit::{ActorLease, Canceller, LeaseBackend};
 pub use metadata::{ColumnDetail, ForeignKeyDetail, IndexDetail, TableDetails};
-pub use object::{ObjectKind, ObjectNode, ObjectPath, PathSegment, folder};
+pub use model::{
+    BulkInsertRequest, BulkInsertResult, DdlItem, DdlLanguage, DdlOptions, DdlRequest, DdlSection,
+    ModelDetail, OnConflict, Relation, SchemaModel, SchemaModelRequest, TableModel,
+    TableStreamRequest,
+};
+pub use object::{
+    ChildrenPage, ChildrenPageRequest, ObjectKind, ObjectNode, ObjectPath, PathSegment, folder,
+};
+pub use plan::{ExplainOptions, ExplainRequest, PlanFormat, RawPlan};
 pub use query::{
     CollectingSink, ColumnMeta, EndOutcome, ExecSummary, QueryEvent, QueryRequest, ResultSet,
-    ResultSink, StatementEnd, StatementOutcome, StatementResult,
+    ResultSink, StatementEnd, StatementOutcome, StatementResult, StatementStart,
 };
-pub use value::{Value, ValueKind};
+pub use script::{
+    ConfirmationGrant, ConfirmationRequest, DestructiveReason, DestructiveStatement,
+    ExecuteRequest, ExecuteResult, ParamInput, ParamRef, ParamStyle, ParamValue, ScriptAnalysis,
+    ScriptDialect, ScriptProblem, StatementClass, StatementInfo, TextRange, TxControl,
+};
+pub use ssh::{SshAuth, SshConfig};
+pub use value::{ExtValue, Value, ValueKind};

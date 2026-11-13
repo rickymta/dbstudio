@@ -1,0 +1,19 @@
+[package]
+name = "dbstudio-ssh"
+description = "SSH local-forward tunnel for DBStudio connections."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+dbstudio-core.workspace = true
+russh.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "io-util", "macros"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

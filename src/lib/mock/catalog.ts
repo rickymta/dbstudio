@@ -14,7 +14,28 @@ import type {
   TableDetails,
   ValueKind,
 } from '../types';
+import { mssqlChildren, mssqlDdl, mssqlDetails } from './catalogMssql';
+import { mongoChildren, mongoDdl, mongoDetails } from './catalogMongo';
+import { oracleChildren, oracleDdl, oracleDetails } from './catalogOracle';
+import { redisChildren, redisDdl, redisDetails } from './catalogRedis';
 import { ipcError } from './util';
+
+/** Kinds served by their own small catalog (the postgres/mysql ones live in this file). */
+const OTHER_CATALOGS: Partial<
+  Record<
+    DbKind,
+    {
+      children: (path: ObjectPath) => ObjectNode[];
+      details: (path: ObjectPath) => TableDetails;
+      ddl: (path: ObjectPath) => string;
+    }
+  >
+> = {
+  sqlserver: { children: mssqlChildren, details: mssqlDetails, ddl: mssqlDdl },
+  oracle: { children: oracleChildren, details: oracleDetails, ddl: oracleDdl },
+  mongodb: { children: mongoChildren, details: mongoDetails, ddl: mongoDdl },
+  redis: { children: redisChildren, details: redisDetails, ddl: redisDdl },
+};
 
 export type RelationKind = 'table' | 'view' | 'materializedView';
 
@@ -406,6 +427,8 @@ function schemaFolders(parent: ObjectPath, s: MockSchema, d: Dialect): ObjectNod
 
 /** Children of `path` in the fake object tree of a `kind` server. */
 export function mockChildren(kind: DbKind, path: ObjectPath): ObjectNode[] {
+  const other = OTHER_CATALOGS[kind];
+  if (other) return other.children(path);
   const d = dialectOf(kind);
   const last = lastSegment(path);
   if (!last) {
@@ -511,6 +534,8 @@ function qualified(kind: DbKind, rel: NonNullable<ReturnType<typeof findRelation
 }
 
 export function mockTableDetails(kind: DbKind, path: ObjectPath): TableDetails {
+  const other = OTHER_CATALOGS[kind];
+  if (other) return other.details(path);
   const rel = findRelation(kind, path);
   if (!rel) throw ipcError('notFound', `table ${lastSegment(path)?.name ?? ''}`);
   const d = dialectOf(kind);
@@ -571,6 +596,8 @@ export function mockTableDetails(kind: DbKind, path: ObjectPath): TableDetails {
 }
 
 export function mockObjectDdl(kind: DbKind, path: ObjectPath): string {
+  const other = OTHER_CATALOGS[kind];
+  if (other) return other.ddl(path);
   const d = dialectOf(kind);
   const last = lastSegment(path);
   if (!last) throw ipcError('notFound', 'object');

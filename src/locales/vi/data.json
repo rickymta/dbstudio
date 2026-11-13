@@ -77,6 +77,8 @@
     "cancelCount": "Huỷ"
   },
   "viewer": {
+    "extType": "Kiểu",
+    "extText": "Giá trị",
     "title": "Ô dữ liệu",
     "close": "Đóng trình xem",
     "copy": "Sao chép",

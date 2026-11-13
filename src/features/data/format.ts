@@ -12,6 +12,8 @@ export interface CellDisplay {
   text: string;
   kind: CellKind;
   align: 'left' | 'right';
+  /** Native type label of an `ext` value (`objectId`, `int64`...). */
+  badge?: string;
 }
 
 /** Longest text kept for in-cell display; the cell is clipped with CSS ellipsis anyway. */
@@ -192,11 +194,12 @@ export function valueToPlain(v: Value): unknown {
     }
     case 'array':
       return v.v.map(valueToPlain);
-    case 'document': {
-      const out: Record<string, unknown> = {};
-      for (const [k, x] of Object.entries(v.v)) out[k] = valueToPlain(x);
-      return out;
-    }
+    case 'document':
+      // Documents are ordered pairs on the wire; the plain tree is an object (duplicate keys
+      // collapse, integer-like keys sort first - both are limits of JS objects).
+      return Object.fromEntries(v.v.map(([k, x]) => [k, valueToPlain(x)]));
+    case 'ext':
+      return v.v.text || v.v.type;
     default:
       return v.v;
   }
@@ -277,7 +280,7 @@ function boundedValueJson(v: Value, max: number): string {
       case 'document': {
         push('{');
         let first = true;
-        for (const [k, item] of Object.entries(x.v)) {
+        for (const [k, item] of x.v) {
           if (!first) push(',');
           first = false;
           push(`${JSON.stringify(k)}:`);
@@ -285,6 +288,8 @@ function boundedValueJson(v: Value, max: number): string {
         }
         return push('}');
       }
+      case 'ext':
+        return push(JSON.stringify(x.v.text || x.v.type));
       default:
         return push(JSON.stringify(String((x as { v: unknown }).v)));
     }
@@ -327,6 +332,8 @@ export function valueToText(v: Value, timestamp: TimestampDisplay = 'utc'): stri
       return stringifyPlain(valueToPlain(v));
     case 'timestamp':
       return timestamp === 'local' ? toLocalTimestamp(v.v) : v.v;
+    case 'ext':
+      return v.v.text;
     case 'text':
     case 'decimal':
     case 'date':
@@ -350,7 +357,9 @@ export function estimateValueSize(v: Value): number {
     case 'array':
       return v.v.reduce((n, x) => n + estimateValueSize(x) + 1, 2);
     case 'document':
-      return Object.entries(v.v).reduce((n, [k, x]) => n + k.length + estimateValueSize(x) + 4, 2);
+      return v.v.reduce((n, [k, x]) => n + k.length + estimateValueSize(x) + 4, 2);
+    case 'ext':
+      return v.v.text.length;
     default:
       return 32;
   }
@@ -408,6 +417,13 @@ function computeCell(v: Value, maxChars: number, timestamp: TimestampDisplay): C
         text: visibleWhitespace(boundedValueJson(v, maxChars)),
         kind: 'structured',
         align: 'left',
+      };
+    case 'ext':
+      return {
+        text: visibleWhitespace(clip(v.v.text || v.v.type, maxChars)),
+        kind: 'text',
+        align: 'left',
+        badge: v.v.type,
       };
     default:
       // A value kind this build does not know: show it as JSON rather than failing.
@@ -467,6 +483,7 @@ const KIND_WIDTH: Record<ValueKind, number> = {
   json: 220,
   array: 220,
   document: 240,
+  ext: 200,
 };
 
 /** Default width of a column from its kind and name (header text must stay readable). */

@@ -1,0 +1,355 @@
+{
+  "BulkInsertRequest": {
+    "columns": ["id", "note"],
+    "conflictColumns": ["id"],
+    "onConflict": "update",
+    "rows": [
+      [
+        {
+          "kind": "text",
+          "v": "1"
+        },
+        {
+          "kind": "value",
+          "v": {
+            "t": "null"
+          }
+        }
+      ]
+    ],
+    "table": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "tables"
+        },
+        {
+          "kind": "table",
+          "name": "orders"
+        }
+      ]
+    }
+  },
+  "BulkInsertResult": {
+    "inserted": 10,
+    "skipped": 1,
+    "updated": 2
+  },
+  "DdlItem": {
+    "dependsOn": [
+      {
+        "segments": [
+          {
+            "kind": "database",
+            "name": "app"
+          },
+          {
+            "kind": "folder",
+            "name": "tables"
+          },
+          {
+            "kind": "table",
+            "name": "users"
+          }
+        ]
+      }
+    ],
+    "kind": "table",
+    "language": "sql",
+    "path": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "tables"
+        },
+        {
+          "kind": "table",
+          "name": "orders"
+        }
+      ]
+    },
+    "section": "preData",
+    "sql": "CREATE TABLE orders (id bigint PRIMARY KEY);"
+  },
+  "DdlLanguage": "mongoShell",
+  "DdlOptions": {
+    "ifNotExists": false,
+    "includeComments": true,
+    "includeDrop": false,
+    "includeForeignKeys": true,
+    "includeGrants": false,
+    "includeIndexes": true,
+    "includeRoutines": true,
+    "includeSequences": true,
+    "includeTriggers": true,
+    "includeViews": true,
+    "qualifySchema": true
+  },
+  "DdlRequest": {
+    "objects": [
+      {
+        "segments": [
+          {
+            "kind": "database",
+            "name": "app"
+          },
+          {
+            "kind": "folder",
+            "name": "tables"
+          },
+          {
+            "kind": "table",
+            "name": "orders"
+          }
+        ]
+      }
+    ],
+    "options": {
+      "ifNotExists": false,
+      "includeComments": true,
+      "includeDrop": false,
+      "includeForeignKeys": true,
+      "includeGrants": false,
+      "includeIndexes": true,
+      "includeRoutines": true,
+      "includeSequences": true,
+      "includeTriggers": true,
+      "includeViews": true,
+      "qualifySchema": true
+    },
+    "scope": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        }
+      ]
+    }
+  },
+  "DdlSection": "postData",
+  "ModelDetail": "keys",
+  "OnConflict": "skip",
+  "Relation": {
+    "fromColumns": ["user_id"],
+    "fromOptional": true,
+    "fromTable": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "tables"
+        },
+        {
+          "kind": "table",
+          "name": "orders"
+        }
+      ]
+    },
+    "inferred": false,
+    "name": "orders_user_fk",
+    "onDelete": "CASCADE",
+    "onUpdate": null,
+    "oneToOne": false,
+    "toColumns": ["id"],
+    "toTable": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "tables"
+        },
+        {
+          "kind": "table",
+          "name": "users"
+        }
+      ]
+    }
+  },
+  "SchemaModel": {
+    "inferred": false,
+    "relations": [
+      {
+        "fromColumns": ["user_id"],
+        "fromOptional": true,
+        "fromTable": {
+          "segments": [
+            {
+              "kind": "database",
+              "name": "app"
+            },
+            {
+              "kind": "folder",
+              "name": "tables"
+            },
+            {
+              "kind": "table",
+              "name": "orders"
+            }
+          ]
+        },
+        "inferred": false,
+        "name": "orders_user_fk",
+        "onDelete": "CASCADE",
+        "onUpdate": null,
+        "oneToOne": false,
+        "toColumns": ["id"],
+        "toTable": {
+          "segments": [
+            {
+              "kind": "database",
+              "name": "app"
+            },
+            {
+              "kind": "folder",
+              "name": "tables"
+            },
+            {
+              "kind": "table",
+              "name": "users"
+            }
+          ]
+        }
+      }
+    ],
+    "scope": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        }
+      ]
+    },
+    "tables": [
+      {
+        "columns": [
+          {
+            "comment": "primary key",
+            "default": null,
+            "extra": "identity",
+            "name": "id",
+            "nullable": false,
+            "ordinal": 1,
+            "primaryKey": true,
+            "typeName": "int8",
+            "valueKind": "int"
+          }
+        ],
+        "comment": "customer orders",
+        "estimatedRows": 1000,
+        "kind": "table",
+        "name": "orders",
+        "path": {
+          "segments": [
+            {
+              "kind": "database",
+              "name": "app"
+            },
+            {
+              "kind": "folder",
+              "name": "tables"
+            },
+            {
+              "kind": "table",
+              "name": "orders"
+            }
+          ]
+        },
+        "primaryKey": ["id"],
+        "schema": "public",
+        "uniqueKeys": [["code"]]
+      }
+    ],
+    "truncated": false
+  },
+  "SchemaModelRequest": {
+    "detail": "full",
+    "includeComments": false,
+    "includeViews": true,
+    "sampleSize": 1000,
+    "scope": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        }
+      ]
+    },
+    "tables": []
+  },
+  "TableModel": {
+    "columns": [
+      {
+        "comment": "primary key",
+        "default": null,
+        "extra": "identity",
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "primaryKey": true,
+        "typeName": "int8",
+        "valueKind": "int"
+      }
+    ],
+    "comment": "customer orders",
+    "estimatedRows": 1000,
+    "kind": "table",
+    "name": "orders",
+    "path": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "tables"
+        },
+        {
+          "kind": "table",
+          "name": "orders"
+        }
+      ]
+    },
+    "primaryKey": ["id"],
+    "schema": "public",
+    "uniqueKeys": [["code"]]
+  },
+  "TableStreamRequest": {
+    "batchSize": 1000,
+    "columns": ["id"],
+    "filters": [],
+    "orderByKey": true,
+    "queryId": "00000000-0000-0000-0000-000000000004",
+    "rawWhere": "id > 10",
+    "table": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "tables"
+        },
+        {
+          "kind": "table",
+          "name": "orders"
+        }
+      ]
+    }
+  }
+}

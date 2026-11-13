@@ -1,0 +1,202 @@
+{
+  "BackupEngine": {
+    "content": "both",
+    "ddl": {
+      "ifNotExists": false,
+      "includeComments": true,
+      "includeDrop": false,
+      "includeForeignKeys": true,
+      "includeGrants": false,
+      "includeIndexes": true,
+      "includeRoutines": true,
+      "includeSequences": true,
+      "includeTriggers": true,
+      "includeViews": true,
+      "qualifySchema": true
+    },
+    "kind": "logical"
+  },
+  "BackupInspection": {
+    "encrypted": false,
+    "header": {
+      "compression": "zstd",
+      "encryption": null,
+      "formatVersion": 1
+    },
+    "native": null,
+    "preamble": {
+      "engine": "postgres"
+    }
+  },
+  "BackupJob": {
+    "createdAt": "2024-12-01T00:00:00Z",
+    "enabled": true,
+    "id": "00000000-0000-0000-0000-000000000002",
+    "lastRunAt": "2025-01-01T02:00:00Z",
+    "missedRun": "runOnce",
+    "name": "nightly",
+    "nextRunAt": "2025-01-02T02:00:00Z",
+    "notify": {
+      "onFailure": true,
+      "onSuccess": true
+    },
+    "retention": {
+      "keepLast": 7,
+      "maxAgeDays": null
+    },
+    "schedule": {
+      "cron": "0 2 * * *",
+      "timezone": "local"
+    },
+    "spec": {
+      "compression": {
+        "kind": "zstd",
+        "level": 3
+      },
+      "connectionId": "00000000-0000-0000-0000-000000000001",
+      "destination": {
+        "fileTemplate": "{connection}-{database}-{date:%Y%m%d-%H%M%S}.dbsbak",
+        "kind": "localDir",
+        "path": "/backups"
+      },
+      "encrypted": true,
+      "engine": {
+        "content": "both",
+        "ddl": {
+          "ifNotExists": false,
+          "includeComments": true,
+          "includeDrop": false,
+          "includeForeignKeys": true,
+          "includeGrants": false,
+          "includeIndexes": true,
+          "includeRoutines": true,
+          "includeSequences": true,
+          "includeTriggers": true,
+          "includeViews": true,
+          "qualifySchema": true
+        },
+        "kind": "logical"
+      },
+      "targets": [
+        {
+          "segments": [
+            {
+              "kind": "database",
+              "name": "app"
+            }
+          ]
+        }
+      ]
+    },
+    "updatedAt": "2024-12-01T00:00:00Z"
+  },
+  "BackupOutcome": {
+    "checksum": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "files": ["/backups/app.dbsbak"],
+    "objects": 3,
+    "rows": 100,
+    "sizeBytes": 1024
+  },
+  "BackupRun": {
+    "checksum": "abababababababababababababababababababababababababababababababab",
+    "connectionId": "00000000-0000-0000-0000-000000000001",
+    "durationMs": 5000,
+    "engine": "logical",
+    "error": {
+      "kind": "io",
+      "message": "disk full"
+    },
+    "filePath": "/backups/app.dbsbak",
+    "finishedAt": "2025-01-01T02:00:05Z",
+    "id": "00000000-0000-0000-0000-000000000003",
+    "jobId": "00000000-0000-0000-0000-000000000002",
+    "jobName": "nightly",
+    "kind": "backup",
+    "logTail": "line",
+    "objects": 3,
+    "rows": 100,
+    "sizeBytes": 1024,
+    "startedAt": "2025-01-01T02:00:00Z",
+    "status": "failed",
+    "trigger": "schedule"
+  },
+  "BackupSpec": {
+    "compression": {
+      "kind": "zstd",
+      "level": 3
+    },
+    "connectionId": "00000000-0000-0000-0000-000000000001",
+    "destination": {
+      "fileTemplate": "{connection}-{database}-{date:%Y%m%d-%H%M%S}.dbsbak",
+      "kind": "localDir",
+      "path": "/backups"
+    },
+    "encrypted": true,
+    "engine": {
+      "content": "both",
+      "ddl": {
+        "ifNotExists": false,
+        "includeComments": true,
+        "includeDrop": false,
+        "includeForeignKeys": true,
+        "includeGrants": false,
+        "includeIndexes": true,
+        "includeRoutines": true,
+        "includeSequences": true,
+        "includeTriggers": true,
+        "includeViews": true,
+        "qualifySchema": true
+      },
+      "kind": "logical"
+    },
+    "targets": [
+      {
+        "segments": [
+          {
+            "kind": "database",
+            "name": "app"
+          }
+        ]
+      }
+    ]
+  },
+  "Compression": {
+    "kind": "zstd",
+    "level": 3
+  },
+  "Destination": {
+    "fileTemplate": "{connection}-{database}-{date:%Y%m%d-%H%M%S}.dbsbak",
+    "kind": "localDir",
+    "path": "/backups"
+  },
+  "NativeToolInfo": {
+    "path": "/usr/bin/pg_dump",
+    "problem": null,
+    "source": "path",
+    "tool": "pgDump",
+    "version": "pg_dump (PostgreSQL) 16.4"
+  },
+  "RestoreOutcome": {
+    "errors": [
+      {
+        "line": 12,
+        "message": "relation exists"
+      }
+    ],
+    "objects": 3,
+    "rows": 100
+  },
+  "RestoreSpec": {
+    "clean": false,
+    "continueOnError": true,
+    "createDatabase": true,
+    "file": "/backups/app.dbsbak",
+    "objects": [],
+    "targetConnectionId": "00000000-0000-0000-0000-000000000004",
+    "targetDatabase": "app_copy"
+  },
+  "Schedule": {
+    "cron": "0 2 * * *",
+    "timezone": "local"
+  }
+}

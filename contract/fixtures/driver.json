@@ -1,0 +1,91 @@
+{
+  "ConnectionConfig": {
+    "connectTimeoutMs": null,
+    "database": "app",
+    "environment": "production",
+    "host": "db.internal",
+    "id": "00000000-0000-0000-0000-000000000007",
+    "kind": "postgres",
+    "name": "prod",
+    "options": {},
+    "port": 5432,
+    "readOnly": false,
+    "ssh": {
+      "auth": {
+        "method": "password"
+      },
+      "connectTimeoutMs": null,
+      "host": "bastion",
+      "keepaliveSecs": null,
+      "port": 22,
+      "username": "me"
+    },
+    "tls": {
+      "caCertPath": null,
+      "clientCertPath": null,
+      "clientKeyPath": null,
+      "mode": "verifyFull",
+      "serverName": "db.internal"
+    },
+    "username": "admin"
+  },
+  "DriverDescriptor": {
+    "capabilities": {
+      "bulkInsert": true,
+      "cancelQuery": true,
+      "dataEditing": true,
+      "ddlGeneration": true,
+      "documentStore": false,
+      "explain": true,
+      "explainAnalyze": true,
+      "explainAnalyzeWrites": true,
+      "foreignKeys": true,
+      "keyValueStore": false,
+      "leases": true,
+      "logicalBackup": true,
+      "manualTransactions": true,
+      "multipleDatabases": false,
+      "nativeBackup": true,
+      "objectSearch": true,
+      "pagedTree": false,
+      "queryParams": true,
+      "readOnlySession": false,
+      "schemaInference": false,
+      "schemaModel": true,
+      "schemas": true,
+      "sequences": true,
+      "sql": true,
+      "sshTunnel": true,
+      "storedRoutines": true,
+      "tableStream": true,
+      "transactions": true,
+      "triggers": true,
+      "views": true
+    },
+    "defaultPort": 1521,
+    "displayName": "Oracle",
+    "family": "relational",
+    "kind": "oracle",
+    "status": {
+      "reason": "nativeClientMissing",
+      "state": "unavailable"
+    }
+  },
+  "DriverStatus": {
+    "reason": "nativeClientTooOld",
+    "state": "unavailable"
+  },
+  "ServerInfo": {
+    "extra": {},
+    "product": "PostgreSQL",
+    "version": "17.2"
+  },
+  "TlsConfig": {
+    "caCertPath": null,
+    "clientCertPath": null,
+    "clientKeyPath": null,
+    "mode": "verifyFull",
+    "serverName": "db.internal"
+  },
+  "UnavailableReason": "nativeClientMissing"
+}

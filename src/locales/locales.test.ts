@@ -51,6 +51,10 @@ describe('locales', () => {
       'collection',
       'key',
       'folder',
+      'keyPrefix',
+      'synonym',
+      'package',
+      'type',
     ];
     const expectKeys = (lang: string) => {
       const explorer = keys(load(lang, 'explorer'));

@@ -1,27 +1,16 @@
-import type { AppInfo, Capabilities, DbFamily, DbKind, DriverDescriptor } from '../types';
+import {
+  NO_CAPABILITIES,
+  type AppInfo,
+  type Capabilities,
+  type DbFamily,
+  type DbKind,
+  type DriverDescriptor,
+} from '../types';
 
 // Mirrors `DriverRegistry::descriptors()` with the PostgreSQL and MySQL drivers registered
 // (phase 1), so the UI works when opened in a plain browser without the Tauri runtime.
 
-const none: Capabilities = {
-  sql: false,
-  transactions: false,
-  schemas: false,
-  multipleDatabases: false,
-  explain: false,
-  explainAnalyze: false,
-  foreignKeys: false,
-  cancelQuery: false,
-  logicalBackup: false,
-  dataEditing: false,
-  storedRoutines: false,
-  triggers: false,
-  views: false,
-  sequences: false,
-  objectSearch: false,
-};
-
-const caps = (on: Partial<Capabilities>): Capabilities => ({ ...none, ...on });
+const caps = (on: Partial<Capabilities>): Capabilities => ({ ...NO_CAPABILITIES, ...on });
 
 const row = (
   kind: DbKind,
@@ -62,6 +51,17 @@ export const mockDrivers: DriverDescriptor[] = [
       triggers: true,
       views: true,
       sequences: true,
+      leases: true,
+      manualTransactions: true,
+      queryParams: true,
+      explainAnalyzeWrites: true,
+      ddlGeneration: true,
+      schemaModel: true,
+      tableStream: true,
+      bulkInsert: true,
+      nativeBackup: true,
+      readOnlySession: true,
+      sshTunnel: true,
     }),
   ),
   row(
@@ -84,6 +84,16 @@ export const mockDrivers: DriverDescriptor[] = [
       storedRoutines: true,
       triggers: true,
       views: true,
+      leases: true,
+      manualTransactions: true,
+      queryParams: true,
+      ddlGeneration: true,
+      schemaModel: true,
+      tableStream: true,
+      bulkInsert: true,
+      nativeBackup: true,
+      readOnlySession: true,
+      sshTunnel: true,
     }),
   ),
   row(
@@ -106,6 +116,16 @@ export const mockDrivers: DriverDescriptor[] = [
       triggers: true,
       views: true,
       sequences: true,
+      leases: true,
+      manualTransactions: true,
+      queryParams: true,
+      ddlGeneration: true,
+      schemaModel: true,
+      tableStream: true,
+      bulkInsert: true,
+      nativeBackup: true,
+      sshTunnel: true,
+      explainAnalyzeWrites: true,
     }),
   ),
   row(
@@ -126,6 +146,16 @@ export const mockDrivers: DriverDescriptor[] = [
       triggers: true,
       views: true,
       sequences: true,
+      leases: true,
+      manualTransactions: true,
+      queryParams: true,
+      ddlGeneration: true,
+      schemaModel: true,
+      tableStream: true,
+      bulkInsert: true,
+      nativeBackup: true,
+      sshTunnel: true,
+      explainAnalyzeWrites: true,
     }),
   ),
   row(
@@ -143,6 +173,17 @@ export const mockDrivers: DriverDescriptor[] = [
       logicalBackup: true,
       dataEditing: true,
       views: true,
+      leases: true,
+      manualTransactions: true,
+      explainAnalyzeWrites: true,
+      documentStore: true,
+      schemaModel: true,
+      schemaInference: true,
+      ddlGeneration: true,
+      tableStream: true,
+      bulkInsert: true,
+      nativeBackup: true,
+      sshTunnel: true,
     }),
   ),
   row(
@@ -151,7 +192,16 @@ export const mockDrivers: DriverDescriptor[] = [
     6379,
     'keyValue',
     4,
-    caps({ transactions: true, multipleDatabases: true, dataEditing: true }),
+    caps({
+      transactions: true,
+      multipleDatabases: true,
+      dataEditing: true,
+      leases: true,
+      keyValueStore: true,
+      pagedTree: true,
+      nativeBackup: true,
+      sshTunnel: true,
+    }),
   ),
   row(
     'cassandra',

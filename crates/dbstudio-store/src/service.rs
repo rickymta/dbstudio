@@ -145,6 +145,11 @@ impl ConnectionService {
                 .delete(id)
                 .map_err(|e| Error::Storage(format!("connection deleted, but its password could not be removed from the keychain: {}", detail(&e))))?;
         }
+        if profile.config.ssh.is_some() {
+            self.secrets
+                .delete_account(&crate::secret::ssh_secret_account(id))
+                .map_err(|e| Error::Storage(format!("connection deleted, but its SSH secret could not be removed from the keychain: {}", detail(&e))))?;
+        }
         Ok(())
     }
 
@@ -565,6 +570,30 @@ mod tests {
         let p = svc.save(profile("a", true), set("old")).unwrap();
         svc.save(p.clone(), set("new")).unwrap();
         assert_eq!(stored(&secrets, p.config.id).as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn delete_also_removes_ssh_secret() {
+        let (svc, secrets) = service();
+        let mut p = profile("a", false);
+        p.config.ssh = Some(dbstudio_core::SshConfig {
+            host: "bastion".into(),
+            port: 22,
+            username: "u".into(),
+            auth: dbstudio_core::SshAuth::Password,
+            keepalive_secs: None,
+            connect_timeout_ms: None,
+        });
+        let p = svc.save(p, SecretChange::Keep).unwrap();
+        secrets
+            .set_account(
+                &crate::secret::ssh_secret_account(p.config.id),
+                &dbstudio_core::Secret::new("tunnel"),
+            )
+            .unwrap();
+        assert_eq!(secrets.len(), 1);
+        svc.delete(p.config.id).unwrap();
+        assert!(secrets.is_empty());
     }
 
     #[test]

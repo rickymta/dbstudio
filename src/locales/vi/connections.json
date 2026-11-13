@@ -87,7 +87,15 @@
     "notFound": "Không tìm thấy",
     "storage": "Lỗi lưu trữ",
     "io": "Lỗi vào/ra",
-    "other": "Lỗi"
+    "other": "Lỗi",
+    "readOnly": "Kết nối chỉ đọc",
+    "confirmationRequired": "Cần xác nhận",
+    "busy": "Đang bận",
+    "permission": "Không đủ quyền",
+    "driverUnavailable": "Driver không khả dụng",
+    "sshHostKey": "Khóa máy chủ SSH",
+    "integrity": "Kiểm tra toàn vẹn thất bại",
+    "changeFailed": "Thay đổi thất bại"
   },
   "dialog": {
     "newTitle": "Kết nối mới",
@@ -103,6 +111,7 @@
     "advanced": "Nâng cao"
   },
   "phase": "Giai đoạn {{phase}}",
+  "driverUnavailable": "không khả dụng",
   "field": {
     "kind": "Loại cơ sở dữ liệu",
     "name": "Tên",

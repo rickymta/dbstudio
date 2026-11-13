@@ -1,0 +1,17 @@
+{
+  "SshAuth": {
+    "method": "agent"
+  },
+  "SshConfig": {
+    "auth": {
+      "hasPassphrase": true,
+      "keyPath": "/home/me/.ssh/id_ed25519",
+      "method": "privateKey"
+    },
+    "connectTimeoutMs": 10000,
+    "host": "bastion.example.com",
+    "keepaliveSecs": 30,
+    "port": 2222,
+    "username": "deploy"
+  }
+}

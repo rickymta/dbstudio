@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ipc, ipcTransport } from './ipc';
 import { ROOT_PATH } from './objectPath';
-import type { QueryEvent, TableDataRequest } from './types';
+import { DEFAULT_SETTINGS, type QueryEvent, type TableDataRequest } from './types';
 
 const URL_BASE = 'http://127.0.0.1:9999';
 
@@ -263,12 +263,7 @@ describe('new mock commands', () => {
 
   it('keeps settings in memory and exposes log dir and save path', async () => {
     const initial = await ipc.settingsGet();
-    expect(initial).toEqual({
-      logLevel: 'info',
-      gridMaxRows: 1_000_000,
-      gridMaxCells: 20_000_000,
-      timestampDisplay: 'utc',
-    });
+    expect(initial).toEqual(DEFAULT_SETTINGS);
     const saved = await ipc.settingsSet({ ...initial, logLevel: 'debug' });
     expect(saved.logLevel).toBe('debug');
     expect((await ipc.settingsGet()).logLevel).toBe('debug');

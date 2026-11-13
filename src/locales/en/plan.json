@@ -1,0 +1,9 @@
+{
+  "tab": {
+    "title": "Query plan"
+  },
+  "placeholder": {
+    "title": "Query plan",
+    "description": "Query plan analysis is not available yet."
+  }
+}

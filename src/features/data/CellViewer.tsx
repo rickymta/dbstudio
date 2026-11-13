@@ -73,6 +73,8 @@ export const ValueView = memo(function ValueView({
     case 'array':
     case 'document':
       return <StructuredValue value={value} />;
+    case 'ext':
+      return <ExtView type={value.v.type} text={value.v.text} />;
     case 'bytes':
       return <BytesView b64={value.v} />;
     case 'timestamp':
@@ -96,6 +98,18 @@ function StructuredValue({ value }: { value: Value }) {
   }, [value]);
   if (value.t === 'json' && plain === undefined) return <TextView text={value.v} />;
   return <StructuredView plain={plain} />;
+}
+
+function ExtView({ type, text }: { type: string; text: string }) {
+  const { t } = useTranslation('data');
+  return (
+    <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 p-3 font-mono text-xs select-text">
+      <dt className="font-sans text-muted-foreground">{t('viewer.extType')}</dt>
+      <dd className="m-0 break-all">{type}</dd>
+      <dt className="font-sans text-muted-foreground">{t('viewer.extText')}</dt>
+      <dd className="m-0 break-all whitespace-pre-wrap">{text}</dd>
+    </dl>
+  );
 }
 
 function TimestampView({ raw, timestamp }: { raw: string; timestamp: TimestampDisplay }) {

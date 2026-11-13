@@ -4,6 +4,10 @@ import {
   Database,
   Eye,
   Folder,
+  FolderTree,
+  Link2,
+  Package,
+  Shapes,
   Hash,
   KeyRound,
   Layers,
@@ -34,6 +38,10 @@ const KIND_ICONS: Record<ObjectKind, LucideIcon> = {
   collection: Table2,
   key: KeyRound,
   folder: Folder,
+  keyPrefix: FolderTree,
+  synonym: Link2,
+  package: Package,
+  type: Shapes,
 };
 
 /** Icon of an object kind; unknown kinds from a newer backend get a generic box. */

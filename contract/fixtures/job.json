@@ -1,0 +1,63 @@
+{
+  "JobError": {
+    "kind": "query",
+    "message": "boom"
+  },
+  "JobEvent": {
+    "jobId": "00000000-0000-0000-0000-000000000005",
+    "progress": {
+      "bytesDone": 20971520,
+      "bytesTotal": null,
+      "message": null,
+      "object": "public.orders",
+      "objectsDone": 3,
+      "objectsTotal": 12,
+      "phase": "data",
+      "rowsDone": 150000,
+      "rowsTotal": 1000000
+    },
+    "type": "progress"
+  },
+  "JobInfo": {
+    "cancellable": false,
+    "connectionId": "00000000-0000-0000-0000-000000000006",
+    "createdAt": "2026-11-13T00:00:00Z",
+    "error": null,
+    "finishedAt": "2026-11-13T00:00:09Z",
+    "id": "00000000-0000-0000-0000-000000000005",
+    "kind": "export",
+    "progress": {
+      "bytesDone": 20971520,
+      "bytesTotal": null,
+      "message": null,
+      "object": "public.orders",
+      "objectsDone": 3,
+      "objectsTotal": 12,
+      "phase": "data",
+      "rowsDone": 150000,
+      "rowsTotal": 1000000
+    },
+    "result": {
+      "path": "/tmp/orders.xlsx",
+      "rows": 10,
+      "sizeBytes": 123,
+      "warnings": []
+    },
+    "startedAt": "2026-11-13T00:00:01Z",
+    "status": "succeeded",
+    "title": "Export app -> orders.xlsx"
+  },
+  "JobKind": "sqlScript",
+  "JobProgress": {
+    "bytesDone": 20971520,
+    "bytesTotal": null,
+    "message": null,
+    "object": "public.orders",
+    "objectsDone": 3,
+    "objectsTotal": 12,
+    "phase": "data",
+    "rowsDone": 150000,
+    "rowsTotal": 1000000
+  },
+  "JobStatus": "running"
+}

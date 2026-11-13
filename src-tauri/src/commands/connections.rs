@@ -1,7 +1,9 @@
 //! Commands managing saved connection profiles and groups.
 
 use dbstudio_core::{Error, ServerInfo};
-use dbstudio_store::{ConnectionGroup, ConnectionProfile, ConnectionsSnapshot, SecretChange};
+use dbstudio_store::{
+    ConnectionGroup, ConnectionProfile, ConnectionsSnapshot, SecretChange, ssh_secret_account,
+};
 use tauri::State;
 use uuid::Uuid;
 
@@ -15,13 +17,39 @@ pub(crate) async fn list_impl(state: &AppState) -> Result<ConnectionsSnapshot> {
     blocking(move || svc.snapshot()).await
 }
 
+#[cfg(test)]
 pub(crate) async fn save_impl(
     state: &AppState,
     profile: ConnectionProfile,
     secret: SecretChange,
 ) -> Result<ConnectionProfile> {
+    save_with_ssh_impl(state, profile, secret, None).await
+}
+
+/// Save a profile; `ssh_secret` (SSH password / key passphrase) goes to the keychain account
+/// `<connId>#ssh`: `Set` stores it (only while the profile has an SSH tunnel), `Clear` removes
+/// it, `None` / `Keep` leave it unchanged.
+pub(crate) async fn save_with_ssh_impl(
+    state: &AppState,
+    profile: ConnectionProfile,
+    secret: SecretChange,
+    ssh_secret: Option<SecretChange>,
+) -> Result<ConnectionProfile> {
     let svc = state.connections.clone();
-    blocking(move || svc.save(profile, secret)).await
+    let secrets = state.secrets.clone();
+    blocking(move || {
+        let saved = svc.save(profile, secret)?;
+        let account = ssh_secret_account(saved.config.id);
+        match ssh_secret {
+            Some(SecretChange::Set { value }) if saved.config.ssh.is_some() => {
+                secrets.set_account(&account, &value)?;
+            }
+            Some(SecretChange::Clear) => secrets.delete_account(&account)?,
+            _ => {}
+        }
+        Ok(saved)
+    })
+    .await
 }
 
 /// Delete the profile (and its secret) and close its open sessions.
@@ -108,9 +136,10 @@ pub async fn connection_save(
     state: State<'_, AppState>,
     profile: ConnectionProfile,
     secret: SecretChange,
+    ssh_secret: Option<SecretChange>,
 ) -> Result<ConnectionProfile> {
     tracing::debug!(command = "connection_save", connection = %profile.config.id, "ipc call");
-    save_impl(&state, profile, secret).await
+    save_with_ssh_impl(&state, profile, secret, ssh_secret).await
 }
 
 /// Delete a profile and its stored secret.

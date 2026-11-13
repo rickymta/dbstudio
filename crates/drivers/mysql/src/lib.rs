@@ -42,10 +42,17 @@
 //! * `sha256_password` accounts are not supported by the client library.
 
 mod browse;
+mod bulk;
 mod connect;
+mod ddl_gen;
+mod edit;
 mod error;
+mod explain;
+mod lease;
+mod model;
 mod session;
 mod sql;
+mod stream;
 mod value;
 
 use async_trait::async_trait;
@@ -160,6 +167,15 @@ impl Driver for MySqlDriver {
             mysql_async::prelude::Queryable::query_first(&mut conn, "SELECT VERSION()")
                 .await
                 .map_err(|e| error::map_connect_error(e, secret_text.as_deref()))?;
+        // Cached once: whether `\` escapes inside string literals (script lexer dialect).
+        let sql_mode: Option<String> =
+            mysql_async::prelude::Queryable::query_first(&mut conn, "SELECT @@sql_mode")
+                .await
+                .map_err(|e| error::map_connect_error(e, secret_text.as_deref()))?;
+        let backslash_escapes = !sql_mode
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+            .contains("NO_BACKSLASH_ESCAPES");
         drop(conn);
         let is_mariadb = detect_mariadb(&version.unwrap_or_default());
         let inner = session::Inner::new(
@@ -168,6 +184,7 @@ impl Driver for MySqlDriver {
             connect::connect_timeout(config),
             secret_text,
             is_mariadb,
+            backslash_escapes,
             config.database.clone().filter(|d| !d.is_empty()),
             tunables.search_timeout_ms,
             tunables.debug_search_sleep_ms,
@@ -186,6 +203,18 @@ mod tests {
         assert_eq!(d.kind, DbKind::MySql);
         assert_eq!(d.status, DriverStatus::Available);
         assert!(d.capabilities.sql && d.capabilities.cancel_query && d.capabilities.object_search);
+    }
+
+    #[test]
+    fn capabilities_follow_contract_table() {
+        let c = MySqlDriver::new().descriptor().capabilities;
+        assert!(c.leases && c.manual_transactions && c.query_params);
+        assert!(c.explain && c.explain_analyze && !c.explain_analyze_writes);
+        assert!(c.foreign_keys && c.schema_model && c.ddl_generation);
+        assert!(c.table_stream && c.bulk_insert && c.native_backup && c.logical_backup);
+        assert!(c.data_editing && c.read_only_session && c.ssh_tunnel && c.multiple_databases);
+        assert!(!c.schemas && !c.document_store && !c.key_value_store && !c.paged_tree);
+        assert!(!c.schema_inference);
     }
 
     #[test]

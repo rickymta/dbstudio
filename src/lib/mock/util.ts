@@ -21,3 +21,10 @@ export function newId(): Uuid {
 export function clone<T>(value: T): T {
   return structuredClone(value);
 }
+
+/** `unsupported` error for commands the browser mock does not emulate. */
+export function unsupported(what: string): IpcError {
+  return ipcError('unsupported', `${what} is not available in the browser mock`, {
+    capability: what,
+  });
+}

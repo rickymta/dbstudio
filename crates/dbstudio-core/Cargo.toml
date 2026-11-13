@@ -13,9 +13,15 @@ base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
 uuid.workspace = true
 
+[features]
+# Fixture helpers for contract tests (used by this crate's tests and other crates' dev-dependencies).
+testing = []
+
 [dev-dependencies]
+dbstudio-core = { path = ".", features = ["testing"] }
 tokio.workspace = true
 
 [lints]

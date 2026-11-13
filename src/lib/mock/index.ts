@@ -1,19 +1,51 @@
+import { backupMock, resetMockBackup } from './backup';
 import { mockChildren, mockObjectDdl, mockTableDetails } from './catalog';
+import { changesMock } from './changes';
+import { erdMock, resetMockErd } from './erd';
+import { exportMock, resetMockExport } from './export';
+import { historyMock, resetMockHistory } from './history';
+import { jobsMock, resetMockJobs } from './jobs';
+import { keyvalueMock } from './keyvalue';
+import { leasesMock, resetMockLeases } from './leases';
+import { planMock } from './plan';
 import * as connections from './connections';
 import * as data from './data';
 import { mockObjectSearch } from './search';
 import * as sessions from './sessions';
 import * as settings from './settings';
-import { sleep } from './util';
+import { ipcError, sleep } from './util';
+import type { DbKind, DriverDiagnostics, ParsedConnectionUri } from '../types';
+import { mockDriverFor } from './drivers';
 
 export { mockAppInfo, mockDrivers } from './drivers';
 export { resetMockConnections } from './connections';
 export { resetMockSettings, mockLogDir } from './settings';
+export { mockEmit, mockListen, resetMockEvents } from './events';
+export { mockAddJob } from './jobs';
+
+/** Reset every in-memory mock store (new commands; the older resets are exported above). */
+export function resetMockPhase2(): void {
+  resetMockLeases();
+  resetMockHistory();
+  resetMockErd();
+  resetMockJobs();
+  resetMockExport();
+  resetMockBackup();
+}
 
 type Path = Parameters<typeof mockChildren>[1];
 
 /** Backend stand-in used by `ipc.ts` when running outside Tauri. */
 export const mock = {
+  ...leasesMock,
+  ...historyMock,
+  ...changesMock,
+  ...planMock,
+  ...erdMock,
+  ...jobsMock,
+  ...exportMock,
+  ...backupMock,
+  ...keyvalueMock,
   connectionsList: connections.connectionsList,
   connectionSave: connections.connectionSave,
   connectionDelete: connections.connectionDelete,
@@ -32,6 +64,16 @@ export const mock = {
   settingsGet: settings.settingsGet,
   settingsSet: settings.settingsSet,
   saveCellValue: settings.saveCellValue,
+  async connectionParseUri(uri: string): Promise<ParsedConnectionUri> {
+    void uri;
+    throw ipcError('unsupported', 'URI parsing is not available in the browser mock');
+  },
+  async driverDiagnostics(kind: DbKind): Promise<DriverDiagnostics> {
+    return { status: mockDriverFor(kind).status, message: '', helpUrl: null };
+  },
+  async sshTrustHost(host: string, port: number, keyType: string, fingerprint: string) {
+    void [host, port, keyType, fingerprint];
+  },
   async objectSearch(sessionId: string, request: Parameters<typeof mockObjectSearch>[1]) {
     await sleep();
     return mockObjectSearch(sessions.mockSessionKind(sessionId), request);

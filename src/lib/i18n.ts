@@ -1,21 +1,54 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
+import enBackup from '../locales/en/backup.json';
 import enCommon from '../locales/en/common.json';
 import enConnections from '../locales/en/connections.json';
 import enData from '../locales/en/data.json';
+import enDocument from '../locales/en/document.json';
+import enEditor from '../locales/en/editor.json';
+import enErd from '../locales/en/erd.json';
 import enExplorer from '../locales/en/explorer.json';
+import enExport from '../locales/en/export.json';
+import enJobs from '../locales/en/jobs.json';
+import enKeyvalue from '../locales/en/keyvalue.json';
+import enPlan from '../locales/en/plan.json';
+import enSafety from '../locales/en/safety.json';
 import enSettings from '../locales/en/settings.json';
+import viBackup from '../locales/vi/backup.json';
 import viCommon from '../locales/vi/common.json';
 import viConnections from '../locales/vi/connections.json';
 import viData from '../locales/vi/data.json';
+import viDocument from '../locales/vi/document.json';
+import viEditor from '../locales/vi/editor.json';
+import viErd from '../locales/vi/erd.json';
 import viExplorer from '../locales/vi/explorer.json';
+import viExport from '../locales/vi/export.json';
+import viJobs from '../locales/vi/jobs.json';
+import viKeyvalue from '../locales/vi/keyvalue.json';
+import viPlan from '../locales/vi/plan.json';
+import viSafety from '../locales/vi/safety.json';
 import viSettings from '../locales/vi/settings.json';
 
 export const LANGUAGES = ['vi', 'en'] as const;
 export type Language = (typeof LANGUAGES)[number];
 
 /** Translation namespaces, one JSON file per language each. `common` is the default. */
-export const NAMESPACES = ['common', 'connections', 'explorer', 'data', 'settings'] as const;
+export const NAMESPACES = [
+  'common',
+  'connections',
+  'explorer',
+  'data',
+  'settings',
+  'editor',
+  'plan',
+  'erd',
+  'export',
+  'jobs',
+  'backup',
+  'document',
+  'keyvalue',
+  'safety',
+] as const;
 export type Namespace = (typeof NAMESPACES)[number];
 
 const STORAGE_KEY = 'dbstudio.language';
@@ -53,6 +86,15 @@ void i18n.use(initReactI18next).init({
       explorer: enExplorer,
       data: enData,
       settings: enSettings,
+      editor: enEditor,
+      plan: enPlan,
+      erd: enErd,
+      export: enExport,
+      jobs: enJobs,
+      backup: enBackup,
+      document: enDocument,
+      keyvalue: enKeyvalue,
+      safety: enSafety,
     },
     vi: {
       common: viCommon,
@@ -60,6 +102,15 @@ void i18n.use(initReactI18next).init({
       explorer: viExplorer,
       data: viData,
       settings: viSettings,
+      editor: viEditor,
+      plan: viPlan,
+      erd: viErd,
+      export: viExport,
+      jobs: viJobs,
+      backup: viBackup,
+      document: viDocument,
+      keyvalue: viKeyvalue,
+      safety: viSafety,
     },
   },
   ns: [...NAMESPACES],

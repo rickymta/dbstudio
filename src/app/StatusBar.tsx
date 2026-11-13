@@ -9,6 +9,7 @@ import { SettingsDialog } from '@/features/settings/SettingsDialog';
 import { ipc, ipcTransport } from '@/lib/ipc';
 import { setLanguage, type Language } from '@/lib/i18n';
 import { useTabsStore } from '@/stores/tabs';
+import { StatusBarSlot } from './StatusBarSlot';
 import { THEME_MODES, useThemeStore, type ThemeMode } from '@/stores/theme';
 
 const themeIcons: Record<ThemeMode, typeof Sun> = { system: Monitor, light: Sun, dark: Moon };
@@ -88,6 +89,7 @@ export function StatusBar() {
           </span>
         )}
         <ActiveConnection />
+        <StatusBarSlot name="jobs" />
       </div>
       <div className="flex items-center gap-1">
         <Tooltip content={t('settings:open')}>

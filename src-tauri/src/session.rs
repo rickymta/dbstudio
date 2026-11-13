@@ -5,10 +5,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use dbstudio_core::{
-    ConnectionConfig, DriverDescriptor, DriverRegistry, Error, Result, Secret, ServerInfo, Session,
+    ConnectionConfig, DriverDescriptor, DriverRegistry, Error, Result, ScriptDialect, Secret,
+    ServerInfo, Session,
 };
 use serde::Serialize;
 use uuid::Uuid;
+
+use crate::events::NullEmitter;
+use crate::lease::LeaseManager;
 
 /// Connect timeout used when the profile does not specify one.
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 15_000;
@@ -25,16 +29,29 @@ pub struct SessionInfo {
     pub server_info: ServerInfo,
     /// Descriptor (capabilities) of the driver in use.
     pub descriptor: DriverDescriptor,
+    /// Script language of the session (editor lexer, splitter, parameters, classifier).
+    pub dialect: ScriptDialect,
 }
 
 struct Entry {
     connection_id: Uuid,
+    /// Profile settings at open time (read-only / environment for the guard).
+    config: ConnectionConfig,
     session: Arc<dyn Session>,
+}
+
+/// What `connect` produced.
+struct Connected {
+    session: Arc<dyn Session>,
+    server_info: ServerInfo,
+    descriptor: DriverDescriptor,
+    dialect: ScriptDialect,
 }
 
 /// Registry of open sessions. Several sessions may be open for the same connection.
 pub struct SessionManager {
     registry: Arc<DriverRegistry>,
+    leases: Arc<LeaseManager>,
     sessions: Mutex<HashMap<Uuid, Entry>>,
 }
 
@@ -47,10 +64,18 @@ impl std::fmt::Debug for SessionManager {
 }
 
 impl SessionManager {
-    /// Create a manager that opens sessions through `registry`.
+    /// Create a manager that opens sessions through `registry` and has its own lease registry
+    /// (no events are published).
+    #[allow(dead_code)] // the application uses `with_leases`; tests use this one
     pub fn new(registry: Arc<DriverRegistry>) -> Self {
+        Self::with_leases(registry, Arc::new(LeaseManager::new(Arc::new(NullEmitter))))
+    }
+
+    /// Create a manager that closes the leases of a session in `leases` before the session.
+    pub fn with_leases(registry: Arc<DriverRegistry>, leases: Arc<LeaseManager>) -> Self {
         SessionManager {
             registry,
+            leases,
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -76,7 +101,7 @@ impl SessionManager {
         &self,
         config: &ConnectionConfig,
         secret: Option<&Secret>,
-    ) -> Result<(Arc<dyn Session>, ServerInfo, DriverDescriptor)> {
+    ) -> Result<Connected> {
         let driver = self.registry.get(config.kind).ok_or_else(|| {
             Error::Unsupported(format!("driver for {}", config.kind.display_name()))
         })?;
@@ -100,7 +125,13 @@ impl SessionManager {
         let (session, info) = tokio::time::timeout(limit, attempt)
             .await
             .map_err(|_| Error::Timeout)??;
-        Ok((session, info, descriptor))
+        let dialect = session.script_dialect();
+        Ok(Connected {
+            session,
+            server_info: info,
+            descriptor,
+            dialect,
+        })
     }
 
     /// Open a new session for `config`.
@@ -109,12 +140,18 @@ impl SessionManager {
         config: &ConnectionConfig,
         secret: Option<&Secret>,
     ) -> Result<SessionInfo> {
-        let (session, server_info, descriptor) = self.connect(config, secret).await?;
+        let Connected {
+            session,
+            server_info,
+            descriptor,
+            dialect,
+        } = self.connect(config, secret).await?;
         let session_id = Uuid::new_v4();
         self.lock().insert(
             session_id,
             Entry {
                 connection_id: config.id,
+                config: config.clone(),
                 session,
             },
         );
@@ -131,6 +168,7 @@ impl SessionManager {
             connection_id: config.id,
             server_info,
             descriptor,
+            dialect,
         })
     }
 
@@ -140,7 +178,11 @@ impl SessionManager {
         config: &ConnectionConfig,
         secret: Option<&Secret>,
     ) -> Result<ServerInfo> {
-        let (session, info, _) = self.connect(config, secret).await?;
+        let Connected {
+            session,
+            server_info: info,
+            ..
+        } = self.connect(config, secret).await?;
         if let Err(e) = session.close().await {
             tracing::debug!(error = %e, "closing test session failed");
         }
@@ -161,11 +203,25 @@ impl SessionManager {
             .ok_or_else(|| Error::NotFound(format!("session {session_id}")))
     }
 
-    /// Close a session. Closing an unknown (already closed) session is not an error.
+    /// The open session together with the profile settings it was opened with.
+    pub fn get_with_config(
+        &self,
+        session_id: Uuid,
+    ) -> Result<(Arc<dyn Session>, ConnectionConfig)> {
+        self.lock()
+            .get(&session_id)
+            .map(|e| (Arc::clone(&e.session), e.config.clone()))
+            .ok_or_else(|| Error::NotFound(format!("session {session_id}")))
+    }
+
+    /// Close a session (its leases first). Closing an unknown (already closed) session is not an error.
     pub async fn close(&self, session_id: Uuid) -> Result<()> {
         let entry = self.lock().remove(&session_id);
         match entry {
-            Some(entry) => Self::shut_down(session_id, entry).await,
+            Some(entry) => {
+                self.leases.close_all_for_session(session_id).await;
+                Self::shut_down(session_id, entry).await
+            }
             None => Ok(()),
         }
     }
@@ -185,6 +241,7 @@ impl SessionManager {
         };
         let count = doomed.len();
         for (id, entry) in doomed {
+            self.leases.close_all_for_session(id).await;
             let _ = Self::shut_down(id, entry).await;
         }
         count
@@ -194,6 +251,7 @@ impl SessionManager {
     pub async fn close_all(&self) {
         let all: Vec<(Uuid, Entry)> = self.lock().drain().collect();
         for (id, entry) in all {
+            self.leases.close_all_for_session(id).await;
             let _ = Self::shut_down(id, entry).await;
         }
     }
@@ -232,6 +290,8 @@ pub(crate) mod testing {
         pub closes: AtomicUsize,
         pub last_secret: Mutex<Option<Option<String>>>,
         pub cancels: Mutex<Vec<Uuid>>,
+        /// Texts passed to `Session::execute`.
+        pub executed: Mutex<Vec<String>>,
     }
 
     /// Driver whose sessions stream three row batches; it fails with `Authentication` when
@@ -305,8 +365,41 @@ pub(crate) mod testing {
                 ..Default::default()
             })
         }
-        async fn execute(&self, _: QueryRequest, _: &mut dyn ResultSink) -> Result<ExecSummary> {
-            Err(Error::Unsupported("execute".into()))
+        async fn execute(
+            &self,
+            req: QueryRequest,
+            sink: &mut dyn ResultSink,
+        ) -> Result<ExecSummary> {
+            self.probe.executed.lock().unwrap().push(req.text.clone());
+            if req.text == "fail" {
+                return Err(Error::Query {
+                    message: "boom".into(),
+                    position: Some(2),
+                });
+            }
+            let len = u32::try_from(req.text.chars().count()).unwrap_or(u32::MAX);
+            sink.on_statement_start(dbstudio_core::StatementStart {
+                index: 0,
+                range: dbstudio_core::TextRange { start: 0, end: len },
+            })?;
+            sink.on_columns(vec![ColumnMeta {
+                name: "n".into(),
+                type_name: "int8".into(),
+                value_kind: ValueKind::Int,
+                nullable: Some(false),
+            }])?;
+            sink.on_rows(vec![vec![Value::Int(1)]])?;
+            sink.on_statement_end(StatementEnd {
+                outcome: EndOutcome::Rows {
+                    row_count: 1,
+                    truncated: false,
+                },
+                elapsed_ms: 1,
+            })?;
+            Ok(ExecSummary {
+                statements: 1,
+                elapsed_ms: 1,
+            })
         }
         async fn cancel(&self, query_id: Uuid) -> Result<()> {
             self.probe.cancels.lock().unwrap().push(query_id);
@@ -362,7 +455,7 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use dbstudio_core::DbKind;
 
@@ -388,6 +481,12 @@ mod tests {
         assert_eq!(info.connection_id, cfg.id);
         assert_eq!(info.server_info.product, "MockDB");
         assert_eq!(info.descriptor.kind, DbKind::Postgres);
+        // The mock session keeps the default dialect.
+        assert_eq!(info.dialect, dbstudio_core::ScriptDialect::Opaque);
+        assert_eq!(
+            serde_json::to_value(&info).unwrap()["dialect"],
+            serde_json::json!({"name": "opaque"})
+        );
         assert_eq!(mgr.len(), 1);
         assert!(mgr.get(info.session_id).is_ok());
 
@@ -398,6 +497,53 @@ mod tests {
         // Closing again is harmless.
         mgr.close(info.session_id).await.unwrap();
         assert_eq!(probe.closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn config_is_kept_per_session() {
+        let (driver, _) = MockDriver::new(DbKind::Postgres);
+        let mgr = manager(driver);
+        let mut cfg = config(DbKind::Postgres);
+        cfg.read_only = true;
+        let info = mgr.open(&cfg, None).await.unwrap();
+        let (_, kept) = mgr.get_with_config(info.session_id).unwrap();
+        assert!(kept.read_only);
+        assert_eq!(kept.id, cfg.id);
+        assert!(matches!(
+            mgr.get_with_config(Uuid::new_v4()),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn closing_a_session_closes_its_leases_first() {
+        use crate::lease::testing::FakeLease;
+        let (driver, _) = MockDriver::new(DbKind::Postgres);
+        let mut registry = DriverRegistry::new();
+        registry.register(driver);
+        let leases = Arc::new(LeaseManager::new(Arc::new(NullEmitter)));
+        let mgr = SessionManager::with_leases(Arc::new(registry), leases.clone());
+        let cfg = config(DbKind::Postgres);
+        let a = mgr.open(&cfg, None).await.unwrap();
+        let b = mgr.open(&cfg, None).await.unwrap();
+        let closes = Arc::new(AtomicUsize::new(0));
+        let mk = || -> Box<dyn dbstudio_core::Lease> {
+            Box::new(FakeLease {
+                closes: closes.clone(),
+            })
+        };
+        leases.register(a.session_id, mk()).unwrap();
+        leases.register(a.session_id, mk()).unwrap();
+        let other = leases.register(b.session_id, mk()).unwrap();
+
+        mgr.close(a.session_id).await.unwrap();
+        assert_eq!(closes.load(Ordering::SeqCst), 2);
+        assert_eq!(leases.count_for_session(a.session_id), 0);
+        assert!(leases.get(other.lease_id).is_ok());
+
+        // close_connection and close_all do the same.
+        assert_eq!(mgr.close_connection(cfg.id).await, 1);
+        assert_eq!(closes.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]

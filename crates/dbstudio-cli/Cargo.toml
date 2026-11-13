@@ -1,0 +1,24 @@
+[package]
+name = "dbstudio-cli"
+description = "Headless DBStudio command line: run backups, restore and verify files."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "dbstudio-cli"
+path = "src/main.rs"
+
+[dependencies]
+dbstudio-core.workspace = true
+dbstudio-store.workspace = true
+dbstudio-backup.workspace = true
+dbstudio-export.workspace = true
+clap.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

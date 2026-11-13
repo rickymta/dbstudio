@@ -59,7 +59,7 @@ jobs:
       - run: cargo test -p dbstudio --features dev-bridge
 
   integration:
-    name: Integration tests (PostgreSQL + MySQL)
+    name: Integration tests (all databases)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -87,17 +87,37 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
-      - name: Generate test certificates
-        run: sh docker/gen-certs.sh
+      - name: Generate test certificates and SSH keys
+        run: |
+          sh docker/gen-certs.sh
+          sh docker/gen-ssh-keys.sh
 
-      # Pulls PostgreSQL 12/16, MySQL 5.7/8, MariaDB 10.4/10.6; images are large and MySQL 5.7
-      # runs under emulation, so allow generous time for pulls and health checks.
+      # Starts every service of compose.test.yml (PostgreSQL 12/16, MySQL 5.7/8, MariaDB 10.4/10.6,
+      # SQL Server 2022, Oracle Free, MongoDB 4.4/7 (rs0 initiated by its healthcheck), Redis 6/7,
+      # Valkey 8, sshd). Images are large and MySQL 5.7 runs under emulation, so allow generous
+      # time for pulls and health checks. The `tools` profile (oracle-it) is not started here.
       - name: Start test databases
-        timeout-minutes: 15
-        run: docker compose -f docker/compose.test.yml up -d --wait --wait-timeout 600
+        timeout-minutes: 25
+        run: docker compose -f docker/compose.test.yml up -d --wait --wait-timeout 900
 
       - name: Run integration tests
-        run: DBSTUDIO_IT=1 cargo test --workspace
+        env:
+          DBSTUDIO_IT: '1'
+          DBSTUDIO_IT_MSSQL_PORT: '14333'
+          DBSTUDIO_IT_ORACLE_PORT: '15213'
+          DBSTUDIO_IT_MONGO44_PORT: '27044'
+          DBSTUDIO_IT_MONGO7_PORT: '27077'
+          DBSTUDIO_IT_REDIS6_PORT: '63796'
+          DBSTUDIO_IT_REDIS7_PORT: '63797'
+          DBSTUDIO_IT_VALKEY8_PORT: '63798'
+          DBSTUDIO_IT_SSH_PORT: '22022'
+        run: cargo test --workspace
+
+      # The Oracle driver needs Instant Client (a Linux build of it lives in the oracle-it image),
+      # so its tests run in a container on the compose network instead of on the runner.
+      - name: Run Oracle driver integration tests
+        timeout-minutes: 30
+        run: docker compose -f docker/compose.test.yml --profile tools run --rm oracle-it
 
       - name: Container logs (on failure)
         if: failure()

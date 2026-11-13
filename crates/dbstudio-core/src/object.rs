@@ -35,6 +35,14 @@ pub enum ObjectKind {
     Key,
     /// Purely organisational grouping node (e.g. "Tables").
     Folder,
+    /// Redis virtual folder; `name` is the full prefix including the delimiter (`"user:1:"`).
+    KeyPrefix,
+    /// Synonym (SQL Server, Oracle).
+    Synonym,
+    /// Oracle package (spec and body shown as one node; DDL gives both).
+    Package,
+    /// User-defined type (PostgreSQL, SQL Server, Oracle); optional for drivers.
+    Type,
 }
 
 /// Stable keys used as the `name` of [`ObjectKind::Folder`] path segments. The UI translates
@@ -62,6 +70,14 @@ pub mod folder {
     pub const ROLES: &str = "roles";
     /// Schemas folder (databases of schema-capable servers).
     pub const SCHEMAS: &str = "schemas";
+    /// Collections folder (MongoDB).
+    pub const COLLECTIONS: &str = "collections";
+    /// Synonyms folder.
+    pub const SYNONYMS: &str = "synonyms";
+    /// Packages folder (Oracle).
+    pub const PACKAGES: &str = "packages";
+    /// User-defined types folder.
+    pub const TYPES: &str = "types";
 }
 
 /// One step of an [`ObjectPath`].
@@ -130,6 +146,34 @@ pub struct ObjectNode {
     pub detail: Option<String>,
 }
 
+/// Request for one page of children, see [`crate::Session::list_children_page`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildrenPageRequest {
+    /// Node whose children are listed.
+    pub parent: ObjectPath,
+    /// Opaque cursor returned by the previous page; `None` for the first page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Maximum nodes in the page (clamped to `1..=5000`).
+    pub limit: u32,
+    /// Glob (`*`, `?`, `[...]`) on the child name; Redis passes it to `SCAN MATCH`.
+    #[serde(default)]
+    pub pattern: Option<String>,
+}
+
+/// One page of children.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildrenPage {
+    /// Nodes of this page.
+    pub nodes: Vec<ObjectNode>,
+    /// Cursor of the next page; `None` when done.
+    pub next_cursor: Option<String>,
+    /// Estimated number of children in total, when known.
+    pub approximate_total: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +198,56 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(ObjectKind::Role).unwrap(), "role");
         assert_eq!(folder::MATERIALIZED_VIEWS, "materializedViews");
+    }
+
+    #[test]
+    fn phase2_kinds_and_folders() {
+        assert_eq!(
+            serde_json::to_value(ObjectKind::KeyPrefix).unwrap(),
+            "keyPrefix"
+        );
+        assert_eq!(
+            serde_json::to_value(ObjectKind::Synonym).unwrap(),
+            "synonym"
+        );
+        assert_eq!(
+            serde_json::to_value(ObjectKind::Package).unwrap(),
+            "package"
+        );
+        assert_eq!(serde_json::to_value(ObjectKind::Type).unwrap(), "type");
+        assert_eq!(folder::COLLECTIONS, "collections");
+        assert_eq!(folder::SYNONYMS, "synonyms");
+        assert_eq!(folder::PACKAGES, "packages");
+        assert_eq!(folder::TYPES, "types");
+    }
+
+    #[test]
+    fn children_page_shapes() {
+        let req = ChildrenPageRequest {
+            parent: ObjectPath::root().child(ObjectKind::Database, "0"),
+            cursor: None,
+            limit: 100,
+            pattern: Some("user:*".into()),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["limit"], 100);
+        assert_eq!(json["pattern"], "user:*");
+        assert_eq!(
+            serde_json::from_value::<ChildrenPageRequest>(json).unwrap(),
+            req
+        );
+        let omitted: ChildrenPageRequest =
+            serde_json::from_value(serde_json::json!({"parent": {"segments": []}, "limit": 5}))
+                .unwrap();
+        assert_eq!(omitted.cursor, None);
+        let page = ChildrenPage {
+            nodes: vec![],
+            next_cursor: Some("17".into()),
+            approximate_total: Some(1000),
+        };
+        let json = serde_json::to_value(&page).unwrap();
+        assert_eq!(json["nextCursor"], "17");
+        assert_eq!(json["approximateTotal"], 1000);
+        assert_eq!(serde_json::from_value::<ChildrenPage>(json).unwrap(), page);
     }
 }

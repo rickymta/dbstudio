@@ -28,7 +28,9 @@ function DriverCard({ driver }: { driver: DriverDescriptor }) {
         <Badge tone={available ? 'success' : 'warning'}>
           {driver.status.state === 'available'
             ? t('status.available')
-            : t('status.planned', { phase: driver.status.phase })}
+            : driver.status.state === 'planned'
+              ? t('status.planned', { phase: driver.status.phase })
+              : t('status.unavailable')}
         </Badge>
       </div>
       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">

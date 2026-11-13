@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { childPath, pathKey, ROOT_PATH } from '@/lib/objectPath';
-import type { Capabilities, ObjectKind, ObjectNode, ObjectPath } from '@/lib/types';
+import {
+  NO_CAPABILITIES,
+  type Capabilities,
+  type ObjectKind,
+  type ObjectNode,
+  type ObjectPath,
+} from '@/lib/types';
 import {
   activationTab,
   flattenTree,
@@ -187,6 +193,7 @@ describe('activation and menu', () => {
 
 describe('capabilities and unknown kinds', () => {
   const caps = (on: Partial<Capabilities>): Capabilities => ({
+    ...NO_CAPABILITIES,
     sql: true,
     transactions: true,
     schemas: false,

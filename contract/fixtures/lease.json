@@ -1,0 +1,30 @@
+{
+  "IsolationLevel": "repeatableRead",
+  "LeaseCloseReport": {
+    "forced": false,
+    "rolledBack": true
+  },
+  "LeaseContext": {
+    "database": "other",
+    "schema": "s"
+  },
+  "LeaseOptions": {
+    "autoCommit": false,
+    "database": "app",
+    "schema": null
+  },
+  "LeaseState": {
+    "autoCommit": false,
+    "broken": false,
+    "database": "app",
+    "pendingResult": null,
+    "running": "00000000-0000-0000-0000-000000000001",
+    "schema": "public",
+    "transaction": "active"
+  },
+  "TxOptions": {
+    "isolation": "serializable",
+    "readOnly": true
+  },
+  "TxStatus": "failed"
+}

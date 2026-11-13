@@ -8,15 +8,22 @@
 //! * Large results are streamed through server-side cursors in batches (see [`exec`]).
 
 mod browse;
+mod bulk;
 mod conn;
 mod ddl;
+mod ddl_gen;
 mod decode;
 mod details;
+mod edit;
 mod error;
 mod exec;
+mod explain;
+mod lease;
+mod model;
 mod search;
 mod session;
 mod sql;
+mod stream;
 mod tls;
 
 use async_trait::async_trait;
@@ -68,5 +75,18 @@ mod tests {
         assert_eq!(d.kind, DbKind::Postgres);
         assert_eq!(d.status, DriverStatus::Available);
         assert!(d.capabilities.sql && d.capabilities.cancel_query);
+    }
+
+    #[test]
+    fn capabilities_follow_contract_table() {
+        let c = PostgresDriver::new().descriptor().capabilities;
+        assert!(c.leases && c.manual_transactions && c.query_params);
+        assert!(c.explain && c.explain_analyze && c.explain_analyze_writes);
+        assert!(c.foreign_keys && c.schema_model && c.ddl_generation);
+        assert!(c.table_stream && c.bulk_insert && c.native_backup && c.logical_backup);
+        assert!(c.data_editing && c.read_only_session && c.ssh_tunnel);
+        assert!(c.schemas && c.multiple_databases);
+        assert!(!c.document_store && !c.key_value_store && !c.paged_tree);
+        assert!(!c.schema_inference);
     }
 }

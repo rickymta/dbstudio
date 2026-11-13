@@ -11,9 +11,8 @@
 //! | `bytes` | base64 string |
 //! | `json` | string holding the raw JSON text exactly as the database returned it (key order and number digits preserved; the consumer parses it) |
 //! | `array` | array of tagged values |
-//! | `document` | object of name to tagged value |
-
-use std::collections::BTreeMap;
+//! | `document` | array of `[name, value]` pairs (field order preserved) |
+//! | `ext` | `{"type": <native type key>, "text": <canonical text>}` |
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -60,8 +59,34 @@ pub enum Value {
     Json(String),
     /// Ordered list (arrays, Redis lists, ...).
     Array(Vec<Value>),
-    /// Nested document (MongoDB documents, maps, hashes).
-    Document(BTreeMap<String, Value>),
+    /// Nested document; field order preserved. JSON: array of `[name, value]` pairs.
+    Document(Vec<(String, Value)>),
+    /// Database-specific scalar without a generic equivalent (ObjectId, BSON timestamp...).
+    Ext(ExtValue),
+}
+
+/// Database-specific scalar. `ty` is a key of the closed list documented in the design
+/// (`objectId`, `int64`, `bsonTimestamp`, `regex`, `binary`, `javascript`, `javascriptWithScope`,
+/// `symbol`, `dbPointer`, `minKey`, `maxKey`, `undefined`, `dateMillis`, `truncatedText`,
+/// `truncatedBytes`, `rowid`, `interval`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtValue {
+    /// Native type key, e.g. `objectId`.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// Canonical text of the value; round-trips exactly through the driver.
+    pub text: String,
+}
+
+impl ExtValue {
+    /// New extension value.
+    pub fn new(ty: impl Into<String>, text: impl Into<String>) -> Self {
+        ExtValue {
+            ty: ty.into(),
+            text: text.into(),
+        }
+    }
 }
 
 /// Coarse type tag of a [`Value`], also used to describe result columns.
@@ -100,6 +125,8 @@ pub enum ValueKind {
     Array,
     /// Document.
     Document,
+    /// Database-specific scalar.
+    Ext,
 }
 
 impl Value {
@@ -122,6 +149,16 @@ impl Value {
             Value::Json(_) => ValueKind::Json,
             Value::Array(_) => ValueKind::Array,
             Value::Document(_) => ValueKind::Document,
+            Value::Ext(_) => ValueKind::Ext,
+        }
+    }
+
+    /// Field `key` of a [`Value::Document`] (first match); `None` for other variants or a missing
+    /// key.
+    pub fn doc_get(&self, key: &str) -> Option<&Value> {
+        match self {
+            Value::Document(fields) => fields.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
         }
     }
 
@@ -301,23 +338,49 @@ mod tests {
 
     #[test]
     fn nested_and_json() {
-        let mut doc = BTreeMap::new();
-        doc.insert("id".to_string(), Value::Int(i64::MAX));
-        doc.insert(
-            "tags".to_string(),
-            Value::Array(vec![Value::Text("a".into()), Value::Null]),
-        );
-        let json = roundtrip(Value::Document(doc));
+        let doc = vec![
+            ("zeta".to_string(), Value::Int(i64::MAX)),
+            (
+                "tags".to_string(),
+                Value::Array(vec![Value::Text("a".into()), Value::Null]),
+            ),
+        ];
+        let json = roundtrip(Value::Document(doc.clone()));
+        // Pairs, in insertion order (not sorted).
         assert_eq!(
-            json["v"]["id"],
-            json!({"t": "int", "v": "9223372036854775807"})
+            json["v"][0],
+            json!(["zeta", {"t": "int", "v": "9223372036854775807"}])
         );
+        assert_eq!(json["v"][1][0], "tags");
+        let value = Value::Document(doc);
+        assert_eq!(value.doc_get("zeta"), Some(&Value::Int(i64::MAX)));
+        assert_eq!(value.doc_get("missing"), None);
+        assert_eq!(Value::Null.doc_get("x"), None);
         let raw = r#"{"b":1,"a":2,"n":12345678901234567890123,"i":9007199254740993}"#;
         assert_eq!(
             roundtrip(Value::Json(raw.into())),
             json!({"t": "json", "v": raw})
         );
         roundtrip(Value::Json("null".into()));
+    }
+
+    #[test]
+    fn ext_value_shape() {
+        let v = Value::Ext(ExtValue::new("objectId", "65f0a1b2c3d4e5f6a7b8c9d0"));
+        assert_eq!(
+            roundtrip(v.clone()),
+            json!({"t": "ext", "v": {"type": "objectId", "text": "65f0a1b2c3d4e5f6a7b8c9d0"}})
+        );
+        assert_eq!(v.kind(), ValueKind::Ext);
+        assert_eq!(serde_json::to_value(ValueKind::Ext).unwrap(), "ext");
+    }
+
+    #[test]
+    fn document_rejects_object_form() {
+        assert!(
+            serde_json::from_value::<Value>(json!({"t": "document", "v": {"a": {"t": "null"}}}))
+                .is_err()
+        );
     }
 
     #[test]

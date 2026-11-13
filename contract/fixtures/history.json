@@ -1,0 +1,163 @@
+{
+  "AppSettings": {
+    "closeToTray": "always",
+    "editorMaxRows": 1000,
+    "gridMaxCells": 20000000,
+    "gridMaxRows": 1000000,
+    "historyEnabled": true,
+    "historyMaxPerConnection": 5000,
+    "logLevel": "info",
+    "maxLobBytes": 16777216,
+    "planMisestimateFactor": 10,
+    "queryTimeoutMs": 0,
+    "timestampDisplay": "utc"
+  },
+  "EditorTabState": {
+    "autoCommit": true,
+    "connectionId": "00000000-0000-0000-0000-000000000003",
+    "cursor": 8,
+    "database": "app",
+    "filePath": "/tmp/q.sql",
+    "id": "00000000-0000-0000-0000-000000000004",
+    "position": 0,
+    "schema": "public",
+    "text": "SELECT 1",
+    "title": "Query 1"
+  },
+  "ErdLayout": {
+    "connectionId": "00000000-0000-0000-0000-000000000003",
+    "createdAt": "2024-05-01T10:00:00Z",
+    "id": "00000000-0000-0000-0000-000000000005",
+    "name": "Main",
+    "options": {
+      "columns": "all",
+      "notation": "crowsFoot",
+      "showComments": false,
+      "showTypes": true
+    },
+    "scope": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "schema",
+          "name": "public"
+        }
+      ]
+    },
+    "snapshot": {
+      "public.users": [["id", "integer"]]
+    },
+    "tables": [
+      {
+        "collapsed": false,
+        "path": {
+          "segments": []
+        },
+        "x": 10.0,
+        "y": 20.0
+      }
+    ],
+    "updatedAt": "2024-05-02T10:00:00Z",
+    "viewport": {
+      "x": 0.0,
+      "y": 0.0,
+      "zoom": 1.0
+    }
+  },
+  "ErdLayoutSummary": {
+    "id": "00000000-0000-0000-0000-000000000005",
+    "name": "Main",
+    "scope": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "schema",
+          "name": "public"
+        }
+      ]
+    },
+    "tableCount": 12,
+    "updatedAt": "2024-05-02T10:00:00Z"
+  },
+  "ExportPreset": {
+    "connectionId": "00000000-0000-0000-0000-000000000003",
+    "createdAt": "2024-05-01T10:00:00Z",
+    "id": "00000000-0000-0000-0000-000000000006",
+    "name": "Nightly CSV",
+    "spec": {
+      "format": "csv"
+    },
+    "updatedAt": "2024-05-02T10:00:00Z"
+  },
+  "HistoryEntry": {
+    "connectionId": "00000000-0000-0000-0000-000000000003",
+    "database": "app",
+    "elapsedMs": 12,
+    "errorMessage": null,
+    "id": 42,
+    "kind": "query",
+    "rows": 1,
+    "startedAt": "2024-05-01T10:00:00Z",
+    "statements": 1,
+    "status": "ok",
+    "text": "SELECT 1",
+    "textTruncated": false
+  },
+  "HistoryQuery": {
+    "beforeId": 100,
+    "connectionId": "00000000-0000-0000-0000-000000000003",
+    "limit": 50,
+    "search": "users",
+    "status": "error"
+  },
+  "SavedFolder": {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "name": "Reports",
+    "parentId": null,
+    "sortOrder": 0
+  },
+  "SavedQueriesSnapshot": {
+    "folders": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Reports",
+        "parentId": null,
+        "sortOrder": 0
+      }
+    ],
+    "queries": [
+      {
+        "connectionId": "00000000-0000-0000-0000-000000000003",
+        "createdAt": "2024-05-01T10:00:00Z",
+        "dbKind": "postgres",
+        "description": "daily",
+        "folderId": "00000000-0000-0000-0000-000000000001",
+        "id": "00000000-0000-0000-0000-000000000002",
+        "isSnippet": false,
+        "name": "Active users",
+        "sortOrder": 1,
+        "text": "SELECT * FROM users WHERE active",
+        "updatedAt": "2024-05-02T10:00:00Z"
+      }
+    ]
+  },
+  "SavedQuery": {
+    "connectionId": "00000000-0000-0000-0000-000000000003",
+    "createdAt": "2024-05-01T10:00:00Z",
+    "dbKind": "postgres",
+    "description": "daily",
+    "folderId": "00000000-0000-0000-0000-000000000001",
+    "id": "00000000-0000-0000-0000-000000000002",
+    "isSnippet": false,
+    "name": "Active users",
+    "sortOrder": 1,
+    "text": "SELECT * FROM users WHERE active",
+    "updatedAt": "2024-05-02T10:00:00Z"
+  }
+}

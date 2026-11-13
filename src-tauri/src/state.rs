@@ -3,9 +3,14 @@ use std::sync::Arc as DriverArc;
 use std::sync::Arc;
 
 use dbstudio_core::DriverRegistry;
-use dbstudio_store::ConnectionService;
+use dbstudio_store::{ConnectionService, SecretStore};
 
+use crate::events::{EventEmitter, EventHub};
+use crate::grants::PathGrants;
+use crate::guard::ConfirmTokens;
 use crate::host::Host;
+use crate::jobs::JobManager;
+use crate::lease::LeaseManager;
 use crate::session::SessionManager;
 
 /// Shared application state managed by Tauri.
@@ -19,21 +24,46 @@ pub struct AppState {
     pub sessions: Arc<SessionManager>,
     /// Desktop-shell services (paths, dialogs).
     pub host: Arc<dyn Host>,
+    /// The keychain (SSH secrets and other accounts besides the connection password).
+    pub secrets: Arc<dyn SecretStore>,
+    /// Application events (Tauri webview + dev bridge).
+    pub events: Arc<EventHub>,
+    /// Dedicated connections of editor / console tabs.
+    pub leases: Arc<LeaseManager>,
+    /// Background jobs.
+    pub jobs: Arc<JobManager>,
+    /// Pending confirmations for destructive operations.
+    pub confirm: Arc<ConfirmTokens>,
+    /// Paths the webview may make the backend read or write.
+    pub grants: Arc<PathGrants>,
 }
 
 impl AppState {
-    /// Assemble the state from a driver registry and the connection service.
+    /// Assemble the state from a driver registry, the connection service and its keychain.
     pub fn new(
         registry: DriverRegistry,
         connections: ConnectionService,
+        secrets: Arc<dyn SecretStore>,
         host: Arc<dyn Host>,
     ) -> Self {
         let registry = Arc::new(registry);
+        let events = EventHub::new();
+        let emitter: Arc<dyn EventEmitter> = events.clone();
+        let leases = Arc::new(LeaseManager::new(Arc::clone(&emitter)));
         AppState {
-            sessions: Arc::new(SessionManager::new(Arc::clone(&registry))),
+            sessions: Arc::new(SessionManager::with_leases(
+                Arc::clone(&registry),
+                Arc::clone(&leases),
+            )),
             registry,
             connections: Arc::new(connections),
             host,
+            secrets,
+            jobs: Arc::new(JobManager::new(emitter)),
+            events,
+            leases,
+            confirm: Arc::new(ConfirmTokens::new()),
+            grants: Arc::new(PathGrants::new()),
         }
     }
 }
@@ -48,6 +78,14 @@ pub fn build_registry() -> DriverRegistry {
     ));
     #[cfg(feature = "mysql")]
     registry.register(DriverArc::new(dbstudio_driver_mysql::MySqlDriver::new()));
+    #[cfg(feature = "mssql")]
+    dbstudio_driver_mssql::register(&mut registry);
+    #[cfg(feature = "oracle")]
+    dbstudio_driver_oracle::register(&mut registry);
+    #[cfg(feature = "mongodb")]
+    dbstudio_driver_mongodb::register(&mut registry);
+    #[cfg(feature = "redis")]
+    dbstudio_driver_redis::register(&mut registry);
     registry
 }
 
@@ -60,6 +98,7 @@ pub(crate) mod testing {
     use dbstudio_store::{MemorySecretStore, Store};
 
     use super::*;
+    use crate::host::FileFilter;
 
     /// [`Host`] that records calls instead of showing dialogs or opening windows.
     #[derive(Debug, Default)]
@@ -69,6 +108,14 @@ pub(crate) mod testing {
         pub save_to: Mutex<Option<PathBuf>>,
         pub suggested: Mutex<Vec<String>>,
         pub opened: Mutex<Vec<PathBuf>>,
+        /// Path the fake "Open" dialog returns (`None` = user cancelled).
+        pub open_from: Mutex<Option<PathBuf>>,
+        /// `(filters, directory)` of every Open dialog shown.
+        pub open_requests: Mutex<Vec<(Vec<FileFilter>, bool)>>,
+        /// Filters of every filtered Save dialog shown.
+        pub save_filters: Mutex<Vec<Vec<FileFilter>>>,
+        /// `(title, body)` of every notification.
+        pub notifications: Mutex<Vec<(String, String)>>,
     }
 
     impl Host for FakeHost {
@@ -89,6 +136,32 @@ pub(crate) mod testing {
                 .push(suggested_name.to_string());
             Ok(self.save_to.lock().unwrap().clone())
         }
+        fn pick_open_path(
+            &self,
+            filters: &[FileFilter],
+            directory: bool,
+        ) -> Result<Option<PathBuf>> {
+            self.open_requests
+                .lock()
+                .unwrap()
+                .push((filters.to_vec(), directory));
+            Ok(self.open_from.lock().unwrap().clone())
+        }
+        fn pick_save_path_filtered(
+            &self,
+            suggested_name: &str,
+            filters: &[FileFilter],
+        ) -> Result<Option<PathBuf>> {
+            self.save_filters.lock().unwrap().push(filters.to_vec());
+            self.pick_save_path(suggested_name)
+        }
+        fn notify(&self, title: &str, body: &str) -> Result<()> {
+            self.notifications
+                .lock()
+                .unwrap()
+                .push((title.to_string(), body.to_string()));
+            Ok(())
+        }
     }
 
     /// State with an in-memory database and secret store (never touches the real keychain).
@@ -105,7 +178,7 @@ pub(crate) mod testing {
         let service = ConnectionService::new(Store::open_in_memory().unwrap(), secrets.clone());
         let host = Arc::new(FakeHost::default());
         (
-            AppState::new(registry, service, host.clone()),
+            AppState::new(registry, service, secrets.clone(), host.clone()),
             secrets,
             host,
         )
@@ -137,5 +210,17 @@ mod tests {
             status(DbKind::MySql) == DriverStatus::Available,
             cfg!(feature = "mysql")
         );
+        for (kind, enabled) in [
+            (DbKind::SqlServer, cfg!(feature = "mssql")),
+            (DbKind::Oracle, cfg!(feature = "oracle")),
+            (DbKind::MongoDb, cfg!(feature = "mongodb")),
+            (DbKind::Redis, cfg!(feature = "redis")),
+        ] {
+            assert_eq!(
+                matches!(status(kind), DriverStatus::Planned { .. }),
+                !enabled,
+                "{kind:?}"
+            );
+        }
     }
 }

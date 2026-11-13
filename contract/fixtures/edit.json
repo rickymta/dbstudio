@@ -1,0 +1,326 @@
+{
+  "ApplyResult": {
+    "affected": [1, 1],
+    "applied": 2,
+    "atomic": true
+  },
+  "CellEdit": {
+    "column": "c",
+    "value": {
+      "kind": "value",
+      "v": {
+        "t": "text",
+        "v": "v"
+      }
+    }
+  },
+  "ChangeSet": {
+    "changes": [
+      {
+        "key": [
+          {
+            "t": "int",
+            "v": 1
+          }
+        ],
+        "op": "update",
+        "set": [
+          {
+            "column": "name",
+            "value": {
+              "kind": "text",
+              "v": "Ann"
+            }
+          }
+        ]
+      },
+      {
+        "op": "insert",
+        "values": [
+          {
+            "column": "created",
+            "value": {
+              "kind": "default"
+            }
+          },
+          {
+            "column": "note",
+            "value": {
+              "kind": "value",
+              "v": {
+                "t": "null"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "key": [
+          {
+            "t": "int",
+            "v": 2
+          }
+        ],
+        "op": "delete"
+      }
+    ],
+    "keyColumns": ["id"],
+    "model": "rows",
+    "table": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "tables"
+        },
+        {
+          "kind": "table",
+          "name": "users"
+        }
+      ]
+    }
+  },
+  "DocInput": {
+    "kind": "ejson",
+    "text": "{}"
+  },
+  "DocumentChange": {
+    "id": {
+      "t": "int",
+      "v": 3
+    },
+    "op": "delete"
+  },
+  "DocumentChangeSet": {
+    "changes": [
+      {
+        "document": {
+          "kind": "ejson",
+          "text": "{\"name\":\"Ann\"}"
+        },
+        "op": "insert"
+      },
+      {
+        "id": {
+          "t": "ext",
+          "v": {
+            "text": "65f0a1b2c3d4e5f6a7b8c9d0",
+            "type": "objectId"
+          }
+        },
+        "op": "update",
+        "set": [
+          {
+            "path": ["address", "city"],
+            "value": {
+              "t": "text",
+              "v": "Hue"
+            }
+          }
+        ],
+        "unset": [["legacy"]]
+      },
+      {
+        "document": {
+          "kind": "value",
+          "value": {
+            "t": "document",
+            "v": [
+              [
+                "a",
+                {
+                  "t": "int",
+                  "v": 1
+                }
+              ]
+            ]
+          }
+        },
+        "id": {
+          "t": "int",
+          "v": 1
+        },
+        "op": "replace"
+      },
+      {
+        "id": {
+          "t": "int",
+          "v": 3
+        },
+        "op": "delete"
+      }
+    ],
+    "collection": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "collections"
+        },
+        {
+          "kind": "collection",
+          "name": "users"
+        }
+      ]
+    }
+  },
+  "EditValue": {
+    "kind": "text",
+    "v": "typed"
+  },
+  "Editability": {
+    "atomic": true,
+    "editable": true,
+    "keyColumns": ["id"],
+    "readOnlyColumns": ["created_at"],
+    "reason": null
+  },
+  "FieldEdit": {
+    "path": ["a"],
+    "value": {
+      "t": "int",
+      "v": 1
+    }
+  },
+  "KeyChange": {
+    "key": "k",
+    "op": "setString",
+    "ttlMs": 1500,
+    "value": {
+      "t": "text",
+      "v": "v"
+    }
+  },
+  "KeyChangeSet": {
+    "changes": [
+      {
+        "key": "greeting",
+        "op": "setString",
+        "ttlMs": 60000,
+        "value": {
+          "t": "text",
+          "v": "hello"
+        }
+      },
+      {
+        "key": "a",
+        "newKey": "b",
+        "op": "rename"
+      },
+      {
+        "key": "a",
+        "op": "expire",
+        "ttlMs": null
+      },
+      {
+        "key": "board",
+        "members": [
+          [
+            {
+              "t": "text",
+              "v": "ann"
+            },
+            "10.5"
+          ]
+        ],
+        "op": "zAdd"
+      },
+      {
+        "keys": ["x", "y"],
+        "op": "delete"
+      }
+    ],
+    "database": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "0"
+        }
+      ]
+    }
+  },
+  "NotEditableReason": "noUniqueKey",
+  "RowChange": {
+    "key": [
+      {
+        "t": "int",
+        "v": 2
+      }
+    ],
+    "op": "delete"
+  },
+  "RowChangeSet": {
+    "changes": [
+      {
+        "key": [
+          {
+            "t": "int",
+            "v": 1
+          }
+        ],
+        "op": "update",
+        "set": [
+          {
+            "column": "name",
+            "value": {
+              "kind": "text",
+              "v": "Ann"
+            }
+          }
+        ]
+      },
+      {
+        "op": "insert",
+        "values": [
+          {
+            "column": "created",
+            "value": {
+              "kind": "default"
+            }
+          },
+          {
+            "column": "note",
+            "value": {
+              "kind": "value",
+              "v": {
+                "t": "null"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "key": [
+          {
+            "t": "int",
+            "v": 2
+          }
+        ],
+        "op": "delete"
+      }
+    ],
+    "keyColumns": ["id"],
+    "table": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "tables"
+        },
+        {
+          "kind": "table",
+          "name": "users"
+        }
+      ]
+    }
+  }
+}

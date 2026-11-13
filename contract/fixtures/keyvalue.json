@@ -1,0 +1,144 @@
+{
+  "ChildrenPage": {
+    "approximateTotal": 1000,
+    "nextCursor": "18",
+    "nodes": [
+      {
+        "detail": null,
+        "hasChildren": true,
+        "kind": "keyPrefix",
+        "name": "user:1:",
+        "path": {
+          "segments": [
+            {
+              "kind": "database",
+              "name": "0"
+            },
+            {
+              "kind": "keyPrefix",
+              "name": "user:1:"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "ChildrenPageRequest": {
+    "cursor": "17",
+    "limit": 500,
+    "parent": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "0"
+        }
+      ]
+    },
+    "pattern": "user:*"
+  },
+  "KeyEntries": {
+    "totalBytes": 5,
+    "truncated": false,
+    "type": "string",
+    "value": {
+      "t": "text",
+      "v": "hello"
+    }
+  },
+  "KeyReadRequest": {
+    "count": 100,
+    "cursor": null,
+    "key": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "0"
+        },
+        {
+          "kind": "key",
+          "name": "user:1"
+        }
+      ]
+    },
+    "maxStringBytes": 1048576,
+    "pattern": "a*"
+  },
+  "KeyValuePage": {
+    "encoding": "listpack",
+    "entries": {
+      "fields": [
+        [
+          {
+            "t": "text",
+            "v": "name"
+          },
+          {
+            "t": "text",
+            "v": "Ann"
+          }
+        ],
+        [
+          {
+            "t": "text",
+            "v": "blob"
+          },
+          {
+            "t": "bytes",
+            "v": "AP8="
+          }
+        ]
+      ],
+      "type": "hash"
+    },
+    "key": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "0"
+        },
+        {
+          "kind": "key",
+          "name": "user:1"
+        }
+      ]
+    },
+    "keyType": "hash",
+    "length": 2,
+    "memoryBytes": 120,
+    "nextCursor": "0",
+    "ttlMs": 30000
+  },
+  "ObjectNode": {
+    "detail": null,
+    "hasChildren": true,
+    "kind": "keyPrefix",
+    "name": "user:1:",
+    "path": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "0"
+        },
+        {
+          "kind": "keyPrefix",
+          "name": "user:1:"
+        }
+      ]
+    }
+  },
+  "StreamEntry": {
+    "fields": [
+      [
+        {
+          "t": "text",
+          "v": "f"
+        },
+        {
+          "t": "text",
+          "v": "v"
+        }
+      ]
+    ],
+    "id": "1700000000000-0"
+  }
+}

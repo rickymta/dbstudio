@@ -59,6 +59,7 @@ function SettingsBody({ onClose }: { onClose: () => void }) {
     setSaving(true);
     setError(null);
     const next: AppSettings = {
+      ...current,
       logLevel,
       gridMaxRows: rowsValue,
       gridMaxCells: cellsValue,

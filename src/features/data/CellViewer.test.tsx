@@ -102,7 +102,10 @@ describe('ValueView lossless json', () => {
   it('renders big ints in documents as numbers, not quoted strings', () => {
     const value: Value = {
       t: 'document',
-      v: { id: { t: 'int', v: '9007199254740993' }, name: { t: 'text', v: 'x' } },
+      v: [
+        ['id', { t: 'int', v: '9007199254740993' }],
+        ['name', { t: 'text', v: 'x' }],
+      ],
     };
     renderWithProviders(<ValueView value={value} />);
     const num = screen.getByText('9007199254740993');

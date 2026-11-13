@@ -72,7 +72,7 @@ describe('formatCell', () => {
     );
     const arr: Value = { t: 'array', v: [{ t: 'int', v: '9007199254740993' }, { t: 'null' }] };
     expect(formatCell(arr).text).toBe('[9007199254740993,null]');
-    const doc: Value = { t: 'document', v: { name: { t: 'text', v: 'x' } } };
+    const doc: Value = { t: 'document', v: [['name', { t: 'text', v: 'x' }]] };
     expect(formatCell(doc).text).toBe('{"name":"x"}');
   });
 
@@ -102,7 +102,10 @@ describe('valueToText / valueToPlain', () => {
   it('flattens value trees', () => {
     const v: Value = {
       t: 'document',
-      v: { n: { t: 'int', v: 1 }, xs: { t: 'array', v: [{ t: 'null' }, { t: 'text', v: 's' }] } },
+      v: [
+        ['n', { t: 'int', v: 1 }],
+        ['xs', { t: 'array', v: [{ t: 'null' }, { t: 'text', v: 's' }] }],
+      ],
     };
     expect(stringifyPlain(valueToPlain(v))).toBe('{"n":1,"xs":[null,"s"]}');
   });
@@ -181,7 +184,10 @@ describe('lossless numbers and robustness', () => {
   it('keeps big ints inside documents as numbers (no quotes)', () => {
     const doc: Value = {
       t: 'document',
-      v: { id: { t: 'int', v: '9007199254740993' }, n: { t: 'json', v: '{"k": 1.50}' } },
+      v: [
+        ['id', { t: 'int', v: '9007199254740993' }],
+        ['n', { t: 'json', v: '{"k": 1.50}' }],
+      ],
     };
     expect(formatCell(doc).text).toBe('{"id":9007199254740993,"n":{"k": 1.50}}');
     expect(valueToText(doc)).toBe('{"id":9007199254740993,"n":{"k":1.50}}');
@@ -223,5 +229,49 @@ describe('lossless numbers and robustness', () => {
     expect(base64ByteLength('AA==')).toBe(1);
     expect(estimateValueSize({ t: 'text', v: 'x'.repeat(10) })).toBe(10);
     expect(estimateValueSize({ t: 'int', v: 1 })).toBeLessThan(LARGE_COPY_BYTES);
+  });
+});
+
+describe('document as ordered pairs and ext values', () => {
+  const doc: Value = {
+    t: 'document',
+    v: [
+      ['b', { t: 'int', v: 2 }],
+      ['a', { t: 'document', v: [['z', { t: 'null' }]] }],
+    ],
+  };
+
+  it('keeps pair order in display and copy text', () => {
+    expect(formatCell(doc).text).toBe('{"b":2,"a":{"z":null}}');
+    expect(valueToText(doc)).toBe('{"b":2,"a":{"z":null}}');
+    expect(stringifyPlain(valueToPlain(doc), 2)).toBe(
+      '{\n  "b": 2,\n  "a": {\n    "z": null\n  }\n}',
+    );
+  });
+
+  it('estimates the size of pairs', () => {
+    expect(estimateValueSize(doc)).toBeGreaterThan(0);
+  });
+
+  it('renders ext values by their text and labels the native type', () => {
+    const oid: Value = { t: 'ext', v: { type: 'objectId', text: '65f0a1b2c3d4e5f6a7b8c9d0' } };
+    const cell = formatCell(oid);
+    expect(cell.text).toBe('65f0a1b2c3d4e5f6a7b8c9d0');
+    expect(cell.badge).toBe('objectId');
+    expect(cell.kind).toBe('text');
+    expect(valueToText(oid)).toBe('65f0a1b2c3d4e5f6a7b8c9d0');
+    expect(estimateValueSize(oid)).toBe(24);
+  });
+
+  it('falls back to the type name when the text is empty and nests ext in documents', () => {
+    const min: Value = { t: 'ext', v: { type: 'minKey', text: '' } };
+    expect(formatCell(min).text).toBe('minKey');
+    expect(valueToText(min)).toBe('');
+    const nested: Value = {
+      t: 'document',
+      v: [['_id', { t: 'ext', v: { type: 'int64', text: '9007199254740993' } }]],
+    };
+    expect(formatCell(nested).text).toBe('{"_id":"9007199254740993"}');
+    expect(valueToText(nested)).toBe('{"_id":"9007199254740993"}');
   });
 });

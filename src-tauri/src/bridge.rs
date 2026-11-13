@@ -10,11 +10,16 @@
 //!
 //! * `POST /ipc/<command>` with a JSON object of arguments (camelCase keys, like Tauri's
 //!   `invoke`) answers `200` + result JSON, or `400` + the serialized `Error`.
-//! * `POST /ipc/table_fetch` streams NDJSON: one `QueryEvent` per line, then exactly one
-//!   `{"type":"result","summary":..}` or `{"type":"error","error":..}` line.
+//! * The commands with a Tauri `Channel` (`table_fetch`, `query_execute`, `lease_execute`,
+//!   `lease_fetch_more`) stream NDJSON: one `QueryEvent` per line, then exactly one
+//!   `{"type":"result","result":<return value>}` or `{"type":"error","error":..}` line.
+//! * `GET /events` streams NDJSON `{"event":"<name>","payload":..}` for every application event
+//!   (`job://progress`, `lease://state`, `backup://changed`).
 
 use std::convert::Infallible;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -22,18 +27,31 @@ use axum::extract::{DefaultBodyLimit, Path, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
+use dbstudio_backup::{BackupJob, BackupSpec, NativeTool, RestoreSpec};
 use dbstudio_core::{
-    Error, ObjectSearchRequest, QueryEvent, Result, Secret, TableCountRequest, TableDataRequest,
+    ChangeSet, ChildrenPageRequest, ConfirmationGrant, DbKind, DdlRequest, Error, ExecuteRequest,
+    ExplainRequest, JobId, KeyReadRequest, LeaseContext, LeaseOptions, ObjectPath,
+    ObjectSearchRequest, QueryEvent, RawPlan, Result, SchemaModelRequest, Secret,
+    TableCountRequest, TableDataRequest, TxOptions,
 };
-use dbstudio_store::{AppSettings, ConnectionGroup, ConnectionProfile, SecretChange};
+use dbstudio_export::{ExportSpec, ImportPreviewRequest, ImportSpec};
+use dbstudio_plan::PlanRules;
+use dbstudio_store::{
+    AppSettings, ConnectionGroup, ConnectionProfile, EditorTabState, ErdLayout, ExportPreset,
+    HistoryQuery, SavedFolder, SavedQuery, SecretChange,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio_stream::StreamExt;
 use uuid::Uuid;
 
-use crate::commands::{app, browse, connections, sessions};
+use crate::commands::{
+    app, background, backup, browse, changes, connections, editor, erd, export, files, history,
+    jobs, keyvalue, plan, sessions, ssh, uri,
+};
+use crate::host::FileFilter;
 use crate::state::AppState;
 
 const TOKEN_HEADER: &str = "x-dbstudio-bridge-token";
@@ -98,7 +116,7 @@ fn add_cors(response: &mut Response, origin: Option<HeaderValue>) {
     );
     h.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("POST, OPTIONS"),
+        HeaderValue::from_static("GET, POST, OPTIONS"),
     );
 }
 
@@ -152,6 +170,7 @@ pub fn router(state: AppState, token: String, port: u16) -> Router {
     let ctx = Ctx { state, token, port };
     Router::new()
         .route("/ipc/{command}", post(ipc))
+        .route("/events", get(events))
         .fallback(|| async {
             error_response(StatusCode::NOT_FOUND, &Error::NotFound("route".into()))
         })
@@ -200,8 +219,14 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
         }
         "connections_list" => call!(connections::list_impl(state)),
         "connection_save" => {
-            args!(profile: ConnectionProfile = "profile", secret: SecretChange = "secret");
-            call!(connections::save_impl(state, profile, secret))
+            args!(
+                profile: ConnectionProfile = "profile",
+                secret: SecretChange = "secret",
+                ssh_secret: Option<SecretChange> = "sshSecret"
+            );
+            call!(connections::save_with_ssh_impl(
+                state, profile, secret, ssh_secret
+            ))
         }
         "connection_delete" => {
             args!(id: Uuid = "id");
@@ -263,6 +288,303 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
             args!(id: Uuid = "sessionId", request: TableCountRequest = "request");
             call!(browse::count_impl(state, id, request))
         }
+        "driver_diagnostics" => {
+            args!(kind: DbKind = "kind");
+            Some(out(app::driver_diagnostics_impl(state, kind)))
+        }
+        "ssh_trust_host" => {
+            args!(
+                host: String = "host",
+                port: u16 = "port",
+                key_type: String = "keyType",
+                fingerprint: String = "fingerprint"
+            );
+            call!(ssh::trust_host_impl(
+                state,
+                host,
+                port,
+                key_type,
+                fingerprint
+            ))
+        }
+        "connection_parse_uri" => {
+            args!(uri_text: String = "uri");
+            Some(out(uri::parse_uri_impl(state, &uri_text)))
+        }
+        "script_analyze" => {
+            args!(id: Uuid = "sessionId", text: String = "text");
+            Some(out(editor::analyze_impl(state, id, &text)))
+        }
+        "script_vocabulary" => {
+            args!(id: Uuid = "sessionId");
+            Some(out(editor::vocabulary_impl(state, id)))
+        }
+        "lease_open" => {
+            args!(id: Uuid = "sessionId", options: LeaseOptions = "options");
+            call!(editor::lease_open_impl(state, id, options))
+        }
+        "lease_close" => {
+            args!(id: Uuid = "leaseId");
+            call!(editor::lease_close_impl(state, id))
+        }
+        "lease_discard_result" => {
+            args!(id: Uuid = "leaseId");
+            call!(editor::lease_discard_result_impl(state, id))
+        }
+        "lease_cancel" => {
+            args!(id: Uuid = "leaseId", query: Uuid = "queryId");
+            call!(editor::lease_cancel_impl(state, id, query))
+        }
+        "lease_begin" => {
+            args!(id: Uuid = "leaseId", options: TxOptions = "options");
+            call!(editor::lease_begin_impl(state, id, options))
+        }
+        "lease_commit" => {
+            args!(id: Uuid = "leaseId");
+            call!(editor::lease_commit_impl(state, id))
+        }
+        "lease_rollback" => {
+            args!(id: Uuid = "leaseId");
+            call!(editor::lease_rollback_impl(state, id))
+        }
+        "lease_set_auto_commit" => {
+            args!(id: Uuid = "leaseId", on: bool = "autoCommit");
+            call!(editor::lease_set_auto_commit_impl(state, id, on))
+        }
+        "lease_set_context" => {
+            args!(id: Uuid = "leaseId", context: LeaseContext = "context");
+            call!(editor::lease_set_context_impl(state, id, context))
+        }
+        "lease_state" => {
+            args!(id: Uuid = "leaseId");
+            Some(out(editor::lease_state_impl(state, id)))
+        }
+        "sql_file_open" => call!(editor::sql_file_open_impl(state)),
+        "sql_file_save" => {
+            args!(path: Option<String> = "path", text: String = "text");
+            call!(editor::sql_file_save_impl(state, path, text))
+        }
+        "history_list" => {
+            args!(query: HistoryQuery = "query");
+            call!(history::history_list_impl(state, query))
+        }
+        "history_delete" => {
+            args!(ids: Vec<i64> = "ids");
+            call!(history::history_delete_impl(state, ids))
+        }
+        "history_clear" => {
+            args!(connection_id: Option<Uuid> = "connectionId");
+            call!(history::history_clear_impl(state, connection_id))
+        }
+        "saved_queries_list" => call!(history::saved_queries_list_impl(state)),
+        "saved_query_save" => {
+            args!(query: SavedQuery = "query");
+            call!(history::saved_query_save_impl(state, query))
+        }
+        "saved_query_delete" => {
+            args!(id: Uuid = "id");
+            call!(history::saved_query_delete_impl(state, id))
+        }
+        "saved_folder_save" => {
+            args!(folder: SavedFolder = "folder");
+            call!(history::saved_folder_save_impl(state, folder))
+        }
+        "saved_folder_delete" => {
+            args!(id: Uuid = "id");
+            call!(history::saved_folder_delete_impl(state, id))
+        }
+        "editor_tabs_get" => call!(history::editor_tabs_get_impl(state)),
+        "editor_tabs_set" => {
+            args!(tabs: Vec<EditorTabState> = "tabs");
+            call!(history::editor_tabs_set_impl(state, tabs))
+        }
+        "table_editability" => {
+            args!(id: Uuid = "sessionId", path: ObjectPath = "path");
+            call!(changes::editability_impl(state, id, path))
+        }
+        "changes_preview" => {
+            args!(id: Uuid = "sessionId", changes: ChangeSet = "changes");
+            call!(changes::preview_impl(state, id, changes))
+        }
+        "changes_apply" => {
+            args!(id: Uuid = "sessionId", changes: ChangeSet = "changes");
+            call!(changes::apply_impl(state, id, changes))
+        }
+        "plan_explain" => {
+            args!(
+                id: Uuid = "sessionId",
+                lease: Option<Uuid> = "leaseId",
+                request: ExplainRequest = "request",
+                rules: Option<PlanRules> = "rules"
+            );
+            call!(plan::explain_impl(state, id, lease, request, rules))
+        }
+        "plan_parse" => {
+            args!(raw: RawPlan = "raw", rules: Option<PlanRules> = "rules");
+            Some(out(plan::parse_impl(state, raw, rules)))
+        }
+        "plan_file_save" => {
+            args!(raw: RawPlan = "raw");
+            call!(plan::file_save_impl(state, raw))
+        }
+        "plan_file_open" => call!(plan::file_open_impl(state)),
+        "schema_model" => {
+            args!(id: Uuid = "sessionId", request: SchemaModelRequest = "request");
+            call!(erd::schema_model_impl(state, id, request))
+        }
+        "erd_layouts_list" => {
+            args!(id: Uuid = "connectionId");
+            call!(erd::layouts_list_impl(state, id))
+        }
+        "erd_layout_get" => {
+            args!(id: Uuid = "id");
+            call!(erd::layout_get_impl(state, id))
+        }
+        "erd_layout_save" => {
+            args!(layout: ErdLayout = "layout");
+            call!(erd::layout_save_impl(state, layout))
+        }
+        "erd_layout_delete" => {
+            args!(id: Uuid = "id");
+            call!(erd::layout_delete_impl(state, id))
+        }
+        "ddl_generate" => {
+            args!(id: Uuid = "sessionId", request: DdlRequest = "request");
+            call!(erd::ddl_generate_impl(state, id, request))
+        }
+        "file_pick_save" => {
+            args!(name: String = "suggestedName", filters: Vec<FileFilter> = "filters");
+            call!(files::pick_save_impl(state, name, filters))
+        }
+        "file_pick_open" => {
+            args!(filters: Vec<FileFilter> = "filters", directory: bool = "directory");
+            call!(files::pick_open_impl(state, filters, directory))
+        }
+        "file_save_bytes" => {
+            args!(
+                name: String = "suggestedName",
+                data: String = "dataBase64",
+                filters: Vec<FileFilter> = "filters"
+            );
+            call!(files::save_bytes_impl(state, name, data, filters))
+        }
+        "export_start" => {
+            args!(spec: ExportSpec = "spec");
+            call!(export::start_impl(state, spec))
+        }
+        "export_presets_list" => {
+            args!(connection_id: Option<Uuid> = "connectionId");
+            call!(export::presets_list_impl(state, connection_id))
+        }
+        "export_preset_save" => {
+            args!(preset: ExportPreset = "preset");
+            call!(export::preset_save_impl(state, preset))
+        }
+        "export_preset_delete" => {
+            args!(id: Uuid = "id");
+            call!(export::preset_delete_impl(state, id))
+        }
+        "import_preview" => {
+            args!(request: ImportPreviewRequest = "request");
+            call!(export::import_preview_impl(state, request))
+        }
+        "import_start" => {
+            args!(spec: ImportSpec = "spec", confirm: Option<ConfirmationGrant> = "confirm");
+            call!(export::import_start_impl(state, spec, confirm))
+        }
+        "jobs_list" => Some(out(Ok(jobs::list_impl(state)))),
+        "job_get" => {
+            args!(id: JobId = "jobId");
+            Some(out(jobs::get_impl(state, id)))
+        }
+        "job_cancel" => {
+            args!(id: JobId = "jobId");
+            Some(out(jobs::cancel_impl(state, id)))
+        }
+        "jobs_clear_finished" => Some(out(Ok(jobs::clear_finished_impl(state)))),
+        "backup_jobs_list" => call!(backup::jobs_list_impl(state)),
+        "backup_job_save" => {
+            args!(job: BackupJob = "job", passphrase: SecretChange = "passphrase");
+            call!(backup::job_save_impl(state, job, passphrase))
+        }
+        "backup_job_delete" => {
+            args!(id: Uuid = "id");
+            call!(backup::job_delete_impl(state, id))
+        }
+        "backup_job_run_now" => {
+            args!(id: Uuid = "id");
+            call!(backup::job_run_now_impl(state, id))
+        }
+        "backup_run_manual" => {
+            args!(
+                spec: BackupSpec = "spec",
+                passphrase: Option<Secret> = "passphrase",
+                save: Option<bool> = "savePassphrase"
+            );
+            call!(backup::run_manual_impl(
+                state,
+                spec,
+                passphrase,
+                save.unwrap_or(false)
+            ))
+        }
+        "backup_runs_list" => {
+            args!(
+                job_id: Option<Uuid> = "jobId",
+                limit: u32 = "limit",
+                before: Option<String> = "before"
+            );
+            call!(backup::runs_list_impl(state, job_id, limit, before))
+        }
+        "backup_inspect" => {
+            args!(path: String = "path", passphrase: Option<Secret> = "passphrase");
+            call!(backup::inspect_impl(state, path, passphrase))
+        }
+        "backup_verify" => {
+            args!(path: String = "path", passphrase: Option<Secret> = "passphrase");
+            call!(backup::verify_impl(state, path, passphrase))
+        }
+        "restore_start" => {
+            args!(
+                spec: RestoreSpec = "spec",
+                passphrase: Option<Secret> = "passphrase",
+                confirm: Option<ConfirmationGrant> = "confirm"
+            );
+            call!(backup::restore_start_impl(state, spec, passphrase, confirm))
+        }
+        "backup_tools_detect" => call!(backup::tools_detect_impl(state)),
+        "backup_tool_set_path" => {
+            args!(tool: NativeTool = "tool", path: Option<String> = "path");
+            call!(backup::tool_set_path_impl(state, tool, path))
+        }
+        "schedule_preview" => {
+            args!(cron: String = "cron", timezone: String = "timezone", count: u32 = "count");
+            Some(out(backup::schedule_preview_impl(cron, timezone, count)))
+        }
+        "background_get" => call!(background::get_impl(state)),
+        "background_set" => {
+            args!(settings: background::BackgroundSettings = "settings");
+            call!(background::set_impl(state, settings))
+        }
+        "object_children_page" => {
+            args!(id: Uuid = "sessionId", request: ChildrenPageRequest = "request");
+            call!(keyvalue::children_page_impl(state, id, request))
+        }
+        "key_read" => {
+            args!(id: Uuid = "sessionId", request: KeyReadRequest = "request");
+            call!(keyvalue::key_read_impl(state, id, request))
+        }
+        "keys_delete_pattern" => {
+            args!(
+                id: Uuid = "sessionId",
+                database: ObjectPath = "database",
+                pattern: String = "pattern",
+                confirm: Option<ConfirmationGrant> = "confirm"
+            );
+            call!(keyvalue::keys_delete_pattern_impl(
+                state, id, database, pattern, confirm
+            ))
+        }
         _ => None,
     }
 }
@@ -273,36 +595,108 @@ fn line(value: &impl Serialize) -> Bytes {
     Bytes::from(text)
 }
 
-/// `table_fetch` as an NDJSON stream with a bounded buffer. When the client disconnects the
-/// receiver is dropped; the task notices through `tx.closed()` (even before the driver has
-/// produced anything), cancels the query on the server and drops the fetch.
-fn fetch_stream(state: AppState, session_id: Uuid, request: TableDataRequest) -> Response {
-    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(STREAM_BUFFER);
-    let query_id = request.query_id;
-    tokio::spawn(async move {
-        let session = state.sessions.get(session_id).ok();
-        let sender = tx.clone();
-        // The sink is synchronous, so a full buffer ends the fetch (`Cancelled`) rather than
-        // waiting for the client.
-        let fetch = browse::fetch_impl(&state, session_id, request, move |event: QueryEvent| {
-            sender.try_send(line(&event)).is_ok()
-        });
-        tokio::select! {
-            result = fetch => {
-                let last = match result {
-                    Ok(summary) => line(&json!({"type": "result", "summary": summary})),
-                    Err(error) => line(&json!({"type": "error", "error": error})),
-                };
-                let _ = tx.send(last).await;
-            }
-            () = tx.closed() => {
-                if let Some(session) = session {
-                    let _ = session.cancel(query_id).await;
-                }
-                tracing::debug!(query = %query_id, "bridge client left; fetch cancelled");
+/// Receiver of a streaming command's events; `false` when the client is gone.
+type Emit = Box<dyn FnMut(QueryEvent) -> bool + Send>;
+
+/// What to cancel on the server when the client disconnects before the command finished.
+enum CancelTarget {
+    Session(Uuid),
+    Lease(Uuid),
+}
+
+/// A parsed streaming command, ready to run.
+struct StreamPlan {
+    query_id: Uuid,
+    cancel: CancelTarget,
+    run: Pin<Box<dyn Future<Output = Result<Value>> + Send>>,
+}
+
+/// Commands that stream `QueryEvent`s through a Tauri `Channel` in the desktop app.
+fn is_stream_command(command: &str) -> bool {
+    matches!(
+        command,
+        "table_fetch" | "query_execute" | "lease_execute" | "lease_fetch_more"
+    )
+}
+
+/// Parse the arguments of a streaming command. `None` means `command` does not stream.
+fn stream_plan(
+    state: &AppState,
+    command: &str,
+    a: &Value,
+    emit: Emit,
+) -> Option<Result<StreamPlan>> {
+    let state = state.clone();
+    Some(match command {
+        "table_fetch" => (|| {
+            let session_id: Uuid = arg(a, "sessionId")?;
+            let request: TableDataRequest = arg(a, "request")?;
+            Ok(StreamPlan {
+                query_id: request.query_id,
+                cancel: CancelTarget::Session(session_id),
+                run: Box::pin(async move {
+                    out(browse::fetch_impl(&state, session_id, request, emit).await)
+                }),
+            })
+        })(),
+        "query_execute" => (|| {
+            let session_id: Uuid = arg(a, "sessionId")?;
+            let request: ExecuteRequest = arg(a, "request")?;
+            Ok(StreamPlan {
+                query_id: request.query.query_id,
+                cancel: CancelTarget::Session(session_id),
+                run: Box::pin(async move {
+                    out(editor::execute_impl(&state, session_id, request, emit).await)
+                }),
+            })
+        })(),
+        "lease_execute" => (|| {
+            let lease_id: Uuid = arg(a, "leaseId")?;
+            let request: ExecuteRequest = arg(a, "request")?;
+            Ok(StreamPlan {
+                query_id: request.query.query_id,
+                cancel: CancelTarget::Lease(lease_id),
+                run: Box::pin(async move {
+                    out(editor::lease_execute_impl(&state, lease_id, request, emit).await)
+                }),
+            })
+        })(),
+        "lease_fetch_more" => (|| {
+            let lease_id: Uuid = arg(a, "leaseId")?;
+            let query_id: Uuid = arg(a, "queryId")?;
+            let max_rows: u64 = arg(a, "maxRows")?;
+            let batch_size: Option<u32> = arg(a, "batchSize")?;
+            Ok(StreamPlan {
+                query_id,
+                cancel: CancelTarget::Lease(lease_id),
+                run: Box::pin(async move {
+                    out(editor::lease_fetch_more_impl(
+                        &state, lease_id, query_id, max_rows, batch_size, emit,
+                    )
+                    .await)
+                }),
+            })
+        })(),
+        _ => return None,
+    })
+}
+
+async fn cancel_target(state: &AppState, target: &CancelTarget, query_id: Uuid) {
+    match target {
+        CancelTarget::Session(id) => {
+            if let Ok(session) = state.sessions.get(*id) {
+                let _ = session.cancel(query_id).await;
             }
         }
-    });
+        CancelTarget::Lease(id) => {
+            if let Ok(lease) = state.leases.get(*id) {
+                let _ = lease.cancel(query_id).await;
+            }
+        }
+    }
+}
+
+fn ndjson_response(rx: tokio::sync::mpsc::Receiver<Bytes>) -> Response {
     let body =
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<_, Infallible>));
     Response::builder()
@@ -311,6 +705,74 @@ fn fetch_stream(state: AppState, session_id: Uuid, request: TableDataRequest) ->
         .header(header::CACHE_CONTROL, "no-store")
         .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// A streaming command as an NDJSON stream with a bounded buffer. Every event is one line, the
+/// last line is `{"type":"result","result":..}` or `{"type":"error","error":..}`. When the client
+/// disconnects the receiver is dropped; the task notices through `tx.closed()` (even before the
+/// driver has produced anything), cancels the query on the server and drops the command.
+fn command_stream(state: AppState, command: &str, args: &Value) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(STREAM_BUFFER);
+    // The sink is synchronous, so a full buffer ends the command (`Cancelled`) rather than
+    // waiting for the client.
+    let sender = tx.clone();
+    let emit: Emit = Box::new(move |event: QueryEvent| sender.try_send(line(&event)).is_ok());
+    let plan = match stream_plan(&state, command, args, emit) {
+        Some(Ok(plan)) => plan,
+        Some(Err(e)) => return error_response(StatusCode::BAD_REQUEST, &e),
+        None => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                &Error::NotFound(format!("command `{command}`")),
+            );
+        }
+    };
+    let StreamPlan {
+        query_id,
+        cancel,
+        run,
+    } = plan;
+    tokio::spawn(async move {
+        tokio::select! {
+            result = run => {
+                let last = match result {
+                    Ok(value) => line(&json!({"type": "result", "result": value})),
+                    Err(error) => line(&json!({"type": "error", "error": error})),
+                };
+                let _ = tx.send(last).await;
+            }
+            () = tx.closed() => {
+                cancel_target(&state, &cancel, query_id).await;
+                tracing::debug!(query = %query_id, "bridge client left; command cancelled");
+            }
+        }
+    });
+    ndjson_response(rx)
+}
+
+/// `GET /events`: every application event as one NDJSON line until the client leaves.
+async fn events(State(ctx): State<Ctx>) -> Response {
+    let mut rx = ctx.state.events.subscribe();
+    let (tx, out_rx) = tokio::sync::mpsc::channel::<Bytes>(STREAM_BUFFER);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                event = rx.recv() => match event {
+                    Ok(event) => {
+                        let msg = line(&json!({"event": event.name, "payload": event.payload}));
+                        if tx.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                    // A slow client misses events; keep going.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                () = tx.closed() => break,
+            }
+        }
+    });
+    ndjson_response(out_rx)
 }
 
 async fn ipc(State(ctx): State<Ctx>, Path(command): Path<String>, body: Bytes) -> Response {
@@ -334,13 +796,8 @@ async fn ipc(State(ctx): State<Ctx>, Path(command): Path<String>, body: Bytes) -
         }
     };
     tracing::debug!(command = %command, "bridge call");
-    if command == "table_fetch" {
-        let parsed = arg::<Uuid>(&args, "sessionId")
-            .and_then(|id| arg::<TableDataRequest>(&args, "request").map(|r| (id, r)));
-        return match parsed {
-            Ok((id, request)) => fetch_stream(ctx.state, id, request),
-            Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
-        };
+    if is_stream_command(&command) {
+        return command_stream(ctx.state, &command, &args);
     }
     match dispatch(&ctx.state, &command, &args).await {
         Some(Ok(value)) => (StatusCode::OK, axum::Json(value)).into_response(),
@@ -838,7 +1295,8 @@ mod tests {
             ]
         );
         assert_eq!(lines[1]["rows"][0][0], json!({"t": "int", "v": 1}));
-        assert_eq!(lines[6]["summary"]["statements"], 1);
+        assert_eq!(lines[6]["result"]["statements"], 1);
+        assert!(lines[6].get("summary").is_none());
 
         // Unknown session: the stream ends with exactly one error line.
         let (_, _, body) = send(
@@ -871,5 +1329,280 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let _ = Arc::new(0);
+    }
+
+    async fn open_session(app: &Router) -> Value {
+        let profile = profile_json();
+        let id = profile["id"].clone();
+        call(
+            app,
+            "connection_save",
+            json!({"profile": profile, "secret": {"action": "keep"}}),
+        )
+        .await;
+        let (status, opened) = call(app, "session_open", json!({"connectionId": id})).await;
+        assert_eq!(status, StatusCode::OK, "{opened}");
+        opened["sessionId"].clone()
+    }
+
+    async fn stream_lines(app: &Router, command: &str, body: Value) -> Vec<Value> {
+        let (status, headers, bytes) = send(
+            app,
+            Method::POST,
+            &format!("/ipc/{command}"),
+            Some(TOKEN),
+            None,
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "application/x-ndjson");
+        String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn new_commands_are_dispatched() {
+        let (app, _, state) = app_with_probe();
+        // jobs
+        let (status, jobs) = call(&app, "jobs_list", json!({})).await;
+        assert_eq!((status, jobs), (StatusCode::OK, json!([])));
+        let (id, _) = state
+            .jobs
+            .create(dbstudio_core::JobKind::Export, "Export", None, true);
+        let (_, jobs) = call(&app, "jobs_list", json!({})).await;
+        assert_eq!(jobs[0]["title"], "Export");
+        assert_eq!(jobs[0]["status"], "queued");
+        let (status, job) = call(&app, "job_get", json!({"jobId": id})).await;
+        assert_eq!(
+            (status, job["id"].as_str()),
+            (StatusCode::OK, Some(id.to_string().as_str()))
+        );
+        let (status, _) = call(&app, "job_cancel", json!({"jobId": id})).await;
+        assert_eq!(status, StatusCode::OK);
+        state.jobs.finish(id, Err(Error::Cancelled));
+        let (_, removed) = call(&app, "jobs_clear_finished", json!({})).await;
+        assert_eq!(removed, json!(1));
+        let (status, err) = call(&app, "job_get", json!({"jobId": Uuid::new_v4()})).await;
+        assert_eq!(
+            (status, err["kind"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("notFound"))
+        );
+
+        // script_analyze on a live (mock) session
+        let session = open_session(&app).await;
+        let (status, analysis) = call(
+            &app,
+            "script_analyze",
+            json!({"sessionId": session, "text": "select 1"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{analysis}");
+        assert_eq!(analysis["dialect"], json!({"name": "opaque"}));
+        assert_eq!(analysis["statements"].as_array().unwrap().len(), 1);
+        let (status, vocab) = call(&app, "script_vocabulary", json!({"sessionId": session})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(vocab["keywords"].is_array());
+
+        // driver_diagnostics, optional arguments default to null
+        let (status, diag) = call(&app, "driver_diagnostics", json!({"kind": "postgres"})).await;
+        assert_eq!(
+            (status, diag["status"].clone()),
+            (StatusCode::OK, json!({"state": "available"}))
+        );
+        let (status, page) = call(
+            &app,
+            "object_children_page",
+            json!({"sessionId": session, "request": {"parent": {"segments": []}, "limit": 5}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["nodes"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn unsupported_commands_return_the_standard_error_json() {
+        let app = app();
+        let session = open_session(&app).await;
+        let (status, err) = call(
+            &app,
+            "lease_open",
+            json!({"sessionId": session, "options": {"autoCommit": true}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err,
+            json!({"kind": "unsupported", "message": "leases", "capability": "leases"})
+        );
+        let (status, err) = call(
+            &app,
+            "connection_parse_uri",
+            json!({"uri": "postgres://h/d"}),
+        )
+        .await;
+        assert_eq!(
+            (status, err["kind"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("unsupported"))
+        );
+        let (status, err) = call(
+            &app,
+            "schedule_preview",
+            json!({"cron": "* * * * *", "timezone": "utc", "count": 3}),
+        )
+        .await;
+        assert_eq!(
+            (status, err["kind"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("unsupported"))
+        );
+        // A command with a missing required argument is an argument error, not a 404.
+        let (status, err) = call(&app, "lease_open", json!({})).await;
+        assert_eq!(
+            (status, err["kind"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("other"))
+        );
+    }
+
+    #[tokio::test]
+    async fn query_execute_streams_like_table_fetch() {
+        let (app, probe, _) = app_with_probe();
+        let session = open_session(&app).await;
+        let query_id = Uuid::new_v4();
+        let lines = stream_lines(
+            &app,
+            "query_execute",
+            json!({"sessionId": session, "request": {"text": "select 1", "queryId": query_id}}),
+        )
+        .await;
+        let types: Vec<&str> = lines.iter().map(|l| l["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            types,
+            [
+                "statementStart",
+                "columns",
+                "rows",
+                "statementEnd",
+                "result"
+            ]
+        );
+        let result = &lines[4]["result"];
+        assert_eq!(result["summary"]["statements"], 1);
+        assert_eq!(result["state"], json!(null));
+        assert_eq!(probe.executed.lock().unwrap().as_slice(), ["select 1"]);
+
+        // Errors end the stream with one error line.
+        let lines = stream_lines(
+            &app,
+            "query_execute",
+            json!({"sessionId": session, "request": {"text": "fail", "queryId": Uuid::new_v4()}}),
+        )
+        .await;
+        let last = lines.last().unwrap();
+        assert_eq!(last["type"], "error");
+        assert_eq!(last["error"]["kind"], "query");
+        assert_eq!(last["error"]["position"], 2);
+
+        // Unknown lease: a single error line; bad arguments are rejected before streaming.
+        let lines = stream_lines(
+            &app,
+            "lease_execute",
+            json!({"leaseId": Uuid::new_v4(), "request": {"text": "x", "queryId": Uuid::new_v4()}}),
+        )
+        .await;
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["error"]["kind"], "notFound");
+        let lines = stream_lines(
+            &app,
+            "lease_fetch_more",
+            json!({"leaseId": Uuid::new_v4(), "queryId": Uuid::new_v4(), "maxRows": 10, "batchSize": null}),
+        )
+        .await;
+        assert_eq!(lines[0]["error"]["kind"], "notFound");
+        let (status, ..) = send(
+            &app,
+            Method::POST,
+            "/ipc/query_execute",
+            Some(TOKEN),
+            None,
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn events_endpoint_streams_app_events_as_ndjson() {
+        use crate::events::EventEmitter as _;
+        let (app, _, state) = app_with_probe();
+        // The token and host checks apply to GET /events too.
+        let (status, ..) = send(&app, Method::GET, "/events", None, None, json!({})).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let req = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/events")
+            .header(header::HOST, "127.0.0.1:1421")
+            .header(TOKEN_HEADER, TOKEN)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/x-ndjson"
+        );
+        let mut body = response.into_body().into_data_stream();
+
+        state.events.emit(
+            crate::events::JOB_PROGRESS,
+            json!({"type": "progress", "jobId": "j"}),
+        );
+        state
+            .events
+            .emit(crate::events::BACKUP_CHANGED, Value::Null);
+        let mut text = String::new();
+        while text.lines().count() < 2 {
+            let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), body.next())
+                .await
+                .expect("event line in time")
+                .expect("stream open")
+                .unwrap();
+            text.push_str(std::str::from_utf8(&chunk).unwrap());
+        }
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            lines[0],
+            json!({"event": "job://progress", "payload": {"type": "progress", "jobId": "j"}})
+        );
+        assert_eq!(
+            lines[1],
+            json!({"event": "backup://changed", "payload": null})
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_allows_get_for_the_events_stream() {
+        let app = app();
+        let (_, headers, _) = send(
+            &app,
+            Method::OPTIONS,
+            "/events",
+            None,
+            Some("http://localhost:1420"),
+            json!({}),
+        )
+        .await;
+        assert!(
+            headers[header::ACCESS_CONTROL_ALLOW_METHODS]
+                .to_str()
+                .unwrap()
+                .contains("GET")
+        );
     }
 }

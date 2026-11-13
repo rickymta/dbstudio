@@ -16,7 +16,8 @@
   },
   "status": {
     "available": "Ready",
-    "planned": "Phase {{phase}}"
+    "planned": "Phase {{phase}}",
+    "unavailable": "Unavailable"
   },
   "family": {
     "relational": "Relational",

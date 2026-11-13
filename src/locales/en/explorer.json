@@ -10,7 +10,11 @@
     "indexes": "Indexes",
     "columns": "Columns",
     "roles": "Roles",
-    "schemas": "Schemas"
+    "schemas": "Schemas",
+    "collections": "Collections",
+    "synonyms": "Synonyms",
+    "packages": "Packages",
+    "types": "Types"
   },
   "kind": {
     "database": "Database",
@@ -27,7 +31,11 @@
     "sequence": "Sequence",
     "collection": "Collection",
     "key": "Key",
-    "folder": "Folder"
+    "folder": "Folder",
+    "keyPrefix": "Key prefix",
+    "synonym": "Synonym",
+    "package": "Package",
+    "type": "Type"
   },
   "treeLabel": "Object tree",
   "expand": "Expand",
@@ -41,6 +49,10 @@
     "viewDdl": "View DDL",
     "copyName": "Copy name",
     "copyFullName": "Copy full name",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "openEditor": "Open SQL editor",
+    "showErd": "Show diagram",
+    "exportData": "Export...",
+    "backup": "Back up..."
   }
 }

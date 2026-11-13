@@ -36,6 +36,51 @@ pub struct Capabilities {
     pub sequences: bool,
     /// Supports server-side object search ([`crate::Session::search_objects`]).
     pub object_search: bool,
+    /// Dedicated connection per editor tab ([`crate::Session::open_lease`]).
+    #[serde(default)]
+    pub leases: bool,
+    /// Manual transactions (begin / commit / rollback, auto-commit off).
+    #[serde(default)]
+    pub manual_transactions: bool,
+    /// `:name` / `$1` / `?` / `@p` query parameters.
+    #[serde(default)]
+    pub query_params: bool,
+    /// EXPLAIN ANALYZE of data-modifying statements (run in a rolled back transaction).
+    #[serde(default)]
+    pub explain_analyze_writes: bool,
+    /// Collections of documents (MongoDB).
+    #[serde(default)]
+    pub document_store: bool,
+    /// Keys with typed values (Redis).
+    #[serde(default)]
+    pub key_value_store: bool,
+    /// [`crate::Session::generate_ddl`] is available.
+    #[serde(default)]
+    pub ddl_generation: bool,
+    /// [`crate::Session::schema_model`] is available (ERD, autocomplete).
+    #[serde(default)]
+    pub schema_model: bool,
+    /// The schema model is inferred by sampling documents.
+    #[serde(default)]
+    pub schema_inference: bool,
+    /// Whole-table streaming (export / backup) through a lease.
+    #[serde(default)]
+    pub table_stream: bool,
+    /// Bulk insert (import) through a lease.
+    #[serde(default)]
+    pub bulk_insert: bool,
+    /// Native backup tool integration (pg_dump, mysqldump...).
+    #[serde(default)]
+    pub native_backup: bool,
+    /// The tree is paged ([`crate::Session::list_children_page`] with a real cursor).
+    #[serde(default)]
+    pub paged_tree: bool,
+    /// The server enforces read-only for the session (otherwise only the app blocks writes).
+    #[serde(default)]
+    pub read_only_session: bool,
+    /// Connections can go through an SSH tunnel.
+    #[serde(default)]
+    pub ssh_tunnel: bool,
 }
 
 impl Capabilities {
@@ -59,6 +104,18 @@ impl Capabilities {
                 triggers: true,
                 views: true,
                 sequences: true,
+                leases: true,
+                manual_transactions: true,
+                query_params: true,
+                explain_analyze_writes: true,
+                ddl_generation: true,
+                schema_model: true,
+                table_stream: true,
+                bulk_insert: true,
+                native_backup: true,
+                read_only_session: true,
+                ssh_tunnel: true,
+                ..none
             },
             DbKind::MySql => Capabilities {
                 object_search: true,
@@ -74,6 +131,16 @@ impl Capabilities {
                 stored_routines: true,
                 triggers: true,
                 views: true,
+                leases: true,
+                manual_transactions: true,
+                query_params: true,
+                ddl_generation: true,
+                schema_model: true,
+                table_stream: true,
+                bulk_insert: true,
+                native_backup: true,
+                read_only_session: true,
+                ssh_tunnel: true,
                 ..none
             },
             DbKind::SqlServer => Capabilities {
@@ -86,11 +153,22 @@ impl Capabilities {
                 explain_analyze: true,
                 foreign_keys: true,
                 cancel_query: true,
+                logical_backup: true,
                 data_editing: true,
                 stored_routines: true,
                 triggers: true,
                 views: true,
                 sequences: true,
+                leases: true,
+                manual_transactions: true,
+                query_params: true,
+                explain_analyze_writes: true,
+                ddl_generation: true,
+                schema_model: true,
+                table_stream: true,
+                bulk_insert: true,
+                native_backup: true,
+                ssh_tunnel: true,
                 ..none
             },
             DbKind::Oracle => Capabilities {
@@ -99,13 +177,25 @@ impl Capabilities {
                 transactions: true,
                 schemas: true,
                 explain: true,
+                explain_analyze: true,
                 foreign_keys: true,
                 cancel_query: true,
+                logical_backup: true,
                 data_editing: true,
                 stored_routines: true,
                 triggers: true,
                 views: true,
                 sequences: true,
+                leases: true,
+                manual_transactions: true,
+                query_params: true,
+                explain_analyze_writes: true,
+                ddl_generation: true,
+                schema_model: true,
+                table_stream: true,
+                bulk_insert: true,
+                native_backup: true,
+                ssh_tunnel: true,
                 ..none
             },
             DbKind::MongoDb => Capabilities {
@@ -118,12 +208,30 @@ impl Capabilities {
                 logical_backup: true,
                 data_editing: true,
                 views: true,
+                leases: true,
+                manual_transactions: true,
+                explain_analyze_writes: true,
+                document_store: true,
+                ddl_generation: true,
+                schema_model: true,
+                schema_inference: true,
+                table_stream: true,
+                bulk_insert: true,
+                native_backup: true,
+                ssh_tunnel: true,
                 ..none
             },
             DbKind::Redis => Capabilities {
                 transactions: true,
                 multiple_databases: true,
+                cancel_query: true,
+                logical_backup: true,
                 data_editing: true,
+                leases: true,
+                key_value_store: true,
+                native_backup: true,
+                paged_tree: true,
+                ssh_tunnel: true,
                 ..none
             },
             DbKind::Cassandra => Capabilities {
@@ -179,5 +287,60 @@ mod tests {
         assert!(json.get("explainAnalyze").is_some());
         assert!(json.get("foreignKeys").is_some());
         assert_eq!(json["objectSearch"], false);
+    }
+
+    #[test]
+    fn phase2_table() {
+        let pg = Capabilities::planned_for(DbKind::Postgres);
+        assert!(pg.leases && pg.query_params && pg.read_only_session && pg.explain_analyze_writes);
+        assert!(!pg.document_store && !pg.key_value_store && !pg.paged_tree);
+        let my = Capabilities::planned_for(DbKind::MySql);
+        assert!(!my.explain_analyze_writes && my.read_only_session && !my.schemas);
+        let ms = Capabilities::planned_for(DbKind::SqlServer);
+        assert!(ms.logical_backup && ms.explain_analyze_writes && !ms.read_only_session);
+        let ora = Capabilities::planned_for(DbKind::Oracle);
+        assert!(
+            ora.explain_analyze && ora.logical_backup && ora.schemas && !ora.multiple_databases
+        );
+        let mongo = Capabilities::planned_for(DbKind::MongoDb);
+        assert!(mongo.document_store && mongo.schema_inference && mongo.manual_transactions);
+        assert!(!mongo.query_params && !mongo.sql && !mongo.foreign_keys);
+        let redis = Capabilities::planned_for(DbKind::Redis);
+        assert!(
+            redis.key_value_store && redis.paged_tree && redis.logical_backup && redis.cancel_query
+        );
+        assert!(!redis.manual_transactions && !redis.schema_model && !redis.bulk_insert);
+    }
+
+    #[test]
+    fn missing_new_flags_default_to_false() {
+        let caps: Capabilities = serde_json::from_value(serde_json::json!({
+            "sql": true, "transactions": false, "schemas": false, "multipleDatabases": false,
+            "explain": false, "explainAnalyze": false, "foreignKeys": false, "cancelQuery": false,
+            "logicalBackup": false, "dataEditing": false, "storedRoutines": false,
+            "triggers": false, "views": false, "sequences": false, "objectSearch": false
+        }))
+        .unwrap();
+        assert!(caps.sql && !caps.leases && !caps.ssh_tunnel);
+        let json = serde_json::to_value(Capabilities::default()).unwrap();
+        for key in [
+            "leases",
+            "manualTransactions",
+            "queryParams",
+            "explainAnalyzeWrites",
+            "documentStore",
+            "keyValueStore",
+            "ddlGeneration",
+            "schemaModel",
+            "schemaInference",
+            "tableStream",
+            "bulkInsert",
+            "nativeBackup",
+            "pagedTree",
+            "readOnlySession",
+            "sshTunnel",
+        ] {
+            assert_eq!(json[key], false, "{key}");
+        }
     }
 }

@@ -1,10 +1,31 @@
 # Test databases for DBStudio integration tests. Local/CI use only: fixed throw-away credentials,
 # bound to 127.0.0.1 on non-default ports so they never clash with real servers.
 #
-#   sh docker/gen-certs.sh
-#   docker compose -f docker/compose.test.yml up -d --wait
+#   sh docker/gen-certs.sh && sh docker/gen-ssh-keys.sh
+#   docker compose -f docker/compose.test.yml up -d --wait <service>...   # start only what you test
 #   DBSTUDIO_IT=1 cargo test --workspace
 #   docker compose -f docker/compose.test.yml down -v
+#
+# Phase 1 services: pg16 54316 (TLS), pg12 54312, mysql8 33068 (TLS), mariadb 33106,
+# mariadb104 33104, mysql57 33057. Login dbstudio / dbstudio_test.
+#
+# Phase 2 services (integration tests read these env vars; the defaults below are the host ports):
+#   mssql2022  DBSTUDIO_IT_MSSQL_PORT=14333    sa / Dbstudio_test1!   (~2 GB, amd64 emulated on ARM)
+#   oraclefree DBSTUDIO_IT_ORACLE_PORT=15213   dbstudio / dbstudio_test, service FREEPDB1 (~3 GB);
+#              system user: SYSTEM / dbstudio_test
+#   oracle-it  profile "tools": docker compose -f docker/compose.test.yml run --rm oracle-it
+#   mongo44    DBSTUDIO_IT_MONGO44_PORT=27044  dbstudio / dbstudio_test (authSource=admin), standalone
+#   mongo7     DBSTUDIO_IT_MONGO7_PORT=27077   dbstudio / dbstudio_test (authSource=admin), replica set
+#              rs0 (1 node, host mongo7:27017: use directConnection=true), TLS mode preferTLS (plain also
+#              works) with docker/certs/mongo.pem, CA docker/certs/ca.crt
+#   redis6     DBSTUDIO_IT_REDIS6_PORT=63796   ACL user dbstudio / dbstudio_test (default user off), KEYS renamed away
+#   redis7     DBSTUDIO_IT_REDIS7_PORT=63797   TLS only (plain port off), user dbstudio / dbstudio_test,
+#              CA docker/certs/ca.crt
+#   valkey8    DBSTUDIO_IT_VALKEY8_PORT=63798  no TLS, password dbstudio_test (default user or user dbstudio)
+#   sshd       DBSTUDIO_IT_SSH_PORT=22022      user dbstudio: password dbstudio_ssh, or key docker/ssh/id_ed25519
+#              (passphrase dbstudio_key_pass; run docker/gen-ssh-keys.sh first). Same compose network as
+#              every DB, so tunnels reach pg16:5432, mysql8:3306, mssql2022:1433 ... by service name.
+# The Docker VM needs memory: MSSQL needs ~2 GB and Oracle ~3 GB, start them only when testing them.
 name: dbstudio-test
 
 x-pg-env: &pg-env
@@ -106,3 +127,182 @@ services:
       interval: 5s
       timeout: 5s
       retries: 60
+
+  # ---------------------------------------------------------------------------------------------
+  # Phase 2 services
+  # ---------------------------------------------------------------------------------------------
+
+  # SQL Server 2022. amd64 only: emulated on Apple Silicon (slow first start, allow minutes).
+  mssql2022:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    mem_limit: 2g
+    environment:
+      ACCEPT_EULA: 'Y'
+      MSSQL_SA_PASSWORD: 'Dbstudio_test1!'
+    ports: ['127.0.0.1:14333:1433']
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Dbstudio_test1!' -Q 'SELECT 1' -b -h -1 >/dev/null",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 80
+      start_period: 30s
+
+  # Oracle Database 23ai Free (FREEPDB1). amd64 image.
+  oraclefree:
+    image: gvenzl/oracle-free:23-slim-faststart
+    # 2g gets OOM-killed during DB open (SGA alone is ~1.6 GB); 3g is the working minimum.
+    mem_limit: 3g
+    environment:
+      ORACLE_PASSWORD: dbstudio_test
+      APP_USER: dbstudio
+      APP_USER_PASSWORD: dbstudio_test
+    ports: ['127.0.0.1:15213:1521']
+    healthcheck:
+      test: ['CMD', 'healthcheck.sh']
+      interval: 5s
+      timeout: 5s
+      retries: 80
+      start_period: 30s
+
+  # Runs the Oracle driver tests inside Linux with Oracle Instant Client (see docker/oracle-it).
+  # Not started by `up`: docker compose -f docker/compose.test.yml run --rm oracle-it
+  oracle-it:
+    profiles: ['tools']
+    build: ./oracle-it
+    platform: linux/amd64
+    mem_limit: 3g
+    working_dir: /work
+    command: ['cargo', 'test', '-p', 'dbstudio-driver-oracle']
+    depends_on:
+      oraclefree:
+        condition: service_healthy
+    environment:
+      DBSTUDIO_IT: '1'
+      # Inside the compose network the container port is used, not the host port.
+      DBSTUDIO_IT_ORACLE_HOST: oraclefree
+      DBSTUDIO_IT_ORACLE_PORT: '1521'
+      DBSTUDIO_IT_ORACLE_SERVICE: FREEPDB1
+    volumes:
+      - ..:/work
+      - target-oracle:/target-oracle
+      - cargo-registry:/root/.cargo/registry
+
+  # MongoDB 4.4 standalone with auth (no transactions). amd64 only.
+  mongo44:
+    image: mongo:4.4
+    platform: linux/amd64
+    mem_limit: 512m
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: dbstudio
+      MONGO_INITDB_ROOT_PASSWORD: dbstudio_test
+    ports: ['127.0.0.1:27044:27017']
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "mongo --quiet -u dbstudio -p dbstudio_test --authenticationDatabase admin --eval 'db.runCommand({ping:1}).ok' | grep -q 1",
+        ]
+      interval: 3s
+      timeout: 10s
+      retries: 60
+      start_period: 10s
+
+  # MongoDB 7 single-node replica set rs0 (keyFile) with TLS = preferTLS (plain still accepted).
+  # The healthcheck also runs rs.initiate on first start (docker/mongo/mongo7-health.sh).
+  mongo7:
+    image: mongo:7
+    mem_limit: 768m
+    entrypoint: ['sh', '/mongo/mongo7-entrypoint.sh']
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: dbstudio
+      MONGO_INITDB_ROOT_PASSWORD: dbstudio_test
+    ports: ['127.0.0.1:27077:27017']
+    volumes: ['./certs:/certs:ro', './mongo:/mongo:ro']
+    healthcheck:
+      test: ['CMD', 'sh', '/mongo/mongo7-health.sh']
+      interval: 3s
+      timeout: 10s
+      retries: 60
+      start_period: 10s
+
+  # Redis 6.2: ACL user (default user disabled) and KEYS disabled via rename-command.
+  redis6:
+    image: redis:6.2
+    mem_limit: 128m
+    command: ['redis-server', '/conf/redis6.conf']
+    ports: ['127.0.0.1:63796:6379']
+    volumes: ['./redis:/conf:ro']
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'redis-cli --no-auth-warning --user dbstudio --pass dbstudio_test ping | grep -q PONG',
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Redis 7.4 with TLS only (certs from docker/certs, CA docker/certs/ca.crt).
+  redis7:
+    image: ${DBSTUDIO_REDIS7_IMAGE:-redis:7.4}
+    mem_limit: 128m
+    command: ['redis-server', '/conf/redis7.conf']
+    ports: ['127.0.0.1:63797:6379']
+    volumes: ['./redis:/conf:ro', './certs:/certs:ro']
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'redis-cli --tls --cacert /certs/ca.crt --no-auth-warning --user dbstudio --pass dbstudio_test ping | grep -q PONG',
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Valkey 8, no TLS, password auth.
+  valkey8:
+    image: valkey/valkey:8
+    mem_limit: 128m
+    command: ['valkey-server', '/conf/valkey8.conf']
+    ports: ['127.0.0.1:63798:6379']
+    volumes: ['./redis:/conf:ro']
+    healthcheck:
+      test: ['CMD-SHELL', 'valkey-cli --no-auth-warning -a dbstudio_test ping | grep -q PONG']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # OpenSSH server for the SSH tunnel tests. On the same compose network as every DB service.
+  # Run `sh docker/gen-ssh-keys.sh` before starting it (the public key is bind-mounted).
+  sshd:
+    image: lscr.io/linuxserver/openssh-server:latest
+    mem_limit: 128m
+    hostname: dbstudio-sshd
+    environment:
+      PUID: '1000'
+      PGID: '1000'
+      TZ: UTC
+      PASSWORD_ACCESS: 'true'
+      USER_NAME: dbstudio
+      USER_PASSWORD: dbstudio_ssh
+      SUDO_ACCESS: 'false'
+      PUBLIC_KEY_FILE: /pubkey/id_ed25519.pub
+    ports: ['127.0.0.1:22022:2222']
+    volumes:
+      - ./ssh/id_ed25519.pub:/pubkey/id_ed25519.pub:ro
+      - ./ssh/sshd-forwarding.sh:/custom-cont-init.d/10-forwarding.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'nc -z localhost 2222']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+
+volumes:
+  target-oracle:
+  cargo-registry:

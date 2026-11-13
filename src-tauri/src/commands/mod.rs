@@ -5,9 +5,22 @@
 use dbstudio_core::{Error, Result};
 
 pub mod app;
+pub mod background;
+pub mod backup;
 pub mod browse;
+pub mod changes;
 pub mod connections;
+pub mod editor;
+pub mod erd;
+pub mod export;
+pub mod files;
+pub mod history;
+pub mod jobs;
+pub mod keyvalue;
+pub mod plan;
 pub mod sessions;
+pub mod ssh;
+pub mod uri;
 
 /// Run blocking work (SQLite, keychain) off the async executor threads.
 pub(crate) async fn blocking<T, F>(f: F) -> Result<T>

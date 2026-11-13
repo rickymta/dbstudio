@@ -1,0 +1,104 @@
+{
+  "authentication": {
+    "kind": "authentication",
+    "message": "bad password"
+  },
+  "busy": {
+    "kind": "busy",
+    "message": "a statement is running"
+  },
+  "cancelled": {
+    "kind": "cancelled",
+    "message": "operation cancelled"
+  },
+  "changeFailed": {
+    "applied": 0,
+    "index": 2,
+    "kind": "changeFailed",
+    "message": "expected 1 row, got 0"
+  },
+  "confirmationRequired": {
+    "confirmation": {
+      "confirmText": "app",
+      "expiresInMs": 120000,
+      "statements": [
+        {
+          "index": 0,
+          "range": {
+            "end": 12,
+            "start": 0
+          },
+          "reason": "drop",
+          "text": "DROP TABLE t"
+        }
+      ],
+      "token": "0123456789abcdef0123456789abcdef"
+    },
+    "kind": "confirmationRequired",
+    "message": "confirmation required"
+  },
+  "connection": {
+    "kind": "connection",
+    "message": "refused"
+  },
+  "driverUnavailable": {
+    "kind": "driverUnavailable",
+    "message": "Instant Client not found"
+  },
+  "integrity": {
+    "kind": "integrity",
+    "message": "checksum mismatch"
+  },
+  "io": {
+    "kind": "io",
+    "message": "broken pipe"
+  },
+  "notFound": {
+    "kind": "notFound",
+    "message": "session"
+  },
+  "other": {
+    "kind": "other",
+    "message": "unexpected"
+  },
+  "permission": {
+    "kind": "permission",
+    "message": "cannot read V$SQL_PLAN"
+  },
+  "query": {
+    "kind": "query",
+    "message": "syntax error",
+    "position": 7
+  },
+  "readOnly": {
+    "kind": "readOnly",
+    "message": "writes are blocked",
+    "position": 0
+  },
+  "sshHostKey": {
+    "changed": false,
+    "fingerprint": "SHA256:abcdef",
+    "host": "bastion.example.com",
+    "keyType": "ssh-ed25519",
+    "kind": "sshHostKey",
+    "message": "bastion.example.com",
+    "port": 22
+  },
+  "storage": {
+    "kind": "storage",
+    "message": "disk full"
+  },
+  "timeout": {
+    "kind": "timeout",
+    "message": "operation timed out"
+  },
+  "tls": {
+    "kind": "tls",
+    "message": "bad certificate"
+  },
+  "unsupported": {
+    "capability": "explain",
+    "kind": "unsupported",
+    "message": "explain"
+  }
+}

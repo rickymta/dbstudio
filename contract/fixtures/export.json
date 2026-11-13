@@ -1,0 +1,198 @@
+{
+  "ExportReport": {
+    "bytes": 2048,
+    "files": ["/tmp/orders.zip"],
+    "objects": 1,
+    "rows": 10,
+    "warnings": ["truncated cell"]
+  },
+  "ExportSpec": {
+    "connectionId": "00000000-0000-0000-0000-000000000007",
+    "content": "both",
+    "destination": {
+      "overwrite": false,
+      "path": "/tmp/orders.zip"
+    },
+    "format": {
+      "delimiter": ",",
+      "encoding": "utf8Bom",
+      "header": true,
+      "kind": "csv",
+      "lineEnding": "crlf",
+      "nullText": "",
+      "quote": "\"",
+      "quoteAll": false
+    },
+    "source": {
+      "kind": "tables",
+      "paths": [
+        {
+          "segments": [
+            {
+              "kind": "database",
+              "name": "app"
+            },
+            {
+              "kind": "folder",
+              "name": "tables"
+            },
+            {
+              "kind": "table",
+              "name": "orders"
+            }
+          ]
+        }
+      ]
+    },
+    "values": {
+      "binary": "base64",
+      "flattenFields": []
+    }
+  },
+  "ImportPreview": {
+    "columns": ["id", "name"],
+    "detectedDelimiter": ";",
+    "estimatedRows": 1000,
+    "rows": [
+      [
+        {
+          "t": "text",
+          "v": "1"
+        },
+        {
+          "t": "text",
+          "v": "a"
+        }
+      ]
+    ],
+    "sheets": [],
+    "statementsPreview": [],
+    "suggestedKinds": ["int", "text"]
+  },
+  "ImportReport": {
+    "errors": [
+      {
+        "line": 4,
+        "message": "duplicate key"
+      }
+    ],
+    "inserted": 8,
+    "rowsRead": 10,
+    "skipped": 0,
+    "updated": 1
+  },
+  "ImportSpec": {
+    "connectionId": "00000000-0000-0000-0000-000000000007",
+    "file": "/tmp/in.csv",
+    "format": {
+      "delimiter": ";",
+      "encoding": "utf8",
+      "header": true,
+      "kind": "csv",
+      "quote": "\""
+    },
+    "mapping": [
+      {
+        "source": "#1",
+        "target": "id",
+        "transform": "trim"
+      }
+    ],
+    "maxErrors": 10,
+    "mode": {
+      "kind": "batches",
+      "rows": 500
+    },
+    "onConflict": "skip",
+    "target": {
+      "columns": [
+        {
+          "name": "id",
+          "nullable": false,
+          "primaryKey": true,
+          "typeName": "bigint"
+        }
+      ],
+      "kind": "new",
+      "name": "t",
+      "parent": {
+        "segments": [
+          {
+            "kind": "database",
+            "name": "app"
+          }
+        ]
+      }
+    }
+  },
+  "ObjectMeta": {
+    "columns": [
+      {
+        "name": "id",
+        "nullable": false,
+        "typeName": "int8",
+        "valueKind": "int"
+      }
+    ],
+    "details": {
+      "columns": [
+        {
+          "comment": null,
+          "default": null,
+          "extra": null,
+          "name": "id",
+          "nullable": false,
+          "ordinal": 1,
+          "primaryKey": true,
+          "typeName": "int8",
+          "valueKind": "int"
+        }
+      ],
+      "comment": null,
+      "estimatedRows": 10,
+      "kind": "table",
+      "name": "orders",
+      "path": {
+        "segments": [
+          {
+            "kind": "database",
+            "name": "app"
+          },
+          {
+            "kind": "folder",
+            "name": "tables"
+          },
+          {
+            "kind": "table",
+            "name": "orders"
+          }
+        ]
+      },
+      "primaryKey": ["id"],
+      "schema": "public",
+      "uniqueKeys": []
+    },
+    "estimatedRows": 10,
+    "name": "orders",
+    "path": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "tables"
+        },
+        {
+          "kind": "table",
+          "name": "orders"
+        }
+      ]
+    }
+  },
+  "RowError": {
+    "line": 4,
+    "message": "duplicate key"
+  }
+}

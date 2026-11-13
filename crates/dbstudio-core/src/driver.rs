@@ -6,9 +6,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    Capabilities, CollectingSink, ConnectionConfig, DbFamily, DbKind, Error, ExecSummary,
-    ObjectNode, ObjectPath, ObjectSearchRequest, QueryRequest, Result, ResultSink, Secret,
-    StatementResult, TableCountRequest, TableDataRequest, TableDetails,
+    ApplyResult, Capabilities, ChangeSet, ChildrenPage, ChildrenPageRequest, CollectingSink,
+    ConnectionConfig, DbFamily, DbKind, DdlItem, DdlRequest, Editability, Error, ExecSummary,
+    ExplainRequest, KeyReadRequest, KeyValuePage, Lease, LeaseOptions, ObjectNode, ObjectPath,
+    ObjectSearchRequest, QueryRequest, RawPlan, Result, ResultSink, SchemaModel,
+    SchemaModelRequest, ScriptDialect, Secret, StatementResult, TableCountRequest,
+    TableDataRequest, TableDetails,
 };
 
 /// Implementation status of a driver.
@@ -22,6 +25,21 @@ pub enum DriverStatus {
         /// Roadmap phase number.
         phase: u8,
     },
+    /// Implemented but cannot run on this machine (e.g. Oracle Instant Client missing).
+    Unavailable {
+        /// Why. Details and instructions come from the `driver_diagnostics` command.
+        reason: UnavailableReason,
+    },
+}
+
+/// Why a registered driver cannot run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UnavailableReason {
+    /// The vendor client library is not installed.
+    NativeClientMissing,
+    /// The vendor client library is older than the driver needs.
+    NativeClientTooOld,
 }
 
 /// Static description of a driver, safe to send to the UI.
@@ -196,6 +214,67 @@ pub trait Session: Send + Sync {
         Err(Error::Unsupported("object_search".into()))
     }
 
+    /// Language of the editor / console for this session (lexer, splitter, params, classifier).
+    /// Defaults to [`ScriptDialect::Opaque`].
+    fn script_dialect(&self) -> ScriptDialect {
+        ScriptDialect::Opaque
+    }
+
+    /// Open a dedicated connection (see [`Lease`]). Unsupported by default.
+    async fn open_lease(&self, opts: LeaseOptions) -> Result<Box<dyn Lease>> {
+        let _ = opts;
+        Err(Error::Unsupported("leases".into()))
+    }
+
+    /// One page of the children of a node. Default: [`Session::list_children`] + glob filter on
+    /// the name + decimal-offset cursor.
+    async fn list_children_page(&self, req: ChildrenPageRequest) -> Result<ChildrenPage> {
+        crate::fallback::children_page(self, req).await
+    }
+
+    /// Whether the rows of a table can be edited and by which key. Default: derived from
+    /// [`Session::table_details`].
+    async fn editability(&self, path: &ObjectPath) -> Result<Editability> {
+        crate::fallback::editability_from_details(self, path).await
+    }
+
+    /// The statements `apply_changes` would run, one per change, in application order.
+    /// Unsupported by default.
+    async fn preview_changes(&self, changes: &ChangeSet) -> Result<Vec<String>> {
+        let _ = changes;
+        Err(Error::Unsupported("data_editing".into()))
+    }
+
+    /// Apply a change set (all-or-nothing when [`Editability::atomic`]). Unsupported by default.
+    async fn apply_changes(&self, changes: ChangeSet) -> Result<ApplyResult> {
+        let _ = changes;
+        Err(Error::Unsupported("data_editing".into()))
+    }
+
+    /// Explain one statement. Unsupported by default.
+    async fn explain(&self, req: ExplainRequest) -> Result<RawPlan> {
+        let _ = req;
+        Err(Error::Unsupported("explain".into()))
+    }
+
+    /// Tables and relations of a scope. Default: built from `table_details` for at most 300
+    /// tables, otherwise `Unsupported`.
+    async fn schema_model(&self, req: SchemaModelRequest) -> Result<SchemaModel> {
+        crate::fallback::schema_model_via_details(self, req).await
+    }
+
+    /// Ordered DDL of the objects in a scope. Unsupported by default.
+    async fn generate_ddl(&self, req: DdlRequest) -> Result<Vec<DdlItem>> {
+        let _ = req;
+        Err(Error::Unsupported("ddl_generation".into()))
+    }
+
+    /// Read one page of a Redis key. Unsupported by default.
+    async fn read_key(&self, req: KeyReadRequest) -> Result<KeyValuePage> {
+        let _ = req;
+        Err(Error::Unsupported("key_value".into()))
+    }
+
     /// Close the connection and release resources.
     async fn close(&self) -> Result<()>;
 }
@@ -247,10 +326,18 @@ impl DriverRegistry {
         DbKind::ALL
             .into_iter()
             .map(|kind| match self.drivers.get(&kind) {
-                Some(driver) => DriverDescriptor {
-                    status: DriverStatus::Available,
-                    ..driver.descriptor()
-                },
+                Some(driver) => {
+                    let descriptor = driver.descriptor();
+                    // A driver may report that it cannot run here; anything else means usable.
+                    let status = match descriptor.status {
+                        DriverStatus::Unavailable { .. } => descriptor.status,
+                        _ => DriverStatus::Available,
+                    };
+                    DriverDescriptor {
+                        status,
+                        ..descriptor
+                    }
+                }
                 None => DriverDescriptor::planned(kind),
             })
             .collect()
@@ -396,7 +483,7 @@ mod tests {
         assert_eq!(all.len(), 9);
         let phase = |k: DbKind| match all.iter().find(|d| d.kind == k).unwrap().status {
             DriverStatus::Planned { phase } => phase,
-            DriverStatus::Available => panic!("must be planned"),
+            _ => panic!("must be planned"),
         };
         assert_eq!(phase(DbKind::Postgres), 1);
         assert_eq!(phase(DbKind::MySql), 1);
@@ -546,5 +633,116 @@ mod tests {
             serde_json::to_value(&end).unwrap(),
             serde_json::json!({"outcome": {"kind": "rows", "rowCount": 5, "truncated": true}, "elapsedMs": 9})
         );
+    }
+
+    #[test]
+    fn unavailable_status_shape_and_copy() {
+        let st = DriverStatus::Unavailable {
+            reason: UnavailableReason::NativeClientTooOld,
+        };
+        let copy = st; // Copy
+        assert_eq!(
+            serde_json::to_value(copy).unwrap(),
+            serde_json::json!({"state": "unavailable", "reason": "nativeClientTooOld"})
+        );
+        assert_eq!(
+            serde_json::to_value(UnavailableReason::NativeClientMissing).unwrap(),
+            "nativeClientMissing"
+        );
+        assert_eq!(
+            serde_json::from_value::<DriverStatus>(
+                serde_json::json!({"state": "unavailable", "reason": "nativeClientMissing"})
+            )
+            .unwrap(),
+            DriverStatus::Unavailable {
+                reason: UnavailableReason::NativeClientMissing
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_keeps_unavailable_status() {
+        struct Oracle;
+        #[async_trait]
+        impl Driver for Oracle {
+            fn descriptor(&self) -> DriverDescriptor {
+                DriverDescriptor::new(
+                    DbKind::Oracle,
+                    Capabilities::planned_for(DbKind::Oracle),
+                    DriverStatus::Unavailable {
+                        reason: UnavailableReason::NativeClientMissing,
+                    },
+                )
+            }
+            async fn connect(
+                &self,
+                _: &ConnectionConfig,
+                _: Option<&Secret>,
+            ) -> Result<Box<dyn Session>> {
+                Err(Error::DriverUnavailable("no client".into()))
+            }
+        }
+        let mut reg = DriverRegistry::new();
+        reg.register(Arc::new(Oracle));
+        let d = reg
+            .descriptors()
+            .into_iter()
+            .find(|d| d.kind == DbKind::Oracle)
+            .unwrap();
+        assert!(matches!(d.status, DriverStatus::Unavailable { .. }));
+    }
+
+    #[tokio::test]
+    async fn new_session_methods_have_defaults() {
+        let s = MockSession::default();
+        assert_eq!(s.script_dialect(), ScriptDialect::Opaque);
+        assert!(matches!(
+            s.open_lease(LeaseOptions::default()).await,
+            Err(Error::Unsupported(c)) if c == "leases"
+        ));
+        let changes = ChangeSet::Keys(crate::KeyChangeSet {
+            database: ObjectPath::root(),
+            changes: vec![],
+        });
+        assert!(matches!(
+            s.preview_changes(&changes).await,
+            Err(Error::Unsupported(c)) if c == "data_editing"
+        ));
+        assert!(matches!(
+            s.apply_changes(changes).await,
+            Err(Error::Unsupported(c)) if c == "data_editing"
+        ));
+        assert!(matches!(
+            s.read_key(KeyReadRequest {
+                key: ObjectPath::root(),
+                cursor: None,
+                count: 1,
+                pattern: None,
+                max_string_bytes: None
+            })
+            .await,
+            Err(Error::Unsupported(c)) if c == "key_value"
+        ));
+        assert!(matches!(
+            s.generate_ddl(DdlRequest {
+                scope: ObjectPath::root(),
+                objects: vec![],
+                options: Default::default()
+            })
+            .await,
+            Err(Error::Unsupported(c)) if c == "ddl_generation"
+        ));
+        assert!(matches!(
+            s.explain(ExplainRequest {
+                query_id: Uuid::nil(),
+                text: "SELECT 1".into(),
+                database: None,
+                analyze: false,
+                options: Default::default(),
+                timeout_ms: None
+            })
+            .await,
+            Err(Error::Unsupported(c)) if c == "explain"
+        ));
     }
 }

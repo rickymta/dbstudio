@@ -5,7 +5,7 @@ use std::fmt::Display;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use dbstudio_core::{ConnectionConfig, DbKind, Error, Result, TlsConfig};
+use dbstudio_core::{ConnectionConfig, DbKind, Error, Result, SshConfig, TlsConfig};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -58,19 +58,150 @@ const MIGRATIONS: &[&str] = &[
         key   TEXT PRIMARY KEY NOT NULL,
         value TEXT NOT NULL
     );",
+    // v3: editor (QUERY-01, 07, 08)
+    r##"CREATE TABLE query_history (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    connection_id  TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+    database_name  TEXT,
+    kind           TEXT NOT NULL,          -- query | explain | script | changes
+    text           TEXT NOT NULL,          -- ≤ 100 000 chars; secrets redacted (see below)
+    text_truncated INTEGER NOT NULL DEFAULT 0,
+    started_at     TEXT NOT NULL,
+    elapsed_ms     INTEGER,
+    status         TEXT NOT NULL,          -- running | ok | error | cancelled
+    statements     INTEGER,
+    rows           INTEGER,
+    error_message  TEXT
+);
+CREATE INDEX idx_history_conn_time ON query_history(connection_id, started_at DESC);
+CREATE INDEX idx_history_time ON query_history(started_at DESC);
+CREATE TABLE saved_query_folders (
+    id         TEXT PRIMARY KEY NOT NULL,
+    name       TEXT NOT NULL,
+    parent_id  TEXT REFERENCES saved_query_folders(id) ON DELETE CASCADE,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE saved_queries (
+    id            TEXT PRIMARY KEY NOT NULL,
+    folder_id     TEXT REFERENCES saved_query_folders(id) ON DELETE SET NULL,
+    name          TEXT NOT NULL,
+    text          TEXT NOT NULL,
+    is_snippet    INTEGER NOT NULL DEFAULT 0,  -- snippet placeholders ${1:name}
+    db_kind       TEXT,                        -- NULL = any
+    connection_id TEXT REFERENCES connections(id) ON DELETE SET NULL,
+    description   TEXT,
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE INDEX idx_saved_folder ON saved_queries(folder_id);
+CREATE TABLE editor_tabs (
+    id            TEXT PRIMARY KEY NOT NULL,
+    position      INTEGER NOT NULL,
+    title         TEXT NOT NULL,
+    connection_id TEXT REFERENCES connections(id) ON DELETE SET NULL,
+    database_name TEXT,
+    schema_name   TEXT,
+    text          TEXT NOT NULL,
+    file_path     TEXT,
+    cursor        INTEGER NOT NULL DEFAULT 0,
+    auto_commit   INTEGER NOT NULL DEFAULT 1,
+    updated_at    TEXT NOT NULL
+);"##,
+    // v4: ERD + export presets (ERD-05, EXPORT-10)
+    r##"CREATE TABLE erd_layouts (
+    id            TEXT PRIMARY KEY NOT NULL,
+    connection_id TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    scope         TEXT NOT NULL,   -- ObjectPath JSON
+    tables        TEXT NOT NULL,   -- JSON [{path, x, y, collapsed, color?}]
+    options       TEXT NOT NULL,   -- JSON {columns:"all"|"keys", showTypes, showComments, notation:"crowsFoot"}
+    viewport      TEXT,            -- JSON {x, y, zoom}
+    snapshot      TEXT NOT NULL,   -- JSON {tablePathKey: [[column, typeName], ...]} for change detection
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    UNIQUE(connection_id, name)
+);
+CREATE INDEX idx_erd_conn ON erd_layouts(connection_id);
+CREATE TABLE export_presets (
+    id            TEXT PRIMARY KEY NOT NULL,
+    name          TEXT NOT NULL,
+    connection_id TEXT REFERENCES connections(id) ON DELETE CASCADE,
+    spec          TEXT NOT NULL,   -- ExportSpec JSON (destination path kept, re-granted on run)
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);"##,
+    // v5: backup (BACKUP-07, 08, 11, 12)
+    r##"CREATE TABLE backup_jobs (
+    id                 TEXT PRIMARY KEY NOT NULL,
+    name               TEXT NOT NULL,
+    connection_id      TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+    enabled            INTEGER NOT NULL DEFAULT 1,
+    spec               TEXT NOT NULL,     -- BackupSpec JSON
+    cron               TEXT,              -- NULL = manual only
+    timezone           TEXT NOT NULL DEFAULT 'local',
+    retention          TEXT NOT NULL,     -- Retention JSON
+    missed_policy      TEXT NOT NULL DEFAULT 'runOnce',
+    notify             TEXT NOT NULL,     -- NotifyPolicy JSON
+    encrypted          INTEGER NOT NULL DEFAULT 0,  -- passphrase in keychain account "backup:<id>"
+    last_scheduled_for TEXT,
+    last_run_at        TEXT,
+    next_run_at        TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+CREATE INDEX idx_backup_jobs_due ON backup_jobs(enabled, next_run_at);
+CREATE TABLE backup_runs (
+    id            TEXT PRIMARY KEY NOT NULL,
+    job_id        TEXT REFERENCES backup_jobs(id) ON DELETE SET NULL,
+    job_name      TEXT NOT NULL,
+    connection_id TEXT REFERENCES connections(id) ON DELETE SET NULL,
+    kind          TEXT NOT NULL,          -- backup | restore | verify
+    trigger       TEXT NOT NULL,          -- manual | schedule | catchUp | cli
+    engine        TEXT NOT NULL,
+    status        TEXT NOT NULL,          -- running | succeeded | failed | cancelled | interrupted
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT,
+    duration_ms   INTEGER,
+    file_path     TEXT,
+    size_bytes    INTEGER,
+    checksum      TEXT,
+    objects       INTEGER,
+    rows          INTEGER,
+    error_kind    TEXT,
+    error_message TEXT,
+    log_tail      TEXT                    -- last 16 KB
+);
+CREATE INDEX idx_backup_runs_job ON backup_runs(job_id, started_at DESC);
+CREATE INDEX idx_backup_runs_time ON backup_runs(started_at DESC);"##,
+    // v6: SSH (CONN-06)
+    r##"ALTER TABLE connections ADD COLUMN ssh TEXT;   -- SshConfig JSON or NULL
+CREATE TABLE ssh_known_hosts (
+    host        TEXT NOT NULL,
+    port        INTEGER NOT NULL,
+    key_type    TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,              -- SHA256:base64
+    added_at    TEXT NOT NULL,
+    PRIMARY KEY (host, port, key_type)
+);"##,
 ];
 
 const PROFILE_COLUMNS: &str = "id, name, kind, host, port, database_name, username, tls_mode, \
     tls_ca_cert_path, tls_client_cert_path, tls_client_key_path, connect_timeout_ms, read_only, \
     environment, options, group_id, color, save_password, has_password, sort_order, created_at, \
-    updated_at";
+    updated_at, ssh";
 
-fn db_err(e: impl Display) -> Error {
+pub(crate) fn db_err(e: impl Display) -> Error {
     Error::Storage(format!("database error: {e}"))
 }
 
-fn invalid(msg: impl Display) -> Error {
+pub(crate) fn invalid(msg: impl Display) -> Error {
     Error::Storage(format!("invalid data: {msg}"))
+}
+
+/// Error returned by repository methods whose implementation belongs to a later work package.
+pub(crate) fn not_implemented<T>(what: &str) -> Result<T> {
+    Err(Error::Unsupported(format!("{what} (not implemented yet)")))
 }
 
 /// Current time as an ISO-8601 (RFC 3339, UTC) string.
@@ -103,23 +234,23 @@ pub(crate) fn migrate(conn: &mut Connection, migrations: &[&str]) -> Result<()> 
     Ok(())
 }
 
-fn to_text<T: Serialize>(value: &T) -> Result<String> {
+pub(crate) fn to_text<T: Serialize>(value: &T) -> Result<String> {
     match serde_json::to_value(value).map_err(invalid)? {
         serde_json::Value::String(s) => Ok(s),
         other => Err(invalid(format!("expected a string, got {other}"))),
     }
 }
 
-fn from_text<T: DeserializeOwned>(text: &str) -> Result<T> {
+pub(crate) fn from_text<T: DeserializeOwned>(text: &str) -> Result<T> {
     serde_json::from_value(serde_json::Value::String(text.to_string()))
         .map_err(|e| invalid(format!("unknown value `{text}`: {e}")))
 }
 
-fn parse_uuid(text: &str) -> Result<Uuid> {
+pub(crate) fn parse_uuid(text: &str) -> Result<Uuid> {
     Uuid::parse_str(text).map_err(|e| invalid(format!("bad uuid `{text}`: {e}")))
 }
 
-fn opt_uuid(text: Option<String>) -> Result<Option<Uuid>> {
+pub(crate) fn opt_uuid(text: Option<String>) -> Result<Option<Uuid>> {
     text.as_deref().map(parse_uuid).transpose()
 }
 
@@ -146,6 +277,7 @@ fn profile_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ConnectionProfile>
     let sort_order: i64 = row.get("sort_order")?;
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
+    let ssh: Option<String> = row.get("ssh")?;
     Ok((|| {
         Ok(ConnectionProfile {
             config: ConnectionConfig {
@@ -161,12 +293,18 @@ fn profile_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ConnectionProfile>
                     ca_cert_path: ca,
                     client_cert_path: cert,
                     client_key_path: key,
+                    server_name: None,
                 },
                 connect_timeout_ms: timeout.map(|t| t.max(0) as u64),
                 read_only,
                 environment: environment.as_deref().map(from_text).transpose()?,
                 options: serde_json::from_str::<BTreeMap<String, String>>(&options)
                     .map_err(|e| invalid(format!("bad options json: {e}")))?,
+                ssh: ssh
+                    .as_deref()
+                    .map(serde_json::from_str::<SshConfig>)
+                    .transpose()
+                    .map_err(|e| invalid(format!("bad ssh json: {e}")))?,
             },
             group_id: opt_uuid(group_id)?,
             color,
@@ -235,7 +373,7 @@ impl Store {
         })
     }
 
-    fn lock(&self) -> MutexGuard<'_, Connection> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Connection> {
         // A poisoned lock only means another thread panicked mid-operation; SQLite's own
         // transactions keep the data consistent, so continue.
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
@@ -555,11 +693,16 @@ fn write_profile(tx: &Transaction<'_>, p: &ConnectionProfile) -> Result<()> {
     let c = &p.config;
     let options = serde_json::to_string(&c.options).map_err(invalid)?;
     let environment = c.environment.as_ref().map(to_text).transpose()?;
+    let ssh = c
+        .ssh
+        .as_ref()
+        .map(|s| serde_json::to_string(s).map_err(invalid))
+        .transpose()?;
     tx.execute(
         &format!(
             "INSERT INTO connections ({PROFILE_COLUMNS}) VALUES
              (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-              ?19, ?20, ?21, ?22)
+              ?19, ?20, ?21, ?22, ?23)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name, kind = excluded.kind, host = excluded.host,
                 port = excluded.port, database_name = excluded.database_name,
@@ -572,7 +715,7 @@ fn write_profile(tx: &Transaction<'_>, p: &ConnectionProfile) -> Result<()> {
                 options = excluded.options, group_id = excluded.group_id,
                 color = excluded.color, save_password = excluded.save_password,
                 has_password = excluded.has_password, sort_order = excluded.sort_order,
-                updated_at = excluded.updated_at"
+                updated_at = excluded.updated_at, ssh = excluded.ssh"
         ),
         params![
             c.id.to_string(),
@@ -597,6 +740,7 @@ fn write_profile(tx: &Transaction<'_>, p: &ConnectionProfile) -> Result<()> {
             p.sort_order,
             p.created_at,
             p.updated_at,
+            ssh,
         ],
     )
     .map_err(db_err)?;
@@ -606,7 +750,7 @@ fn write_profile(tx: &Transaction<'_>, p: &ConnectionProfile) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbstudio_core::{Environment, TlsMode};
+    use dbstudio_core::{Environment, SshAuth, TlsMode};
 
     fn profile(name: &str) -> ConnectionProfile {
         ConnectionProfile {
@@ -653,6 +797,7 @@ mod tests {
             ca_cert_path: Some("/ca.pem".into()),
             client_cert_path: Some("/c.pem".into()),
             client_key_path: Some("/k.pem".into()),
+            server_name: None,
         };
         p.config.connect_timeout_ms = Some(2500);
         p.config.read_only = true;
@@ -828,19 +973,31 @@ mod tests {
         s.save_group(&c2).unwrap();
     }
 
+    /// Insert a connection into a database at schema v1/v2 (no `ssh` column yet).
+    fn insert_legacy(conn: &Connection, name: &str, group: Option<Uuid>) -> Uuid {
+        let id = Uuid::new_v4();
+        conn.execute(
+            "INSERT INTO connections (id, name, kind, host, port, tls_mode, group_id, created_at, \
+             updated_at) VALUES (?1, ?2, 'postgres', 'localhost', 5432, 'prefer', ?3, \
+             '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+            params![id.to_string(), name, group.map(|g| g.to_string())],
+        )
+        .unwrap();
+        id
+    }
+
     #[test]
     fn migrations_upgrade_old_database_without_data_loss() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("old.sqlite");
         // A database created by an older app version (schema v1 only).
-        let p = {
+        let (gid, pid) = {
             let conn = Connection::open(&path).unwrap();
             let s = Store::init(conn, &MIGRATIONS[..1]).unwrap();
             assert_eq!(s.schema_version().unwrap(), 1);
             let g = s.save_group(&group("old", None)).unwrap();
-            let mut p = profile("legacy");
-            p.group_id = Some(g.id);
-            s.save_profile(&p).unwrap()
+            let pid = insert_legacy(&s.lock(), "legacy", Some(g.id));
+            (g.id, pid)
         };
         // A later version appends a migration; opening upgrades in place.
         let newer: Vec<&str> = MIGRATIONS
@@ -850,7 +1007,10 @@ mod tests {
             .collect();
         let s = Store::init(Connection::open(&path).unwrap(), &newer).unwrap();
         assert_eq!(s.schema_version().unwrap(), newer.len() as u32);
-        assert_eq!(s.get_profile(p.config.id).unwrap(), p);
+        let p = s.get_profile(pid).unwrap();
+        assert_eq!(p.config.name, "legacy");
+        assert_eq!(p.group_id, Some(gid));
+        assert_eq!(p.config.ssh, None);
         assert_eq!(s.snapshot().unwrap().groups.len(), 1);
         s.lock()
             .execute("UPDATE connections SET note = 'x'", [])
@@ -888,19 +1048,218 @@ mod tests {
         assert_eq!(s.get_profile(id).unwrap().config.name, "persist");
     }
 
+    fn table_exists(s: &Store, name: &str) -> bool {
+        s.lock()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
     #[test]
-    fn v1_database_upgrades_to_v2_keeping_profiles_and_gaining_settings() {
+    fn v1_database_upgrades_to_latest_keeping_profiles_and_gaining_settings() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("v1.sqlite");
-        let p = {
+        let pid = {
             let s = Store::init(Connection::open(&path).unwrap(), &MIGRATIONS[..1]).unwrap();
             assert_eq!(s.schema_version().unwrap(), 1);
-            s.save_profile(&profile("legacy")).unwrap()
+            insert_legacy(&s.lock(), "legacy", None)
         };
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 2);
-        assert_eq!(s.get_profile(p.config.id).unwrap(), p);
+        assert_eq!(s.schema_version().unwrap(), 6);
+        assert_eq!(s.get_profile(pid).unwrap().config.name, "legacy");
         assert_eq!(s.get_settings().unwrap(), AppSettings::default());
+    }
+
+    #[test]
+    fn v2_database_with_data_upgrades_to_v6() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2.sqlite");
+        let (gid, pid, settings) = {
+            let s = Store::init(Connection::open(&path).unwrap(), &MIGRATIONS[..2]).unwrap();
+            assert_eq!(s.schema_version().unwrap(), 2);
+            assert!(!table_exists(&s, "query_history"));
+            let g = s.save_group(&group("g", None)).unwrap();
+            let pid = insert_legacy(&s.lock(), "old-conn", Some(g.id));
+            let settings = s
+                .set_settings(AppSettings {
+                    grid_max_rows: 2_000,
+                    log_level: crate::settings::LogLevel::Debug,
+                    ..AppSettings::default()
+                })
+                .unwrap();
+            (g.id, pid, settings)
+        };
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 6);
+        assert_eq!(MIGRATIONS.len(), 6);
+        for t in [
+            "query_history",
+            "saved_query_folders",
+            "saved_queries",
+            "editor_tabs",
+            "erd_layouts",
+            "export_presets",
+            "backup_jobs",
+            "backup_runs",
+            "ssh_known_hosts",
+        ] {
+            assert!(table_exists(&s, t), "missing table {t}");
+        }
+        let has_ssh: bool = s
+            .lock()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('connections') WHERE name = 'ssh')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_ssh);
+        let p = s.get_profile(pid).unwrap();
+        assert_eq!(p.config.name, "old-conn");
+        assert_eq!(p.group_id, Some(gid));
+        assert_eq!(p.config.ssh, None);
+        assert_eq!(s.snapshot().unwrap().groups.len(), 1);
+        let got = s.get_settings().unwrap();
+        assert_eq!(got.grid_max_rows, 2_000);
+        assert_eq!(got.log_level, settings.log_level);
+        // New settings fields take their defaults.
+        assert_eq!(got.history_max_per_connection, 5_000);
+        drop(s);
+        // Reopening is idempotent.
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 6);
+        assert_eq!(s.get_profile(pid).unwrap().config.name, "old-conn");
+    }
+
+    #[test]
+    fn ssh_config_roundtrips_and_null_when_absent() {
+        let s = Store::open_in_memory().unwrap();
+        let mut p = profile("tunnelled");
+        p.config.ssh = Some(SshConfig {
+            host: "bastion".into(),
+            port: 2222,
+            username: "ops".into(),
+            auth: SshAuth::PrivateKey {
+                key_path: "/home/u/.ssh/id_ed25519".into(),
+                has_passphrase: true,
+            },
+            keepalive_secs: Some(30),
+            connect_timeout_ms: Some(5_000),
+        });
+        let saved = s.save_profile(&p).unwrap();
+        let loaded = s.get_profile(p.config.id).unwrap();
+        assert_eq!(loaded, saved);
+        assert_eq!(loaded.config.ssh, p.config.ssh);
+        let raw: String = s
+            .lock()
+            .query_row("SELECT ssh FROM connections", [], |r| r.get(0))
+            .unwrap();
+        assert!(raw.contains("\"method\":\"privateKey\""));
+
+        // Other auth methods and clearing back to NULL.
+        for auth in [SshAuth::Password, SshAuth::Agent] {
+            let mut edit = loaded.clone();
+            edit.config.ssh.as_mut().unwrap().auth = auth.clone();
+            s.save_profile(&edit).unwrap();
+            assert_eq!(
+                s.get_profile(p.config.id).unwrap().config.ssh.unwrap().auth,
+                auth
+            );
+        }
+        let mut edit = loaded;
+        edit.config.ssh = None;
+        s.save_profile(&edit).unwrap();
+        assert_eq!(s.get_profile(p.config.id).unwrap().config.ssh, None);
+        let null: bool = s
+            .lock()
+            .query_row("SELECT ssh IS NULL FROM connections", [], |r| r.get(0))
+            .unwrap();
+        assert!(null);
+        // Duplicate keeps the tunnel configuration.
+        let mut with = edit;
+        with.config.ssh = p.config.ssh.clone();
+        s.save_profile(&with).unwrap();
+        let copy = s.duplicate_profile(p.config.id).unwrap();
+        assert_eq!(copy.config.ssh, p.config.ssh);
+    }
+
+    #[test]
+    fn deleting_a_connection_cascades_and_nulls_dependents() {
+        let s = Store::open_in_memory().unwrap();
+        let p = s.save_profile(&profile("c")).unwrap();
+        let id = p.config.id.to_string();
+        let conn = s.lock();
+        conn.execute(
+            "INSERT INTO query_history (connection_id, kind, text, started_at, status)
+             VALUES (?1, 'query', 'select 1', '2024-01-01T00:00:00Z', 'ok')",
+            params![id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO saved_queries (id, name, text, connection_id, created_at, updated_at)
+             VALUES ('q1', 'n', 't', ?1, 'x', 'x')",
+            params![id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO editor_tabs (id, position, title, connection_id, text, updated_at)
+             VALUES ('t1', 0, 'T', ?1, '', 'x')",
+            params![id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO erd_layouts (id, connection_id, name, scope, tables, options, snapshot,
+             created_at, updated_at) VALUES ('e1', ?1, 'n', '{}', '[]', '{}', '{}', 'x', 'x')",
+            params![id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO export_presets (id, name, connection_id, spec, created_at, updated_at)
+             VALUES ('p1', 'n', ?1, '{}', 'x', 'x')",
+            params![id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO backup_jobs (id, name, connection_id, spec, retention, notify,
+             created_at, updated_at) VALUES ('j1', 'n', ?1, '{}', '{}', '{}', 'x', 'x')",
+            params![id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO backup_runs (id, job_id, job_name, connection_id, kind, trigger, engine,
+             status, started_at) VALUES ('r1', 'j1', 'n', ?1, 'backup', 'manual', 'native',
+             'succeeded', 'x')",
+            params![id],
+        )
+        .unwrap();
+        drop(conn);
+
+        s.delete_profile(p.config.id).unwrap();
+
+        let conn = s.lock();
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count("SELECT COUNT(*) FROM query_history"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM erd_layouts"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM export_presets"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM backup_jobs"), 0);
+        // Saved queries, tabs and run records survive without the link.
+        assert_eq!(
+            count("SELECT COUNT(*) FROM saved_queries WHERE connection_id IS NULL"),
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM editor_tabs WHERE connection_id IS NULL"),
+            1
+        );
+        assert_eq!(
+            count(
+                "SELECT COUNT(*) FROM backup_runs WHERE connection_id IS NULL AND job_id IS NULL"
+            ),
+            1
+        );
     }
 
     #[test]

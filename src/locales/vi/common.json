@@ -16,7 +16,8 @@
   },
   "status": {
     "available": "Sẵn sàng",
-    "planned": "Giai đoạn {{phase}}"
+    "planned": "Giai đoạn {{phase}}",
+    "unavailable": "Không khả dụng"
   },
   "family": {
     "relational": "Quan hệ",

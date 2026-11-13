@@ -1,0 +1,140 @@
+{
+  "array": {
+    "t": "array",
+    "v": [
+      {
+        "t": "int",
+        "v": 1
+      },
+      {
+        "t": "text",
+        "v": "two"
+      },
+      {
+        "t": "null"
+      }
+    ]
+  },
+  "bool": {
+    "t": "bool",
+    "v": true
+  },
+  "bytes": {
+    "t": "bytes",
+    "v": "AAEC/w=="
+  },
+  "date": {
+    "t": "date",
+    "v": "2024-05-31"
+  },
+  "dateTime": {
+    "t": "dateTime",
+    "v": "2024-05-31T13:45:00"
+  },
+  "decimal": {
+    "t": "decimal",
+    "v": "12345678901234567890.123456789"
+  },
+  "document": {
+    "t": "document",
+    "v": [
+      [
+        "zeta",
+        {
+          "t": "int",
+          "v": 1
+        }
+      ],
+      [
+        "alpha",
+        {
+          "t": "text",
+          "v": "x"
+        }
+      ],
+      [
+        "nested",
+        {
+          "t": "document",
+          "v": [
+            [
+              "id",
+              {
+                "t": "ext",
+                "v": {
+                  "text": "65f0a1b2c3d4e5f6a7b8c9d0",
+                  "type": "objectId"
+                }
+              }
+            ],
+            [
+              "tags",
+              {
+                "t": "array",
+                "v": [
+                  {
+                    "t": "text",
+                    "v": "a"
+                  },
+                  {
+                    "t": "null"
+                  }
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    ]
+  },
+  "ext": {
+    "t": "ext",
+    "v": {
+      "text": "1700000000,1",
+      "type": "bsonTimestamp"
+    }
+  },
+  "float": {
+    "t": "float",
+    "v": 1.5
+  },
+  "floatNaN": {
+    "t": "float",
+    "v": "NaN"
+  },
+  "int": {
+    "t": "int",
+    "v": 42
+  },
+  "intUnsafe": {
+    "t": "int",
+    "v": "9007199254740993"
+  },
+  "json": {
+    "t": "json",
+    "v": "{\"b\":1,\"a\":2}"
+  },
+  "null": {
+    "t": "null"
+  },
+  "text": {
+    "t": "text",
+    "v": "hello"
+  },
+  "time": {
+    "t": "time",
+    "v": "13:45:00"
+  },
+  "timestamp": {
+    "t": "timestamp",
+    "v": "2024-05-31T13:45:00.123456789+07:00[Asia/Ho_Chi_Minh]"
+  },
+  "uInt": {
+    "t": "uInt",
+    "v": "18446744073709551615"
+  },
+  "uuid": {
+    "t": "uuid",
+    "v": "00000000-0000-0000-0000-000000000001"
+  }
+}

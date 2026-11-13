@@ -1,0 +1,150 @@
+{
+  "ExplainOptions": {
+    "buffers": true,
+    "settings": false,
+    "verbose": true
+  },
+  "ExplainRequest": {
+    "analyze": true,
+    "database": "app",
+    "options": {
+      "buffers": true,
+      "settings": true,
+      "verbose": false
+    },
+    "queryId": "00000000-0000-0000-0000-000000000003",
+    "text": "SELECT 1",
+    "timeoutMs": 30000
+  },
+  "PlanFormat": "mySqlJsonV2",
+  "PlanNode": {
+    "actualRows": 950.0,
+    "actualRowsTotal": 950.0,
+    "actualTimeMs": 1.5,
+    "children": [],
+    "condition": "(status = 'x')",
+    "estCost": 155.0,
+    "estRows": 1000.0,
+    "estStartupCost": 0.0,
+    "extra": {
+      "Sort Method": "quicksort"
+    },
+    "id": 1,
+    "kind": "fullScan",
+    "loops": 1,
+    "object": {
+      "alias": null,
+      "index": null,
+      "name": "orders",
+      "schema": "public"
+    },
+    "op": "Seq Scan",
+    "raw": {
+      "kind": "jsonPointer",
+      "pointer": "/0/Plan"
+    },
+    "selfCost": 155.0,
+    "selfTimeMs": 1.5
+  },
+  "PlanRules": {
+    "largeTableRows": 100000.0,
+    "misestimateFactor": 10.0,
+    "misestimateMinRows": 100.0,
+    "nestedLoopRows": 10000.0
+  },
+  "PlanTree": {
+    "analyzed": true,
+    "format": "postgresJson",
+    "hotPath": [0, 1],
+    "nodeCount": 2,
+    "root": {
+      "actualRows": 950.0,
+      "actualRowsTotal": 950.0,
+      "actualTimeMs": 1.5,
+      "children": [
+        {
+          "actualRows": 950.0,
+          "actualRowsTotal": 950.0,
+          "actualTimeMs": 1.5,
+          "children": [],
+          "condition": "(status = 'x')",
+          "estCost": 155.0,
+          "estRows": 1000.0,
+          "estStartupCost": 0.0,
+          "extra": {
+            "Sort Method": "quicksort"
+          },
+          "id": 1,
+          "kind": "fullScan",
+          "loops": 1,
+          "object": {
+            "alias": null,
+            "index": null,
+            "name": "orders",
+            "schema": "public"
+          },
+          "op": "Seq Scan",
+          "raw": {
+            "kind": "jsonPointer",
+            "pointer": "/0/Plan"
+          },
+          "selfCost": 155.0,
+          "selfTimeMs": 1.5
+        }
+      ],
+      "condition": "(status = 'x')",
+      "estCost": 155.0,
+      "estRows": 1000.0,
+      "estStartupCost": 0.0,
+      "extra": {
+        "Sort Method": "quicksort"
+      },
+      "id": 0,
+      "kind": "sort",
+      "loops": 1,
+      "object": null,
+      "op": "Sort",
+      "raw": {
+        "kind": "none"
+      },
+      "selfCost": 155.0,
+      "selfTimeMs": 1.5
+    },
+    "totals": {
+      "executionTimeMs": 2.0,
+      "planningTimeMs": 0.2,
+      "rows": 950.0,
+      "totalCost": 160.0
+    },
+    "warnings": [
+      {
+        "nodeId": 1,
+        "params": {
+          "factor": "12.5"
+        },
+        "rule": "misestimate",
+        "severity": "warning"
+      }
+    ]
+  },
+  "PlanWarning": {
+    "nodeId": 1,
+    "params": {
+      "factor": "12.5"
+    },
+    "rule": "misestimate",
+    "severity": "warning"
+  },
+  "RawPlan": {
+    "analyzed": true,
+    "capturedAt": "2026-11-13T00:00:00Z",
+    "extra": {
+      "xplan": "Plan hash value: 1"
+    },
+    "format": "oraclePlanRows",
+    "rolledBack": true,
+    "serverVersion": "23.4",
+    "statement": "SELECT 1 FROM dual",
+    "text": "[]"
+  }
+}

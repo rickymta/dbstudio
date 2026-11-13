@@ -1,0 +1,21 @@
+[package]
+name = "dbstudio-plan"
+description = "Execution plan parsing and analysis (PostgreSQL, MySQL, SQL Server, Oracle, MongoDB) for DBStudio."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+dbstudio-core.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+dbstudio-core = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

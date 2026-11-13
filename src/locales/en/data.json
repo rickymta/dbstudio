@@ -78,6 +78,8 @@
   },
   "viewer": {
     "title": "Cell",
+    "extType": "Type",
+    "extText": "Value",
     "close": "Close viewer",
     "copy": "Copy",
     "copied": "Copied",

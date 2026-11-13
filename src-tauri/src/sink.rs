@@ -1,6 +1,8 @@
 //! Bridge from the driver-facing [`ResultSink`] to a stream of [`QueryEvent`]s.
 
-use dbstudio_core::{ColumnMeta, Error, QueryEvent, Result, ResultSink, StatementEnd, Value};
+use dbstudio_core::{
+    ColumnMeta, Error, QueryEvent, Result, ResultSink, StatementEnd, StatementStart, Value,
+};
 
 /// A [`ResultSink`] that forwards every callback as a [`QueryEvent`] to `emit`.
 ///
@@ -46,5 +48,9 @@ impl<F: FnMut(QueryEvent) -> bool + Send> ResultSink for EventSink<F> {
 
     fn on_statement_end(&mut self, end: StatementEnd) -> Result<()> {
         self.send(QueryEvent::StatementEnd { end })
+    }
+
+    fn on_statement_start(&mut self, start: StatementStart) -> Result<()> {
+        self.send(QueryEvent::StatementStart { start })
     }
 }

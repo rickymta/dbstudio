@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::Result;
+use crate::script::TextRange;
 use crate::value::{Value, ValueKind};
 
 /// A request to execute one or more statements.
@@ -136,6 +137,16 @@ pub struct ExecSummary {
     pub elapsed_ms: u64,
 }
 
+/// A statement begins; offsets are characters into the request text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatementStart {
+    /// Zero-based statement index.
+    pub index: u32,
+    /// Range of the statement in the request text (MSSQL may report the whole batch).
+    pub range: TextRange,
+}
+
 /// Receiver of streamed query results.
 ///
 /// Methods are synchronous. Returning `Err` means the receiver wants the driver to stop; the
@@ -151,6 +162,11 @@ pub trait ResultSink: Send {
     fn on_message(&mut self, message: String) -> Result<()>;
     /// The current statement finished.
     fn on_statement_end(&mut self, end: StatementEnd) -> Result<()>;
+    /// A statement begins. Optional for drivers; ignored by default.
+    fn on_statement_start(&mut self, start: StatementStart) -> Result<()> {
+        let _ = start;
+        Ok(())
+    }
 }
 
 /// Event streamed to the frontend (through a Tauri channel) while a query or table fetch runs.
@@ -177,6 +193,11 @@ pub enum QueryEvent {
     StatementEnd {
         /// End-of-statement details.
         end: StatementEnd,
+    },
+    /// A statement begins (optional; drivers that cannot split statements never send it).
+    StatementStart {
+        /// Index and character range.
+        start: StatementStart,
     },
 }
 
@@ -289,5 +310,32 @@ mod tests {
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["type"], "statementEnd");
         assert_eq!(serde_json::from_value::<QueryEvent>(v).unwrap(), e);
+    }
+
+    #[test]
+    fn statement_start_event_shape() {
+        let e = QueryEvent::StatementStart {
+            start: StatementStart {
+                index: 0,
+                range: TextRange { start: 0, end: 17 },
+            },
+        };
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(
+            json,
+            json!({"type": "statementStart", "start": {"index": 0, "range": {"start": 0, "end": 17}}})
+        );
+        assert_eq!(serde_json::from_value::<QueryEvent>(json).unwrap(), e);
+    }
+
+    #[test]
+    fn collecting_sink_ignores_statement_start() {
+        let mut sink = CollectingSink::new();
+        sink.on_statement_start(StatementStart {
+            index: 0,
+            range: TextRange { start: 0, end: 1 },
+        })
+        .unwrap();
+        assert!(sink.into_results().is_empty());
     }
 }

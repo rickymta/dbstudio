@@ -4,7 +4,7 @@ use std::path::Path;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use dbstudio_core::{DriverDescriptor, Error, Result};
+use dbstudio_core::{DbKind, DriverDescriptor, DriverStatus, Error, Result, UnavailableReason};
 use dbstudio_store::AppSettings;
 use serde::Serialize;
 use tauri::State;
@@ -44,6 +44,53 @@ pub(crate) fn app_info_impl(state: &AppState) -> AppInfo {
 
 pub(crate) fn list_drivers_impl(state: &AppState) -> Vec<DriverDescriptor> {
     state.registry.descriptors()
+}
+
+/// Why a driver is (not) usable on this machine, with a link to instructions when there is one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriverDiagnostics {
+    pub status: DriverStatus,
+    pub message: String,
+    pub help_url: Option<String>,
+}
+
+/// Status of the driver of `kind` and an explanation. Package J refines the Oracle case.
+pub(crate) fn driver_diagnostics_impl(state: &AppState, kind: DbKind) -> Result<DriverDiagnostics> {
+    let descriptor = state
+        .registry
+        .descriptors()
+        .into_iter()
+        .find(|d| d.kind == kind)
+        .ok_or_else(|| Error::NotFound(format!("driver {}", kind.id())))?;
+    let name = kind.display_name();
+    let (message, help_url) = match descriptor.status {
+        DriverStatus::Available => (format!("The {name} driver is available."), None),
+        DriverStatus::Planned { phase } => (
+            format!("The {name} driver is planned for phase {phase} and not built into this app."),
+            None,
+        ),
+        DriverStatus::Unavailable { reason } => {
+            let message = match reason {
+                UnavailableReason::NativeClientMissing => {
+                    format!("The {name} client library is not installed on this machine.")
+                }
+                UnavailableReason::NativeClientTooOld => {
+                    format!("The installed {name} client library is too old.")
+                }
+            };
+            let help = (kind == DbKind::Oracle).then(|| {
+                "https://www.oracle.com/database/technologies/instant-client/downloads.html"
+                    .to_string()
+            });
+            (message, help)
+        }
+    };
+    Ok(DriverDiagnostics {
+        status: descriptor.status,
+        message,
+        help_url,
+    })
 }
 
 pub(crate) fn log_dir_impl(state: &AppState) -> Result<String> {
@@ -207,6 +254,13 @@ pub(crate) async fn save_cell_value_impl(
 pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     tracing::debug!(command = "app_info", "ipc call");
     app_info_impl(&state)
+}
+
+/// Diagnostics of a driver (`DriverStatus` plus an explanation and a help link).
+#[tauri::command]
+pub fn driver_diagnostics(state: State<'_, AppState>, kind: DbKind) -> Result<DriverDiagnostics> {
+    tracing::debug!(command = "driver_diagnostics", kind = kind.id(), "ipc call");
+    driver_diagnostics_impl(&state, kind)
 }
 
 #[tauri::command]

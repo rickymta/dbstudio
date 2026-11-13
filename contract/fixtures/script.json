@@ -1,0 +1,220 @@
+{
+  "CommandHint": {
+    "flags": ["write"],
+    "name": "SET",
+    "summary": "Set the string value of a key",
+    "syntax": "SET key value [EX seconds]"
+  },
+  "ConfirmationGrant": {
+    "token": "0123456789abcdef0123456789abcdef",
+    "typed": "app"
+  },
+  "ConfirmationRequest": {
+    "confirmText": "app",
+    "expiresInMs": 120000,
+    "statements": [
+      {
+        "index": 0,
+        "range": {
+          "end": 12,
+          "start": 0
+        },
+        "reason": "drop",
+        "text": "DROP TABLE t"
+      }
+    ],
+    "token": "0123456789abcdef0123456789abcdef"
+  },
+  "DestructiveReason": "deleteWithoutWhere",
+  "DestructiveStatement": {
+    "index": 0,
+    "range": {
+      "end": 12,
+      "start": 0
+    },
+    "reason": "drop",
+    "text": "DROP TABLE t"
+  },
+  "ExecuteRequest": {
+    "batchSize": null,
+    "confirm": {
+      "token": "0123456789abcdef0123456789abcdef",
+      "typed": "app"
+    },
+    "database": null,
+    "maxRows": 1000,
+    "params": [
+      {
+        "name": ":id",
+        "value": {
+          "kind": "number",
+          "v": "42"
+        }
+      }
+    ],
+    "queryId": "00000000-0000-0000-0000-000000000002",
+    "recordHistory": true,
+    "text": "SELECT * FROM t WHERE id = :id",
+    "timeoutMs": null
+  },
+  "ExecuteResult": {
+    "historyId": 7,
+    "state": {
+      "autoCommit": false,
+      "broken": false,
+      "database": "app",
+      "pendingResult": null,
+      "running": "00000000-0000-0000-0000-000000000001",
+      "schema": "public",
+      "transaction": "active"
+    },
+    "summary": {
+      "elapsedMs": 12,
+      "statements": 3
+    }
+  },
+  "ParamInput": {
+    "kind": "text",
+    "v": "o'brien"
+  },
+  "ParamRef": {
+    "name": ":id",
+    "ranges": [
+      {
+        "end": 4,
+        "start": 1
+      }
+    ],
+    "style": "named"
+  },
+  "ParamStyle": "question",
+  "ParamValue": {
+    "name": ":id",
+    "value": {
+      "kind": "number",
+      "v": "42"
+    }
+  },
+  "ScriptAnalysis": {
+    "dialect": {
+      "backslashEscapes": true,
+      "mariadb": false,
+      "name": "mySql"
+    },
+    "params": [
+      {
+        "name": ":id",
+        "ranges": [
+          {
+            "end": 4,
+            "start": 1
+          }
+        ],
+        "style": "named"
+      }
+    ],
+    "problems": [
+      {
+        "message": "unterminated string",
+        "range": {
+          "end": 10,
+          "start": 9
+        }
+      }
+    ],
+    "statements": [
+      {
+        "class": {
+          "analyze": true,
+          "kind": "explain",
+          "writes": false
+        },
+        "destructive": null,
+        "implicitCommit": false,
+        "index": 0,
+        "range": {
+          "end": 28,
+          "start": 0
+        },
+        "targets": ["users"],
+        "verb": "EXPLAIN"
+      },
+      {
+        "class": {
+          "kind": "transaction",
+          "op": "begin"
+        },
+        "destructive": null,
+        "implicitCommit": false,
+        "index": 1,
+        "range": {
+          "end": 48,
+          "start": 30
+        },
+        "targets": [],
+        "verb": "BEGIN"
+      },
+      {
+        "class": {
+          "kind": "write"
+        },
+        "destructive": "deleteWithoutWhere",
+        "implicitCommit": false,
+        "index": 2,
+        "range": {
+          "end": 70,
+          "start": 50
+        },
+        "targets": ["users"],
+        "verb": "DELETE"
+      }
+    ]
+  },
+  "ScriptDialect": {
+    "backslashEscapes": true,
+    "mariadb": false,
+    "name": "mySql"
+  },
+  "ScriptProblem": {
+    "message": "unterminated string",
+    "range": {
+      "end": 10,
+      "start": 9
+    }
+  },
+  "StatementClass": {
+    "kind": "transaction",
+    "op": "rollbackToSavepoint"
+  },
+  "StatementInfo": {
+    "class": {
+      "kind": "write"
+    },
+    "destructive": "deleteWithoutWhere",
+    "implicitCommit": false,
+    "index": 2,
+    "range": {
+      "end": 70,
+      "start": 50
+    },
+    "targets": ["users"],
+    "verb": "DELETE"
+  },
+  "TextRange": {
+    "end": 9,
+    "start": 3
+  },
+  "TxControl": "savepoint",
+  "Vocabulary": {
+    "commands": [
+      {
+        "flags": ["write"],
+        "name": "SET",
+        "summary": "Set the string value of a key",
+        "syntax": "SET key value [EX seconds]"
+      }
+    ],
+    "functions": ["count"],
+    "keywords": ["SELECT"]
+  }
+}

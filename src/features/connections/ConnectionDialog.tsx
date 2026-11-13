@@ -124,7 +124,9 @@ function ConnectionDialogBody({
       label:
         d.status.state === 'available'
           ? d.displayName
-          : `${d.displayName} (${t('phase', { phase: d.status.phase })})`,
+          : d.status.state === 'planned'
+            ? `${d.displayName} (${t('phase', { phase: d.status.phase })})`
+            : `${d.displayName} (${t('driverUnavailable')})`,
       disabled: d.status.state !== 'available',
     }));
   }, [drivers.data, form.kind, t]);
