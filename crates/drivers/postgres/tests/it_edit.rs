@@ -29,7 +29,7 @@ async fn make(s: &dyn Session, es: &str, name: &str, extra: &str) {
     exec(
         s,
         &format!(
-            "DROP TABLE IF EXISTS {es}.{name}; \
+            "DROP TABLE IF EXISTS {es}.{name} CASCADE; \
              CREATE TABLE {es}.{name} (id int PRIMARY KEY, a text, b text NOT NULL DEFAULT 'd', \
              n int{extra}); \
              INSERT INTO {es}.{name} (id, a, b, n) VALUES (1,'x','x',1),(2,'y','y',2),(3,'z','z',3),(4,'w','w',4)"
