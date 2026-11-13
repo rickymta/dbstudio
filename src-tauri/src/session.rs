@@ -290,6 +290,16 @@ impl SessionManager {
             .ok_or_else(|| Error::NotFound(format!("session {session_id}")))
     }
 
+    /// Any open session opened from `connection_id` with its id (which one is unspecified when
+    /// several are open), or `None` when the connection has no open session.
+    #[allow(dead_code)] // used by the export/backup commands
+    pub fn find_by_connection(&self, connection_id: Uuid) -> Option<(Uuid, Arc<dyn Session>)> {
+        self.lock()
+            .iter()
+            .find(|(_, e)| e.connection_id == connection_id)
+            .map(|(id, e)| (*id, Arc::clone(&e.session)))
+    }
+
     /// Close a session (its leases first). Closing an unknown (already closed) session is not an error.
     pub async fn close(&self, session_id: Uuid) -> Result<()> {
         let entry = self.lock().remove(&session_id);
@@ -620,6 +630,22 @@ mod tests {
         // close_connection and close_all do the same.
         assert_eq!(mgr.close_connection(cfg.id).await, 1);
         assert_eq!(closes.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn find_by_connection_returns_a_session_of_that_connection() {
+        let (driver, _) = MockDriver::new(DbKind::Postgres);
+        let mgr = manager(driver);
+        let a = config(DbKind::Postgres);
+        let b = config(DbKind::Postgres);
+        assert!(mgr.find_by_connection(a.id).is_none());
+        let info_a = mgr.open(&a, None).await.unwrap();
+        let info_b = mgr.open(&b, None).await.unwrap();
+        assert_eq!(mgr.find_by_connection(a.id).unwrap().0, info_a.session_id);
+        assert_eq!(mgr.find_by_connection(b.id).unwrap().0, info_b.session_id);
+        mgr.close(info_a.session_id).await.unwrap();
+        assert!(mgr.find_by_connection(a.id).is_none());
+        assert!(mgr.find_by_connection(Uuid::new_v4()).is_none());
     }
 
     #[tokio::test]

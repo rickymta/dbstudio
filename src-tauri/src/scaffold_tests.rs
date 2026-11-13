@@ -291,12 +291,13 @@ async fn data_editing_checks_read_only_before_the_session() {
         .await
         .unwrap_err();
     assert_eq!(err.kind(), "readOnly");
-    assert_eq!(
-        changes::preview_impl(&f.state, ro, change_set.clone())
-            .await
-            .unwrap_err()
-            .kind(),
-        "readOnly"
+    // Preview is not guarded: on a read-only connection it reaches the session.
+    let err = changes::preview_impl(&f.state, ro, change_set.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::Unsupported(c) if c == "data_editing"),
+        "{err}"
     );
     let rw = open(&f, profile(false, None)).await;
     let err = changes::apply_impl(&f.state, rw, change_set)

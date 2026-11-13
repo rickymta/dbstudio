@@ -37,10 +37,9 @@ pub(crate) async fn preview_impl(
     session_id: Uuid,
     changes: ChangeSet,
 ) -> Result<Vec<String>> {
-    // Kept guarded like `changes_apply` (contract tests expect it); "copy as INSERT" on a
-    // read-only connection therefore reports the read-only error.
-    let (session, config) = state.sessions.get_with_config(session_id)?;
-    guard::ensure_writable(&config, "data editing")?;
+    // Preview only renders text and never touches the server, so it is allowed on read-only
+    // connections ("copy as INSERT"); `apply_impl` is the one that enforces read-only.
+    let session = state.sessions.get(session_id)?;
     session.preview_changes(&changes).await
 }
 
