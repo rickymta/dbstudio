@@ -258,7 +258,14 @@ export async function svgToPdfBytes(
   width: number,
   height: number,
 ): Promise<Uint8Array> {
-  const [{ jsPDF }, { svg2pdf }] = await Promise.all([import('jspdf'), import('svg2pdf.js')]);
+  const [jspdfModule, svg2pdfModule] = await Promise.all([import('jspdf'), import('svg2pdf.js')]);
+  // The CommonJS builds expose the exports under `default`.
+  const pick = <T>(mod: unknown, name: string): T => {
+    const m = mod as Record<string, unknown> & { default?: Record<string, unknown> };
+    return (m[name] ?? m.default?.[name]) as T;
+  };
+  const jsPDF = pick<typeof import('jspdf').jsPDF>(jspdfModule, 'jsPDF');
+  const svg2pdf = pick<typeof import('svg2pdf.js').svg2pdf>(svg2pdfModule, 'svg2pdf');
   const doc = new jsPDF({
     orientation: width >= height ? 'landscape' : 'portrait',
     unit: 'pt',

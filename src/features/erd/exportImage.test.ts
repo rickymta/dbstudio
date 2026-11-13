@@ -1,8 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { generateModel, sampleModel } from '@/lib/mock/erd';
 import { autoLayout } from './erdLayout';
-import { PALETTES, buildSvg, bytesToBase64, renderExport } from './exportImage';
+import { PALETTES, buildSvg, bytesToBase64, renderExport, svgToPngBytes } from './exportImage';
 import { DEFAULT_OPTIONS, buildView, tableKey } from './model';
+
+// jsdom resolves the CommonJS build of svg2pdf.js; the app (Vite) uses the ES build.
+vi.mock(
+  'svg2pdf.js',
+  async () => await import('../../../node_modules/svg2pdf.js/dist/svg2pdf.es.min.js'),
+);
 
 async function input(theme: 'light' | 'dark', n?: number) {
   const model = n ? generateModel(n) : sampleModel(true);
@@ -145,5 +151,68 @@ describe('SVG export', () => {
     expect(text.startsWith('<svg ')).toBe(true);
     expect(bytesToBase64(new TextEncoder().encode('hé'))).toBe(btoa('hÃ©'));
     expect(tableKey(a.view.tables[0]!.table.path)).toBeTruthy();
+  });
+});
+
+describe('PDF and PNG export', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('writes a valid PDF for both themes', async () => {
+    // svg2pdf measures shapes with getBBox, which jsdom does not implement.
+    (SVGElement.prototype as unknown as { getBBox: () => unknown }).getBBox = () => ({
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 20,
+    });
+    const a = await input('light');
+    for (const theme of ['light', 'dark'] as const) {
+      const bytes = await renderExport(
+        {
+          tables: a.view.tables,
+          relations: a.view.relations,
+          positions: a.positions,
+          options: DEFAULT_OPTIONS,
+          theme,
+        },
+        'pdf',
+      );
+      const text = new TextDecoder('latin1').decode(bytes);
+      expect(text.startsWith('%PDF-')).toBe(true);
+      expect(text.trimEnd().endsWith('%%EOF')).toBe(true);
+      expect(bytes.length).toBeGreaterThan(2000);
+    }
+  });
+
+  it('rasterizes the SVG to PNG bytes within the canvas limits', async () => {
+    const drawn: number[] = [];
+    class FakeImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      decoding = '';
+      set src(value: string) {
+        expect(value.startsWith('data:image/svg+xml;charset=utf-8,')).toBe(true);
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    vi.stubGlobal('Image', FakeImage);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+      () =>
+        ({
+          drawImage: (_i: unknown, _x: number, _y: number, w: number, h: number) =>
+            drawn.push(w, h),
+        }) as never,
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((cb) =>
+      cb(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' })),
+    );
+    const bytes = await svgToPngBytes('<svg xmlns="http://www.w3.org/2000/svg"/>', 400, 300, 2);
+    expect(Array.from(bytes)).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect(drawn).toEqual([800, 600]);
+    // A huge diagram is scaled down to fit.
+    drawn.length = 0;
+    await svgToPngBytes('<svg xmlns="http://www.w3.org/2000/svg"/>', 40000, 1000, 2);
+    expect(drawn[0]).toBeLessThanOrEqual(16000);
+    vi.unstubAllGlobals();
   });
 });
