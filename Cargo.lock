@@ -1690,9 +1690,11 @@ name = "dbstudio-driver-oracle"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "dbstudio-core",
  "dbstudio-sql",
  "oracle",
+ "serde_json",
  "tokio",
  "uuid",
 ]
