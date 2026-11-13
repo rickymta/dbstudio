@@ -126,7 +126,7 @@ function SourceStep({
             id="export-query"
             rows={5}
             value={form.source.text}
-            placeholder="SELECT …"
+            placeholder={t('source.queryPlaceholder')}
             onChange={(e) =>
               setForm({ ...form, source: { kind: 'query', text: e.target.value, database: null } })
             }

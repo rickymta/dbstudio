@@ -6,6 +6,7 @@ import { JobsIndicator } from '@/features/jobs/JobsIndicator';
 import { useJobsStore } from '@/features/jobs/jobsStore';
 import { ipc } from '@/lib/ipc';
 import { resetMockEvents } from '@/lib/mock';
+import { sampleSchemaModel } from '@/lib/mock/erd';
 import { resetMockExport } from '@/lib/mock/export';
 import { mockJobTiming, resetMockJobs } from '@/lib/mock/jobs';
 import type { ExportSpec, SessionInfo } from '@/lib/types';
@@ -71,6 +72,8 @@ describe('ExportWizard', () => {
     const user = userEvent.setup();
     const start = vi.spyOn(ipc, 'exportStart');
     vi.spyOn(ipc, 'filePickSave').mockResolvedValue('/tmp/x.xlsx');
+    // The table list comes from schema_model; use the Pagila-like fixture that has `actor`.
+    vi.spyOn(ipc, 'schemaModel').mockImplementation(async (_id, req) => sampleSchemaModel(req));
     const schema = { segments: pgPath('actor').segments.slice(0, 3) };
     renderWithProviders(
       <ExportWizard open onOpenChange={() => {}} origin={{ session, path: schema }} />,

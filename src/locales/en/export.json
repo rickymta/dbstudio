@@ -13,6 +13,7 @@
   "source": {
     "query": "Query",
     "queryHint": "Exactly one SELECT statement. The export only reads data.",
+    "queryPlaceholder": "SELECT …",
     "objects": "Objects",
     "allDatabase": "Every table of the database",
     "allSchema": "Every table of the schema",

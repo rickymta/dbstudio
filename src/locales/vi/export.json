@@ -13,6 +13,7 @@
   "source": {
     "query": "Truy vấn",
     "queryHint": "Đúng một câu SELECT. Việc xuất chỉ đọc dữ liệu.",
+    "queryPlaceholder": "SELECT …",
     "objects": "Đối tượng",
     "allDatabase": "Mọi bảng của cơ sở dữ liệu",
     "allSchema": "Mọi bảng của schema",
