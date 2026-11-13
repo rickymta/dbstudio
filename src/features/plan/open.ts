@@ -35,7 +35,6 @@ function newEntry(session: PlanSession, planId: string, patch: Partial<PlanEntry
     parseError: null,
     status: 'loading',
     error: null,
-    confirmation: null,
     selectedId: null,
     runId: 0,
     ...patch,
