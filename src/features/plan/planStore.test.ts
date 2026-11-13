@@ -105,6 +105,8 @@ describe('opening plans', () => {
       's1',
       'lease-1',
       expect.objectContaining({ text: 'select 1', analyze: false }),
+      null,
+      null,
     );
   });
 

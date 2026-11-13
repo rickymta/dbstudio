@@ -6,7 +6,7 @@ import { Select } from '@/components/ui/Select';
 import { cn } from '@/lib/cn';
 import { comparePlans, type TotalDiff } from './compareModel';
 import { formatCost, formatCount, formatDuration, objectLabel } from './planModel';
-import { usePlanStore, type PlanEntry } from './planStore';
+import { usePlanStore } from './planStore';
 
 const fmt: Record<TotalDiff['key'], (n: number | null) => string> = {
   totalCost: formatCost,
@@ -17,7 +17,7 @@ const fmt: Record<TotalDiff['key'], (n: number | null) => string> = {
   warnings: formatCount,
 };
 
-function label(e: PlanEntry): string {
+function label(e: { planId: string; statement: string }): string {
   const text = e.statement.replace(/\s+/g, ' ').trim();
   return text.length > 60 ? `${text.slice(0, 59)}…` : text || e.planId;
 }
@@ -33,13 +33,26 @@ export function PlanCompare({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation('plan');
-  const entries = usePlanStore((s) => s.entries);
-  const current = entries[planId];
-  const others = Object.values(entries).filter((e) => e.planId !== planId && e.tree);
+  // Narrow selectors: strings and trees only, so selecting a node in some other tab does not
+  // re-render this dialog. Entries are listed as `planId\u0000statement`.
+  const listed = usePlanStore((s) =>
+    Object.values(s.entries)
+      .filter((e) => e.planId !== planId && e.tree)
+      .map((e) => `${e.planId}\u0000${e.statement}`)
+      .join('\u0001'),
+  );
+  const others = listed
+    ? listed.split('\u0001').map((x) => {
+        const [id = '', statement = ''] = x.split('\u0000');
+        return { planId: id, statement };
+      })
+    : [];
   const [otherId, setOtherId] = useState<string | undefined>(undefined);
   const other = others.find((e) => e.planId === otherId) ?? others[0];
+  const currentTree = usePlanStore((s) => s.entries[planId]?.tree ?? null);
+  const otherTree = usePlanStore((s) => (other ? (s.entries[other.planId]?.tree ?? null) : null));
 
-  const result = current?.tree && other?.tree ? comparePlans(current.tree, other.tree) : null;
+  const result = currentTree && otherTree ? comparePlans(currentTree, otherTree) : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

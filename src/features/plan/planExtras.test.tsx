@@ -7,7 +7,14 @@ import { polyfillLayoutApis } from '../data/testUtils';
 import { comparePlans } from './compareModel';
 import type { PlanLayout } from './elkLayout';
 import { PlanCompare } from './PlanCompare';
-import { exportPlan, planToSvg, svgToPngBase64, themeColors, utf8ToBase64 } from './planExport';
+import {
+  exportPlan,
+  planToSvg,
+  svgToPngBase64,
+  themeColors,
+  toHex,
+  utf8ToBase64,
+} from './planExport';
 import { flatten } from './planModel';
 import PlanRaw from './PlanRaw';
 import { PlanTable } from './PlanTable';
@@ -103,6 +110,41 @@ describe('SVG export', () => {
   it('encodes UTF-8 to base64', () => {
     expect(atob(utf8ToBase64('abc'))).toBe('abc');
     expect(utf8ToBase64('é')).toBe('w6k=');
+  });
+});
+
+describe('SVG colors and text', () => {
+  it('converts modern CSS colors to hex through the canvas', () => {
+    expect(toHex('#abc')).toBe('#abc');
+    // jsdom has no canvas: unresolved colors are returned as they are.
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    expect(toHex('oklch(0.5 0.1 200)')).toBe('oklch(0.5 0.1 200)');
+    vi.restoreAllMocks();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
+      this: HTMLCanvasElement,
+    ) {
+      return {
+        canvas: this,
+        fillStyle: '',
+        clearRect() {},
+        fillRect() {},
+        getImageData: () => ({ data: [255, 128, 0, 255] }),
+      } as unknown as CanvasRenderingContext2D;
+    });
+    expect(toHex('oklch(0.7 0.2 50)')).toBe('#ff8000');
+    document.documentElement.style.setProperty('--accent', 'oklch(0.55 0.2 262)');
+    expect(themeColors().accent).toBe('#ff8000');
+    const svg = planToSvg(pg, layoutOf(pg), themeColors());
+    expect(svg).not.toContain('oklch');
+  });
+
+  it('drops characters XML cannot carry', () => {
+    const t = structuredClone(pg);
+    t.root.op = 'A\u0001B\u001fC\u0000D\ufffeE';
+    const svg = planToSvg(t, layoutOf(t), themeColors());
+    expect(svg).toContain('>A B C D E</text>');
+    const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    expect(doc.querySelector('parsererror')).toBeNull();
   });
 });
 

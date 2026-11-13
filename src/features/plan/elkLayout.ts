@@ -1,6 +1,6 @@
 // Tree layout of a plan with ELK (layered, root on the left, data flowing right to left).
 
-import ELK from 'elkjs/lib/elk.bundled.js';
+import type { ELK, ElkNode } from 'elkjs/lib/elk-api';
 import type { PlanNode } from '@/lib/types';
 
 export const NODE_WIDTH = 240;
@@ -12,7 +12,48 @@ export interface PlanLayout {
   height: number;
 }
 
-const elk = new ELK();
+interface Engine {
+  layout: ELK['layout'];
+}
+
+let worker: Promise<Engine | null> | null = null;
+let inline: Promise<Engine> | null = null;
+
+/** ELK in a web worker, so a big plan does not freeze the window; `null` when unavailable. */
+function workerEngine(): Promise<Engine | null> {
+  worker ??= (async () => {
+    if (typeof Worker === 'undefined') return null;
+    try {
+      const [{ default: Api }, { default: ElkWorker }] = await Promise.all([
+        import('elkjs/lib/elk-api'),
+        import('elkjs/lib/elk-worker.min.js?worker'),
+      ]);
+      return new Api({ workerFactory: () => new ElkWorker() });
+    } catch {
+      return null;
+    }
+  })();
+  return worker;
+}
+
+/** ELK running on the main thread (tests, or when workers are not allowed). */
+function inlineEngine(): Promise<Engine> {
+  inline ??= import('elkjs/lib/elk.bundled.js').then(({ default: Elk }) => new Elk());
+  return inline;
+}
+
+async function runLayout(graph: ElkNode): Promise<ElkNode> {
+  const w = await workerEngine();
+  if (w) {
+    try {
+      return await w.layout(graph);
+    } catch {
+      // A worker that cannot start (CSP, packaging): use the main thread from now on.
+      worker = Promise.resolve(null);
+    }
+  }
+  return (await inlineEngine()).layout(graph);
+}
 
 interface Item {
   id: string;
@@ -37,7 +78,7 @@ export async function layoutPlan(
     }
   };
   walk(root);
-  const result = await elk.layout({
+  const result = await runLayout({
     id: 'root',
     layoutOptions: {
       'elk.algorithm': 'layered',

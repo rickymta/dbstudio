@@ -29,10 +29,37 @@ export interface ExportColors {
   danger: string;
 }
 
-/** Theme colors as they are right now (light or dark). */
+/**
+ * A CSS color (the app's tokens are `oklch(...)`) as `#rrggbb`. SVG viewers, PDF tools and
+ * older web views do not all know modern color syntaxes; the canvas converts them to sRGB.
+ * Colors the canvas cannot resolve (no canvas, unknown syntax) are returned unchanged.
+ */
+export function toHex(css: string): string {
+  const value = css.trim();
+  if (/^#[0-9a-f]{3,8}$/i.test(value)) return value;
+  try {
+    const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+    if (!ctx) return value;
+    ctx.canvas.width = ctx.canvas.height = 1;
+    // An unparsable color leaves the previous fillStyle; start from a known one to notice.
+    ctx.fillStyle = '#010203';
+    ctx.fillStyle = value;
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+    if (r === undefined || g === undefined || b === undefined || a === undefined) return value;
+    const hex = (n: number) => n.toString(16).padStart(2, '0');
+    return `#${hex(r)}${hex(g)}${hex(b)}`;
+  } catch {
+    return value;
+  }
+}
+
+/** Theme colors as they are right now (light or dark), as hex. */
 export function themeColors(): ExportColors {
   const css = getComputedStyle(document.documentElement);
-  const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
+  const v = (name: string, fallback: string) =>
+    toHex(css.getPropertyValue(name).trim() || fallback);
   return {
     background: v('--background', '#ffffff'),
     surface: v('--surface', '#ffffff'),
@@ -50,8 +77,13 @@ export function themeColors(): ExportColors {
 const MARGIN = 24;
 const FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
 
+/** Characters XML 1.0 cannot carry (C0 controls, U+FFFE/U+FFFF) become spaces. */
+// eslint-disable-next-line no-control-regex
+const XML_ILLEGAL = /[\u0000-\u001f\ufffe\uffff]/g;
+
 function esc(s: string): string {
   return s
+    .replace(XML_ILLEGAL, ' ')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

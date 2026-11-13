@@ -415,9 +415,12 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
                 id: Uuid = "sessionId",
                 lease: Option<Uuid> = "leaseId",
                 request: ExplainRequest = "request",
-                rules: Option<PlanRules> = "rules"
+                rules: Option<PlanRules> = "rules",
+                confirm: Option<ConfirmationGrant> = "confirm"
             );
-            call!(plan::explain_impl(state, id, lease, request, rules))
+            call!(plan::explain_impl(
+                state, id, lease, request, rules, confirm
+            ))
         }
         "plan_parse" => {
             args!(raw: RawPlan = "raw", rules: Option<PlanRules> = "rules");

@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 import { ipc, toIpcError } from '@/lib/ipc';
-import type { ExplainRequest, IpcError, PlanTree, RawPlan, Uuid } from '@/lib/types';
+import type {
+  ConfirmationGrant,
+  ConfirmationRequest,
+  ExplainRequest,
+  IpcError,
+  PlanTree,
+  RawPlan,
+  Uuid,
+} from '@/lib/types';
 import { planTabId, useTabsStore } from '@/stores/tabs';
 
 export type PlanStatus = 'loading' | 'ready' | 'error';
@@ -22,6 +30,8 @@ export interface PlanEntry {
   parseError: string | null;
   status: PlanStatus;
   error: IpcError | null;
+  /** The backend wants the typed confirmation before it runs an ANALYZE (production). */
+  confirmation: ConfirmationRequest | null;
   /** Node selected in the diagram, table and raw views alike. */
   selectedId: number | null;
   /** Incremented per run; a late answer of an older run is ignored. */
@@ -60,12 +70,22 @@ export const usePlanStore = create<PlanState>((set) => ({
     }),
 }));
 
-// Forget the plans of closed tabs.
+/** Stop the explain that is running for `planId` (no effect when nothing runs). */
+export function cancelPlan(planId: string): void {
+  const entry = usePlanStore.getState().entries[planId];
+  if (entry?.status !== 'loading' || !entry.request) return;
+  void ipc.queryCancel(entry.sessionId, entry.request.queryId).catch(() => {});
+}
+
+// Forget the plans of closed tabs; a tab closed while its statement runs stops the statement.
 useTabsStore.subscribe((state) => {
   const open = new Set(state.tabs.map((t) => t.id));
   const { entries, remove } = usePlanStore.getState();
   for (const id of Object.keys(entries)) {
-    if (!open.has(planTabId(id))) remove(id);
+    if (!open.has(planTabId(id))) {
+      cancelPlan(id);
+      remove(id);
+    }
   }
 });
 
@@ -73,7 +93,10 @@ useTabsStore.subscribe((state) => {
  * Explain `entry.request` and store the answer. `analyze` overrides the request's flag (the
  * request is updated, so "run again" repeats what was last asked).
  */
-export async function runPlan(planId: string, opts: { analyze?: boolean } = {}): Promise<void> {
+export async function runPlan(
+  planId: string,
+  opts: { analyze?: boolean; confirm?: ConfirmationGrant } = {},
+): Promise<void> {
   const store = usePlanStore.getState();
   const entry = store.entries[planId];
   if (!entry?.request) return;
@@ -83,9 +106,22 @@ export async function runPlan(planId: string, opts: { analyze?: boolean } = {}):
     analyze: opts.analyze ?? entry.request.analyze ?? false,
   };
   const runId = entry.runId + 1;
-  store.patch(planId, { request, runId, status: 'loading', error: null, parseError: null });
+  store.patch(planId, {
+    request,
+    runId,
+    status: 'loading',
+    error: null,
+    confirmation: null,
+    parseError: null,
+  });
   try {
-    const result = await ipc.planExplain(entry.sessionId, entry.leaseId, request);
+    const result = await ipc.planExplain(
+      entry.sessionId,
+      entry.leaseId,
+      request,
+      null,
+      opts.confirm ?? null,
+    );
     const cur = usePlanStore.getState().entries[planId];
     if (!cur || cur.runId !== runId) return;
     usePlanStore.getState().patch(planId, {
@@ -98,7 +134,14 @@ export async function runPlan(planId: string, opts: { analyze?: boolean } = {}):
   } catch (e) {
     const cur = usePlanStore.getState().entries[planId];
     if (!cur || cur.runId !== runId) return;
-    usePlanStore.getState().patch(planId, { status: 'error', error: toIpcError(e) });
+    const error = toIpcError(e);
+    // A cancelled or unconfirmed run leaves the previous plan (if any) on screen.
+    const keep = cur.raw !== null && (error.kind === 'cancelled' || error.confirmation);
+    usePlanStore.getState().patch(planId, {
+      status: keep ? 'ready' : 'error',
+      error: error.confirmation ? null : error,
+      confirmation: error.confirmation ?? null,
+    });
   }
 }
 

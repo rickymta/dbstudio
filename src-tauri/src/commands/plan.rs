@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use dbstudio_core::{Error, ExplainRequest, RawPlan};
+use dbstudio_core::{
+    ConfirmationGrant, ConfirmationRequest, ConnectionConfig, DestructiveStatement, Error,
+    ExplainRequest, RawPlan, ScriptDialect, StatementClass, TextRange,
+};
 use dbstudio_plan::{PlanError, PlanRules, PlanTree};
 use serde::Serialize;
 use tauri::State;
@@ -11,6 +14,7 @@ use uuid::Uuid;
 use super::app::write_atomic;
 use super::blocking;
 use crate::grants::Purpose;
+use crate::guard::{self, ConfirmTokens};
 use crate::host::FileFilter;
 use crate::state::AppState;
 
@@ -54,16 +58,197 @@ fn effective_rules(state: &AppState, rules: Option<PlanRules>) -> PlanRules {
     })
 }
 
+/// Functions that act outside the transaction of an ANALYZE (locks, sequences, other servers,
+/// files) or on the server itself: a statement calling them is not a pure read.
+fn impure_call(word: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "nextval",
+        "setval",
+        "lo_import",
+        "lo_export",
+        "pg_terminate_backend",
+        "pg_cancel_backend",
+        "pg_reload_conf",
+        "get_lock",
+        "release_lock",
+        "release_all_locks",
+        "load_file",
+    ];
+    EXACT.contains(&word)
+        || word.starts_with("pg_advisory")
+        || word.starts_with("pg_try_advisory")
+        || word.starts_with("dblink")
+}
+
+/// Whether `text` calls an impure function or has a top-level `INTO` (outside strings,
+/// comments and quoted identifiers).
+fn has_impure_calls(text: &str) -> bool {
+    let b = text.as_bytes();
+    let (mut i, mut depth) = (0usize, 0u32);
+    while i < b.len() {
+        match b[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b'#' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+            }
+            q @ (b'\'' | b'"' | b'`') => {
+                i += 1;
+                while i < b.len() {
+                    if b[i] == b'\\' && q == b'\'' {
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == q {
+                        if b.get(i + 1) == Some(&q) {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                let word = text[start..i].to_ascii_lowercase();
+                if impure_call(&word) || (depth == 0 && word == "into") {
+                    return true;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
+/// The guard of `plan_explain`. A plain EXPLAIN never runs the statement and always passes
+/// (the drivers make sure it is exactly one statement). EXPLAIN ANALYZE runs it, so anything
+/// that is not a pure read is refused on read-only connections and needs the typed
+/// confirmation on production ones, like `query_execute`.
+pub(crate) fn check_explain(
+    tokens: &ConfirmTokens,
+    dialect: ScriptDialect,
+    config: &ConnectionConfig,
+    request: &ExplainRequest,
+    target: &str,
+    confirm: Option<&ConfirmationGrant>,
+) -> Result<()> {
+    if !request.analyze {
+        return Ok(());
+    }
+    let analysis = dbstudio_sql::analyze(dialect, &request.text);
+    let statements: Vec<_> = analysis
+        .statements
+        .iter()
+        .filter(|s| s.class != StatementClass::Empty)
+        .collect();
+    let [stmt] = statements.as_slice() else {
+        return Err(Error::Query {
+            message: "EXPLAIN takes exactly one statement".into(),
+            position: statements.get(1).map(|s| s.range.start),
+        });
+    };
+    let text: String = request
+        .text
+        .chars()
+        .skip(stmt.range.start as usize)
+        .take((stmt.range.end - stmt.range.start) as usize)
+        .collect();
+    let pure_read = analysis.problems.is_empty()
+        && stmt.class == StatementClass::Read
+        && !has_impure_calls(&text);
+    if pure_read {
+        return Ok(());
+    }
+    let (read_only, production) = guard::policy_flags(config);
+    if read_only {
+        return Err(Error::ReadOnlyViolation {
+            message: "EXPLAIN ANALYZE executes the statement, which is not a plain read".into(),
+            position: Some(stmt.range.start),
+        });
+    }
+    if !production {
+        return Ok(());
+    }
+    // The grant is bound to this statement run as an ANALYZE on this target.
+    let payload = [request.text.as_bytes(), b"\0explain-analyze"].concat();
+    let confirm_text = guard::confirm_text_for(config, request.database.as_deref());
+    if let Some(grant) = confirm {
+        match tokens.consume(grant, target, &payload) {
+            Ok(()) => return Ok(()),
+            Err(why) => tracing::debug!(?why, "explain confirmation refused"),
+        }
+    }
+    let (token, expires_in_ms) = tokens.issue(target, &payload, &confirm_text);
+    Err(Error::ConfirmationRequired(Box::new(ConfirmationRequest {
+        token,
+        confirm_text,
+        statements: vec![DestructiveStatement {
+            index: stmt.index,
+            range: TextRange {
+                start: stmt.range.start,
+                end: stmt.range.end,
+            },
+            text: text.chars().take(2000).collect(),
+            // Plain writes have no "destructive" reason; the statement is listed so the
+            // dialog shows what will run.
+            reason: stmt
+                .destructive
+                .unwrap_or(dbstudio_core::DestructiveReason::UpdateWithoutWhere),
+        }],
+        expires_in_ms,
+    })))
+}
+
 pub(crate) async fn explain_impl(
     state: &AppState,
     session_id: Uuid,
     lease_id: Option<Uuid>,
     request: ExplainRequest,
     rules: Option<PlanRules>,
+    confirm: Option<ConfirmationGrant>,
 ) -> Result<PlanResult> {
+    let (session, config) = state.sessions.get_with_config(session_id)?;
+    let target = match lease_id {
+        Some(id) => format!("lease:{id}"),
+        None => format!("session:{session_id}"),
+    };
+    check_explain(
+        &state.confirm,
+        session.script_dialect(),
+        &config,
+        &request,
+        &target,
+        confirm.as_ref(),
+    )?;
     let raw = match lease_id {
         Some(lease_id) => state.leases.get(lease_id)?.explain(request).await?,
-        None => state.sessions.get(session_id)?.explain(request).await?,
+        None => session.explain(request).await?,
     };
     let rules = effective_rules(state, rules);
     let (tree, parse_error) = match dbstudio_plan::parse_and_analyze(&raw, &rules) {
@@ -127,9 +312,10 @@ pub async fn plan_explain(
     lease_id: Option<Uuid>,
     request: ExplainRequest,
     rules: Option<PlanRules>,
+    confirm: Option<ConfirmationGrant>,
 ) -> Result<PlanResult> {
     tracing::debug!(command = "plan_explain", session = %session_id, "ipc call");
-    explain_impl(&state, session_id, lease_id, request, rules).await
+    explain_impl(&state, session_id, lease_id, request, rules, confirm).await
 }
 
 #[tauri::command]
@@ -257,5 +443,200 @@ mod tests {
         std::fs::write(&junk, "[1, 2]").unwrap();
         *host.open_from.lock().unwrap() = Some(junk);
         assert!(file_open_impl(&state).await.is_err());
+    }
+
+    // ---- guard of plan_explain ----
+
+    use dbstudio_core::{DbKind, Environment};
+
+    fn config(read_only: bool, production: bool) -> ConnectionConfig {
+        let mut c = ConnectionConfig::new(DbKind::Postgres, "prod", "localhost");
+        c.database = Some("shop".into());
+        c.read_only = read_only;
+        c.environment = production.then_some(Environment::Production);
+        c
+    }
+
+    fn req(text: &str, analyze: bool) -> ExplainRequest {
+        ExplainRequest {
+            query_id: Uuid::new_v4(),
+            text: text.into(),
+            database: None,
+            analyze,
+            options: Default::default(),
+            timeout_ms: None,
+        }
+    }
+
+    fn check(c: &ConnectionConfig, text: &str, analyze: bool) -> Result<()> {
+        check_explain(
+            &ConfirmTokens::new(),
+            ScriptDialect::Postgres,
+            c,
+            &req(text, analyze),
+            "session:1",
+            None,
+        )
+    }
+
+    #[test]
+    fn plain_explain_always_passes_the_guard() {
+        for (ro, prod) in [(false, false), (true, false), (true, true), (false, true)] {
+            for sql in ["UPDATE t SET a = 1", "DELETE FROM t", "select 1"] {
+                check(&config(ro, prod), sql, false).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn analyze_of_a_pure_read_passes_everywhere() {
+        for (ro, prod) in [(false, false), (true, false), (true, true), (false, true)] {
+            check(&config(ro, prod), "SELECT * FROM t WHERE a = 1", true).unwrap();
+            check(
+                &config(ro, prod),
+                "WITH x AS (SELECT 1) SELECT * FROM x",
+                true,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn read_only_connections_refuse_analyze_of_anything_but_reads() {
+        let ro = config(true, false);
+        for sql in [
+            "UPDATE t SET a = 1",
+            "DELETE FROM t",
+            "INSERT INTO t VALUES (1)",
+            "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x",
+            "CREATE TABLE t2 AS SELECT 1",
+            "SELECT pg_advisory_lock(1)",
+            "SELECT nextval('s')",
+            "SELECT dblink_exec('x', 'drop table t')",
+            "SELECT * INTO t3 FROM t",
+            "SELECT 1; DELETE FROM t",
+            "SELECT 'unterminated",
+        ] {
+            let e = check(&ro, sql, true).unwrap_err();
+            assert!(
+                matches!(e, Error::ReadOnlyViolation { .. } | Error::Query { .. }),
+                "{sql}: {e:?}"
+            );
+        }
+        // Words inside strings and quoted identifiers do not count.
+        check(&ro, "SELECT 'nextval(', \"dblink\" FROM t", true).unwrap();
+    }
+
+    #[test]
+    fn production_asks_for_the_typed_confirmation_once() {
+        let tokens = ConfirmTokens::new();
+        let prod = config(false, true);
+        let text = "UPDATE orders SET status = 'x' WHERE id = 1";
+        let run = |text: &str, grant: Option<&ConfirmationGrant>| {
+            check_explain(
+                &tokens,
+                ScriptDialect::Postgres,
+                &prod,
+                &req(text, true),
+                "session:1",
+                grant,
+            )
+        };
+        let Err(Error::ConfirmationRequired(c)) = run(text, None) else {
+            panic!("expected a confirmation");
+        };
+        assert_eq!(c.confirm_text, "shop");
+        assert_eq!(c.statements.len(), 1);
+        assert!(c.statements[0].text.starts_with("UPDATE orders"));
+        // Wrong text: refused and a fresh token is issued (the old one is spent).
+        let wrong = ConfirmationGrant {
+            token: c.token.clone(),
+            typed: "nope".into(),
+        };
+        assert!(matches!(
+            run(text, Some(&wrong)),
+            Err(Error::ConfirmationRequired(_))
+        ));
+        let Err(Error::ConfirmationRequired(c)) = run(text, None) else {
+            panic!()
+        };
+        let grant = ConfirmationGrant {
+            token: c.token.clone(),
+            typed: "shop".into(),
+        };
+        // A grant for another statement does not carry over.
+        assert!(matches!(
+            run("DELETE FROM orders WHERE id = 2", Some(&grant)),
+            Err(Error::ConfirmationRequired(_))
+        ));
+        let Err(Error::ConfirmationRequired(c)) = run(text, None) else {
+            panic!()
+        };
+        let grant = ConfirmationGrant {
+            token: c.token,
+            typed: "shop".into(),
+        };
+        run(text, Some(&grant)).unwrap();
+        // Single use.
+        assert!(matches!(
+            run(text, Some(&grant)),
+            Err(Error::ConfirmationRequired(_))
+        ));
+        // Destructive statements name their reason.
+        let Err(Error::ConfirmationRequired(c)) = run("DELETE FROM orders", None) else {
+            panic!()
+        };
+        assert_eq!(
+            c.statements[0].reason,
+            dbstudio_core::DestructiveReason::DeleteWithoutWhere
+        );
+    }
+
+    #[test]
+    fn development_connections_may_analyze_writes() {
+        check(&config(false, false), "UPDATE t SET a = 1", true).unwrap();
+    }
+
+    #[tokio::test]
+    async fn explain_impl_applies_the_guard_before_the_driver() {
+        let (driver, probe) = crate::session::testing::MockDriver::new(DbKind::Postgres);
+        let mut registry = DriverRegistry::new();
+        registry.register(driver);
+        let (state, _, _) = test_state_with_host(registry);
+        let mut cfg = config(true, false);
+        cfg.name = "ro".into();
+        let profile = dbstudio_store::ConnectionProfile {
+            config: cfg,
+            group_id: None,
+            color: None,
+            save_password: false,
+            has_password: false,
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let saved = crate::commands::connections::save_impl(
+            &state,
+            profile,
+            dbstudio_store::SecretChange::Keep,
+        )
+        .await
+        .unwrap();
+        let session_id = crate::commands::sessions::open_impl(&state, saved.config.id, None)
+            .await
+            .unwrap()
+            .session_id;
+        // The mock session has an opaque dialect: everything is "unknown", so ANALYZE is
+        // refused before the driver is reached.
+        let e = explain_impl(&state, session_id, None, req("select 1", true), None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, Error::ReadOnlyViolation { .. }), "{e:?}");
+        // A plain EXPLAIN reaches the driver (the mock has none).
+        let e = explain_impl(&state, session_id, None, req("select 1", false), None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, Error::Unsupported(_)), "{e:?}");
+        let _ = probe;
     }
 }

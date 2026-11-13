@@ -18,7 +18,8 @@
     "copied": "Plan copied to the clipboard",
     "exportSvg": "Export diagram as SVG",
     "exportPng": "Export diagram as PNG",
-    "exported": "Diagram saved to {{path}}"
+    "exported": "Diagram saved to {{path}}",
+    "cancel": "Cancel"
   },
   "views": {
     "label": "Plan views",
@@ -37,7 +38,8 @@
     "hotPath": "Hot path",
     "format": "Format",
     "capturedAt": "Captured {{time}}",
-    "server": "Server {{version}}"
+    "server": "Server {{version}}",
+    "layoutFailed": "The diagram could not be laid out: {{message}}"
   },
   "summary": {
     "totalCost": "Total cost",
@@ -141,5 +143,12 @@
       "nodeCount": "Operators",
       "warnings": "Warnings"
     }
+  },
+  "production": {
+    "title": "Run this statement with ANALYZE on production?",
+    "description": "ANALYZE executes the statement (inside a transaction that is rolled back). This connection is marked as production.",
+    "type": "Type {{text}} to confirm",
+    "run": "Run with ANALYZE",
+    "cancel": "Cancel"
   }
 }

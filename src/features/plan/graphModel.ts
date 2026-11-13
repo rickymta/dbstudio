@@ -79,3 +79,28 @@ export function buildGraph(
   walk(tree.root);
   return { nodes, edges };
 }
+
+/** Plans up to this many operators start fully expanded. */
+export const AUTO_COLLAPSE_NODES = 300;
+
+/**
+ * Nodes to collapse at first so a huge plan opens readable: levels are shown top-down while
+ * they fit in `limit` operators; the nodes at the first level that does not fit are collapsed.
+ * Small plans collapse nothing.
+ */
+export function initialCollapsed(tree: PlanTree, limit = AUTO_COLLAPSE_NODES): Set<number> {
+  const collapsed = new Set<number>();
+  if (tree.nodeCount <= limit) return collapsed;
+  let level: PlanNode[] = [tree.root];
+  let shown = 0;
+  while (level.length > 0) {
+    const next = level.flatMap((n) => n.children);
+    shown += level.length;
+    if (shown + next.length > limit) {
+      for (const n of level) if (n.children.length > 0) collapsed.add(n.id);
+      break;
+    }
+    level = next;
+  }
+  return collapsed;
+}

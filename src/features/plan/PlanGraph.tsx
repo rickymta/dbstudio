@@ -28,7 +28,7 @@ import { toIpcError } from '@/lib/ipc';
 import { cn } from '@/lib/cn';
 import type { PlanTree, Severity } from '@/lib/types';
 import { NODE_HEIGHT, NODE_WIDTH, layoutPlan, type PlanLayout } from './elkLayout';
-import { buildGraph, type CardNode } from './graphModel';
+import { buildGraph, initialCollapsed, type CardNode } from './graphModel';
 import { NodeFacts, SeverityIcon } from './PlanDetails';
 import { PlanNodeIcon } from './PlanNodeIcon';
 import { exportPlan, type ExportFormat } from './planExport';
@@ -195,13 +195,20 @@ interface PlanGraphProps {
 
 function Graph({ tree, selectedId, onSelect }: PlanGraphProps) {
   const { t } = useTranslation('plan');
-  const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(() => new Set());
+  const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(() => initialCollapsed(tree));
   const [layout, setLayout] = useState<PlanLayout | null>(null);
+  const [layoutError, setLayoutError] = useState<string | null>(null);
   const [hover, setHover] = useState<{ id: number; x: number; y: number } | null>(null);
 
   useEffect(() => {
     let alive = true;
-    void layoutPlan(tree.root, collapsed).then((l) => alive && setLayout(l));
+    layoutPlan(tree.root, collapsed)
+      .then((l) => {
+        if (!alive) return;
+        setLayout(l);
+        setLayoutError(null);
+      })
+      .catch((e: unknown) => alive && setLayoutError(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
     };
@@ -237,6 +244,14 @@ function Graph({ tree, selectedId, onSelect }: PlanGraphProps) {
 
   return (
     <div className="relative h-full w-full" data-testid="plan-graph" aria-label={t('views.graph')}>
+      {layoutError && (
+        <p
+          role="alert"
+          className="absolute inset-x-0 top-2 z-10 mx-auto w-fit rounded border border-danger bg-danger-soft px-3 py-1 text-xs text-danger"
+        >
+          {t('status.layoutFailed', { message: layoutError })}
+        </p>
+      )}
       <ReactFlow
         nodes={nodes}
         edges={edges}

@@ -1,4 +1,4 @@
-import { Copy, GitCompare, FileDown, FolderOpen, Play, RefreshCw, Gauge } from 'lucide-react';
+import { Copy, GitCompare, X, FileDown, FolderOpen, Play, RefreshCw, Gauge } from 'lucide-react';
 import { lazy, Suspense, useCallback, useState, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/Badge';
@@ -12,6 +12,7 @@ import { ipc, toIpcError } from '@/lib/ipc';
 import type { PlanTabPayload } from '@/stores/tabs';
 import { openPlanFile } from './open';
 import { PlanCompare } from './PlanCompare';
+import { PlanConfirmDialog } from './PlanConfirmDialog';
 import { PlanDetails } from './PlanDetails';
 import { PlanGraph } from './PlanGraph';
 import {
@@ -20,12 +21,12 @@ import {
   formatCost,
   formatCount,
   formatDuration,
-  isWriteStatement,
+  statementWrites,
   locateRaw,
   nodeById,
 } from './planModel';
 import { PlanTable } from './PlanTable';
-import { runPlan, usePlanStore } from './planStore';
+import { cancelPlan, runPlan, usePlanStore } from './planStore';
 
 const PlanRaw = lazy(() => import('./PlanRaw'));
 
@@ -49,6 +50,7 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
   const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(() => new Set());
   const [comparing, setComparing] = useState(false);
   const [confirm, setConfirm] = useState<'analyze' | 'rerun' | null>(null);
+  const [writes, setWrites] = useState(false);
 
   const onSelect = useCallback((id: number) => select(planId, id), [select, planId]);
   const onToggle = useCallback(
@@ -74,7 +76,13 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
   }
 
   const analyzing = entry.request?.analyze ?? false;
-  const writes = isWriteStatement(entry.statement);
+  // Ask the backend's parser whether the statement writes before an ANALYZE (which runs it).
+  const requestAnalyze = (kind: 'analyze' | 'rerun') =>
+    void statementWrites(sessionId, entry.statement).then((w) => {
+      setWrites(w);
+      if (w) setConfirm(kind);
+      else void runPlan(planId, { analyze: true });
+    });
   const header = (
     <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-border px-3 py-1.5 text-xs">
       <span className="min-w-0 max-w-[40ch] truncate font-mono" title={entry.statement}>
@@ -120,11 +128,7 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
               size="sm"
               disabled={entry.status === 'loading'}
               onClick={() =>
-                analyzing
-                  ? void runPlan(planId, { analyze: false })
-                  : writes
-                    ? setConfirm('analyze')
-                    : void runPlan(planId, { analyze: true })
+                analyzing ? void runPlan(planId, { analyze: false }) : requestAnalyze('analyze')
               }
             >
               <Gauge size={13} />
@@ -133,11 +137,17 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
             <Button
               size="sm"
               disabled={entry.status === 'loading'}
-              onClick={() => (analyzing && writes ? setConfirm('rerun') : void runPlan(planId))}
+              onClick={() => (analyzing ? requestAnalyze('rerun') : void runPlan(planId))}
             >
               <RefreshCw size={13} />
               {t('toolbar.rerun')}
             </Button>
+            {entry.status === 'loading' && (
+              <Button size="sm" variant="danger" onClick={() => cancelPlan(planId)}>
+                <X size={13} />
+                {t('toolbar.cancel')}
+              </Button>
+            )}
           </>
         )}
         <Button
@@ -192,7 +202,7 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
     body = (
       <div className="flex flex-1 items-center justify-center">
         <EmptyState
-          title={t('status.failed')}
+          title={entry.confirmation ? t('production.title') : t('status.failed')}
           description={entry.error ? explainErrorMessage(t, entry.error) : undefined}
           action={
             entry.request && (
@@ -260,7 +270,12 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
           <div className="min-w-0 flex-1">
             {tree && (
               <TabsContent value="graph" className="h-full">
-                <PlanGraph tree={tree} selectedId={entry.selectedId} onSelect={onSelect} />
+                <PlanGraph
+                  key={entry.runId}
+                  tree={tree}
+                  selectedId={entry.selectedId}
+                  onSelect={onSelect}
+                />
               </TabsContent>
             )}
             {tree && (
@@ -292,6 +307,11 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
     <div className="flex h-full min-h-0 flex-col" data-testid="plan-tab">
       {header}
       {body}
+      <PlanConfirmDialog
+        request={entry.confirmation}
+        onConfirm={(grant) => void runPlan(planId, { analyze: true, confirm: grant })}
+        onCancel={() => usePlanStore.getState().patch(planId, { confirmation: null })}
+      />
       {comparing && <PlanCompare planId={planId} open onOpenChange={setComparing} />}
       <ConfirmDialog
         open={confirm !== null}

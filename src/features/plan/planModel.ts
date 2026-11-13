@@ -1,6 +1,7 @@
 // Pure helpers over a `PlanTree`: traversal, warnings, hot path, numbers, raw-text locating.
 
 import type { TFunction } from 'i18next';
+import { ipc } from '@/lib/ipc';
 import type {
   IpcError,
   PlanFormat,
@@ -183,8 +184,8 @@ export const FORMAT_LANGUAGE: Record<PlanFormat, 'json' | 'xml' | 'text'> = {
 // ---------------------------------------------------------------------------------------------
 
 /** Words of a SQL text outside comments, strings and quoted identifiers, with their paren depth. */
-function sqlWords(text: string): { word: string; depth: number }[] {
-  const out: { word: string; depth: number }[] = [];
+function sqlWords(text: string): { word: string; depth: number; call: boolean }[] {
+  const out: { word: string; depth: number; call: boolean }[] = [];
   let depth = 0;
   let i = 0;
   while (i < text.length) {
@@ -215,7 +216,11 @@ function sqlWords(text: string): { word: string; depth: number }[] {
     } else if (/[A-Za-z_]/.test(c)) {
       const start = i;
       while (i < text.length && /[A-Za-z0-9_]/.test(text[i]!)) i++;
-      out.push({ word: text.slice(start, i).toUpperCase(), depth });
+      out.push({
+        word: text.slice(start, i).toUpperCase(),
+        depth,
+        call: /^\s*\(/.test(text.slice(i, i + 16)),
+      });
     } else i++;
   }
   return out;
@@ -223,17 +228,64 @@ function sqlWords(text: string): { word: string; depth: number }[] {
 
 const WRITE_WORDS = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE', 'REPLACE', 'TRUNCATE']);
 
-/** Whether executing `sql` can change data (ANALYZE then deserves a warning). */
+/** Functions acting outside the transaction of an ANALYZE (locks, sequences, other servers). */
+function isImpureCall(word: string): boolean {
+  const w = word.toLowerCase();
+  return (
+    [
+      'nextval',
+      'setval',
+      'lo_import',
+      'lo_export',
+      'pg_terminate_backend',
+      'pg_cancel_backend',
+      'get_lock',
+      'release_lock',
+      'release_all_locks',
+      'load_file',
+    ].includes(w) ||
+    w.startsWith('pg_advisory') ||
+    w.startsWith('pg_try_advisory') ||
+    w.startsWith('dblink')
+  );
+}
+
+/**
+ * Local guess whether executing `sql` can change data or act outside its transaction (ANALYZE
+ * then deserves a warning). Used when the backend analysis is not available; it errs on the
+ * safe side: a write keyword anywhere (also inside a CTE), `INTO`, lock/sequence functions.
+ */
 export function isWriteStatement(sql: string): boolean {
   const words = sqlWords(sql);
   const first = words[0]?.word;
   if (!first) return false;
-  if (WRITE_WORDS.has(first)) return true;
-  if (first === 'CREATE' || first === 'EXECUTE') return true;
-  if (first === 'WITH' || first === 'SELECT') {
-    return words.some((w) => w.depth === 0 && (WRITE_WORDS.has(w.word) || w.word === 'INTO'));
+  if (WRITE_WORDS.has(first) || first === 'CREATE' || first === 'EXECUTE') return true;
+  if (first !== 'WITH' && first !== 'SELECT') return false;
+  return words.some(
+    (w) =>
+      // `REPLACE(...)` and `INSERT(...)` are string functions.
+      (WRITE_WORDS.has(w.word) && !w.call) ||
+      (w.word === 'INTO' && w.depth === 0) ||
+      (w.call && isImpureCall(w.word)),
+  );
+}
+
+/**
+ * Whether the statement writes, from the backend's script analysis (the parser of the
+ * session's dialect) combined with the local guess; falls back to the guess alone when the
+ * analysis cannot be fetched.
+ */
+export async function statementWrites(sessionId: string, sql: string): Promise<boolean> {
+  const local = isWriteStatement(sql);
+  try {
+    const analysis = await ipc.scriptAnalyze(sessionId, sql);
+    const backend = analysis.statements.some(
+      (s) => s.class.kind !== 'read' && s.class.kind !== 'empty',
+    );
+    return backend || local;
+  } catch {
+    return local;
   }
-  return false;
 }
 
 // ---------------------------------------------------------------------------------------------
