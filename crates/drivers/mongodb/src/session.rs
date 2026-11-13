@@ -146,6 +146,7 @@ pub fn run_ctx(
         max_rows,
         batch: batch.map(|b| b.max(1) as usize).unwrap_or(DEFAULT_BATCH),
         cancel: reg.flag.clone(),
+        read_only: false,
     }
 }
 
@@ -316,9 +317,10 @@ pub async fn explain_statement(
     let [stmt] = stmts.as_slice() else {
         return Err(bad("exactly one statement can be explained"));
     };
-    let db = req
+    let db = stmt
         .database
         .clone()
+        .or_else(|| req.database.clone())
         .unwrap_or_else(|| default_db.to_string());
     let planned = plan(stmt, &db, "")?.ok_or_else(|| bad("this statement cannot be explained"))?;
     match planned.kind {
@@ -390,7 +392,8 @@ impl Session for MongoSession {
         let started = Instant::now();
         let statements = mongo_shell::parse(&req.text)?;
         let reg = Registered::new(&self.running, req.query_id);
-        let ctx = run_ctx(req.query_id, req.max_rows, req.batch_size, &reg);
+        let mut ctx = run_ctx(req.query_id, req.max_rows, req.batch_size, &reg);
+        ctx.read_only = self.conn.read_only();
         let mut db = req
             .database
             .clone()

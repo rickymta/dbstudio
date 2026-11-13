@@ -38,6 +38,9 @@ pub struct RunCtx {
     pub max_rows: Option<u64>,
     pub batch: usize,
     pub cancel: Arc<AtomicBool>,
+    /// Defence in depth for read-only profiles (the command layer already blocks writes):
+    /// refuse every statement that is not a read.
+    pub read_only: bool,
 }
 
 impl RunCtx {
@@ -871,7 +874,25 @@ pub async fn run_script(
                 show(cmd, db, &stmt.method, sink).await?;
             }
             _ => {
-                let planned = plan(stmt, db, &comment)?.ok_or_else(|| bad("empty statement"))?;
+                if ctx.read_only {
+                    use dbstudio_core::StatementClass as C;
+                    let (class, _) = dbstudio_sql::mongo_shell::classify(stmt);
+                    let allowed = match class {
+                        C::Read | C::Session | C::Empty => true,
+                        C::Explain { analyze, writes } => !(analyze && writes),
+                        _ => false,
+                    };
+                    if !allowed {
+                        return Err(Error::ReadOnlyViolation {
+                            message: "the connection is read-only".into(),
+                            position: Some(stmt.range.start),
+                        });
+                    }
+                }
+                // `db.getSiblingDB('x').…` runs on x, whatever `use` selected.
+                let target = stmt.database.clone().unwrap_or_else(|| db.clone());
+                let planned =
+                    plan(stmt, &target, &comment)?.ok_or_else(|| bad("empty statement"))?;
                 pending = run_planned(cmd, ctx, planned, keep_last && last, sink)
                     .await
                     .map_err(|e| {
@@ -938,7 +959,8 @@ mod tests {
     use dbstudio_sql::mongo_shell;
 
     fn planned(text: &str) -> Result<Option<Planned>> {
-        let stmts = mongo_shell::parse(text).unwrap();
+        // The parser already refuses unknown chains; the driver refuses them again (defence).
+        let stmts = mongo_shell::parse(text)?;
         plan(&stmts[0], "app", "cid")
     }
 
@@ -953,7 +975,11 @@ mod tests {
         ] {
             let e = planned(text).unwrap_err();
             assert_eq!(e.kind(), "query", "{text}");
-            assert!(e.message().contains("cannot be chained"), "{text}: {e}");
+            let m = e.message();
+            assert!(
+                m.contains("cannot be chained") || m.contains("cannot follow"),
+                "{text}: {e}"
+            );
         }
         // A plain write still plans.
         assert!(planned("db.c.deleteMany({})").unwrap().is_some());

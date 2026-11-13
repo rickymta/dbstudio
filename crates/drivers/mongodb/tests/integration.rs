@@ -1126,3 +1126,111 @@ async fn prefer_mode_reports_the_downgrade_and_never_hides_other_failures() {
     assert_eq!(err.kind(), "connection", "{err}");
     assert!(t0.elapsed() < Duration::from_secs(10));
 }
+
+#[tokio::test]
+async fn sibling_database_statements_run_on_that_database() {
+    if !enabled() {
+        return;
+    }
+    for srv in [Srv::M44, Srv::M7] {
+        let s = connect(srv).await;
+        let (here, other) = (unique_db(), unique_db());
+        // `use`-less request on `here`, statement addressed to `other`.
+        run(
+            &*s,
+            &here,
+            &format!("db.getSiblingDB('{other}').c.insertOne({{a: 1}})"),
+        )
+        .await;
+        assert_eq!(
+            fetch(&*s, &other, "c", |_| {}).await.len(),
+            1,
+            "{srv:?}: written to the other db"
+        );
+        let r = run(&*s, &here, "show collections").await;
+        assert!(
+            docs_names(&r[0]).is_empty(),
+            "nothing was written to the current db"
+        );
+        // explain honours it too.
+        let plan = s
+            .explain(ExplainRequest {
+                query_id: uuid::Uuid::new_v4(),
+                text: format!("db.getSiblingDB('{other}').c.find({{a: 1}})"),
+                database: Some(here.clone()),
+                analyze: true,
+                options: Default::default(),
+                timeout_ms: None,
+            })
+            .await
+            .unwrap();
+        assert!(plan.text.contains(&format!("{other}.c")), "{}", plan.text);
+        // Inside a lease (and its transaction on a replica set).
+        let lease = s
+            .open_lease(LeaseOptions {
+                database: Some(here.clone()),
+                schema: None,
+                auto_commit: srv == Srv::M44,
+            })
+            .await
+            .unwrap();
+        lease
+            .execute(
+                QueryRequest::new(format!("db.getSiblingDB('{other}').c.insertOne({{a: 2}})")),
+                &mut CollectingSink::new(),
+            )
+            .await
+            .unwrap();
+        if srv == Srv::M7 {
+            lease.commit().await.unwrap();
+        }
+        assert_eq!(fetch(&*s, &other, "c", |_| {}).await.len(), 2);
+        lease.close().await.unwrap();
+        // Dropping a sibling database drops that one only.
+        run(&*s, &here, "db.keep.insertOne({a: 1})").await;
+        run(
+            &*s,
+            &here,
+            &format!("db.getSiblingDB('{other}').dropDatabase()"),
+        )
+        .await;
+        assert!(fetch(&*s, &other, "c", |_| {}).await.is_empty());
+        assert_eq!(fetch(&*s, &here, "keep", |_| {}).await.len(), 1);
+        drop_db(&*s, &here).await;
+    }
+}
+
+#[tokio::test]
+async fn read_only_profile_blocks_scripted_writes_including_sibling_databases() {
+    if !enabled() {
+        return;
+    }
+    let rw = connect(Srv::M44).await;
+    let db = unique_db();
+    run(&*rw, &db, "db.c.insertOne({a: 1})").await;
+    let mut cfg = config(Srv::M44);
+    cfg.read_only = true;
+    let ro = connect_cfg(&cfg).await.unwrap();
+    for text in [
+        format!("db.getSiblingDB('{db}').dropDatabase()"),
+        format!("db.getSiblingDB('{db}').c.deleteMany({{}})"),
+        "db.c.insertOne({a: 2})".to_string(),
+        "db.c.drop()".to_string(),
+        "db.c.aggregate([{$out: 'x'}])".to_string(),
+    ] {
+        let mut req = QueryRequest::new(text.clone());
+        req.database = Some(db.clone());
+        let e = execute_collect(&*ro, req).await.unwrap_err();
+        assert_eq!(e.kind(), "readOnly", "{text}: {e}");
+    }
+    // Reads and show still work.
+    let mut req = QueryRequest::new("db.c.find({}); show collections");
+    req.database = Some(db.clone());
+    assert_eq!(execute_collect(&*ro, req).await.unwrap().len(), 2);
+    assert_eq!(
+        fetch(&*rw, &db, "c", |_| {}).await.len(),
+        1,
+        "data untouched"
+    );
+    drop_db(&*rw, &db).await;
+}

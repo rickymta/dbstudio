@@ -128,7 +128,8 @@ impl Lease for MongoLease {
         self.ensure_txn(inner).await?;
         let reg = Registered::new(&self.running, req.query_id);
         self.set_state(|s| s.running = Some(req.query_id));
-        let ctx = run_ctx(req.query_id, req.max_rows, req.batch_size, &reg);
+        let mut ctx = run_ctx(req.query_id, req.max_rows, req.batch_size, &reg);
+        ctx.read_only = self.conn.read_only();
         let mut db = inner.db.clone();
         let result = {
             let fut = async {
