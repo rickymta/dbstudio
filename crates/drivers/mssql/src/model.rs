@@ -209,6 +209,7 @@ mod tests {
             base_type: "int".into(),
             nullable,
             identity: None,
+            identity_not_for_replication: false,
             computed: None,
             default: None,
             collation: None,
@@ -231,6 +232,11 @@ mod tests {
             disabled: false,
             keys: keys.iter().map(|k| (k.to_string(), false)).collect(),
             included: vec![],
+            ignore_dup_key: false,
+            fill_factor: 0,
+            padded: false,
+            allow_row_locks: true,
+            allow_page_locks: true,
         }
     }
 
@@ -246,6 +252,7 @@ mod tests {
             on_delete: "NO ACTION".into(),
             disabled: false,
             not_trusted: false,
+            not_for_replication: false,
         };
         let from = ("dbo".to_string(), "t".to_string());
         let cols = vec![col("a", true)];

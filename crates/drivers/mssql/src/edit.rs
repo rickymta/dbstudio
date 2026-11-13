@@ -216,6 +216,31 @@ pub async fn apply(sess: &MssqlSession, changes: ChangeSet) -> Result<ApplyResul
         .clone()
         .unwrap_or_else(|| sess.login_db().to_string());
     let mut conn = sess.shared.acquire(&db).await?;
+    // The client names the key; it must be a real primary or unique key of the table.
+    if cs
+        .changes
+        .iter()
+        .any(|c| !matches!(c, RowChange::Insert { .. }))
+    {
+        let candidates = match crate::data::candidate_keys(&mut conn, &obj).await {
+            Ok(c) => c,
+            Err(e) => {
+                conn.release();
+                return Err(e);
+            }
+        };
+        let same = |a: &[String], b: &[String]| {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|x| b.iter().any(|y| y.eq_ignore_ascii_case(x)))
+        };
+        if !candidates.iter().any(|k| same(k, &cs.key_columns)) {
+            conn.release();
+            return Err(Error::Other(
+                "key_columns do not match a primary or unique NOT NULL key of the table".into(),
+            ));
+        }
+    }
     conn.run("BEGIN TRANSACTION").await?;
     let mut affected = Vec::with_capacity(stmts.len());
     for (index, sql) in stmts.iter().enumerate() {
@@ -225,6 +250,9 @@ pub async fn apply(sess: &MssqlSession, changes: ChangeSet) -> Result<ApplyResul
             (RowChange::Update { .. } | RowChange::Delete { .. }, Ok(0)) => Some(
                 "no row matched the key (0 rows affected); it may have been changed or deleted"
                     .to_string(),
+            ),
+            (RowChange::Update { .. } | RowChange::Delete { .. }, Ok(n)) if n != 1 => Some(
+                format!("the key matched {n} rows instead of one; nothing was changed"),
             ),
             (_, Ok(n)) => {
                 affected.push(n);

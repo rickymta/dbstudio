@@ -14,7 +14,7 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::error::{self, map_connect, map_query};
 use crate::settings::{CATALOG_POOL_MAX, Settings};
-use crate::value::{self, column_meta};
+use crate::value::{self, column_meta, int_at, str_at};
 
 /// The `tiberius` client over a tokio TCP stream.
 pub type TdsClient = Client<Compat<TcpStream>>;
@@ -38,6 +38,8 @@ pub struct Conn {
     pub idle_since: Instant,
     /// Text/binary cell limit.
     pub lob_limit: usize,
+    /// Session fingerprint right after login (see [`Conn::fingerprint`]).
+    pub baseline: String,
 }
 
 impl std::fmt::Debug for Conn {
@@ -71,14 +73,53 @@ impl Conn {
             Ok(r) => r?,
         };
         let cancel = client.cancel_handle();
-        Ok(Conn {
+        let mut conn = Conn {
             client,
             cancel,
             db: db.to_string(),
             broken: false,
             idle_since: Instant::now(),
             lob_limit: settings.max_lob_bytes,
-        })
+            baseline: String::new(),
+        };
+        conn.baseline = conn.fingerprint().await.map(|f| f.0).unwrap_or_default();
+        Ok(conn)
+    }
+
+    /// Session settings that user statements can change and that must not leak into the pool:
+    /// `(settings fingerprint, open transaction count)`. The fingerprint holds the current
+    /// database, `@@OPTIONS`, language, date format/first, isolation level, lock timeout,
+    /// deadlock priority, text size, row count and the ANSI/quoting flags.
+    pub async fn fingerprint(&mut self) -> Result<(String, i64)> {
+        let rows = self
+            .rows(
+                "SELECT CONCAT(DB_NAME(), '|', @@OPTIONS, '|', s.language, '|', s.date_format, '|', s.date_first, '|', \
+                 s.quoted_identifier, '|', s.arithabort, '|', s.ansi_null_dflt_on, '|', s.ansi_defaults, '|', \
+                 s.ansi_warnings, '|', s.ansi_padding, '|', s.ansi_nulls, '|', s.concat_null_yields_null, '|', \
+                 s.transaction_isolation_level, '|', s.lock_timeout, '|', s.deadlock_priority, '|', s.text_size, \
+                 '|', s.row_count), @@TRANCOUNT \
+                 FROM sys.dm_exec_sessions s WHERE s.session_id = @@SPID",
+            )
+            .await?;
+        let r = rows.first().cloned().unwrap_or_default();
+        Ok((str_at(&r, 0), int_at(&r, 1)))
+    }
+
+    /// True when the session still looks like a fresh login (nothing leaked).
+    pub async fn is_clean(&mut self) -> bool {
+        if self.broken {
+            return false;
+        }
+        match tokio::time::timeout(Duration::from_secs(5), self.fingerprint()).await {
+            Ok(Ok((fp, trancount))) => {
+                if trancount > 0 {
+                    let _ = self.run("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await;
+                    return false;
+                }
+                fp == self.baseline
+            }
+            _ => false,
+        }
     }
 
     /// Run a batch and collect every result set (catalog queries, small results).
@@ -118,6 +159,7 @@ impl Conn {
         };
         let mut sets: Vec<Rows> = Vec::new();
         let mut fatal = false;
+        let mut cancelled = false;
         let result = async {
             while let Some(item) = stream.try_next().await? {
                 match item {
@@ -132,7 +174,13 @@ impl Conn {
                             last.push(cells);
                         }
                     }
-                    QueryItem::Info(_) | QueryItem::Done(_) => {}
+                    QueryItem::Info(_) => {}
+                    QueryItem::Done(d) => {
+                        // A cancel that hit this internal query: its results are incomplete.
+                        if d.attention {
+                            cancelled = true;
+                        }
+                    }
                 }
             }
             Ok::<(), tiberius::error::Error>(())
@@ -140,6 +188,7 @@ impl Conn {
         .await;
         drop(stream);
         match result {
+            Ok(()) if cancelled => Err((Error::Cancelled, None)),
             Ok(()) => Ok(sets),
             Err(e) => {
                 fatal |= error::is_fatal(&e);

@@ -411,6 +411,11 @@ async fn run_batch(
             }
             QueryItem::Done(d) => {
                 if d.attention {
+                    // An attention nobody asked for through `ctl` (a late cancel of an earlier
+                    // statement): the batch was cut short, so it did not complete.
+                    if reason.is_none() {
+                        reason = Some(Reason::User);
+                    }
                     continue;
                 }
                 if reason.is_some() {

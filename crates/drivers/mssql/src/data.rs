@@ -33,18 +33,15 @@ pub(crate) async fn check_raw_where(conn: &mut Conn, table: &str, raw: &str) -> 
     off
 }
 
-/// Key columns used as paging tie-breaker and as row identity: the primary key, else the first
-/// unique index whose columns are all `NOT NULL`.
-pub(crate) async fn key_columns(conn: &mut Conn, obj: &ObjRef) -> Result<Vec<String>> {
+/// Candidate row identities: the primary key first, then every unique index whose columns are
+/// all `NOT NULL` (and that is not filtered or disabled).
+pub(crate) async fn candidate_keys(conn: &mut Conn, obj: &ObjRef) -> Result<Vec<Vec<String>>> {
     let filter = catalog::one(&obj.schema, &obj.name);
     let key = (obj.schema.clone(), obj.name.clone());
     let idx = catalog::indexes(conn, &filter)
         .await?
         .remove(&key)
         .unwrap_or_default();
-    if let Some(pk) = idx.iter().find(|i| i.primary) {
-        return Ok(pk.keys.iter().map(|(c, _)| c.clone()).collect());
-    }
     let cols = catalog::columns(conn, &filter)
         .await?
         .remove(&key)
@@ -54,17 +51,31 @@ pub(crate) async fn key_columns(conn: &mut Conn, obj: &ObjRef) -> Result<Vec<Str
             .find(|c| c.name == name)
             .is_none_or(|c| c.nullable)
     };
-    Ok(idx
-        .iter()
-        .find(|i| {
-            i.unique
-                && i.filter.is_none()
-                && !i.disabled
-                && matches!(i.type_id, 1 | 2)
-                && !i.keys.is_empty()
-                && i.keys.iter().all(|(c, _)| !nullable(c))
-        })
-        .map(|i| i.keys.iter().map(|(c, _)| c.clone()).collect())
+    let names = |i: &catalog::Idx| i.keys.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let mut out: Vec<Vec<String>> = idx.iter().filter(|i| i.primary).map(names).collect();
+    out.extend(
+        idx.iter()
+            .filter(|i| {
+                !i.primary
+                    && i.unique
+                    && i.filter.is_none()
+                    && !i.disabled
+                    && matches!(i.type_id, 1 | 2)
+                    && !i.keys.is_empty()
+                    && i.keys.iter().all(|(c, _)| !nullable(c))
+            })
+            .map(names),
+    );
+    Ok(out)
+}
+
+/// Key columns used as paging tie-breaker and as row identity: the primary key, else the first
+/// unique index whose columns are all `NOT NULL`.
+pub(crate) async fn key_columns(conn: &mut Conn, obj: &ObjRef) -> Result<Vec<String>> {
+    Ok(candidate_keys(conn, obj)
+        .await?
+        .into_iter()
+        .next()
         .unwrap_or_default())
 }
 
@@ -72,18 +83,123 @@ fn cache_id(db: &str, obj: &ObjRef) -> (String, String, String) {
     (db.to_string(), obj.schema.clone(), obj.name.clone())
 }
 
-pub(crate) async fn table_key(
+/// How a column is read so that huge cells never travel in full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LobKind {
+    None,
+    /// `varchar(max)` / `nvarchar(max)`.
+    TextMax,
+    Xml,
+    Text,
+    NText,
+    /// `varbinary(max)`.
+    BytesMax,
+    Image,
+}
+
+/// Key and column read plan of a table, cached for a short time.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TableInfo {
+    pub key: Vec<String>,
+    pub columns: Vec<(String, LobKind)>,
+}
+
+impl TableInfo {
+    /// Select list reading only the first `limit + 1` characters/bytes of every large column
+    /// (the value decoder then marks the cell truncated). `*` when nothing is large.
+    pub fn select_list(&self, only: &[String], limit: usize) -> String {
+        let n = limit + 1;
+        let expr = |c: &str, k: LobKind| {
+            let q = quote(c);
+            match k {
+                LobKind::None => q,
+                LobKind::TextMax => format!("LEFT({q}, {n}) AS {q}"),
+                LobKind::Xml => format!("LEFT(CAST({q} AS NVARCHAR(MAX)), {n}) AS {q}"),
+                LobKind::Text => format!("LEFT(CAST({q} AS VARCHAR(MAX)), {n}) AS {q}"),
+                LobKind::NText => format!("LEFT(CAST({q} AS NVARCHAR(MAX)), {n}) AS {q}"),
+                LobKind::BytesMax => format!("SUBSTRING({q}, 1, {n}) AS {q}"),
+                LobKind::Image => format!("SUBSTRING(CAST({q} AS VARBINARY(MAX)), 1, {n}) AS {q}"),
+            }
+        };
+        let any_lob = self.columns.iter().any(|(_, k)| *k != LobKind::None);
+        if self.columns.is_empty() || (!any_lob && only.is_empty()) {
+            return if only.is_empty() {
+                "*".to_string()
+            } else {
+                only.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", ")
+            };
+        }
+        if only.is_empty() {
+            return self
+                .columns
+                .iter()
+                .map(|(c, k)| expr(c, *k))
+                .collect::<Vec<_>>()
+                .join(", ");
+        }
+        only.iter()
+            .map(|c| {
+                let k = self
+                    .columns
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(c))
+                    .map_or(LobKind::None, |(_, k)| *k);
+                expr(c, k)
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn lob_kind(type_name: &str, max_length: i64) -> LobKind {
+    match type_name.to_ascii_lowercase().as_str() {
+        "varchar" | "nvarchar" if max_length == -1 => LobKind::TextMax,
+        "varbinary" if max_length == -1 => LobKind::BytesMax,
+        "xml" => LobKind::Xml,
+        "text" => LobKind::Text,
+        "ntext" => LobKind::NText,
+        "image" => LobKind::Image,
+        _ => LobKind::None,
+    }
+}
+
+/// Read key and columns from the catalog.
+pub(crate) async fn load_table_info(conn: &mut Conn, obj: &ObjRef) -> TableInfo {
+    let key = key_columns(conn, obj).await.unwrap_or_default();
+    let rows = conn
+        .rows(&format!(
+            "SELECT c.name, CASE WHEN t.is_user_defined = 1 THEN \
+             (SELECT bt.name FROM sys.types bt WHERE bt.user_type_id = t.system_type_id) ELSE t.name END, \
+             c.max_length FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.user_type_id \
+             WHERE c.object_id = OBJECT_ID({}) ORDER BY c.column_id",
+            lit(&obj.qualified())
+        ))
+        .await
+        .unwrap_or_default();
+    let columns = rows
+        .iter()
+        .map(|r| {
+            (
+                str_at(r, 0),
+                lob_kind(&str_at(r, 1), crate::value::int_at(r, 2)),
+            )
+        })
+        .collect();
+    TableInfo { key, columns }
+}
+
+pub(crate) async fn table_info(
     sess: &MssqlSession,
     conn: &mut Conn,
     db: &str,
     obj: &ObjRef,
-) -> Vec<String> {
+) -> TableInfo {
     let id = cache_id(db, obj);
-    if let Some(k) = sess.cached_key(&id) {
+    if let Some(k) = sess.cached_info(&id) {
         return k;
     }
-    let k = key_columns(conn, obj).await.unwrap_or_default();
-    sess.cache_key(id, k.clone());
+    let k = load_table_info(conn, obj).await;
+    sess.cache_info(id, k.clone());
     k
 }
 
@@ -121,7 +237,9 @@ pub async fn fetch_table(
     let (db, obj) = target_of(sess, &req.table)?;
     let mut conn = sess.shared.acquire(&db).await?;
     let table = obj.qualified();
-    let key = table_key(sess, &mut conn, &db, &obj).await;
+    let info = table_info(sess, &mut conn, &db, &obj).await;
+    let key = info.key.clone();
+    let list = info.select_list(&[], conn.lob_limit);
     let prepared = async {
         let where_ = where_clause(&req.filters, req.raw_where.as_deref())?;
         if let Some(raw) = req
@@ -143,10 +261,10 @@ pub async fn fetch_table(
         }
     };
     let sql = if req.limit == 0 {
-        format!("SELECT TOP (0) * FROM {table}{where_}")
+        format!("SELECT TOP (0) {list} FROM {table}{where_}")
     } else {
         format!(
-            "SELECT * FROM {table}{where_}{} OFFSET {} ROWS FETCH NEXT {} ROWS ONLY",
+            "SELECT {list} FROM {table}{where_}{} OFFSET {} ROWS FETCH NEXT {} ROWS ONLY",
             order_by(&req.sort, &key),
             req.offset,
             req.limit
@@ -161,6 +279,10 @@ pub async fn fetch_table(
             .clamp(1, 100_000),
         timeout: None,
     };
+    // READ COMMITTED explicitly (design 3.1), whatever the pooled connection had.
+    let mut conn = conn;
+    conn.run("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        .await?;
     let r = run_on(sess, conn, Some(req.query_id), &sql, &params, sink).await;
     r.map_err(strip_position)
 }
@@ -186,7 +308,7 @@ async fn run_on(
         &mut crate::exec::SinkOut(sink),
     )
     .await;
-    sess.finish(conn, sql);
+    sess.finish(conn, None).await;
     r
 }
 
@@ -233,19 +355,16 @@ pub async fn count_table(sess: &MssqlSession, req: TableCountRequest) -> Result<
 }
 
 /// SQL of a whole-table read for export (no paging).
-pub(crate) fn stream_sql(obj: &ObjRef, req: &TableStreamRequest, key: &[String]) -> Result<String> {
-    let cols = if req.columns.is_empty() {
-        "*".to_string()
-    } else {
-        req.columns
-            .iter()
-            .map(|c| quote(c))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+pub(crate) fn stream_sql(
+    obj: &ObjRef,
+    req: &TableStreamRequest,
+    info: &TableInfo,
+    lob_limit: usize,
+) -> Result<String> {
+    let cols = info.select_list(&req.columns, lob_limit);
     let where_ = where_clause(&req.filters, req.raw_where.as_deref())?;
-    let order = if req.order_by_key && !key.is_empty() {
-        order_by(&[], key)
+    let order = if req.order_by_key && !info.key.is_empty() {
+        order_by(&[], &info.key)
     } else {
         String::new()
     };
@@ -418,8 +537,12 @@ mod tests {
             order_by_key: true,
             batch_size: None,
         };
+        let info = TableInfo {
+            key: vec!["id".into()],
+            columns: vec![],
+        };
         assert_eq!(
-            stream_sql(&obj, &req, &["id".into()]).unwrap(),
+            stream_sql(&obj, &req, &info, 100).unwrap(),
             "SELECT [a], [b]]] FROM [dbo].[t] WHERE ([a] IS NULL) ORDER BY [id]"
         );
         let req = TableStreamRequest {
@@ -429,9 +552,22 @@ mod tests {
             ..req
         };
         assert_eq!(
-            stream_sql(&obj, &req, &[]).unwrap(),
+            stream_sql(&obj, &req, &TableInfo::default(), 100).unwrap(),
             "SELECT * FROM [dbo].[t]"
         );
+        let info = TableInfo {
+            key: vec![],
+            columns: vec![
+                ("a".into(), LobKind::None),
+                ("b".into(), LobKind::TextMax),
+                ("c".into(), LobKind::Image),
+            ],
+        };
+        assert_eq!(
+            info.select_list(&[], 9),
+            "[a], LEFT([b], 10) AS [b], SUBSTRING(CAST([c] AS VARBINARY(MAX)), 1, 10) AS [c]"
+        );
+        assert_eq!(info.select_list(&["b".into()], 9), "LEFT([b], 10) AS [b]");
     }
 
     #[test]

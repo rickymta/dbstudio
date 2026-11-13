@@ -12,7 +12,7 @@
 //!
 //! SQL login by default; `auth=windows` is NTLM (`DOMAIN\user`) on every OS through `sspi-rs`
 //! (compiled in, not exercised by the integration tests: it needs a domain); `auth=integrated`
-//! only exists on Windows. TLS: `Disable` does not encrypt, `Prefer`/`Require` encrypt without
+//! only exists on Windows. TLS: `Disable` encrypts only the login (all traffic if the server forces encryption), `Prefer`/`Require` encrypt without
 //! verifying the certificate (TDS has no plain-text fallback once the server asks for
 //! encryption), `VerifyCa`/`VerifyFull` verify chain and host name (`verifyCa` behaves like
 //! `verifyFull`; the library cannot skip the name check). Without a CA file the operating

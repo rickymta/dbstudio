@@ -11,7 +11,6 @@ use dbstudio_core::{
     Result, ResultSink, SchemaModel, SchemaModelRequest, ScriptDialect, ServerInfo, Session,
     TableCountRequest, TableDataRequest, TableDetails, Value,
 };
-use regex::Regex;
 use tiberius::CancelHandle;
 use uuid::Uuid;
 
@@ -29,7 +28,7 @@ pub struct Running {
 }
 
 /// Cached key columns of a table (paging tie-breaker): `(db, schema, table) -> (when, columns)`.
-type KeyCache = HashMap<(String, String, String), (Instant, Vec<String>)>;
+type KeyCache = HashMap<(String, String, String), (Instant, crate::data::TableInfo)>;
 
 const KEY_CACHE_TTL: Duration = Duration::from_secs(30);
 
@@ -61,22 +60,6 @@ impl Drop for Unregister<'_> {
             map.remove(&self.id);
         }
     }
-}
-
-/// Statements after which a pooled connection must not be reused: they change session state.
-fn session_state_re() -> &'static Regex {
-    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)\buse\b|#|\btran(saction)?\b|\bdeclare\b.*\bcursor\b|\bset\s+(ansi_\w+|arithabort|arithignore|concat_null_yields_null|cursor_close_on_commit|datefirst|dateformat|deadlock_priority|fmtonly|identity_insert|implicit_transactions|language|lock_timeout|nocount|noexec|numeric_roundabort|parseonly|query_governor_cost_limit|quoted_identifier|remote_proc_transactions|rowcount|showplan_\w+|statistics|textsize|xact_abort|context_info|offsets|trans)\b|\bsp_setapprole\b|\bexecute\s+as\b|\bexec\s+as\b",
-        )
-        .expect("static regex")
-    })
-}
-
-/// Whether running `text` may leave state on the connection.
-pub fn changes_session_state(text: &str) -> bool {
-    session_state_re().is_match(text)
 }
 
 impl MssqlSession {
@@ -150,28 +133,42 @@ impl MssqlSession {
     ) -> Result<ExecSummary> {
         let mut conn = self.shared.acquire(db).await?;
         let ctl = Arc::new(Control::default());
-        let _reg = self.register(query_id, &ctl, &conn);
+        let reg = self.register(query_id, &ctl, &conn);
         let r = run_script(&mut conn, text, params, &ctl, None, &mut SinkOut(sink)).await;
-        self.finish(conn, text);
+        // A cancel must not hit the clean-up query.
+        drop(reg);
+        self.finish(conn, Some(text)).await;
         r
     }
 
-    /// Return a connection to the pool unless the text may have changed its state.
-    pub(crate) fn finish(&self, conn: Pooled, text: &str) {
-        if !changes_session_state(text) {
-            conn.release();
+    /// Return a connection to the pool. After user text (`user`) the session is compared with
+    /// its fingerprint at login (database, SET options, isolation, open transaction ...) and the
+    /// connection is dropped when anything differs; generated SQL cannot change the session.
+    pub(crate) async fn finish(&self, mut conn: Pooled, user_text: Option<&str>) {
+        if conn.broken {
+            return;
         }
+        if let Some(text) = user_text {
+            // Temporary tables live as long as the connection and are not in the fingerprint.
+            if text.contains('#') || !conn.is_clean().await {
+                return;
+            }
+        }
+        conn.release();
     }
 
-    pub(crate) fn cached_key(&self, id: &(String, String, String)) -> Option<Vec<String>> {
+    pub(crate) fn cached_info(
+        &self,
+        id: &(String, String, String),
+    ) -> Option<crate::data::TableInfo> {
         let map = self.keys.lock().ok()?;
         let (at, cols) = map.get(id)?;
         (at.elapsed() < KEY_CACHE_TTL).then(|| cols.clone())
     }
 
-    pub(crate) fn cache_key(&self, id: (String, String, String), cols: Vec<String>) {
+    pub(crate) fn cache_info(&self, id: (String, String, String), info: crate::data::TableInfo) {
         if let Ok(mut map) = self.keys.lock() {
-            map.insert(id, (Instant::now(), cols));
+            map.insert(id, (Instant::now(), info));
         }
     }
 }
@@ -230,6 +227,9 @@ impl Session for MssqlSession {
             if !v.is_empty() {
                 extra.insert(key.to_string(), v);
             }
+        }
+        if let Some(w) = self.shared.settings.ntlm_warning() {
+            extra.insert("warning".into(), w);
         }
         if let Some(first) = text(6).lines().next() {
             extra.insert("banner".into(), first.to_string());
@@ -320,32 +320,5 @@ impl Session for MssqlSession {
     async fn close(&self) -> Result<()> {
         self.shared.close_all();
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn session_state_detection() {
-        for yes in [
-            "USE other",
-            "SET NOCOUNT ON; SELECT 1",
-            "begin tran; delete t",
-            "CREATE TABLE #t(a int)",
-            "set  rowcount 5",
-            "EXEC sp_who; EXECUTE AS USER = 'x'",
-        ] {
-            assert!(changes_session_state(yes), "{yes}");
-        }
-        for no in [
-            "SELECT * FROM t",
-            "UPDATE t SET a = 1",
-            "INSERT INTO t VALUES (1)",
-            "SELECT 'use' AS x2",
-        ] {
-            assert!(!changes_session_state(no) || no.contains("'use'"), "{no}");
-        }
     }
 }

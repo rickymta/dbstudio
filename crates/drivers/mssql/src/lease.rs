@@ -327,14 +327,28 @@ impl MssqlLease {
             });
             return;
         }
-        let probe = tokio::time::timeout(
-            CLOSE_STEP,
-            conn.rows("SELECT @@TRANCOUNT, XACT_STATE(), DB_NAME()"),
-        )
-        .await;
-        match probe {
-            Ok(Ok(rows)) => {
-                let r = rows.first().cloned().unwrap_or_default();
+        // A cancel that lands on the probe itself ends it with an attention: ask again.
+        let mut probe = None;
+        for _ in 0..2 {
+            match tokio::time::timeout(
+                CLOSE_STEP,
+                conn.rows("SELECT @@TRANCOUNT, XACT_STATE(), DB_NAME(), @@OPTIONS & 2"),
+            )
+            .await
+            {
+                Ok(Ok(rows)) => {
+                    probe = Some(rows);
+                    break;
+                }
+                Ok(Err(Error::Cancelled)) => continue,
+                _ => {
+                    conn.broken = true;
+                    break;
+                }
+            }
+        }
+        match probe.as_ref().and_then(|r| r.first().cloned()) {
+            Some(r) => {
                 let status = if int_at(&r, 1) == -1 {
                     TxStatus::Failed
                 } else if int_at(&r, 0) > 0 {
@@ -343,20 +357,23 @@ impl MssqlLease {
                     TxStatus::Idle
                 };
                 let db = str_at(&r, 2);
+                let implicit = int_at(&r, 3) != 0;
                 self.shared.update(|s| {
                     s.transaction = status;
+                    s.auto_commit = !implicit;
                     if !db.is_empty() {
                         s.database = Some(db);
                     }
                 });
             }
-            _ => {
-                conn.broken = true;
+            None if conn.broken => {
                 self.shared.update(|s| {
                     s.broken = true;
                     s.transaction = TxStatus::Unknown;
                 });
             }
+            // Still cancelled: the state is unknown but the connection is fine.
+            None => self.shared.update(|s| s.transaction = TxStatus::Unknown),
         }
     }
 
@@ -567,11 +584,15 @@ impl Lease for MssqlLease {
             *r = Some((req.query_id, ctl.clone()));
         }
         self.shared.update(|s| s.running = Some(req.query_id));
-        let plan = crate::explain::explain_on(conn, &ctl, &req).await;
-        if let Ok(mut r) = self.shared.running.lock() {
-            *r = None;
-        }
-        self.shared.update(|s| s.running = None);
+        let shared = self.shared.clone();
+        let mut done = move || {
+            if let Ok(mut r) = shared.running.lock() {
+                *r = None;
+            }
+            shared.update(|s| s.running = None);
+        };
+        let plan = crate::explain::explain_on(conn, &ctl, &req, &mut done).await;
+        done();
         self.refresh_tx(&mut inner).await;
         plan
     }
@@ -585,14 +606,8 @@ impl Lease for MssqlLease {
         let obj = parse_object(&req.table)?;
         let mut inner = self.inner.try_lock().map_err(|_| Self::busy())?;
         let conn = self.idle(&mut inner).await?;
-        let key = if req.order_by_key {
-            crate::data::key_columns(conn, &obj)
-                .await
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let sql = crate::data::stream_sql(&obj, &req, &key)?;
+        let info = crate::data::load_table_info(conn, &obj).await;
+        let sql = crate::data::stream_sql(&obj, &req, &info, conn.lob_limit)?;
         let params = RunParams {
             max_rows: None,
             batch_size: req
@@ -698,6 +713,23 @@ impl Lease for MssqlLease {
     }
 }
 
+/// The server doomed the transaction (`XACT_STATE() = -1`): nothing but a rollback is possible.
+/// Roll everything back and tell the user; the lease itself stays usable.
+async fn doomed(conn: &mut Conn, cause: &str) -> Error {
+    if conn
+        .run("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION")
+        .await
+        .is_err()
+    {
+        conn.broken = true;
+    }
+    Error::Other(if cause.is_empty() {
+        "the transaction was aborted by the server and has been rolled back".to_string()
+    } else {
+        format!("the transaction was aborted by the server and has been rolled back ({cause})")
+    })
+}
+
 /// Run the statements of a bulk insert on `conn`.
 async fn bulk_on(
     conn: &mut Conn,
@@ -744,11 +776,11 @@ async fn bulk_on(
     };
     let stmts = bulk::statements(obj, req, &types, &key_columns)?;
     // Atomic per call even without an open transaction.
-    let outer = conn
-        .rows("SELECT @@TRANCOUNT")
-        .await?
-        .first()
-        .is_some_and(|r| int_at(r, 0) > 0);
+    let tx = conn.rows("SELECT @@TRANCOUNT, XACT_STATE()").await?;
+    let outer = tx.first().is_some_and(|r| int_at(r, 0) > 0);
+    if outer && tx.first().is_some_and(|r| int_at(r, 1) == -1) {
+        return Err(doomed(conn, "").await);
+    }
     if !outer {
         conn.run("BEGIN TRANSACTION").await?;
     } else {
@@ -821,6 +853,18 @@ async fn bulk_on(
             Ok(total)
         }
         Err(e) => {
+            if outer {
+                // Doomed (`XACT_STATE() = -1`) or already rolled back (`XACT_ABORT`).
+                let gone = conn
+                    .rows("SELECT @@TRANCOUNT, XACT_STATE()")
+                    .await
+                    .ok()
+                    .and_then(|r| r.first().cloned())
+                    .is_some_and(|r| int_at(&r, 1) == -1 || int_at(&r, 0) == 0);
+                if gone {
+                    return Err(doomed(conn, &e.to_string()).await);
+                }
+            }
             let undo = if outer {
                 "ROLLBACK TRANSACTION dbstudio_bulk"
             } else {

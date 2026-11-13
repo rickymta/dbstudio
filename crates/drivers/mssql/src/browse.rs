@@ -873,6 +873,9 @@ async fn object_ddl_on(conn: &mut Conn, obj: &ObjRef, db: &str) -> Result<String
                     out.push(s);
                 }
             }
+            for k in checks.iter().filter(|k| !k.plain()) {
+                out.push(ddl::add_check(names, &obj.schema, &obj.name, k));
+            }
             for f in &fks {
                 out.push(ddl::add_foreign_key(names, &obj.schema, &obj.name, f));
             }
@@ -980,7 +983,7 @@ pub(crate) async fn table_triggers(
 async fn sequence_ddl(conn: &mut Conn, obj: &ObjRef) -> Result<String> {
     let rows = conn
         .rows(&format!(
-            "SELECT TYPE_NAME(s.user_type_id), CAST(s.start_value AS NVARCHAR(60)), CAST(s.increment AS NVARCHAR(60)), \
+            "SELECT TYPE_NAME(s.user_type_id), CAST((SELECT CASE WHEN x.n > CAST(s.maximum_value AS DECIMAL(38,0)) THEN CAST(s.maximum_value AS DECIMAL(38,0)) WHEN x.n < CAST(s.minimum_value AS DECIMAL(38,0)) THEN CAST(s.minimum_value AS DECIMAL(38,0)) ELSE x.n END FROM (SELECT CASE WHEN s.last_used_value IS NULL THEN CAST(s.start_value AS DECIMAL(38,0)) ELSE CAST(s.last_used_value AS DECIMAL(38,0)) + CAST(s.increment AS DECIMAL(38,0)) END AS n) x) AS NVARCHAR(60)), CAST(s.increment AS NVARCHAR(60)), \
              CAST(s.minimum_value AS NVARCHAR(60)), CAST(s.maximum_value AS NVARCHAR(60)), s.is_cycling, \
              s.is_cached, s.cache_size \
              FROM sys.sequences s WHERE s.object_id = OBJECT_ID({})",

@@ -26,6 +26,8 @@ pub struct Col {
     pub nullable: bool,
     /// `(seed, increment)`.
     pub identity: Option<(String, String)>,
+    /// The identity is `NOT FOR REPLICATION`.
+    pub identity_not_for_replication: bool,
     /// `(expression, persisted)`.
     pub computed: Option<(String, bool)>,
     /// `(constraint name, definition)`.
@@ -53,6 +55,12 @@ pub struct Idx {
     /// Key columns with their descending flag.
     pub keys: Vec<(String, bool)>,
     pub included: Vec<String>,
+    pub ignore_dup_key: bool,
+    /// 0 = server default.
+    pub fill_factor: i64,
+    pub padded: bool,
+    pub allow_row_locks: bool,
+    pub allow_page_locks: bool,
 }
 
 /// A foreign key.
@@ -67,6 +75,7 @@ pub struct Fk {
     pub on_delete: String,
     pub disabled: bool,
     pub not_trusted: bool,
+    pub not_for_replication: bool,
 }
 
 /// A check constraint.
@@ -74,6 +83,16 @@ pub struct Fk {
 pub struct Check {
     pub name: String,
     pub definition: String,
+    pub disabled: bool,
+    pub not_trusted: bool,
+    pub not_for_replication: bool,
+}
+
+impl Check {
+    /// Enabled and trusted: can be part of `CREATE TABLE`.
+    pub fn plain(&self) -> bool {
+        !self.disabled && !self.not_trusted
+    }
 }
 
 /// Tables selected by `filter` (`WHERE` fragment over `sys.objects o`; use `o.type IN ('U','V')`).
@@ -84,7 +103,7 @@ pub async fn columns(conn: &mut Conn, filter: &str) -> Result<BTreeMap<TableKey,
          c.is_nullable, c.is_identity, c.is_computed, dc.name, dc.definition, cc.definition, \
          cc.is_persisted, CAST(ic.seed_value AS NVARCHAR(60)), CAST(ic.increment_value AS NVARCHAR(60)), \
          CAST(ep.value AS NVARCHAR(MAX)), c.collation_name, c.is_sparse, \
-         CAST(COLUMNPROPERTY(c.object_id, c.name, 'GeneratedAlwaysType') AS INT) \
+         CAST(COLUMNPROPERTY(c.object_id, c.name, 'GeneratedAlwaysType') AS INT), ic.is_not_for_replication \
          FROM sys.objects o \
          JOIN sys.columns c ON c.object_id = o.object_id \
          JOIN sys.types t ON t.user_type_id = c.user_type_id \
@@ -134,6 +153,7 @@ pub async fn columns(conn: &mut Conn, filter: &str) -> Result<BTreeMap<TableKey,
             base_type: base,
             nullable: bool_at(&r, 11),
             identity,
+            identity_not_for_replication: bool_at(&r, 24),
             computed,
             default,
             collation: opt_str_at(&r, 21),
@@ -154,7 +174,8 @@ pub async fn indexes(conn: &mut Conn, filter: &str) -> Result<BTreeMap<TableKey,
     let sql = format!(
         "SELECT SCHEMA_NAME(o.schema_id), o.name, i.index_id, i.name, i.type, i.type_desc, \
          i.is_unique, i.is_primary_key, i.is_unique_constraint, i.filter_definition, i.is_disabled, \
-         c.name, ic.is_descending_key, ic.is_included_column, ic.key_ordinal \
+         c.name, ic.is_descending_key, ic.is_included_column, ic.key_ordinal, \
+         i.ignore_dup_key, i.fill_factor, i.is_padded, i.allow_row_locks, i.allow_page_locks \
          FROM sys.objects o \
          JOIN sys.indexes i ON i.object_id = o.object_id AND i.index_id > 0 \
          JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
@@ -180,6 +201,11 @@ pub async fn indexes(conn: &mut Conn, filter: &str) -> Result<BTreeMap<TableKey,
                 disabled: bool_at(&r, 10),
                 keys: Vec::new(),
                 included: Vec::new(),
+                ignore_dup_key: bool_at(&r, 15),
+                fill_factor: int_at(&r, 16),
+                padded: bool_at(&r, 17),
+                allow_row_locks: bool_at(&r, 18),
+                allow_page_locks: bool_at(&r, 19),
             });
             last = Some((key, id));
         }
@@ -200,7 +226,7 @@ pub async fn foreign_keys(conn: &mut Conn, filter: &str) -> Result<BTreeMap<Tabl
     let sql = format!(
         "SELECT SCHEMA_NAME(o.schema_id), o.name, fk.name, fk.delete_referential_action_desc, \
          fk.update_referential_action_desc, SCHEMA_NAME(rt.schema_id), rt.name, pc.name, rc.name, \
-         fk.is_disabled, fk.is_not_trusted \
+         fk.is_disabled, fk.is_not_trusted, fk.is_not_for_replication \
          FROM sys.objects o \
          JOIN sys.foreign_keys fk ON fk.parent_object_id = o.object_id \
          JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id \
@@ -226,6 +252,7 @@ pub async fn foreign_keys(conn: &mut Conn, filter: &str) -> Result<BTreeMap<Tabl
                 on_update: str_at(&r, 4).replace('_', " "),
                 disabled: bool_at(&r, 9),
                 not_trusted: bool_at(&r, 10),
+                not_for_replication: bool_at(&r, 11),
             });
         }
         if let Some(f) = list.last_mut() {
@@ -239,7 +266,7 @@ pub async fn foreign_keys(conn: &mut Conn, filter: &str) -> Result<BTreeMap<Tabl
 /// Check constraints of the tables selected by `filter`.
 pub async fn checks(conn: &mut Conn, filter: &str) -> Result<BTreeMap<TableKey, Vec<Check>>> {
     let sql = format!(
-        "SELECT SCHEMA_NAME(o.schema_id), o.name, k.name, k.definition \
+        "SELECT SCHEMA_NAME(o.schema_id), o.name, k.name, k.definition, k.is_disabled, k.is_not_trusted, k.is_not_for_replication \
          FROM sys.objects o JOIN sys.check_constraints k ON k.parent_object_id = o.object_id \
          WHERE {filter} ORDER BY 1, 2, k.name"
     );
@@ -250,6 +277,9 @@ pub async fn checks(conn: &mut Conn, filter: &str) -> Result<BTreeMap<TableKey, 
             .push(Check {
                 name: str_at(&r, 2),
                 definition: str_at(&r, 3),
+                disabled: bool_at(&r, 4),
+                not_trusted: bool_at(&r, 5),
+                not_for_replication: bool_at(&r, 6),
             });
     }
     Ok(out)

@@ -70,12 +70,51 @@ pub fn statements(
             )));
         }
     }
-    let typed = |v: &EditValue, i: usize| match v {
-        EditValue::Value(dbstudio_core::Value::Null) => {
-            let ty = types.get(i).map(String::as_str).unwrap_or("NVARCHAR(MAX)");
-            format!("CAST(NULL AS {ty})")
+    // `DEFAULT` is only valid in a plain `VALUES` list, not in a derived table.
+    if req.on_conflict != OnConflict::Error
+        && req
+            .rows
+            .iter()
+            .any(|r| r.iter().any(|v| matches!(v, EditValue::Default)))
+    {
+        return Err(Error::Unsupported(
+            "DEFAULT cannot be used together with a conflict policy".into(),
+        ));
+    }
+    // In a derived table each literal gets its own type, so values are cast to the column type
+    // (strings and binaries are left alone: a cast would silently truncate them).
+    let typed = |v: &EditValue, i: usize| {
+        let ty = types.get(i).map(String::as_str).unwrap_or("NVARCHAR(MAX)");
+        let upper = ty.to_ascii_uppercase();
+        let keep = [
+            "CHAR",
+            "VARCHAR",
+            "NCHAR",
+            "NVARCHAR",
+            "BINARY",
+            "VARBINARY",
+            "XML",
+            "TEXT",
+            "NTEXT",
+            "IMAGE",
+            "ROWVERSION",
+            "SQL_VARIANT",
+            "[",
+        ]
+        .iter()
+        .any(|p| upper.starts_with(p));
+        match v {
+            EditValue::Value(dbstudio_core::Value::Null) => {
+                let ty = if upper.starts_with("ROWVERSION") {
+                    "VARBINARY(8)"
+                } else {
+                    ty
+                };
+                format!("CAST(NULL AS {ty})")
+            }
+            other if keep => cell(other),
+            other => format!("CAST({} AS {ty})", cell(other)),
         }
-        other => cell(other),
     };
     let mut out = Vec::new();
     for chunk in req.rows.chunks(ROWS_PER_STATEMENT) {
@@ -208,7 +247,11 @@ mod tests {
     fn skip_and_merge_forms() {
         let types = vec!["INT".to_string(), "NVARCHAR(20)".to_string()];
         let s = statements(&obj(), &req(OnConflict::Skip, 2), &types, &["id".into()]).unwrap();
-        assert!(s[0].0.contains("(0, CAST(NULL AS NVARCHAR(20)))"));
+        assert!(
+            s[0].0
+                .contains("(CAST(0 AS INT), CAST(NULL AS NVARCHAR(20)))")
+        );
+        assert!(s[0].0.contains("(CAST(1 AS INT), N'x''y')"));
         assert!(
             s[0].0.contains(
                 "WHERE NOT EXISTS (SELECT 1 FROM [d].[s].[t] AS t WHERE t.[id] = v.[id])"
@@ -237,6 +280,17 @@ mod tests {
         let mut r = req(OnConflict::Skip, 1);
         r.conflict_columns = vec!["zzz".into()];
         assert!(statements(&obj(), &r, &[], &[]).is_err());
+        let mut r = req(OnConflict::Skip, 1);
+        r.rows[0][1] = EditValue::Default;
+        assert!(
+            statements(
+                &obj(),
+                &r,
+                &["INT".into(), "NVARCHAR(5)".into()],
+                &["id".into()]
+            )
+            .is_err()
+        );
         let mut r = req(OnConflict::Update, 1);
         r.columns = vec![];
         assert!(statements(&obj(), &r, &[], &[]).is_err());

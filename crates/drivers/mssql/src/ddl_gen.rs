@@ -243,6 +243,23 @@ async fn build(
                 }
             }
         }
+        for k in tchecks.iter().filter(|k| !k.plain()) {
+            let sql = guard(
+                format!(
+                    "NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = {} AND parent_object_id = OBJECT_ID({}))",
+                    lit(&k.name),
+                    lit(&format!("{}.{}", quote(&schema), quote(&name)))
+                ),
+                ddl::add_check(names, &schema, &name, k),
+            );
+            post.push(item(
+                tpath.clone(),
+                ObjectKind::Table,
+                DdlSection::PostData,
+                sql,
+                vec![],
+            ));
+        }
         if o.include_foreign_keys {
             for f in fks.get(&key).into_iter().flatten() {
                 if !sel.wants(&f.ref_schema, &f.ref_table) {
@@ -404,6 +421,14 @@ async fn build(
                 let key = (schema.clone(), name.clone());
                 for i in idx.get(&key).into_iter().flatten() {
                     if let Some(s) = ddl::create_index(names, &schema, &name, i) {
+                        let s = guard(
+                            format!(
+                                "NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = {} AND object_id = OBJECT_ID({}))",
+                                lit(&i.name),
+                                lit(&format!("{}.{}", quote(&schema), quote(&name)))
+                            ),
+                            s,
+                        );
                         post.push(item(
                             object_path(db, &schema, ObjectKind::View, &name)
                                 .child(ObjectKind::Folder, dbstudio_core::folder::INDEXES)
@@ -424,7 +449,7 @@ async fn build(
         let rows = conn
             .rows(&format!(
                 "SELECT o.object_id, SCHEMA_NAME(o.schema_id), o.name, TYPE_NAME(s.user_type_id), \
-                 CAST(s.start_value AS NVARCHAR(60)), CAST(s.increment AS NVARCHAR(60)), \
+                 CAST((SELECT CASE WHEN x.n > CAST(s.maximum_value AS DECIMAL(38,0)) THEN CAST(s.maximum_value AS DECIMAL(38,0)) WHEN x.n < CAST(s.minimum_value AS DECIMAL(38,0)) THEN CAST(s.minimum_value AS DECIMAL(38,0)) ELSE x.n END FROM (SELECT CASE WHEN s.last_used_value IS NULL THEN CAST(s.start_value AS DECIMAL(38,0)) ELSE CAST(s.last_used_value AS DECIMAL(38,0)) + CAST(s.increment AS DECIMAL(38,0)) END AS n) x) AS NVARCHAR(60)), CAST(s.increment AS NVARCHAR(60)), \
                  CAST(s.minimum_value AS NVARCHAR(60)), CAST(s.maximum_value AS NVARCHAR(60)), \
                  s.is_cycling, s.is_cached, s.cache_size \
                  FROM sys.sequences s JOIN sys.objects o ON o.object_id = s.object_id \
@@ -656,7 +681,12 @@ async fn build(
         out.extend(drops);
     }
     out.extend(schema_items);
-    out.extend(type_items);
+    // Alias types first: table types may use them for their columns.
+    let (aliases, table_types): (Vec<_>, Vec<_>) = type_items
+        .into_iter()
+        .partition(|i| !i.sql.contains("AS TABLE ("));
+    out.extend(aliases);
+    out.extend(table_types);
     out.extend(pre);
     out.extend(post);
     if out.is_empty() && !req.objects.is_empty() {

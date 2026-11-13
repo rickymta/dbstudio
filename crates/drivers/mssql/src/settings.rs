@@ -125,9 +125,21 @@ impl Settings {
         })
     }
 
+    /// Warning for the UI when NTLM credentials go over TLS whose certificate is not verified.
+    pub fn ntlm_warning(&self) -> Option<String> {
+        (self.auth == AuthKind::Windows
+            && !matches!(self.tls.mode, TlsMode::VerifyCa | TlsMode::VerifyFull))
+        .then(|| {
+            "Windows (NTLM) credentials are sent over TLS without verifying the server \
+             certificate; use verify-ca or verify-full"
+                .to_string()
+        })
+    }
+
     /// The `tiberius` configuration for a connection to `database`.
     ///
-    /// TLS policy: `Disable` sends nothing encrypted beyond what the server forces; `Prefer`
+    /// TLS policy: `Disable` encrypts only the login packet (everything when the server forces
+    /// encryption), certificate unverified; `Prefer`
     /// and `Require` encrypt without verifying the certificate (TDS has no fallback to plain
     /// text once the server asks for encryption); `VerifyCa` and `VerifyFull` both verify chain
     /// and host name (the TLS library cannot skip the name check). Without a CA file the
@@ -165,16 +177,17 @@ impl Settings {
             c.encryption(EncryptionLevel::Strict);
         } else {
             c.encryption(match tls.mode {
-                TlsMode::Disable => EncryptionLevel::NotSupported,
+                TlsMode::Disable => EncryptionLevel::Off,
                 TlsMode::Prefer => EncryptionLevel::On,
                 _ => EncryptionLevel::Required,
             });
         }
         match tls.mode {
             TlsMode::Disable | TlsMode::Prefer | TlsMode::Require => {
-                if tls.mode != TlsMode::Disable {
-                    c.trust_cert();
-                }
+                // `Disable` asks for no encryption of the data, but the login is still encrypted
+                // (and the whole connection when the server forces encryption): the certificate
+                // is not verified in that case either.
+                c.trust_cert();
             }
             TlsMode::VerifyCa | TlsMode::VerifyFull => {
                 if let Some(ca) = &tls.ca_cert_path {
@@ -261,7 +274,7 @@ mod tests {
     fn tls_modes_map_to_encryption() {
         let mut c = cfg();
         for (mode, level) in [
-            (TlsMode::Disable, "NotSupported"),
+            (TlsMode::Disable, "Off"),
             (TlsMode::Prefer, "On"),
             (TlsMode::Require, "Required"),
             (TlsMode::VerifyFull, "Required"),
@@ -272,6 +285,31 @@ mod tests {
             let dbg = format!("{t:?}");
             assert!(dbg.contains(level), "{mode:?}: {dbg}");
         }
+    }
+
+    #[test]
+    fn ntlm_over_unverified_tls_warns() {
+        let mut c = cfg();
+        c.options.insert("auth".into(), "windows".into());
+        for (mode, warns) in [
+            (TlsMode::Disable, true),
+            (TlsMode::Prefer, true),
+            (TlsMode::Require, true),
+            (TlsMode::VerifyCa, false),
+            (TlsMode::VerifyFull, false),
+        ] {
+            c.tls.mode = mode;
+            let s = Settings::from_config(&c, None).unwrap();
+            assert_eq!(s.ntlm_warning().is_some(), warns, "{mode:?}");
+        }
+        c.options.insert("auth".into(), "sql".into());
+        c.tls.mode = TlsMode::Require;
+        assert!(
+            Settings::from_config(&c, None)
+                .unwrap()
+                .ntlm_warning()
+                .is_none()
+        );
     }
 
     #[test]

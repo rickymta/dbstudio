@@ -29,12 +29,15 @@ pub fn type_column_definition(c: &Col, db_collation: &str) -> String {
     column_def(c, db_collation, false)
 }
 
-fn column_def(c: &Col, db_collation: &str, named_default: bool) -> String {
+fn column_def(c: &Col, _db_collation: &str, named_default: bool) -> String {
     let mut s = quote(&c.name);
     if let Some((expr, persisted)) = &c.computed {
         s.push_str(&format!(" AS {expr}"));
         if *persisted {
             s.push_str(" PERSISTED");
+            if !c.nullable {
+                s.push_str(" NOT NULL");
+            }
         }
         return s;
     }
@@ -43,13 +46,20 @@ fn column_def(c: &Col, db_collation: &str, named_default: bool) -> String {
     if c.sparse {
         s.push_str(" SPARSE");
     }
-    if let Some(coll) = &c.collation {
-        if !coll.eq_ignore_ascii_case(db_collation) {
-            s.push_str(&format!(" COLLATE {coll}"));
-        }
+    // Always explicit: the target database may have another default collation.
+    // (not allowed on alias types: they carry their own)
+    if let Some(coll) = c
+        .collation
+        .as_ref()
+        .filter(|_| !c.ddl_type.starts_with('['))
+    {
+        s.push_str(&format!(" COLLATE {coll}"));
     }
     if let Some((seed, inc)) = &c.identity {
         s.push_str(&format!(" IDENTITY({seed},{inc})"));
+        if c.identity_not_for_replication {
+            s.push_str(" NOT FOR REPLICATION");
+        }
     }
     if !c.rowversion {
         s.push_str(if c.nullable { " NULL" } else { " NOT NULL" });
@@ -69,6 +79,31 @@ fn key_list(keys: &[(String, bool)]) -> String {
         .map(|(c, desc)| format!("{} {}", quote(c), if *desc { "DESC" } else { "ASC" }))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// `WITH (...)` of the index options that differ from the defaults.
+fn index_options(i: &Idx) -> String {
+    let mut o: Vec<String> = Vec::new();
+    if i.padded {
+        o.push("PAD_INDEX = ON".into());
+    }
+    if i.fill_factor > 0 && i.fill_factor < 100 {
+        o.push(format!("FILLFACTOR = {}", i.fill_factor));
+    }
+    if i.ignore_dup_key {
+        o.push("IGNORE_DUP_KEY = ON".into());
+    }
+    if !i.allow_row_locks {
+        o.push("ALLOW_ROW_LOCKS = OFF".into());
+    }
+    if !i.allow_page_locks {
+        o.push("ALLOW_PAGE_LOCKS = OFF".into());
+    }
+    if o.is_empty() {
+        String::new()
+    } else {
+        format!(" WITH ({})", o.join(", "))
+    }
 }
 
 fn clustered(i: &Idx) -> &'static str {
@@ -95,17 +130,24 @@ pub fn create_table(
         .collect();
     for i in indexes.iter().filter(|i| i.primary || i.unique_constraint) {
         lines.push(format!(
-            "    CONSTRAINT {} {} {} ({})",
+            "    CONSTRAINT {} {} {} ({}){}",
             quote(&i.name),
             if i.primary { "PRIMARY KEY" } else { "UNIQUE" },
             clustered(i),
-            key_list(&i.keys)
+            key_list(&i.keys),
+            index_options(i)
         ));
     }
-    for k in checks {
+    // Disabled or untrusted checks are added after the data load (`add_check`).
+    for k in checks.iter().filter(|k| k.plain()) {
         lines.push(format!(
-            "    CONSTRAINT {} CHECK {}",
+            "    CONSTRAINT {} CHECK{} {}",
             quote(&k.name),
+            if k.not_for_replication {
+                " NOT FOR REPLICATION"
+            } else {
+                ""
+            },
             k.definition
         ));
     }
@@ -136,6 +178,7 @@ pub fn create_index(names: Names, schema: &str, table: &str, i: &Idx) -> Option<
             if let Some(f) = &i.filter {
                 s.push_str(&format!(" WHERE {f}"));
             }
+            s.push_str(&index_options(i));
             s.push(';');
             Some(s)
         }
@@ -168,7 +211,7 @@ pub fn add_foreign_key(names: Names, schema: &str, table: &str, f: &Fk) -> Strin
     let cols: Vec<String> = f.cols.iter().map(|c| quote(c)).collect();
     let rcols: Vec<String> = f.ref_cols.iter().map(|c| quote(c)).collect();
     let mut s = format!(
-        "ALTER TABLE {} WITH {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}) ON DELETE {} ON UPDATE {};",
+        "ALTER TABLE {} WITH {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}) ON DELETE {} ON UPDATE {}{};",
         names.obj(schema, table),
         if f.not_trusted || f.disabled {
             "NOCHECK"
@@ -180,13 +223,47 @@ pub fn add_foreign_key(names: Names, schema: &str, table: &str, f: &Fk) -> Strin
         names.obj(&f.ref_schema, &f.ref_table),
         rcols.join(", "),
         f.on_delete,
-        f.on_update
+        f.on_update,
+        if f.not_for_replication {
+            " NOT FOR REPLICATION"
+        } else {
+            ""
+        }
     );
     if f.disabled {
         s.push_str(&format!(
             "\nALTER TABLE {} NOCHECK CONSTRAINT {};",
             names.obj(schema, table),
             quote(&f.name)
+        ));
+    }
+    s
+}
+
+/// `ALTER TABLE ... ADD CONSTRAINT ... CHECK` of a check that is disabled or untrusted: added
+/// `WITH NOCHECK` (existing rows are not validated), then disabled again when it was.
+pub fn add_check(names: Names, schema: &str, table: &str, k: &Check) -> String {
+    let mut s = format!(
+        "ALTER TABLE {} WITH {} ADD CONSTRAINT {} CHECK{} {};",
+        names.obj(schema, table),
+        if k.disabled || k.not_trusted {
+            "NOCHECK"
+        } else {
+            "CHECK"
+        },
+        quote(&k.name),
+        if k.not_for_replication {
+            " NOT FOR REPLICATION"
+        } else {
+            ""
+        },
+        k.definition
+    );
+    if k.disabled {
+        s.push_str(&format!(
+            "\nALTER TABLE {} NOCHECK CONSTRAINT {};",
+            names.obj(schema, table),
+            quote(&k.name)
         ));
     }
     s
@@ -276,6 +353,7 @@ mod tests {
             base_type: ty.to_lowercase(),
             nullable,
             identity: None,
+            identity_not_for_replication: false,
             computed: None,
             default: None,
             collation: None,
@@ -305,10 +383,18 @@ mod tests {
             disabled: false,
             keys: vec![("id".into(), false)],
             included: vec![],
+            ignore_dup_key: false,
+            fill_factor: 0,
+            padded: false,
+            allow_row_locks: true,
+            allow_page_locks: true,
         };
         let ck = Check {
             name: "CK_t".into(),
             definition: "([qty]>=(0))".into(),
+            disabled: false,
+            not_trusted: false,
+            not_for_replication: false,
         };
         let sql = create_table(
             Names { qualify: true },
@@ -341,6 +427,11 @@ mod tests {
             disabled: false,
             keys: vec![("a".into(), false), ("b".into(), true)],
             included: vec!["c".into()],
+            ignore_dup_key: false,
+            fill_factor: 0,
+            padded: false,
+            allow_row_locks: true,
+            allow_page_locks: true,
         };
         let n = Names { qualify: false };
         assert_eq!(
@@ -368,6 +459,7 @@ mod tests {
             on_delete: "CASCADE".into(),
             disabled: false,
             not_trusted: false,
+            not_for_replication: false,
         };
         assert_eq!(
             add_foreign_key(Names { qualify: true }, "dbo", "t", &f),
