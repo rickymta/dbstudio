@@ -242,10 +242,13 @@ fn explain_in_the_chain_does_not_hide_writes() {
         mclass("db.a.deleteMany({}).explain()"),
         (C::Write, Some(R::DeleteManyAll))
     );
-    assert_eq!(
-        mclass("db.dropDatabase().explain()"),
-        (C::Ddl, Some(R::DropDatabase))
-    );
+    // A chain after a database method is rejected by the parser; the statement stays unknown,
+    // keeps the destructive reason of the keyword scan and read-only refuses it.
+    let unparsed = analyze(MONGO, "db.dropDatabase().explain()");
+    assert!(!unparsed.problems.is_empty());
+    assert_eq!(unparsed.statements[0].class, C::Unknown);
+    assert_eq!(unparsed.statements[0].destructive, Some(R::DropDatabase));
+    denied(MONGO, "db.dropDatabase().explain()");
     assert_eq!(
         mclass("db.a.aggregate([{$out: 'b'}]).explain()").0,
         C::Write

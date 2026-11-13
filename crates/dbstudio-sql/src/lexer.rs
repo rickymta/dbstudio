@@ -310,8 +310,9 @@ impl<'a> Lexer<'a> {
         }
         if c == '-' && nx == Some('-') && r.dash_comment {
             let ok = if r.mysql {
+                // MySQL: only ASCII blanks and control characters (NBSP is an identifier char).
                 self.at(i + 2)
-                    .is_none_or(|x| x.is_whitespace() || x.is_control())
+                    .is_none_or(|x| x.is_ascii_whitespace() || x.is_ascii_control())
             } else {
                 true
             };
@@ -324,6 +325,27 @@ impl<'a> Lexer<'a> {
         }
         if c == '/' && nx == Some('/') && r.slash_comment {
             return self.line_comment(i);
+        }
+        if r.mysql {
+            // Executable comments `/*! ... */`, `/*!50000 ... */`, `/*M! ... */` are code:
+            // the opener (marker and version) and the closer are blanks, the content is lexed
+            // as ordinary SQL.
+            if c == '/' && nx == Some('*') {
+                let m = match self.at(i + 2) {
+                    Some('!') => Some(i + 3),
+                    Some('M') if self.at(i + 3) == Some('!') => Some(i + 4),
+                    _ => None,
+                };
+                if let Some(mut j) = m {
+                    while self.at(j).is_some_and(|d| d.is_ascii_digit()) {
+                        j += 1;
+                    }
+                    return (TokenKind::Whitespace, j, None);
+                }
+            }
+            if c == '*' && nx == Some('/') {
+                return (TokenKind::Whitespace, i + 2, None);
+            }
         }
         if c == '/' && nx == Some('*') {
             return self.block_comment(i);
@@ -636,7 +658,7 @@ mod tests {
         assert_eq!(kinds(MY, "--x").len(), 3);
         assert_eq!(one(PG, "--x"), TokenKind::LineComment);
         assert_eq!(one(PG, "/* a /* b */ c */"), TokenKind::BlockComment);
-        assert_eq!(kinds(MY, "/* a /* b */ c */").len(), 4);
+        assert_eq!(kinds(MY, "/* a /* b */ c */").len(), 2);
         assert_eq!(
             one(ScriptDialect::MsSql, "/* a /* b */ c */"),
             TokenKind::BlockComment
@@ -648,6 +670,26 @@ mod tests {
         );
         let k = kinds(PG, "a -- x\nb");
         assert_eq!(k.len(), 3);
+    }
+
+    #[test]
+    fn mysql_executable_comments_are_code() {
+        let k = kinds(MY, "/*!50000 DROP TABLE t */");
+        let words: Vec<_> = k.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(words, ["DROP", "TABLE", "t"]);
+        assert_eq!(kinds(MY, "/*! SELECT 1 */").len(), 2);
+        assert_eq!(kinds(MY, "/*M!100000 SELECT 1 */").len(), 2);
+        // ordinary comments stay comments
+        assert_eq!(one(MY, "/* DROP TABLE t */"), TokenKind::BlockComment);
+        // other dialects: a comment, whatever follows `/*`
+        assert_eq!(one(PG, "/*! x */"), TokenKind::BlockComment);
+    }
+
+    #[test]
+    fn mysql_dash_comment_needs_ascii_blank() {
+        assert_eq!(kinds(MY, "--\u{a0}x").len(), 3);
+        assert_eq!(one(MY, "-- x"), TokenKind::LineComment);
+        assert_eq!(one(MY, "--\tx"), TokenKind::LineComment);
     }
 
     #[test]

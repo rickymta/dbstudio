@@ -66,7 +66,8 @@ pub fn statement_databases(
                         if s.kind == mongo_shell::ShellKind::Use {
                             cur = Some(s.method.clone());
                         }
-                        cur.clone()
+                        // `db.getSiblingDB("x")...` names its own database
+                        s.database.clone().or_else(|| cur.clone())
                     })
                     .collect()
             }
@@ -335,7 +336,7 @@ fn sig_tokens(d: ScriptDialect, chars: &[char], r: TextRange) -> Vec<Sig> {
             let text: String = chars[i..e].iter().collect();
             let (up, raw) = match kind {
                 TokenKind::Word => (text.to_uppercase(), text),
-                TokenKind::QuotedIdent => (String::new(), text),
+                TokenKind::QuotedIdent => (unquote(&text).to_uppercase(), text),
                 TokenKind::String => (String::new(), String::new()),
                 _ => (text, String::new()),
             };
@@ -382,81 +383,229 @@ fn analyze_sql(d: ScriptDialect, chars: &[char]) -> (Vec<StatementInfo>, Vec<Scr
     (out, problems)
 }
 
-/// T-SQL statements of a batch: split at `;` outside `BEGIN ... END` / `CASE ... END` / parens.
+/// Words after which a statement keyword continues the current statement (`ON DELETE`,
+/// `FOR UPDATE`, `WHEN MATCHED THEN DELETE`, `GRANT ALTER`...).
+const MSSQL_CONTINUE_DML: &[&str] = &[
+    "FOR", "AFTER", "INSTEAD", "OF", "THEN", "OR", "AND", ",", "DO", "WHEN", "BEFORE", "GRANT",
+    "DENY", "REVOKE", "BULK",
+];
+
+/// Does the word `up` at position `k` of the significant tokens `t` start a new T-SQL statement
+/// (T-SQL does not require `;`)? `first` is the first word of the statement so far.
+fn mssql_starts_statement(
+    t: &[(TokenKind, usize, usize, String)],
+    k: usize,
+    first: &str,
+    cte_open: bool,
+) -> bool {
+    let up = t[k].3.as_str();
+    let prev = if k == 0 { "" } else { t[k - 1].3.as_str() };
+    let next = t.get(k + 1).map(|x| x.3.as_str()).unwrap_or("");
+    let next2 = t.get(k + 2).map(|x| x.3.as_str()).unwrap_or("");
+    // Definitions swallow what follows (procedure bodies, ALTER ... DROP ...).
+    if matches!(first, "CREATE" | "ALTER") {
+        return false;
+    }
+    // `WITH x AS (...) SELECT|INSERT|UPDATE|DELETE|MERGE`: the main verb belongs to the CTE.
+    if cte_open && matches!(up, "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "MERGE") {
+        return false;
+    }
+    match up {
+        "SELECT" => !matches!(
+            prev,
+            "UNION"
+                | "ALL"
+                | "INTERSECT"
+                | "EXCEPT"
+                | "AS"
+                | "("
+                | "FOR"
+                | "IN"
+                | "EXISTS"
+                | "ANY"
+                | "SOME"
+                | "DISTINCT"
+                | "OPTION"
+                | "THEN"
+                | ","
+                | "GRANT"
+                | "DENY"
+                | "REVOKE"
+        ),
+        "INSERT" | "UPDATE" | "DELETE" => !MSSQL_CONTINUE_DML.contains(&prev),
+        "MERGE" => !matches!(prev, ","),
+        "DROP" | "TRUNCATE" | "DECLARE" | "USE" | "DBCC" | "KILL" => true,
+        "EXEC" | "EXECUTE" => !matches!(prev, "AS" | "WITH" | ","),
+        "CREATE" | "ALTER" => !matches!(prev, "GRANT" | "DENY" | "REVOKE" | "," | "OR" | "ADD"),
+        "GRANT" | "REVOKE" | "DENY" | "BACKUP" | "RESTORE" => !matches!(prev, "WITH" | ","),
+        "SET" => !matches!(first, "UPDATE" | "MERGE"),
+        "WITH" => {
+            !matches!(
+                next,
+                "EXECUTE"
+                    | "RECOMPILE"
+                    | "ENCRYPTION"
+                    | "SCHEMABINDING"
+                    | "VIEW_METADATA"
+                    | "NATIVE_COMPILATION"
+                    | "PASSWORD"
+                    | "CHECK"
+                    | "GRANT"
+                    | "NOCHECK"
+            ) && t.get(k + 1).is_some_and(|x| x.0 == TokenKind::Word)
+                && matches!(next2, "AS" | "(")
+        }
+        "IF" | "WHILE" => !matches!(
+            prev,
+            "ELSE"
+                | "TABLE"
+                | "VIEW"
+                | "INDEX"
+                | "PROCEDURE"
+                | "PROC"
+                | "FUNCTION"
+                | "TRIGGER"
+                | "SCHEMA"
+                | "DATABASE"
+                | "TYPE"
+                | "SEQUENCE"
+                | "SYNONYM"
+                | "COLUMN"
+                | "CONSTRAINT"
+                | "LOGIN"
+                | "USER"
+                | "ROLE"
+                | ","
+        ),
+        "BEGIN" => !matches!(prev, "ELSE"),
+        _ => false,
+    }
+}
+
+/// T-SQL statements of a batch: split at `;` outside `BEGIN ... END` / `CASE ... END` / parens,
+/// and before a statement keyword (T-SQL allows statements without `;`).
 fn mssql_statements(chars: &[char], batch: TextRange) -> Vec<TextRange> {
     let d = ScriptDialect::MsSql;
     let lx = Lexer::new(chars, d);
     let end = batch.end as usize;
+    // Significant tokens: (kind, start, end, upper text for words and punctuation).
+    let mut t: Vec<(TokenKind, usize, usize, String)> = Vec::new();
+    // Start of the first comment before the next token (comments belong to the statement
+    // that follows them).
+    let mut comment_start: Option<usize> = None;
+    let mut starts: Vec<usize> = Vec::new();
     let mut i = batch.start as usize;
-    let mut out = Vec::new();
-    let mut start: Option<usize> = None;
-    let mut last_end = 0usize;
-    let mut has_code = false;
-    let mut depth = 0i32;
-    let mut paren = 0i32;
-    let mut pending_begin = false;
-    let mut push = |start: &mut Option<usize>, last_end: usize, has_code: &mut bool| {
-        if *has_code {
-            if let Some(s) = *start {
-                out.push(range(s, last_end));
-            }
-        }
-        *start = None;
-        *has_code = false;
-    };
     while i < end {
         let (kind, e, _) = lx.next(i);
         let e = e.min(end);
         match kind {
             TokenKind::Whitespace => {}
             TokenKind::LineComment | TokenKind::BlockComment => {
-                start.get_or_insert(i);
-                last_end = e;
+                comment_start.get_or_insert(i);
             }
             _ => {
-                let text: String = chars[i..e].iter().collect();
-                if kind == TokenKind::Punct && text == ";" && depth <= 0 && paren <= 0 {
-                    push(&mut start, last_end, &mut has_code);
-                    depth = 0;
+                let text = if matches!(kind, TokenKind::Word | TokenKind::Punct) {
+                    chars[i..e].iter().collect::<String>().to_uppercase()
                 } else {
-                    start.get_or_insert(i);
-                    has_code = true;
-                    last_end = e;
-                    if kind == TokenKind::Punct {
-                        match text.as_str() {
-                            "(" => paren += 1,
-                            ")" => paren = (paren - 1).max(0),
-                            _ => {}
-                        }
-                    } else if kind == TokenKind::Word {
-                        let up = text.to_uppercase();
-                        if pending_begin {
-                            pending_begin = false;
-                            if !matches!(
-                                up.as_str(),
-                                "TRAN" | "TRANSACTION" | "DISTRIBUTED" | "DIALOG" | "CONVERSATION"
-                            ) {
-                                depth += 1;
-                            }
-                        }
-                        match up.as_str() {
-                            "BEGIN" => pending_begin = true,
-                            "CASE" => depth += 1,
-                            "END" => depth = (depth - 1).max(0),
-                            _ => {}
-                        }
-                    }
-                }
+                    String::new()
+                };
+                t.push((kind, i, e, text));
+                starts.push(comment_start.take().unwrap_or(i));
             }
-        }
-        // A trailing BEGIN (nothing after it) still opens a block.
-        if pending_begin && i + (e - i) >= end {
-            depth += 1;
-            pending_begin = false;
         }
         i = e;
     }
-    push(&mut start, last_end, &mut has_code);
+    let mut out = Vec::new();
+    let mut cur_first: Option<usize> = None; // index in `t` of the first token
+    let mut first_word = String::new();
+    let mut depth = 0i32;
+    let mut paren = 0i32;
+    let mut pending_begin = false;
+    let mut main_seen = false;
+    let flush = |from: usize, to: usize, out: &mut Vec<TextRange>| {
+        // statement = tokens t[from..to]
+        if from < to {
+            out.push(range(starts[from], t[to - 1].2));
+        }
+    };
+    let mut k = 0;
+    while k < t.len() {
+        let (kind, _, _, ref up) = t[k];
+        if kind == TokenKind::Punct && up == ";" && depth <= 0 && paren <= 0 {
+            if let Some(f) = cur_first.take() {
+                flush(f, k, &mut out);
+            }
+            depth = 0;
+            first_word.clear();
+            pending_begin = false;
+            main_seen = false;
+            k += 1;
+            continue;
+        }
+        if kind == TokenKind::Word {
+            if let Some(f) = cur_first {
+                if depth <= 0
+                    && paren <= 0
+                    && !pending_begin
+                    && mssql_starts_statement(
+                        &t,
+                        k,
+                        &first_word,
+                        first_word == "WITH" && !main_seen,
+                    )
+                {
+                    flush(f, k, &mut out);
+                    cur_first = None;
+                    first_word.clear();
+                    depth = 0;
+                    main_seen = false;
+                }
+            }
+        }
+        if cur_first.is_none() {
+            cur_first = Some(k);
+            if kind == TokenKind::Word {
+                first_word = up.clone();
+            }
+        }
+        if kind == TokenKind::Punct {
+            match up.as_str() {
+                "(" => paren += 1,
+                ")" => paren = (paren - 1).max(0),
+                _ => {}
+            }
+        } else if kind == TokenKind::Word {
+            if pending_begin {
+                pending_begin = false;
+                if !matches!(
+                    up.as_str(),
+                    "TRAN" | "TRANSACTION" | "DISTRIBUTED" | "DIALOG" | "CONVERSATION"
+                ) {
+                    depth += 1;
+                }
+            }
+            if depth <= 0
+                && paren <= 0
+                && matches!(
+                    up.as_str(),
+                    "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "MERGE"
+                )
+            {
+                main_seen = true;
+            }
+            match up.as_str() {
+                "BEGIN" => pending_begin = true,
+                "CASE" => depth += 1,
+                "END" => depth = (depth - 1).max(0),
+                _ => {}
+            }
+        }
+        k += 1;
+    }
+    // A trailing BEGIN opens nothing.
+    if let Some(f) = cur_first {
+        flush(f, t.len(), &mut out);
+    }
     out
 }
 
@@ -661,6 +810,30 @@ fn keyword_scan(
                 }
             }
             _ => {}
+        }
+    }
+    // Data-destroying statements inside blocks / dynamic SQL.
+    if let Some(r) = dml_without_where(sig, 0) {
+        return Some(r);
+    }
+    if sig
+        .iter()
+        .any(|s| s.kind == TokenKind::Word && s.up == "MERGE")
+        && sig
+            .windows(2)
+            .any(|p| p[0].up == "THEN" && p[1].up == "DELETE")
+    {
+        return Some(DestructiveReason::DeleteWithoutWhere);
+    }
+    if let Some(a) = sig
+        .iter()
+        .position(|s| s.kind == TokenKind::Word && s.up == "ALTER")
+    {
+        if sig[a..]
+            .iter()
+            .any(|s| s.kind == TokenKind::Word && s.up == "DROP")
+        {
+            return Some(DestructiveReason::AlterDrop);
         }
     }
     None
@@ -963,6 +1136,9 @@ const VOLATILE_FUNCTIONS: &[&str] = &[
     "LO_FROM_BYTEA",
     "LO_PUT",
     "DBLINK_EXEC",
+    "DBLINK",
+    "DBLINK_SEND_QUERY",
+    "GET_LOCK",
     "DBLINK_CONNECT",
     "PG_REPLICATION_SLOT_ADVANCE",
     "PG_DROP_REPLICATION_SLOT",
@@ -986,11 +1162,20 @@ fn select_class(d: ScriptDialect, sig: &[Sig], f: usize) -> StatementClass {
         }
     }
     for (k, s) in sig.iter().enumerate().skip(f) {
-        if s.kind != TokenKind::Word {
+        if !matches!(s.kind, TokenKind::Word | TokenKind::QuotedIdent) {
             continue;
         }
-        if VOLATILE_FUNCTIONS.contains(&s.up.as_str()) {
+        // A quoted identifier is only a function when it is called.
+        let callable = s.kind == TokenKind::Word || p(sig, k + 1) == "(";
+        if callable
+            && (VOLATILE_FUNCTIONS.contains(&s.up.as_str())
+                || s.up.starts_with("PG_ADVISORY_")
+                || s.up.starts_with("PG_TRY_ADVISORY_"))
+        {
             return C::Write;
+        }
+        if s.kind != TokenKind::Word {
+            continue;
         }
         // Row locks: FOR UPDATE / FOR SHARE / FOR NO KEY UPDATE / FOR KEY SHARE,
         // MySQL LOCK IN SHARE MODE.
@@ -1014,6 +1199,33 @@ fn has_read_write(sig: &[Sig]) -> bool {
         .any(|p| p[0].up == "READ" && p[1].up == "WRITE" && p[0].kind == TokenKind::Word)
 }
 
+/// Does this SET / RESET change read-only mode, string lexing or the role?
+fn set_lifts(sig: &[Sig]) -> bool {
+    const NAMES: &[&str] = &[
+        "TRANSACTION_READ_ONLY",
+        "TX_READ_ONLY",
+        "SQL_MODE",
+        "SUPER_READ_ONLY",
+        "STANDARD_CONFORMING_STRINGS",
+        "BACKSLASH_QUOTE",
+        "ESCAPE_STRING_WARNING",
+    ];
+    let named = |s: &Sig| matches!(s.kind, TokenKind::Word | TokenKind::QuotedIdent);
+    has_read_write(sig)
+        || sig.iter().any(|s| {
+            named(s)
+                && (NAMES.iter().any(|k| s.up.contains(k))
+                    || s.up == "READ_ONLY"
+                    || s.up.ends_with(".READ_ONLY"))
+        })
+        || sig
+            .iter()
+            .any(|s| matches!(s.kind, TokenKind::Word | TokenKind::QuotedIdent) && s.up == "ROLE")
+        || sig
+            .windows(2)
+            .any(|p| p[0].up == "SESSION" && p[1].up == "AUTHORIZATION")
+}
+
 fn classify_sig(
     d: ScriptDialect,
     chars: &[char],
@@ -1021,7 +1233,8 @@ fn classify_sig(
 ) -> (StatementClass, Option<DestructiveReason>) {
     use StatementClass as C;
     let Some(f) = first_word(sig) else {
-        return (C::Unknown, None);
+        // e.g. `[sp_executesql] N'drop table t'`: unknown, but never skip the safety net.
+        return (C::Unknown, keyword_scan(d, chars, sig, 0));
     };
     let first = w(sig, f);
     let second = w(sig, f + 1);
@@ -1032,7 +1245,7 @@ fn classify_sig(
     let pg = matches!(d, ScriptDialect::Postgres);
     match first {
         "SELECT" => (select_class(d, sig, f), None),
-        "VALUES" => (C::Read, None),
+        "VALUES" => (select_class(d, sig, f), None),
         "TABLE" if pg => (C::Read, None),
         "WITH" => {
             let main = depth0_word_pos(
@@ -1062,6 +1275,23 @@ fn classify_sig(
                 _ => (C::Read, None),
             }
         }
+        // MySQL: DESCRIBE/DESC is EXPLAIN; `DESCRIBE ANALYZE <stmt>` executes the statement.
+        "DESCRIBE" | "DESC"
+            if is_mysql(d)
+                && matches!(
+                    second,
+                    "ANALYZE"
+                        | "SELECT"
+                        | "INSERT"
+                        | "UPDATE"
+                        | "DELETE"
+                        | "REPLACE"
+                        | "WITH"
+                        | "FORMAT"
+                ) =>
+        {
+            explain(d, chars, sig, f)
+        }
         "SHOW" | "DESCRIBE" | "DESC" | "HELP" | "FETCH" | "MOVE" => (C::Read, None),
         "EXPLAIN" => explain(d, chars, sig, f),
         "ANALYZE"
@@ -1081,7 +1311,17 @@ fn classify_sig(
                 inner.1,
             )
         }
-        "INSERT" | "MERGE" | "UPSERT" => (C::Write, None),
+        "MERGE" => {
+            // WHEN [NOT] MATCHED ... THEN DELETE removes rows.
+            let del = sig
+                .windows(2)
+                .any(|p| p[0].up == "THEN" && p[1].up == "DELETE" && p[1].kind == TokenKind::Word);
+            (
+                C::Write,
+                del.then_some(DestructiveReason::DeleteWithoutWhere),
+            )
+        }
+        "INSERT" | "UPSERT" => (C::Write, None),
         "REPLACE" if is_mysql(d) => (C::Write, None),
         "LOAD" if is_mysql(d) && second == "DATA" => (C::Write, None),
         "BULK" if mssql => (C::Write, None),
@@ -1137,23 +1377,18 @@ fn classify_sig(
         "SAVE" if mssql && matches!(second, "TRAN" | "TRANSACTION") => tx(TxControl::Savepoint),
         "RELEASE" => tx(TxControl::Release),
         "SET" => {
-            // Settings that lift read-only mode or change how strings are lexed are not plain
-            // session statements.
-            let lifts = has_read_write(sig)
-                || sig.iter().any(|s| {
-                    s.kind == TokenKind::Word
-                        && [
-                            "TRANSACTION_READ_ONLY",
-                            "TX_READ_ONLY",
-                            "SQL_MODE",
-                            "SUPER_READ_ONLY",
-                        ]
-                        .iter()
-                        .any(|k| s.up.contains(k))
-                        || s.up == "READ_ONLY"
-                        || s.up.ends_with(".READ_ONLY")
-                });
-            if lifts {
+            // MariaDB: SET STATEMENT var=value FOR <stmt> is judged by the statement.
+            if is_mysql(d) && second == "STATEMENT" {
+                if let Some(k) = depth0_word_pos(sig, f + 2, &["FOR"]) {
+                    if set_lifts(&sig[f..k]) {
+                        return (C::Admin, None);
+                    }
+                    return classify_sig(d, chars, &sig[k + 1..]);
+                }
+            }
+            // Settings that lift read-only mode, change how strings are lexed or switch the
+            // role are not plain session statements.
+            if set_lifts(sig) {
                 return (C::Admin, None);
             }
             if is_mysql(d) {
@@ -1165,8 +1400,54 @@ fn classify_sig(
             }
             (C::Session, None)
         }
-        "USE" | "LOCK" | "UNLOCK" | "LISTEN" | "UNLISTEN" | "NOTIFY" | "DISCARD" | "CLOSE"
-        | "DEALLOCATE" | "OPEN" | "PREPARE" | "RESET" | "WORK" => (C::Session, None),
+        "RESET" => {
+            if is_mysql(d) || second == "ALL" || set_lifts(sig) {
+                (C::Admin, None)
+            } else {
+                (C::Session, None)
+            }
+        }
+        "DISCARD" if second == "ALL" => (C::Admin, None),
+        "LOCK" => {
+            // LOCK TABLE(S) ... WRITE / EXCLUSIVE blocks other sessions.
+            if sig.iter().any(|s| {
+                s.kind == TokenKind::Word && matches!(s.up.as_str(), "WRITE" | "EXCLUSIVE")
+            }) {
+                (C::Admin, None)
+            } else {
+                (C::Session, None)
+            }
+        }
+        "PREPARE" => {
+            // PostgreSQL: PREPARE n AS <stmt>; MySQL: PREPARE n FROM '<stmt>'.
+            let inner = if pg {
+                depth0_word_pos(sig, f + 1, &["AS"]).map(|k| classify_sig(d, chars, &sig[k + 1..]))
+            } else {
+                depth0_word_pos(sig, f + 1, &["FROM"]).and_then(|k| match sig.get(k + 1) {
+                    Some(t) if t.kind == TokenKind::String => {
+                        let text: String = chars[t.start..t.end].iter().collect();
+                        let inner: Vec<char> = string_inner(&text).chars().collect();
+                        let r = range(0, inner.len());
+                        let isig = sig_tokens(d, &inner, r);
+                        Some(classify_sig(d, &inner, &isig))
+                    }
+                    _ => None,
+                })
+            };
+            match inner {
+                Some((c, dr)) => {
+                    let class = if c == C::Read {
+                        C::Session
+                    } else {
+                        C::Procedural
+                    };
+                    (class, dr.or_else(|| keyword_scan(d, chars, sig, 0)))
+                }
+                None => procedural(sig),
+            }
+        }
+        "USE" | "UNLOCK" | "LISTEN" | "UNLISTEN" | "NOTIFY" | "DISCARD" | "CLOSE"
+        | "DEALLOCATE" | "OPEN" | "WORK" => (C::Session, None),
         "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "RENAME" | "COMMENT" | "FLASHBACK"
         | "REFRESH" => classify_ddl(d, sig, f),
         "GRANT" | "REVOKE" | "DENY" | "KILL" | "SHUTDOWN" | "FLUSH" | "DBCC" | "BACKUP"
@@ -1220,7 +1501,18 @@ fn classify_ddl(
                         && !matches!(w(sig, k + 1), "NOT" | "DEFAULT" | "IDENTITY" | "EXPRESSION")
                 })
                 .map(|(k, _)| k);
-            drop_at.map(|_| DestructiveReason::AlterDrop)
+            if drop_at.is_some() {
+                Some(DestructiveReason::AlterDrop)
+            } else if sig
+                .iter()
+                .skip(f + 1)
+                .any(|s| s.kind == TokenKind::Word && s.up == "TRUNCATE")
+            {
+                // ALTER TABLE t TRUNCATE PARTITION p
+                Some(DestructiveReason::Truncate)
+            } else {
+                None
+            }
         }
         _ => None,
     };
@@ -1715,8 +2007,10 @@ mod tests {
     fn session_and_transactions() {
         assert_eq!(cls(PG, "set search_path = a"), (C::Session, None));
         assert_eq!(cls(PG, "set local x = 1"), (C::Session, None));
-        assert_eq!(cls(PG, "reset all"), (C::Session, None));
-        assert_eq!(cls(PG, "discard all"), (C::Session, None));
+        assert_eq!(cls(PG, "reset work_mem"), (C::Session, None));
+        assert_eq!(cls(PG, "reset all"), (C::Admin, None));
+        assert_eq!(cls(PG, "discard all"), (C::Admin, None));
+        assert_eq!(cls(PG, "discard plans"), (C::Session, None));
         assert_eq!(cls(MY, "use db"), (C::Session, None));
         assert_eq!(cls(MY, "set autocommit = 0"), (C::Session, None));
         assert_eq!(cls(MY, "set names utf8mb4"), (C::Session, None));
@@ -1772,14 +2066,15 @@ mod tests {
         assert_eq!(cls(MS, "exec sp_who"), (C::Procedural, None));
         assert_eq!(cls(MS, "execute dbo.p @a = 1"), (C::Procedural, None));
         assert_eq!(cls(MS, "print 'x'"), (C::Procedural, None));
-        assert_eq!(cls(MS, "if 1 = 1 select 1"), (C::Procedural, None));
-        assert_eq!(
-            cls(
-                MS,
-                "begin try select 1 end try begin catch select 2 end catch"
-            ),
-            (C::Procedural, None)
+        // T-SQL needs no `;`: the condition and the statement it guards are listed separately.
+        let a = analyze(MS, "if 1 = 1 select 1");
+        assert_eq!(a.statements[0].class, C::Procedural);
+        assert_eq!(a.statements[1].class, C::Read);
+        let a = analyze(
+            MS,
+            "begin try select 1 end try begin catch select 2 end catch",
         );
+        assert!(a.statements.iter().all(|s| s.class == C::Procedural));
         assert_eq!(cls(ORA, "begin null; end;"), (C::Procedural, None));
         assert_eq!(
             cls(ORA, "declare a number; begin a := 1; end;"),
@@ -1811,8 +2106,9 @@ mod tests {
             cls(MS, "exec sp_executesql N'truncate table x'").1,
             Some(DestructiveReason::Truncate)
         );
+        let a = analyze(MS, "if 1=1 drop table x");
         assert_eq!(
-            cls(MS, "if 1=1 drop table x").1,
+            a.statements.last().unwrap().destructive,
             Some(DestructiveReason::Drop)
         );
         assert_eq!(
@@ -2003,8 +2299,11 @@ mod tests {
     #[test]
     fn mssql_blocks_stay_whole() {
         let a = analyze(MS, "if 1 = 1 begin delete from t; select 1; end; select 2");
-        assert_eq!(a.statements.len(), 2);
+        assert_eq!(a.statements.len(), 3);
         assert_eq!(a.statements[0].class, C::Procedural);
+        // the BEGIN..END block is one statement, judged as a whole
+        assert_eq!(a.statements[1].class, C::Procedural);
+        assert_eq!(a.statements[2].class, C::Read);
         let a = analyze(
             MS,
             "begin tran; update t set a = 1 where b = 2; commit tran",

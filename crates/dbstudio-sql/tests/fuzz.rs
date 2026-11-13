@@ -221,3 +221,39 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(400))]
+
+    /// A destructive T-SQL statement can never hide behind a read that has no `;`.
+    #[test]
+    fn tsql_destructive_never_hides_after_a_read(
+        read in prop::sample::select(vec![
+            "select 1",
+            "select * from t where a = 1",
+            "with x as (select 1 a) select * from x",
+            "select 1 union all select 2",
+            "print 'hi'",
+            "set nocount on",
+        ]),
+        destr in prop::sample::select(vec![
+            "drop table t",
+            "truncate table t",
+            "delete from t",
+            "update t set a = 1",
+            "exec('drop table t')",
+            "if 1 = 1 drop table t",
+        ]),
+        sep in prop::sample::select(vec![" ", "\n", "  ", " /* c */ ", " -- c\n"]),
+    ) {
+        let sql = format!("{read}{sep}{destr}");
+        let a = analyze(ScriptDialect::MsSql, &sql);
+        prop_assert!(a.statements.len() >= 2, "{sql:?} -> {:?}", a.statements);
+        prop_assert!(
+            a.statements.iter().any(|s| s.destructive.is_some()),
+            "{sql:?} -> {:?}",
+            a.statements
+        );
+        prop_assert!(a.statements[0].destructive.is_none() || read.contains("drop"));
+    }
+}

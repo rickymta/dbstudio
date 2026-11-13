@@ -361,6 +361,8 @@ async fn driver_diagnostics_report_the_registry_status() {
 #[tokio::test]
 async fn ssh_trust_host_stores_the_accepted_key() {
     let f = fixture();
+    // the backend only trusts a key it has seen during a connection attempt
+    ssh::record_observed("bastion", 22, "ssh-ed25519", "SHA256:abc");
     ssh::trust_host_impl(
         &f.state,
         "bastion".into(),

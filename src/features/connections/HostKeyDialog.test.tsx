@@ -67,19 +67,46 @@ describe('HostKeyDialog', () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
-  it('warns loudly when the key has changed', async () => {
+  it('warns loudly when the key has changed and needs the host name typed to trust it', async () => {
+    const trust = vi.spyOn(ipc, 'sshTrustHost').mockResolvedValue();
+    const onTrusted = vi.fn();
+    const user = userEvent.setup();
     render(
       <Providers>
         <HostKeyDialog
           prompt={hostKeyPromptFromError({ ...KEY, changed: true })}
           onCancel={() => {}}
-          onTrusted={() => {}}
+          onTrusted={onTrusted}
         />
       </Providers>,
     );
     await screen.findByRole('dialog', { name: 'SSH host key has changed' });
     expect(screen.getByRole('note')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Replace the trusted key' })).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Replace the trusted key' });
+    expect(button).toBeDisabled();
+    const box = screen.getByLabelText('Type bastion to confirm');
+    await user.type(box, 'basti');
+    expect(button).toBeDisabled();
+    await user.type(box, 'on');
+    expect(button).toBeEnabled();
+    await user.click(button);
+    await waitFor(() => expect(onTrusted).toHaveBeenCalled());
+    expect(trust).toHaveBeenCalledWith('bastion', 2222, 'ssh-ed25519', 'SHA256:abc123');
+  });
+
+  it('an unknown (new) key needs no typing', async () => {
+    render(
+      <Providers>
+        <HostKeyDialog
+          prompt={hostKeyPromptFromError(KEY)}
+          onCancel={() => {}}
+          onTrusted={() => {}}
+        />
+      </Providers>,
+    );
+    await screen.findByRole('dialog', { name: 'Trust this SSH server?' });
+    expect(screen.queryByLabelText(/Type bastion/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Trust and continue' })).toBeEnabled();
   });
 
   it('cancel does not store anything', async () => {

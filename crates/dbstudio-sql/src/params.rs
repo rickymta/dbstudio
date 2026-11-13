@@ -385,7 +385,12 @@ fn render(d: ScriptDialect, name: &str, v: &ParamInput) -> Result<String> {
                     "parameter {name}: \"{s}\" is not a number"
                 )));
             }
-            s.clone()
+            // Parentheses keep `5 - :n` from becoming the comment `5 --1`.
+            if s.starts_with('-') {
+                format!("({s})")
+            } else {
+                s.clone()
+            }
         }
         ParamInput::Bool(b) => q.literal(&dbstudio_core::Value::Bool(*b)),
         ParamInput::Raw(s) => s.clone(),
@@ -592,7 +597,7 @@ mod tests {
             ],
         )
         .unwrap();
-        assert_eq!(b.text, "select 'it''s', -1.5e3, NULL, true, now()");
+        assert_eq!(b.text, "select 'it''s', (-1.5e3), NULL, true, now()");
         let b = bind(MS, "select @p", &[pv("@p", ParamInput::Text("x".into()))]).unwrap();
         assert_eq!(b.text, "select N'x'");
         let b = bind(
@@ -619,6 +624,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(b.text, "select 7, 7");
+    }
+
+    #[test]
+    fn negative_numbers_never_form_a_comment() {
+        let b = bind(
+            PG,
+            "select 5 -:n, 5-:n",
+            &[pv(":n", ParamInput::Number("-1".into()))],
+        )
+        .unwrap();
+        assert_eq!(b.text, "select 5 -(-1), 5-(-1)");
+        assert_eq!(crate::split(PG, &b.text).len(), 1);
+        assert!(crate::analyze(PG, &b.text).problems.is_empty());
+    }
+
+    #[test]
+    fn postgres_text_with_backslash_is_safe_in_any_mode() {
+        let b = bind(
+            PG,
+            "select :a",
+            &[pv(":a", ParamInput::Text("\\'; drop table x; --".into()))],
+        )
+        .unwrap();
+        assert_eq!(b.text, "select E'\\\\''; drop table x; --'");
+        assert_eq!(crate::split(PG, &b.text).len(), 1);
     }
 
     #[test]
