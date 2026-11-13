@@ -18,9 +18,9 @@ pub mod redis_cli;
 pub mod split;
 pub mod vocabulary;
 
-pub use classify::analyze;
+pub use classify::{analyze, statement_databases};
 pub use dialect::Dialect;
-pub use guard::{Policy, Verdict, check};
+pub use guard::{Policy, Verdict, check, confirm_text_for};
 pub use params::{BoundScript, OffsetMap, bind, find_params};
 pub use split::{StreamSplitter, split};
 pub use vocabulary::{CommandHint, Vocabulary, vocabulary};

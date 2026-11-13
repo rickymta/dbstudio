@@ -1,3 +1,27 @@
 {
-  "readOnly": "Read-only"
+  "readOnly": "Read-only",
+  "destructive": {
+    "title": "Confirm destructive statements",
+    "description": "This connection is a production environment. The statements below can destroy data and cannot be undone.",
+    "statements": "Destructive statements",
+    "typePrompt": "Type {{text}} to confirm",
+    "confirm": "Run anyway",
+    "cancel": "Cancel",
+    "reason": {
+      "drop": "Drops an object",
+      "truncate": "Truncates a table",
+      "deleteWithoutWhere": "DELETE without WHERE: removes every row",
+      "updateWithoutWhere": "UPDATE without WHERE: changes every row",
+      "alterDrop": "Drops a column or constraint",
+      "flushDb": "Removes every key of the database",
+      "flushAll": "Removes every key of every database",
+      "deleteByPattern": "Deletes keys by pattern",
+      "dropCollection": "Drops a collection",
+      "dropDatabase": "Drops the database",
+      "deleteManyAll": "deleteMany with an empty filter: removes every document",
+      "updateManyAll": "updateMany with an empty filter: changes every document",
+      "restore": "Restores over existing data",
+      "importReplace": "Import replaces existing data"
+    }
+  }
 }

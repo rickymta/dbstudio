@@ -62,7 +62,7 @@ describe('mock sessions and leases', () => {
       events.push(e.type);
       if (e.type === 'statementStart') expect(e.start.range).toEqual({ start: 0, end: 8 });
     });
-    expect(events).toEqual(['statementStart', 'columns', 'statementEnd']);
+    expect(events).toEqual(['statementStart', 'columns', 'rows', 'statementEnd']);
     expect(res.summary.statements).toBe(1);
     expect((await ipc.leaseBegin(lease.leaseId, {})).transaction).toBe('active');
     await expect(ipc.leaseSetAutoCommit(lease.leaseId, true)).rejects.toMatchObject({
@@ -76,7 +76,7 @@ describe('mock sessions and leases', () => {
   it('analyzes scripts and runs query_execute', async () => {
     const s = await open();
     const a = await ipc.scriptAnalyze(s.sessionId, 'drop table x');
-    expect(a.statements[0]).toMatchObject({ verb: 'DROP', class: { kind: 'unknown' } });
+    expect(a.statements[0]).toMatchObject({ verb: 'DROP', class: { kind: 'ddl' } });
     expect((await ipc.scriptAnalyze(s.sessionId, '  ')).statements).toEqual([]);
     const events: string[] = [];
     const r = await ipc.queryExecute(s.sessionId, { text: 'select 1', queryId: 'q' }, (e) =>

@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 dbstudio-core.workspace = true
+dbstudio-sql.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
