@@ -1069,10 +1069,10 @@ mod tests {
     }
 
     #[test]
-    fn run_guard_with_the_scaffold_analyzer() {
-        // The stub analyzer classifies everything as Unknown, which read-only refuses.
+    fn run_guard_with_the_real_analyzer() {
         let (t, _) = tokens();
-        let err = run_guard(&t, &input("select 1", true, false, None)).unwrap_err();
+        run_guard(&t, &input("select 1", true, false, None)).unwrap();
+        let err = run_guard(&t, &input("insert into t values (1)", true, false, None)).unwrap_err();
         assert_eq!(err.kind(), "readOnly");
         let ok = run_guard(&t, &input("select 1", false, false, None)).unwrap();
         assert_eq!(ok.bound.text, "select 1");

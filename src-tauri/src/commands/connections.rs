@@ -90,9 +90,11 @@ pub(crate) async fn test_impl(
         let profile = profile.clone();
         blocking(move || svc.resolve_secret(&profile, &secret)).await?
     };
+    // The SSH secret is the stored one (the test command carries no SSH secret change).
+    let ssh = super::ssh::ssh_env(state, &profile.config).await?;
     state
         .sessions
-        .test(&profile.config, password.as_ref())
+        .test_with_ssh(&profile.config, password.as_ref(), ssh.as_ref())
         .await
 }
 

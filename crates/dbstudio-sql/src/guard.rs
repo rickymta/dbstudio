@@ -65,6 +65,32 @@ fn slice(text: &str, range: TextRange) -> String {
         .collect()
 }
 
+/// Text the user must type to confirm `destructive` statements: the database each one runs
+/// against (see [`crate::classify::statement_databases`]; `None` = `default`). One database →
+/// its name; several → the distinct names joined with `", "` (in statement order).
+pub fn confirm_text_for(
+    default: &str,
+    databases: &[Option<String>],
+    destructive: &[DestructiveStatement],
+) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for s in destructive {
+        let db = databases
+            .get(s.index as usize)
+            .and_then(|d| d.as_deref())
+            .unwrap_or(default)
+            .to_string();
+        if !names.contains(&db) {
+            names.push(db);
+        }
+    }
+    if names.is_empty() {
+        default.to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
 /// Decide without statement text: the `text` of listed [`DestructiveStatement`]s is empty.
 pub fn check(policy: &Policy, analysis: &ScriptAnalysis) -> Verdict {
     decide(policy, analysis, None)
