@@ -1,0 +1,53 @@
+{
+  "app": { "name": "DBStudio" },
+  "sidebar": {
+    "connections": "Kết nối",
+    "empty": "Chưa có kết nối nào",
+    "emptyHint": "Tạo một kết nối để bắt đầu duyệt cơ sở dữ liệu.",
+    "newConnection": "Kết nối mới",
+    "availableInPhase": "Có ở giai đoạn {{phase}}"
+  },
+  "tabs": { "welcome": "Chào mừng" },
+  "welcome": {
+    "title": "Chào mừng đến với DBStudio",
+    "subtitle": "Một công cụ để quản trị nhiều hệ cơ sở dữ liệu.",
+    "supported": "Các hệ quản trị được hỗ trợ",
+    "loadError": "Không tải được danh sách driver.",
+    "port": "Cổng mặc định",
+    "family": "Họ"
+  },
+  "status": {
+    "available": "Sẵn sàng",
+    "planned": "Giai đoạn {{phase}}"
+  },
+  "family": {
+    "relational": "Quan hệ",
+    "document": "Tài liệu",
+    "keyValue": "Khóa-giá trị",
+    "wideColumn": "Cột rộng",
+    "columnar": "Cột phân tích"
+  },
+  "capability": {
+    "sql": "SQL",
+    "transactions": "Giao dịch",
+    "schemas": "Schema",
+    "multipleDatabases": "Nhiều CSDL",
+    "explain": "Explain",
+    "explainAnalyze": "Explain analyze",
+    "foreignKeys": "Sơ đồ ER",
+    "cancelQuery": "Hủy truy vấn",
+    "logicalBackup": "Sao lưu",
+    "dataEditing": "Sửa dữ liệu",
+    "storedRoutines": "Thủ tục/hàm",
+    "triggers": "Trigger",
+    "views": "View",
+    "sequences": "Sequence"
+  },
+  "theme": {
+    "label": "Giao diện",
+    "system": "Theo hệ thống",
+    "light": "Sáng",
+    "dark": "Tối"
+  },
+  "language": { "label": "Ngôn ngữ", "vi": "Tiếng Việt", "en": "English" }
+}

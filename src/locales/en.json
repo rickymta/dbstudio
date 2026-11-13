@@ -1,0 +1,53 @@
+{
+  "app": { "name": "DBStudio" },
+  "sidebar": {
+    "connections": "Connections",
+    "empty": "No connections yet",
+    "emptyHint": "Create a connection to start browsing a database.",
+    "newConnection": "New connection",
+    "availableInPhase": "Available in phase {{phase}}"
+  },
+  "tabs": { "welcome": "Welcome" },
+  "welcome": {
+    "title": "Welcome to DBStudio",
+    "subtitle": "One tool to administer many databases.",
+    "supported": "Supported database systems",
+    "loadError": "Could not load the driver list.",
+    "port": "Default port",
+    "family": "Family"
+  },
+  "status": {
+    "available": "Ready",
+    "planned": "Phase {{phase}}"
+  },
+  "family": {
+    "relational": "Relational",
+    "document": "Document",
+    "keyValue": "Key-value",
+    "wideColumn": "Wide-column",
+    "columnar": "Columnar"
+  },
+  "capability": {
+    "sql": "SQL",
+    "transactions": "Transactions",
+    "schemas": "Schemas",
+    "multipleDatabases": "Multi-database",
+    "explain": "Explain",
+    "explainAnalyze": "Explain analyze",
+    "foreignKeys": "ER diagram",
+    "cancelQuery": "Cancel query",
+    "logicalBackup": "Backup",
+    "dataEditing": "Data editing",
+    "storedRoutines": "Routines",
+    "triggers": "Triggers",
+    "views": "Views",
+    "sequences": "Sequences"
+  },
+  "theme": {
+    "label": "Theme",
+    "system": "System",
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "language": { "label": "Language", "vi": "Tiếng Việt", "en": "English" }
+}

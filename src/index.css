@@ -1,0 +1,74 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens. Components use the Tailwind color utilities mapped below, never raw colors. */
+:root {
+  --background: oklch(0.985 0.002 250);
+  --foreground: oklch(0.21 0.02 255);
+  --surface: oklch(1 0 0);
+  --surface-muted: oklch(0.965 0.004 250);
+  --border: oklch(0.9 0.006 250);
+  --muted-foreground: oklch(0.5 0.02 255);
+  --accent: oklch(0.55 0.2 262);
+  --accent-foreground: oklch(0.99 0 0);
+  --success: oklch(0.55 0.15 150);
+  --success-soft: oklch(0.94 0.05 150);
+  --warning: oklch(0.55 0.13 75);
+  --warning-soft: oklch(0.95 0.06 85);
+  --ring: oklch(0.55 0.2 262 / 0.5);
+}
+
+.dark {
+  --background: oklch(0.18 0.012 255);
+  --foreground: oklch(0.94 0.005 250);
+  --surface: oklch(0.22 0.014 255);
+  --surface-muted: oklch(0.26 0.016 255);
+  --border: oklch(0.32 0.016 255);
+  --muted-foreground: oklch(0.7 0.015 255);
+  --accent: oklch(0.68 0.16 262);
+  --accent-foreground: oklch(0.15 0.02 255);
+  --success: oklch(0.78 0.14 150);
+  --success-soft: oklch(0.3 0.06 150);
+  --warning: oklch(0.82 0.12 85);
+  --warning-soft: oklch(0.32 0.06 80);
+  --ring: oklch(0.68 0.16 262 / 0.6);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-border: var(--border);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-ring: var(--ring);
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
