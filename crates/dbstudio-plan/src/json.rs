@@ -205,7 +205,8 @@ struct Parser<'a> {
     depth: u32,
 }
 
-const MAX_DEPTH: u32 = 512;
+/// Deepest JSON nesting accepted; bounds the recursion of every later pass.
+pub(crate) const MAX_DEPTH: u32 = 256;
 
 impl Parser<'_> {
     fn err(&self, msg: &str) -> String {

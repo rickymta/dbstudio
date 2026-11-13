@@ -88,8 +88,8 @@ pub(crate) fn parse(text: &str) -> Result<PlanTree, PlanError> {
     let mut seen = vec![false; rows.len()];
     let nodes: Vec<PlanNode> = roots
         .iter()
-        .map(|i| build(*i, &rows, &kids, &mut seen))
-        .collect();
+        .map(|i| build(*i, &rows, &kids, &mut seen, 0))
+        .collect::<Result<_, _>>()?;
     let analyzed = nodes.iter().any(any_actual);
     let totals = PlanTotals {
         execution_time_ms: nodes
@@ -105,7 +105,19 @@ fn any_actual(n: &PlanNode) -> bool {
     n.loops.is_some() || n.children.iter().any(any_actual)
 }
 
-fn build(i: usize, rows: &[Row], kids: &BTreeMap<u32, Vec<usize>>, seen: &mut [bool]) -> PlanNode {
+fn build(
+    i: usize,
+    rows: &[Row],
+    kids: &BTreeMap<u32, Vec<usize>>,
+    seen: &mut [bool],
+    depth: u32,
+) -> Result<PlanNode, PlanError> {
+    if depth > crate::json::MAX_DEPTH {
+        return Err(PlanError::Invalid(format!(
+            "the Oracle plan is nested deeper than {} levels",
+            crate::json::MAX_DEPTH
+        )));
+    }
     seen[i] = true;
     let r = &rows[i];
     let j = r.j;
@@ -198,12 +210,12 @@ fn build(i: usize, rows: &[Row], kids: &BTreeMap<u32, Vec<usize>>, seen: &mut [b
     if let Some(ids) = kids.get(&r.id) {
         for c in ids {
             if !seen[*c] {
-                let child = build(*c, rows, kids, seen);
+                let child = build(*c, rows, kids, seen, depth + 1)?;
                 n.children.push(child);
             }
         }
     }
-    n
+    Ok(n)
 }
 
 fn kind_of(operation: &str, options: Option<&str>) -> PlanNodeKind {

@@ -7,8 +7,11 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use dbstudio_core::{Error, ExplainRequest, PlanFormat, RawPlan, Result};
+use dbstudio_core::{
+    Error, ExplainRequest, PlanFormat, RawPlan, Result, ScriptDialect, StatementClass,
+};
 use tokio_postgres::SimpleQueryMessage;
+use tokio_postgres::types::{FromSql, Type};
 
 use crate::conn::PooledConn;
 use crate::error::map_error;
@@ -16,13 +19,7 @@ use crate::session::PostgresSession;
 
 /// Explain one statement.
 pub(crate) async fn explain(session: &PostgresSession, req: ExplainRequest) -> Result<RawPlan> {
-    let statement = req.text.trim().trim_end_matches(';').trim_end().to_string();
-    if statement.is_empty() {
-        return Err(Error::Query {
-            message: "nothing to explain".into(),
-            position: None,
-        });
-    }
+    let (statement, offset) = single_statement(&req.text)?;
     if req.analyze && !analyzable(&statement) {
         return Err(Error::Unsupported("explain_analyze_ddl".into()));
     }
@@ -36,7 +33,7 @@ pub(crate) async fn explain(session: &PostgresSession, req: ExplainRequest) -> R
     // Registered under the query id, so `Session::cancel` reaches this statement.
     let (running, _unregister) = session.register(Some(req.query_id), &conn);
     let token = conn.cancel.clone();
-    let work = run(&mut conn, &req, &statement);
+    let work = run(&mut conn, &req, &statement, offset);
     let result = match req.timeout_ms {
         Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), work).await {
             Ok(r) => r,
@@ -60,7 +57,12 @@ pub(crate) async fn explain(session: &PostgresSession, req: ExplainRequest) -> R
     result
 }
 
-async fn run(conn: &mut PooledConn, req: &ExplainRequest, statement: &str) -> Result<RawPlan> {
+async fn run(
+    conn: &mut PooledConn,
+    req: &ExplainRequest,
+    statement: &str,
+    offset: u32,
+) -> Result<RawPlan> {
     let (version_num, version) = server_version(conn).await?;
     let mut options = vec!["FORMAT JSON".to_string()];
     if req.analyze {
@@ -86,14 +88,17 @@ async fn run(conn: &mut PooledConn, req: &ExplainRequest, statement: &str) -> Re
         conn.in_txn = true;
         if let Some(ms) = req.timeout_ms {
             conn.client
-                .batch_execute(&format!("SET LOCAL statement_timeout = {ms}"))
+                .batch_execute(&format!(
+                    "SET LOCAL statement_timeout = {}",
+                    ms.min(i32::MAX as u64)
+                ))
                 .await
                 .map_err(map_error)?;
         }
     }
     let text = match fetch_text(conn, &sql).await {
         Ok(t) => t,
-        Err(e) => return Err(shift_position(e, prefix.len())),
+        Err(e) => return Err(shift_position(e, prefix.len(), offset)),
     };
     if req.analyze {
         conn.client
@@ -134,28 +139,77 @@ async fn server_version(conn: &PooledConn) -> Result<(u32, String)> {
     Ok((0, String::new()))
 }
 
-/// Run `sql` and return the single text cell (the JSON document).
-async fn fetch_text(conn: &PooledConn, sql: &str) -> Result<String> {
-    let rows = conn.client.simple_query(sql).await.map_err(map_error)?;
-    for m in rows {
-        if let SimpleQueryMessage::Row(r) = m {
-            if let Some(t) = r.get(0) {
-                return Ok(t.to_string());
-            }
-        }
+/// The JSON document of an `EXPLAIN (FORMAT JSON)` result, read as text.
+struct PlanJson(String);
+
+impl<'a> FromSql<'a> for PlanJson {
+    fn from_sql(
+        _ty: &Type,
+        raw: &'a [u8],
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(PlanJson(std::str::from_utf8(raw)?.to_string()))
     }
-    Err(Error::Other("EXPLAIN returned no plan".into()))
+
+    fn accepts(ty: &Type) -> bool {
+        *ty == Type::JSON
+    }
 }
 
-/// Error positions refer to the prefixed text; shift them back to the user's statement.
-fn shift_position(e: Error, prefix: usize) -> Error {
+/// Run `sql` and return the single JSON cell. The statement goes through the extended
+/// protocol (one Parse message), so the server itself refuses a text that holds several
+/// statements: nothing can ride along behind the statement that is being explained.
+async fn fetch_text(conn: &PooledConn, sql: &str) -> Result<String> {
+    let stmt = conn.client.prepare(sql).await.map_err(map_error)?;
+    let rows = conn.client.query(&stmt, &[]).await.map_err(map_error)?;
+    let row = rows
+        .first()
+        .ok_or_else(|| Error::Other("EXPLAIN returned no plan".into()))?;
+    Ok(row.try_get::<_, PlanJson>(0).map_err(map_error)?.0)
+}
+
+/// Exactly one statement of `text`: its text and the character offset where it starts.
+fn single_statement(text: &str) -> Result<(String, u32)> {
+    let analysis = dbstudio_sql::analyze(ScriptDialect::Postgres, text);
+    if let Some(p) = analysis.problems.first() {
+        return Err(Error::Query {
+            message: format!("cannot explain: {}", p.message),
+            position: Some(p.range.start),
+        });
+    }
+    let stmts: Vec<_> = analysis
+        .statements
+        .iter()
+        .filter(|s| s.class != StatementClass::Empty)
+        .collect();
+    match stmts.as_slice() {
+        [] => Err(Error::Query {
+            message: "nothing to explain".into(),
+            position: None,
+        }),
+        [one] => {
+            let body: String = text
+                .chars()
+                .skip(one.range.start as usize)
+                .take((one.range.end - one.range.start) as usize)
+                .collect();
+            Ok((body, one.range.start))
+        }
+        [_, second, ..] => Err(Error::Query {
+            message: format!("EXPLAIN takes exactly one statement, found {}", stmts.len()),
+            position: Some(second.range.start),
+        }),
+    }
+}
+
+/// Error positions refer to the prefixed text; map them back to the user's original text.
+fn shift_position(e: Error, prefix: usize, offset: u32) -> Error {
     match e {
         Error::Query {
             message,
             position: Some(p),
         } => Error::Query {
             message,
-            position: p.checked_sub(prefix as u32),
+            position: p.checked_sub(prefix as u32).map(|q| q + offset),
         },
         other => other,
     }
@@ -288,15 +342,48 @@ mod tests {
             position: p,
         };
         assert!(matches!(
-            shift_position(q(Some(40)), 30),
+            shift_position(q(Some(40)), 30, 7),
             Error::Query {
-                position: Some(10),
+                position: Some(17),
                 ..
             }
         ));
         assert!(matches!(
-            shift_position(q(Some(5)), 30),
+            shift_position(q(Some(5)), 30, 7),
             Error::Query { position: None, .. }
         ));
+    }
+
+    #[test]
+    fn exactly_one_statement() {
+        let (stmt, at) = single_statement(
+            "  -- c
+  SELECT 1;  ",
+        )
+        .unwrap();
+        // The range starts after the leading whitespace and keeps the comment.
+        assert_eq!((stmt.as_str(), at), ("-- c\n  SELECT 1", 2));
+        // A multi-byte character before the statement counts as one position.
+        let (body, at) = single_statement("  /* é */ select 2").unwrap();
+        assert_eq!((body.as_str(), at), ("/* é */ select 2", 2));
+        for bad in [
+            "UPDATE t SET a = 2; COMMIT",
+            "SELECT 1; DELETE FROM t",
+            "select 1; select 2",
+        ] {
+            let e = single_statement(bad).unwrap_err();
+            assert!(
+                matches!(&e, Error::Query { message, position: Some(_) } if message.contains("exactly one")),
+                "{bad}: {e:?}"
+            );
+        }
+        for empty in ["", "  ;  ", "-- nothing"] {
+            assert!(matches!(
+                single_statement(empty).unwrap_err(),
+                Error::Query { position: None, .. }
+            ));
+        }
+        // Unterminated string: the lexer problem is reported, nothing is sent.
+        assert!(single_statement("select 'abc").is_err());
     }
 }

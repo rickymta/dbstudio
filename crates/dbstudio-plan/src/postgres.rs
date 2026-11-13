@@ -45,7 +45,7 @@ pub(crate) fn parse(text: &str) -> Result<PlanTree, PlanError> {
     let plan = top
         .get("Plan")
         .ok_or_else(|| PlanError::Invalid("no \"Plan\" member in the PostgreSQL plan".into()))?;
-    let root = node(plan);
+    let root = node(plan, 1.0);
     let analyzed = top.get("Execution Time").is_some() || any_actual(&root);
     let totals = PlanTotals {
         total_cost: root.est_cost,
@@ -65,7 +65,37 @@ fn any_actual(n: &PlanNode) -> bool {
     n.actual_time_ms.is_some() || n.children.iter().any(any_actual)
 }
 
-fn node(p: &Js) -> PlanNode {
+/// Number of processes that share the work below a `Gather`: the launched workers plus the
+/// leader (when it takes part in the scan, i.e. a parallel-aware node ran in every process).
+fn gather_factor(p: &Js) -> f64 {
+    if p.get("Single Copy").and_then(Js::as_bool) == Some(true) {
+        return 1.0;
+    }
+    let launched = p.num("Workers Launched").unwrap_or(0.0).max(0.0);
+    let leader_runs_too = !parallel_aware_loops(p).is_some_and(|l| l == launched);
+    if leader_runs_too {
+        launched + 1.0
+    } else {
+        launched.max(1.0)
+    }
+}
+
+/// `Actual Loops` of the first parallel-aware node below `p`.
+fn parallel_aware_loops(p: &Js) -> Option<f64> {
+    for c in p.get("Plans").map(Js::items).unwrap_or_default() {
+        if c.get("Parallel Aware").and_then(Js::as_bool) == Some(true) {
+            return c.num("Actual Loops");
+        }
+        if let Some(l) = parallel_aware_loops(c) {
+            return Some(l);
+        }
+    }
+    None
+}
+
+/// `factor` is the number of processes that ran this node concurrently (1 outside parallel
+/// plans): their times overlap, so wall time = time summed over loops / factor.
+fn node(p: &Js, factor: f64) -> PlanNode {
     let node_type = p.text("Node Type").unwrap_or("?");
     let strategy = p.text("Strategy");
     let kind = kind_of(node_type, strategy);
@@ -112,17 +142,28 @@ fn node(p: &Js) -> PlanNode {
         let loops = p.num("Actual Loops").unwrap_or(1.0).max(0.0);
         n.set_actual(rows, loops as u64);
         if let Some(t) = p.num("Actual Total Time") {
-            // PostgreSQL reports the time of one loop; the total over loops is what counts.
-            n.actual_time_ms = Some(t * loops);
+            // PostgreSQL reports the time of one loop; the total over loops is what counts, but
+            // loops run by parallel workers overlap in time.
+            n.actual_time_ms = Some(t * loops / factor.max(1.0));
         }
     }
     flatten_scalars(&mut n, p, CONSUMED, "");
     for c in CONDITIONS {
         n.extra.remove(*c);
     }
+    let child_factor = match node_type {
+        "Gather" | "Gather Merge" => gather_factor(p),
+        _ => factor,
+    };
     n.children = p
         .get("Plans")
-        .map(|plans| plans.items().iter().map(node).collect())
+        .map(|plans| {
+            plans
+                .items()
+                .iter()
+                .map(|c| node(c, child_factor))
+                .collect()
+        })
         .unwrap_or_default();
     n
 }

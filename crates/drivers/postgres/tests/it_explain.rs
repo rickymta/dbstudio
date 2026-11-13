@@ -186,6 +186,61 @@ async fn analyze_cancel(port: u16) {
     assert_eq!(scalar(&*s, "SELECT 1").await, Value::Int(1));
 }
 
+async fn multiple_statements_are_refused(port: u16) {
+    let s = connect(port).await;
+    make(&*s, "it_explain_multi").await;
+    let before = snapshot(&*s, "it_explain_multi").await;
+    for (sql, analyze) in [
+        ("UPDATE it_explain_multi.t SET v = 2; COMMIT", true),
+        ("UPDATE it_explain_multi.t SET v = 2; COMMIT;", false),
+        ("SELECT 1; DELETE FROM it_explain_multi.t", false),
+        ("SELECT 1; DELETE FROM it_explain_multi.t", true),
+        ("SELECT 1;\nDROP TABLE it_explain_multi.t", false),
+    ] {
+        let e = s.explain(req(sql, analyze)).await.unwrap_err();
+        assert!(
+            matches!(&e, Error::Query { message, position: Some(_) } if message.contains("exactly one")),
+            "{sql}: {e:?}"
+        );
+        assert_eq!(snapshot(&*s, "it_explain_multi").await, before, "{sql}");
+    }
+    // The server refuses a second statement too (extended protocol), whatever the splitter
+    // believes: a comment hiding a terminator does not smuggle anything in.
+    let e = s
+        .explain(req(
+            "SELECT 1 -- ;\n; DELETE FROM it_explain_multi.t",
+            false,
+        ))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, Error::Query { .. }), "{e:?}");
+    assert_eq!(snapshot(&*s, "it_explain_multi").await, before);
+    // Nothing was left open: the transaction counter is idle.
+    assert_eq!(
+        scalar(&*s, "SELECT txid_current_if_assigned() IS NULL").await,
+        Value::Bool(true)
+    );
+}
+
+async fn error_position_is_in_the_original_text(port: u16) {
+    let s = connect(port).await;
+    let e = s
+        .explain(req("   -- lead\n   SELECT * FROM no_such_table_x", false))
+        .await
+        .unwrap_err();
+    match e {
+        // `no_such_table_x` starts at character 28 of the text typed by the user.
+        Error::Query {
+            position: Some(p), ..
+        } => assert_eq!(p, 28, "{p}"),
+        other => panic!("{other:?}"),
+    }
+    // A timeout beyond i32 does not break SET LOCAL.
+    let mut r = req("SELECT 1", true);
+    r.timeout_ms = Some(u64::MAX / 2);
+    s.explain(r).await.expect("huge timeout is clamped");
+}
+
 macro_rules! both {
     ($f:ident, $a:ident, $b:ident) => {
         #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -213,3 +268,9 @@ both!(analyze_errors, analyze_errors_pg16, analyze_errors_pg12);
 both!(analyze_timeout, analyze_timeout_pg16, analyze_timeout_pg12);
 both!(other_database, other_database_pg16, other_database_pg12);
 both!(analyze_cancel, analyze_cancel_pg16, analyze_cancel_pg12);
+both!(multiple_statements_are_refused, multi_pg16, multi_pg12);
+both!(
+    error_position_is_in_the_original_text,
+    position_pg16,
+    position_pg12
+);

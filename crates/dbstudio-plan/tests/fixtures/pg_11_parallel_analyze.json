@@ -1,0 +1,135 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Aggregate",
+      "Strategy": "Sorted",
+      "Partial Mode": "Finalize",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 4230.63,
+      "Total Cost": 4235.46,
+      "Plan Rows": 100,
+      "Plan Width": 21,
+      "Actual Startup Time": 45.401,
+      "Actual Total Time": 47.568,
+      "Actual Rows": 80,
+      "Actual Loops": 1,
+      "Group Key": ["sku"],
+      "Plans": [
+        {
+          "Node Type": "Gather Merge",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 4230.63,
+          "Total Cost": 4232.96,
+          "Plan Rows": 200,
+          "Plan Width": 21,
+          "Actual Startup Time": 45.396,
+          "Actual Total Time": 47.538,
+          "Actual Rows": 240,
+          "Actual Loops": 1,
+          "Workers Planned": 2,
+          "Workers Launched": 2,
+          "Plans": [
+            {
+              "Node Type": "Sort",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 4230.60,
+              "Total Cost": 4230.85,
+              "Plan Rows": 100,
+              "Plan Width": 21,
+              "Actual Startup Time": 40.588,
+              "Actual Total Time": 40.591,
+              "Actual Rows": 80,
+              "Actual Loops": 3,
+              "Sort Key": ["sku"],
+              "Sort Method": "quicksort",
+              "Sort Space Used": 28,
+              "Sort Space Type": "Memory",
+              "Workers": [
+                {
+                  "Worker Number": 0,
+                  "Sort Method": "quicksort",
+                  "Sort Space Used": 28,
+                  "Sort Space Type": "Memory"
+                },
+                {
+                  "Worker Number": 1,
+                  "Sort Method": "quicksort",
+                  "Sort Space Used": 28,
+                  "Sort Space Type": "Memory"
+                }
+              ],
+              "Plans": [
+                {
+                  "Node Type": "Aggregate",
+                  "Strategy": "Hashed",
+                  "Partial Mode": "Partial",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Startup Cost": 4226.28,
+                  "Total Cost": 4227.28,
+                  "Plan Rows": 100,
+                  "Plan Width": 21,
+                  "Actual Startup Time": 40.500,
+                  "Actual Total Time": 40.507,
+                  "Actual Rows": 80,
+                  "Actual Loops": 3,
+                  "Group Key": ["sku"],
+                  "Planned Partitions": 0,
+                  "HashAgg Batches": 1,
+                  "Peak Memory Usage": 24,
+                  "Disk Usage": 0,
+                  "Workers": [
+                    {
+                      "Worker Number": 0,
+                      "HashAgg Batches": 1,
+                      "Peak Memory Usage": 24,
+                      "Disk Usage": 0
+                    },
+                    {
+                      "Worker Number": 1,
+                      "HashAgg Batches": 1,
+                      "Peak Memory Usage": 24,
+                      "Disk Usage": 0
+                    }
+                  ],
+                  "Plans": [
+                    {
+                      "Node Type": "Seq Scan",
+                      "Parent Relationship": "Outer",
+                      "Parallel Aware": true,
+                      "Async Capable": false,
+                      "Relation Name": "items",
+                      "Alias": "items",
+                      "Startup Cost": 0.00,
+                      "Total Cost": 3473.50,
+                      "Plan Rows": 100371,
+                      "Plan Width": 9,
+                      "Actual Startup Time": 0.041,
+                      "Actual Total Time": 31.275,
+                      "Actual Rows": 80000,
+                      "Actual Loops": 3,
+                      "Filter": "(qty > 1)",
+                      "Rows Removed by Filter": 20000,
+                      "Workers": [
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Planning Time": 4.326,
+    "Triggers": [
+    ],
+    "Execution Time": 47.739
+  }
+]

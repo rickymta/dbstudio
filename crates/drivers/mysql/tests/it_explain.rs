@@ -233,3 +233,61 @@ async fn analyze_cancel_by_query_id() {
         assert_eq!(query(&*s, "SELECT 1").await.rows, vec![vec![Value::Int(1)]]);
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn smuggled_statements_are_refused() {
+    if !it_enabled() {
+        return;
+    }
+    for t in targets() {
+        let (s, db) = setup(t, "xpl_multi").await;
+        let before = snapshot(&*s, &db).await;
+        for (sql, analyze) in [
+            (format!("SELECT 1; DROP TABLE `{db}`.t"), false),
+            (format!("SELECT 1; DROP TABLE `{db}`.t"), true),
+            (
+                format!("select 1; commit; /*!update `{db}`.t set v=2*/"),
+                false,
+            ),
+            (format!("select /*!50000 1; */ from `{db}`.t"), false),
+            (
+                format!("select 1 from `{db}`.t;\ndelete from `{db}`.t"),
+                false,
+            ),
+            (format!("update `{db}`.t set v = 2; commit"), true),
+        ] {
+            let e = s.explain(req(&sql, analyze)).await.unwrap_err();
+            assert!(
+                matches!(e, Error::Query { .. }),
+                "[{}] {sql}: {e:?}",
+                t.name
+            );
+            assert_eq!(snapshot(&*s, &db).await, before, "[{}] {sql}", t.name);
+        }
+        // The table is still there and nothing was committed behind our back.
+        assert_eq!(
+            query(&*s, &format!("SELECT COUNT(*) FROM `{db}`.t"))
+                .await
+                .rows,
+            vec![vec![Value::Int(5)]],
+            "[{}]",
+            t.name
+        );
+        // A semicolon inside a string literal is just text.
+        let raw = s
+            .explain(req(&format!("SELECT ';' AS x FROM `{db}`.t"), false))
+            .await
+            .unwrap_or_else(|e| panic!("[{}] {e:?}", t.name));
+        parse_and_analyze(&raw, &PlanRules::default()).unwrap();
+        // Lock functions are not pure reads.
+        let e = s
+            .explain(req("SELECT GET_LOCK('xpl_lock', 0)", true))
+            .await
+            .unwrap_err();
+        assert!(
+            is_unsupported(&e, "explain_analyze_writes") || is_unsupported(&e, "explain_analyze"),
+            "[{}] {e:?}",
+            t.name
+        );
+    }
+}

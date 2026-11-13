@@ -351,6 +351,13 @@ const EXPECTED: &[Expectation] = &[
         Some(27050.98),
         &["1:nestedLoopManyRows:warning"],
     ),
+    (
+        "pg_11_parallel_analyze.json",
+        true,
+        5,
+        Some(4235.46),
+        &["4:fullScanLargeTable:warning"],
+    ),
 ];
 
 #[test]
@@ -675,4 +682,146 @@ fn damaged_inputs_are_errors_not_panics() {
     let mut raw = raw_of("pg_02_hashjoin_agg_analyze.json");
     raw.text = raw.text.replace("\"Plans\"", "\"Plans\": 5, \"X\"");
     assert!(parse(&raw).is_ok());
+}
+
+#[test]
+fn parallel_plans_report_wall_time_not_summed_worker_time() {
+    let t = load("pg_11_parallel_analyze.json");
+    let total = t.totals.execution_time_ms.unwrap();
+    let all = nodes(&t);
+    // Everything runs inside the statement, so no node can take longer than it (small slack
+    // for the leader's own startup).
+    for n in &all {
+        assert!(
+            n.actual_time_ms.unwrap() <= total * 1.05,
+            "{} took {:?} of {total}",
+            n.op,
+            n.actual_time_ms
+        );
+    }
+    // The Sort ran in 3 processes (2 workers and the leader) at ~40 ms each, concurrently.
+    let sort = find(&t, "Sort");
+    assert_eq!(sort.loops, Some(3));
+    let t_sort = sort.actual_time_ms.unwrap();
+    assert!((30.0..=50.0).contains(&t_sort), "{t_sort}");
+    // Rows still add up over the processes.
+    assert!(sort.actual_rows_total.unwrap() > sort.actual_rows.unwrap() * 2.9);
+    // Self time of the Gather Merge is small, not negative-clamped garbage.
+    let gm = find(&t, "Gather Merge");
+    assert!(gm.self_time_ms.unwrap() < 10.0);
+}
+
+fn nested_xml(depth: usize) -> String {
+    let mut s =
+        String::from("<ShowPlanXML><BatchSequence><Batch><Statements><StmtSimple><QueryPlan>");
+    for i in 0..depth {
+        s.push_str(&format!("<RelOp NodeId=\"{i}\" PhysicalOp=\"Sort\"><Sort>"));
+    }
+    for _ in 0..depth {
+        s.push_str("</Sort></RelOp>");
+    }
+    s.push_str("</QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>");
+    s
+}
+
+fn raw_text(format: PlanFormat, text: String) -> RawPlan {
+    RawPlan {
+        text,
+        ..raw_of_format(format)
+    }
+}
+
+fn raw_of_format(format: PlanFormat) -> RawPlan {
+    RawPlan {
+        format,
+        text: String::new(),
+        statement: String::new(),
+        analyzed: false,
+        rolled_back: false,
+        server_version: String::new(),
+        captured_at: String::new(),
+        extra: BTreeMap::new(),
+    }
+}
+
+#[test]
+fn deeply_nested_input_is_rejected_not_a_stack_overflow() {
+    // 500 nested RelOp elements.
+    let err = parse(&raw_text(PlanFormat::MsSqlShowplanXml, nested_xml(500))).unwrap_err();
+    assert!(err.to_string().contains("nested deeper"), "{err}");
+    // 100 levels (200 elements deep) are fine.
+    assert!(parse(&raw_text(PlanFormat::MsSqlShowplanXml, nested_xml(100))).is_ok());
+
+    // MySQL tree with 1500 nested lines.
+    let mut tree = String::new();
+    for i in 0..1500 {
+        tree.push_str(&format!(
+            "{}-> Filter: (a = {i})  (cost=1 rows=1)\n",
+            "    ".repeat(i)
+        ));
+    }
+    let err = parse(&raw_text(PlanFormat::MySqlTree, tree)).unwrap_err();
+    assert!(err.to_string().contains("nested deeper"), "{err}");
+
+    // PostgreSQL JSON nested 1000 plan levels.
+    let mut pg = String::from("[{\"Plan\":");
+    for _ in 0..1000 {
+        pg.push_str("{\"Node Type\":\"Result\",\"Plans\":[");
+    }
+    pg.push_str("{\"Node Type\":\"Result\"}");
+    for _ in 0..1000 {
+        pg.push_str("]}");
+    }
+    pg.push_str("}]");
+    assert!(parse(&raw_text(PlanFormat::PostgresJson, pg)).is_err());
+
+    // Oracle: a chain of 20000 parent links.
+    let rows: Vec<String> = (0..20_000)
+        .map(|i| {
+            let parent = if i == 0 {
+                "null".to_string()
+            } else {
+                (i - 1).to_string()
+            };
+            format!("{{\"ID\":{i},\"PARENT_ID\":{parent},\"OPERATION\":\"SORT\"}}")
+        })
+        .collect();
+    let err = parse(&raw_text(
+        PlanFormat::OraclePlanRows,
+        format!("[{}]", rows.join(",")),
+    ))
+    .unwrap_err();
+    assert!(err.to_string().contains("nested deeper"), "{err}");
+
+    // MongoDB: 1000 nested inputStage levels.
+    let mut mongo = String::from("{\"queryPlanner\":{\"winningPlan\":");
+    for _ in 0..1000 {
+        mongo.push_str("{\"stage\":\"FETCH\",\"inputStage\":");
+    }
+    mongo.push_str("{\"stage\":\"COLLSCAN\"}");
+    for _ in 0..1000 {
+        mongo.push('}');
+    }
+    mongo.push_str("}}");
+    assert!(parse(&raw_text(PlanFormat::MongoExplain, mongo)).is_err());
+}
+
+#[test]
+fn very_wide_plans_parse() {
+    // 20 000 sibling elements: large but flat, must not abort.
+    let mut s = String::from(
+        "<ShowPlanXML><BatchSequence><Batch><Statements><StmtSimple><QueryPlan><RelOp NodeId=\"0\" PhysicalOp=\"Concatenation\"><Concat>",
+    );
+    for i in 1..=20_000 {
+        s.push_str(&format!(
+            "<RelOp NodeId=\"{i}\" PhysicalOp=\"Constant Scan\"/>"
+        ));
+    }
+    s.push_str("</Concat></RelOp></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>");
+    let t = parse_and_analyze(
+        &raw_text(PlanFormat::MsSqlShowplanXml, s),
+        &PlanRules::default(),
+    )
+    .unwrap();
+    assert_eq!(t.node_count, 20_001);
 }

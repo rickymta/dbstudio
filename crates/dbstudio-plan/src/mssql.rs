@@ -78,9 +78,14 @@ fn start_to_x(e: &BytesStart<'_>) -> Result<X, PlanError> {
     })
 }
 
+/// Deepest element nesting and largest element count accepted (bounds every recursive pass).
+const MAX_XML_DEPTH: usize = 256;
+const MAX_XML_ELEMENTS: usize = 500_000;
+
 fn read_xml(text: &str) -> Result<X, PlanError> {
     let mut reader = Reader::from_str(text);
     let mut stack: Vec<X> = vec![X::default()];
+    let mut elements = 0usize;
     loop {
         let ev = reader.read_event().map_err(|e| {
             PlanError::Invalid(format!(
@@ -89,8 +94,18 @@ fn read_xml(text: &str) -> Result<X, PlanError> {
             ))
         })?;
         match ev {
-            Event::Start(e) => stack.push(start_to_x(&e)?),
+            Event::Start(e) => {
+                elements += 1;
+                if stack.len() > MAX_XML_DEPTH || elements > MAX_XML_ELEMENTS {
+                    return Err(too_big());
+                }
+                stack.push(start_to_x(&e)?)
+            }
             Event::Empty(e) => {
+                elements += 1;
+                if elements > MAX_XML_ELEMENTS {
+                    return Err(too_big());
+                }
                 let x = start_to_x(&e)?;
                 stack.last_mut().expect("root frame").kids.push(x);
             }
@@ -109,6 +124,12 @@ fn read_xml(text: &str) -> Result<X, PlanError> {
         return Err(PlanError::Invalid("unterminated XML element".into()));
     }
     Ok(stack.remove(0))
+}
+
+fn too_big() -> PlanError {
+    PlanError::Invalid(format!(
+        "the showplan XML is nested deeper than {MAX_XML_DEPTH} levels or has more than {MAX_XML_ELEMENTS} elements"
+    ))
 }
 
 pub(crate) fn parse(text: &str) -> Result<PlanTree, PlanError> {

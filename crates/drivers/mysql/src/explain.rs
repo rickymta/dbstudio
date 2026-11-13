@@ -9,7 +9,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dbstudio_core::{Error, ExplainRequest, PlanFormat, RawPlan, Result};
+use dbstudio_core::{
+    Error, ExplainRequest, PlanFormat, RawPlan, Result, ScriptDialect, StatementClass,
+};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Row};
 
@@ -28,25 +30,11 @@ enum Kind {
 
 /// Explain one statement.
 pub(crate) async fn explain(session: &MySqlSession, req: ExplainRequest) -> Result<RawPlan> {
-    let statement = req.text.trim().trim_end_matches(';').trim_end().to_string();
-    if statement.is_empty() {
-        return Err(Error::Query {
-            message: "nothing to explain".into(),
-            position: None,
-        });
-    }
-    if req.analyze {
-        match classify(&statement) {
-            Kind::Read => {}
-            Kind::Write => return Err(Error::Unsupported("explain_analyze_writes".into())),
-            Kind::Other => return Err(Error::Unsupported("explain_analyze_ddl".into())),
-        }
-    }
     let database = req.database.as_deref().filter(|d| !d.is_empty());
     let mut conn = session.inner.acquire_in(database).await?;
     // Registers the statement for `Session::cancel` and arms the timeout (KILL QUERY).
     let guard = session.inner.begin(conn.id(), req.query_id, req.timeout_ms);
-    let result = run(session, &mut conn, &req, &statement).await;
+    let result = run(session, &mut conn, &req).await;
     let ctl = guard.end().await;
     let stopped = ctl.stopped();
     let result = ctl.finalize(result);
@@ -55,22 +43,33 @@ pub(crate) async fn explain(session: &MySqlSession, req: ExplainRequest) -> Resu
     result
 }
 
-async fn run(
-    session: &MySqlSession,
-    conn: &mut Conn,
-    req: &ExplainRequest,
-    statement: &str,
-) -> Result<RawPlan> {
-    let raw_version: String = conn
-        .query_first("SELECT VERSION()")
+async fn run(session: &MySqlSession, conn: &mut Conn, req: &ExplainRequest) -> Result<RawPlan> {
+    let (raw_version, sql_mode): (String, String) = conn
+        .query_first("SELECT VERSION(), @@SESSION.sql_mode")
         .await
         .map_err(map_query_error)?
         .unwrap_or_default();
     let mariadb = session.inner.is_mariadb;
     let version = normalize_version(&raw_version);
-    if req.analyze && !mariadb && !supports_explain_analyze(&version) {
-        return Err(Error::Unsupported("explain_analyze".into()));
+    // The dialect follows this very connection's sql_mode (backslash escapes in strings).
+    let dialect = ScriptDialect::MySql {
+        mariadb,
+        backslash_escapes: !sql_mode
+            .to_ascii_uppercase()
+            .contains("NO_BACKSLASH_ESCAPES"),
+    };
+    let (statement, class) = single_statement(dialect, &req.text)?;
+    if req.analyze {
+        match kind_of(class, &statement) {
+            Kind::Read => {}
+            Kind::Write => return Err(Error::Unsupported("explain_analyze_writes".into())),
+            Kind::Other => return Err(Error::Unsupported("explain_analyze_ddl".into())),
+        }
+        if !mariadb && !supports_explain_analyze(&version) {
+            return Err(Error::Unsupported("explain_analyze".into()));
+        }
     }
+    let statement = statement.as_str();
 
     let (sql, format) = match (mariadb, req.analyze) {
         (true, false) => (
@@ -103,18 +102,87 @@ async fn run(
     })
 }
 
-/// Run the EXPLAIN statement (in a read-only transaction when it executes the query).
+/// Exactly one statement of `text` (and its class). The connection has multi-statement mode
+/// on, so anything that could hide a second statement is refused here: several statements,
+/// lexer problems (unterminated strings/comments) and version-specific comments
+/// (`/*! ... */` is executed by MySQL, ignored by every parser).
+fn single_statement(dialect: ScriptDialect, text: &str) -> Result<(String, StatementClass)> {
+    let analysis = dbstudio_sql::analyze(dialect, text);
+    if let Some(p) = analysis.problems.first() {
+        return Err(Error::Query {
+            message: format!("cannot explain: {}", p.message),
+            position: Some(p.range.start),
+        });
+    }
+    let stmts: Vec<_> = analysis
+        .statements
+        .iter()
+        .filter(|s| s.class != StatementClass::Empty)
+        .collect();
+    let one = match stmts.as_slice() {
+        [] => {
+            return Err(Error::Query {
+                message: "nothing to explain".into(),
+                position: None,
+            });
+        }
+        [one] => *one,
+        [_, second, ..] => {
+            return Err(Error::Query {
+                message: format!("EXPLAIN takes exactly one statement, found {}", stmts.len()),
+                position: Some(second.range.start),
+            });
+        }
+    };
+    let body: String = text
+        .chars()
+        .skip(one.range.start as usize)
+        .take((one.range.end - one.range.start) as usize)
+        .collect();
+    if let Some(i) = body.find("/*!").or_else(|| body.find("/*M!")) {
+        return Err(Error::Query {
+            message: "version-specific comments (/*! ... */) are not allowed in EXPLAIN".into(),
+            position: Some(one.range.start + body[..i].chars().count() as u32),
+        });
+    }
+    Ok((body, one.class))
+}
+
+/// Functions that act on the server outside any transaction.
+const IMPURE_CALLS: &[&str] = &["GET_LOCK", "RELEASE_LOCK", "RELEASE_ALL_LOCKS", "LOAD_FILE"];
+
+/// How EXPLAIN ANALYZE must treat a statement: reads only when the parser says so and the
+/// text holds no `INTO` (OUTFILE/DUMPFILE/variable) or lock function.
+fn kind_of(class: StatementClass, statement: &str) -> Kind {
+    match class {
+        StatementClass::Read => {
+            let w = words(statement);
+            let impure = w.iter().any(|(word, depth)| {
+                (*depth == 0 && word == "INTO") || IMPURE_CALLS.contains(&word.as_str())
+            });
+            if impure { Kind::Write } else { Kind::Read }
+        }
+        StatementClass::Write => Kind::Write,
+        _ => Kind::Other,
+    }
+}
+
+/// Run the EXPLAIN statement as a *prepared* statement: `COM_STMT_PREPARE` takes exactly one
+/// statement, so even with multi-statement mode on nothing can follow it. In a read-only
+/// transaction when it executes the query.
 async fn fetch(conn: &mut Conn, sql: &str, analyze: bool) -> Result<String> {
+    let stmt = conn.prep(sql).await.map_err(map_query_error)?;
     if analyze {
         conn.query_drop("START TRANSACTION READ ONLY")
             .await
             .map_err(map_query_error)?;
     }
-    let row: std::result::Result<Option<Row>, _> = conn.query_first(sql).await;
+    let row: std::result::Result<Option<Row>, _> = conn.exec_first(&stmt, ()).await;
     if analyze {
         // Always end the transaction, whatever happened.
         let _ = conn.query_drop("ROLLBACK").await;
     }
+    let _ = conn.close(stmt).await;
     let row = row.map_err(map_query_error)?;
     row.as_ref()
         .and_then(|r| r.as_ref(0))
@@ -203,27 +271,6 @@ fn words(text: &str) -> Vec<(String, u32)> {
     out
 }
 
-/// Read, write or other: writes include `WITH ... UPDATE`, `INSERT ... SELECT` and
-/// `SELECT ... INTO` of any kind.
-fn classify(statement: &str) -> Kind {
-    let w = words(statement);
-    let Some((first, _)) = w.first() else {
-        return Kind::Other;
-    };
-    const WRITES: &[&str] = &["INSERT", "UPDATE", "DELETE", "REPLACE", "LOAD", "TRUNCATE"];
-    match first.as_str() {
-        "SELECT" | "TABLE" | "VALUES" | "WITH" => {
-            // A write keyword at depth 0 after WITH, or an INTO of a SELECT, makes it a write.
-            let writes = w.iter().any(|(word, depth)| {
-                *depth == 0 && (WRITES.contains(&word.as_str()) || word == "INTO")
-            });
-            if writes { Kind::Write } else { Kind::Read }
-        }
-        f if WRITES.contains(&f) => Kind::Write,
-        _ => Kind::Other,
-    }
-}
-
 /// Current time as RFC 3339 UTC (second precision).
 fn rfc3339_now() -> String {
     let secs = SystemTime::now()
@@ -259,9 +306,18 @@ fn rfc3339(secs: u64) -> String {
 mod tests {
     use super::*;
 
+    fn kind(sql: &str) -> Kind {
+        let d = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+        };
+        let (body, class) = single_statement(d, sql).unwrap();
+        kind_of(class, &body)
+    }
+
     #[test]
-    fn classification() {
-        for (sql, kind) in [
+    fn classification_uses_the_parser() {
+        for (sql, expected) in [
             ("select * from t", Kind::Read),
             ("  /* c */ (select 1) union (select 2)", Kind::Read),
             ("with x as (select 1) select * from x", Kind::Read),
@@ -271,13 +327,52 @@ mod tests {
             ("insert into t select * from u", Kind::Write),
             ("with x as (select 1) update t set a = 1", Kind::Write),
             ("select * into outfile '/tmp/x' from t", Kind::Write),
+            ("select get_lock('a', 1)", Kind::Write),
+            ("select 1 from t where release_lock('a')", Kind::Write),
             ("replace into t values (1)", Kind::Write),
             ("create table t (a int)", Kind::Other),
             ("call p()", Kind::Other),
-            ("", Kind::Other),
+            ("set @a = 1", Kind::Other),
         ] {
-            assert_eq!(classify(sql), kind, "{sql}");
+            assert_eq!(kind(sql), expected, "{sql}");
         }
+    }
+
+    #[test]
+    fn only_one_statement_and_no_versioned_comments() {
+        let d = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+        };
+        for bad in [
+            "SELECT 1; DROP TABLE t",
+            "select 1; commit; /*!update t set a=2*/",
+            "select 1;select 2",
+            "select /*!50000 1 */ from t",
+            "select /*M!100100 1 */ from t",
+        ] {
+            let e = single_statement(d, bad).unwrap_err();
+            assert!(matches!(e, Error::Query { .. }), "{bad}: {e:?}");
+        }
+        // Semicolons inside strings, identifiers and comments are fine.
+        for ok in [
+            "select 'a;b' from t",
+            "select `a;b` from t",
+            "select 1 /* ; */ from t;",
+            "select '\\'; select' from t",
+        ] {
+            assert!(single_statement(d, ok).is_ok(), "{ok}");
+        }
+        // With NO_BACKSLASH_ESCAPES the backslash does not escape the quote.
+        let no_bs = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: false,
+        };
+        assert!(single_statement(no_bs, "select '\\'; drop table t; select '").is_err());
+        assert!(matches!(
+            single_statement(d, "  ").unwrap_err(),
+            Error::Query { position: None, .. }
+        ));
     }
 
     #[test]

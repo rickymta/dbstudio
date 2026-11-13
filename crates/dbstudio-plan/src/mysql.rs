@@ -350,6 +350,13 @@ pub(crate) fn parse_tree(text: &str) -> Result<PlanTree, PlanError> {
             end: line_no as u32,
         };
         pop_to(&mut stack, &mut roots, depth);
+        if stack.len() >= crate::json::MAX_DEPTH as usize {
+            return Err(PlanError::Invalid(format!(
+                "the MySQL tree plan is nested deeper than {} levels (line {})",
+                crate::json::MAX_DEPTH,
+                line_no + 1
+            )));
+        }
         stack.push(Frame { depth, node: n });
     }
     pop_to(&mut stack, &mut roots, 0);
