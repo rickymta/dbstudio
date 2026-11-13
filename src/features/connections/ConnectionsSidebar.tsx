@@ -47,6 +47,7 @@ import { dropPosition, planMove, type DragItem, type DropTarget } from './dragMo
 import { describeError } from './errors';
 import { GroupDialog } from './GroupDialog';
 import { PasswordDialog } from './PasswordDialog';
+import { useHostKeyPrompt } from './useHostKeyPrompt';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
 import { ServerSearch } from './ServerSearch';
 import { useSearchableSessions } from './serverSearchModel';
@@ -93,6 +94,8 @@ export function ConnectionsSidebar() {
   const [expandedProfiles, setExpandedProfiles] = useState<Set<Uuid>>(() => new Set());
   const [errors, setErrors] = useState<Record<Uuid, string>>({});
   const [modal, setModal] = useState<Modal | null>(null);
+  // An SSH tunnel to an unknown host stops with `sshHostKey`: ask, trust, then connect again.
+  const { run: runWithHostKey, dialog: hostKeyDialog } = useHostKeyPrompt();
 
   const filtering = filter.trim().length > 0;
   const asideRef = useRef<HTMLElement>(null);
@@ -153,7 +156,7 @@ export function ConnectionsSidebar() {
         return rest;
       });
       try {
-        await sessions.open(profile.id, password ?? null);
+        await runWithHostKey(() => sessions.open(profile.id, password ?? null));
         setProfileExpanded(profile.id, true);
       } catch (e) {
         const error = toIpcError(e);
@@ -163,7 +166,7 @@ export function ConnectionsSidebar() {
         toast.error(`${profile.name}: ${message}`);
       }
     },
-    [t],
+    [t, runWithHostKey],
   );
 
   // Drag and drop (CONN-02). The dragged item lives in a ref because `dragover` cannot read
@@ -558,6 +561,7 @@ export function ConnectionsSidebar() {
         <div data-drop-root className="h-8" />
       </div>
 
+      {hostKeyDialog}
       <ConnectionDialog
         open={modal?.type === 'connection'}
         onOpenChange={(o) => !o && setModal(null)}
