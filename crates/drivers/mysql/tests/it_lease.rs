@@ -595,3 +595,220 @@ async fn read_only_connection_applies_to_leases() {
         root.close().await.unwrap();
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Review fixes
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sql_mode_cannot_hide_a_statement_from_the_splitter() {
+    if !it_enabled() {
+        return;
+    }
+    for t in lease_targets() {
+        let db = scratch_db(t, "lease_mode").await;
+        let s = user_session(t).await;
+        let lease = open(&*s, &db, true).await;
+        exec(&*lease, "CREATE TABLE t (a int); INSERT INTO t VALUES (1)").await;
+        let attack = "SELECT 'a\\'; DROP TABLE t; -- '";
+        // Under the default sql_mode the backslash escapes the quote (one statement), under
+        // NO_BACKSLASH_ESCAPES the server would run the DROP: the script is refused outright.
+        let err = lease
+            .execute(QueryRequest::new(attack), &mut CollectingSink::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("NO_BACKSLASH_ESCAPES"),
+            "[{}] {err}",
+            t.name
+        );
+        // Same after the session switched its mode.
+        exec(&*lease, "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'").await;
+        lease
+            .execute(QueryRequest::new(attack), &mut CollectingSink::new())
+            .await
+            .unwrap_err();
+        // Within one request too.
+        lease
+            .execute(
+                QueryRequest::new(format!(
+                    "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'; {attack}"
+                )),
+                &mut CollectingSink::new(),
+            )
+            .await
+            .unwrap_err();
+        exec(&*lease, "SET SESSION sql_mode = DEFAULT").await;
+        let rows = exec(&*lease, "SELECT count(*) FROM t").await;
+        assert_eq!(first_int(&rows), 1, "[{}] the table must be intact", t.name);
+        // Ordinary backslashes that do not move a boundary are fine.
+        exec(&*lease, "SELECT 'it\\'s fine'").await;
+        lease.close().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn read_only_profile_stays_read_only() {
+    if !it_enabled() {
+        return;
+    }
+    for t in lease_targets() {
+        let db = scratch_db(t, "lease_ro2").await;
+        let root = root_session(t).await;
+        run(
+            &*root,
+            &format!("CREATE TABLE `{db}`.t (a int) ENGINE=InnoDB"),
+        )
+        .await;
+        let mut cfg = config(t, "dbstudio", dbstudio_core::TlsMode::Disable);
+        cfg.read_only = true;
+        let s = connect_cfg(&cfg).await.unwrap();
+        let lease = open(&*s, &db, true).await;
+        let insert = || QueryRequest::new("INSERT INTO t VALUES (1)");
+        lease
+            .execute(insert(), &mut CollectingSink::new())
+            .await
+            .unwrap_err();
+        // A script that switches read-write on is undone before the next request.
+        exec(&*lease, "SET SESSION TRANSACTION READ WRITE").await;
+        let err = lease
+            .execute(insert(), &mut CollectingSink::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "query", "[{}] {err:?}", t.name);
+        // A transaction opened through the lease is read-only whatever was asked.
+        lease.begin(TxOptions::default()).await.unwrap();
+        lease
+            .execute(insert(), &mut CollectingSink::new())
+            .await
+            .unwrap_err();
+        lease.rollback().await.unwrap();
+        assert_eq!(
+            count(&*root, &format!("SELECT count(*) FROM `{db}`.t")).await,
+            0
+        );
+        lease.close().await.unwrap();
+        root.close().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transaction_state_follows_the_server() {
+    if !it_enabled() {
+        return;
+    }
+    for t in lease_targets() {
+        let db = scratch_db(t, "lease_txs").await;
+        let s = user_session(t).await;
+        let lease = open(&*s, &db, true).await;
+        exec(&*lease, "CREATE TABLE t (id int PRIMARY KEY) ENGINE=InnoDB").await;
+
+        // `SET autocommit=0` typed in a script switches to manual mode.
+        exec(&*lease, "SET autocommit=0").await;
+        exec(&*lease, "INSERT INTO t VALUES (1)").await;
+        assert_eq!(lease.state().transaction, TxStatus::Active, "[{}]", t.name);
+        // Temporary tables do not commit.
+        exec(&*lease, "CREATE TEMPORARY TABLE tmp (a int)").await;
+        assert_eq!(lease.state().transaction, TxStatus::Active);
+        exec(&*lease, "DROP TEMPORARY TABLE tmp").await;
+        assert_eq!(lease.state().transaction, TxStatus::Active);
+        // A failing DDL still committed implicitly before it failed.
+        lease
+            .execute(
+                QueryRequest::new("CREATE TABLE t (id int)"),
+                &mut CollectingSink::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(lease.state().transaction, TxStatus::Idle);
+        exec(&*lease, "SET autocommit=1").await;
+        exec(&*lease, "INSERT INTO t VALUES (2)").await;
+        assert_eq!(lease.state().transaction, TxStatus::Idle);
+        lease.close().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deadlock_reports_the_rolled_back_transaction() {
+    if !it_enabled() {
+        return;
+    }
+    for t in lease_targets() {
+        let db = scratch_db(t, "lease_dead").await;
+        let s = user_session(t).await;
+        let setup = open(&*s, &db, true).await;
+        exec(
+            &*setup,
+            "CREATE TABLE t (id int PRIMARY KEY, v int) ENGINE=InnoDB; \
+             INSERT INTO t VALUES (1, 0), (2, 0)",
+        )
+        .await;
+        setup.close().await.unwrap();
+
+        let a: Arc<dyn Lease> = Arc::from(open(&*s, &db, false).await);
+        let b: Arc<dyn Lease> = Arc::from(open(&*s, &db, false).await);
+        exec(&*a, "UPDATE t SET v = 1 WHERE id = 1").await;
+        exec(&*b, "UPDATE t SET v = 1 WHERE id = 2").await;
+        let run = |lease: Arc<dyn Lease>, sql: &'static str| {
+            tokio::spawn(async move {
+                let r = lease
+                    .execute(QueryRequest::new(sql), &mut CollectingSink::new())
+                    .await;
+                (lease, r)
+            })
+        };
+        let first = run(a.clone(), "UPDATE t SET v = 2 WHERE id = 2");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let second = run(b.clone(), "UPDATE t SET v = 2 WHERE id = 1");
+        let (ra, rb) = (first.await.unwrap(), second.await.unwrap());
+        let victims: Vec<_> = [ra, rb]
+            .into_iter()
+            .filter_map(|(lease, r)| r.err().map(|e| (lease, e)))
+            .collect();
+        assert_eq!(victims.len(), 1, "[{}] exactly one deadlock victim", t.name);
+        let (victim, err) = &victims[0];
+        assert!(err.to_string().contains("1213"), "{err}");
+        assert!(err.to_string().contains("rolled back"), "{err}");
+        assert_eq!(victim.state().transaction, TxStatus::Idle);
+        a.close().await.unwrap();
+        b.close().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_plain_selects_stay_open_for_fetch_more() {
+    if !it_enabled() {
+        return;
+    }
+    for t in lease_targets() {
+        let db = scratch_db(t, "lease_park").await;
+        let s = user_session(t).await;
+        let lease = open(&*s, &db, true).await;
+        fixture_digits(&*lease).await;
+        exec(
+            &*lease,
+            "CREATE PROCEDURE p() SELECT d FROM digits ORDER BY d",
+        )
+        .await;
+
+        // CALL with more rows than max_rows: read to the end, nothing stays pending, and the
+        // procedure was not killed half way.
+        let mut req = QueryRequest::new("CALL p()");
+        req.max_rows = Some(3);
+        let mut sink = CollectingSink::new();
+        lease.execute(req, &mut sink).await.unwrap();
+        assert_eq!(lease.state().pending_result, None, "[{}]", t.name);
+        assert_eq!(first_int(&exec(&*lease, "SELECT 5").await), 5);
+
+        // A plain SELECT does.
+        let mut req = QueryRequest::new("SELECT d FROM digits ORDER BY d");
+        req.max_rows = Some(3);
+        let id = req.query_id;
+        lease
+            .execute(req, &mut CollectingSink::new())
+            .await
+            .unwrap();
+        assert_eq!(lease.state().pending_result, Some(id));
+        lease.discard_result().await.unwrap();
+        lease.close().await.unwrap();
+    }
+}
