@@ -1,26 +1,33 @@
 //! Backup / restore engine, `.dbsbak` container and scheduler logic.
 //!
-//! Scaffold status: all types and defaults are final. `run_backup`, `inspect`, `verify` and
-//! `run_restore` return `Error::Unsupported`; `detect_tools` reports every tool as not detected;
-//! `apply_retention` and the [`Scheduler`] methods return nothing. Package H fills them in.
+//! A backup is a `.dbsbak` container ([`container`]) produced either by the integrated engine
+//! ([`logical`]: DDL and `INSERT` scripts written through the session) or by a native tool
+//! ([`native`]). [`runner`] ties a saved job to the store (run records, locks, retention).
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use dbstudio_core::{
-    ConnectionConfig, DdlOptions, Error, JobError, JobReporter, ObjectPath, Result, Secret, Session,
+    ConnectionConfig, DdlOptions, JobError, JobReporter, ObjectPath, Secret, Session,
 };
 use dbstudio_export::{ExportContent, RowError};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod container;
+pub mod crypto;
+pub mod logical;
+pub mod native;
+pub mod runner;
 pub mod scheduler;
+pub mod sqlscan;
 
-pub use scheduler::{Clock, Scheduler, SystemClock};
+pub use native::detect_tools;
+pub use scheduler::{
+    Clock, Scheduler, SystemClock, next_after, parse_cron, parse_tz, preview_from,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Specs
@@ -479,6 +486,10 @@ pub struct BackupContext {
     pub tunnel_addr: Option<SocketAddr>,
     /// Progress, log and cancellation.
     pub reporter: Arc<dyn JobReporter>,
+    /// Job name for the `{job}` file name placeholder.
+    pub job_name: Option<String>,
+    /// Configured native tool paths.
+    pub tool_overrides: BTreeMap<NativeTool, String>,
 }
 
 impl fmt::Debug for BackupContext {
@@ -491,68 +502,12 @@ impl fmt::Debug for BackupContext {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Operations (scaffold)
+// Operations
 // ---------------------------------------------------------------------------------------------
 
-/// Run a backup. Scaffold: `Unsupported("backup")`.
-pub async fn run_backup(
-    ctx: BackupContext,
-    spec: &BackupSpec,
-    passphrase: Option<&Secret>,
-) -> Result<BackupOutcome> {
-    let _ = (ctx, spec, passphrase);
-    Err(Error::Unsupported("backup".into()))
-}
+mod ops;
 
-/// Read the header (and preamble when possible). Scaffold: `Unsupported("backup_inspect")`.
-pub async fn inspect(path: &Path, passphrase: Option<&Secret>) -> Result<BackupInspection> {
-    let _ = (path, passphrase);
-    Err(Error::Unsupported("backup_inspect".into()))
-}
-
-/// Check integrity of the whole file. Scaffold: `Unsupported("backup_verify")`.
-pub async fn verify(
-    path: &Path,
-    passphrase: Option<&Secret>,
-    reporter: &dyn JobReporter,
-) -> Result<()> {
-    let _ = (path, passphrase, reporter);
-    Err(Error::Unsupported("backup_verify".into()))
-}
-
-/// Restore a backup. Scaffold: `Unsupported("restore")`.
-pub async fn run_restore(
-    ctx: BackupContext,
-    spec: &RestoreSpec,
-    passphrase: Option<&Secret>,
-) -> Result<RestoreOutcome> {
-    let _ = (ctx, spec, passphrase);
-    Err(Error::Unsupported("restore".into()))
-}
-
-/// Probe the native tools (configured path, then `PATH`, then well-known directories).
-/// Scaffold: every tool that has a binary is reported as not detected.
-pub fn detect_tools(overrides: &BTreeMap<NativeTool, String>) -> Vec<NativeToolInfo> {
-    let _ = overrides;
-    NativeTool::ALL
-        .into_iter()
-        .filter(|t| t.binary().is_some())
-        .map(|tool| NativeToolInfo {
-            tool,
-            path: None,
-            version: None,
-            source: ToolSource::Path,
-            problem: Some("not detected".into()),
-        })
-        .collect()
-}
-
-/// Files of `job` that retention says to delete (only files recorded in `runs`).
-/// Scaffold: none.
-pub fn apply_retention(job: &BackupJob, runs: &[BackupRun], now: DateTime<Utc>) -> Vec<PathBuf> {
-    let _ = (job, runs, now);
-    Vec::new()
-}
+pub use ops::{apply_retention, inspect, render_file_name, run_backup, run_restore, verify};
 
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use chrono::TimeZone;
+use std::path::PathBuf;
+
+use chrono::{DateTime, TimeZone, Utc};
 use dbstudio_core::testing::write_or_check;
 use dbstudio_core::{CancelToken, JobProgress, ObjectKind};
 use serde::Serialize;
@@ -243,13 +245,14 @@ fn json_shapes() {
 }
 
 #[test]
-fn stub_contract_detect_tools_reports_not_detected() {
+fn detection_lists_every_binary_tool() {
     let tools = detect_tools(&BTreeMap::new());
     assert_eq!(tools.len(), 10);
+    // Either found, or a human readable problem is attached.
     assert!(
         tools
             .iter()
-            .all(|t| t.path.is_none() && t.problem.as_deref() == Some("not detected"))
+            .all(|t| t.path.is_some() || t.problem.is_some())
     );
     assert!(
         tools
@@ -258,26 +261,121 @@ fn stub_contract_detect_tools_reports_not_detected() {
     );
 }
 
+fn run_of(n: u128, at: &str, file: &str) -> BackupRun {
+    BackupRun {
+        id: id(100 + n),
+        started_at: at.into(),
+        file_path: Some(file.into()),
+        status: RunStatus::Succeeded,
+        ..run()
+    }
+}
+
 #[test]
-fn stub_contract_retention_and_scheduler_return_nothing() {
-    let now = Utc.with_ymd_and_hms(2025, 1, 2, 3, 0, 0).unwrap();
-    assert!(apply_retention(&job(), &[run()], now).is_empty());
-    let s = Scheduler::new(FixedClock(now));
-    assert_eq!(s.clock().now(), now);
-    assert_eq!(s.next_due(&job(), None), None);
-    assert!(s.due_jobs(&[job()], &BTreeMap::new()).is_empty());
-    assert!(s.catch_up(&[job()], &BTreeMap::new()).is_empty());
-    assert_eq!(SystemClock.now().timezone(), Utc);
+fn retention_keeps_the_newest_n_and_only_files_of_the_job() {
+    let now = Utc.with_ymd_and_hms(2025, 1, 10, 0, 0, 0).unwrap();
+    let mut j = job();
+    j.retention = Retention {
+        keep_last: Some(3),
+        max_age_days: None,
+    };
+    let mut runs: Vec<BackupRun> = (1..=5)
+        .map(|n| {
+            run_of(
+                n,
+                &format!("2025-01-0{n}T02:00:00Z"),
+                &format!("/b/{n}.dbsbak"),
+            )
+        })
+        .collect();
+    // Not deleted: other job, failed run, restore run, run without a file.
+    let mut other = run_of(6, "2024-12-01T00:00:00Z", "/b/other.dbsbak");
+    other.job_id = Some(id(77));
+    let mut failed = run_of(7, "2024-12-02T00:00:00Z", "/b/failed.dbsbak");
+    failed.status = RunStatus::Failed;
+    let mut restore = run_of(8, "2024-12-03T00:00:00Z", "/b/restore.dbsbak");
+    restore.kind = RunKind::Restore;
+    let mut nofile = run_of(9, "2024-12-04T00:00:00Z", "");
+    nofile.file_path = None;
+    runs.extend([other, failed, restore, nofile]);
+    let doomed = apply_retention(&j, &runs, now);
+    assert_eq!(
+        doomed,
+        vec![PathBuf::from("/b/1.dbsbak"), PathBuf::from("/b/2.dbsbak")]
+    );
+    // No rule, nothing deleted.
+    j.retention = Retention::default();
+    assert!(apply_retention(&j, &runs, now).is_empty());
+}
+
+#[test]
+fn retention_by_age_always_keeps_the_newest_file() {
+    let now = Utc.with_ymd_and_hms(2025, 3, 1, 0, 0, 0).unwrap();
+    let mut j = job();
+    j.retention = Retention {
+        keep_last: None,
+        max_age_days: Some(30),
+    };
+    let runs = vec![
+        run_of(1, "2025-02-27T00:00:00Z", "/b/new.dbsbak"),
+        run_of(2, "2025-02-01T00:00:00Z", "/b/mid.dbsbak"),
+        run_of(3, "2025-01-01T00:00:00Z", "/b/old.dbsbak"),
+    ];
+    assert_eq!(
+        apply_retention(&j, &runs, now),
+        vec![PathBuf::from("/b/old.dbsbak")]
+    );
+    // Everything is older than the limit: the newest one survives.
+    let later = Utc.with_ymd_and_hms(2025, 9, 1, 0, 0, 0).unwrap();
+    let doomed = apply_retention(&j, &runs, later);
+    assert_eq!(doomed.len(), 2);
+    assert!(!doomed.contains(&PathBuf::from("/b/new.dbsbak")));
+}
+
+#[test]
+fn file_name_template_expands_and_sanitizes() {
+    let now = chrono::Local.with_ymd_and_hms(2026, 5, 6, 7, 8, 9).unwrap();
+    assert_eq!(
+        render_file_name(&default_template(), "My/Conn", "app", "nightly", now),
+        "My_Conn-app-20260506-070809.dbsbak"
+    );
+    assert_eq!(
+        render_file_name("{job}_{date}_{unknown}", "c", "d", "../j", now),
+        "_j_20260506-070809_{unknown}.dbsbak"
+    );
+    assert_eq!(
+        render_file_name("a/b\\c-{date:%Y}.dbsbak", "c", "d", "j", now),
+        "a_b_c-2026.dbsbak"
+    );
+    assert_eq!(
+        render_file_name("", "c", "d", "j", now),
+        "backup-20260506-070809.dbsbak"
+    );
 }
 
 #[tokio::test]
-async fn stub_contract_operations_are_unsupported() {
-    let dir = std::path::Path::new("/nonexistent.dbsbak");
-    assert_eq!(inspect(dir, None).await.unwrap_err().kind(), "unsupported");
+async fn inspect_and_verify_reject_foreign_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("x.dbsbak");
+    std::fs::write(&f, b"not a backup at all").unwrap();
+    assert_eq!(inspect(&f, None).await.unwrap_err().kind(), "integrity");
     let reporter = Reporter(CancelToken::default());
     assert_eq!(
-        verify(dir, None, &reporter).await.unwrap_err().kind(),
-        "unsupported"
+        verify(&f, None, &reporter).await.unwrap_err().kind(),
+        "integrity"
+    );
+    assert_eq!(
+        verify(&dir.path().join("missing"), None, &reporter)
+            .await
+            .unwrap_err()
+            .kind(),
+        "io"
+    );
+    assert_eq!(SystemClock.now().timezone(), Utc);
+    assert!(
+        Scheduler::new(FixedClock(Utc::now()))
+            .next_due(&job(), None)
+            .is_some()
     );
 }
 

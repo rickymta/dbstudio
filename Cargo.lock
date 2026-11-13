@@ -1599,6 +1599,8 @@ dependencies = [
  "chrono",
  "croner",
  "dbstudio-core",
+ "dbstudio-driver-mysql",
+ "dbstudio-driver-postgres",
  "dbstudio-export",
  "dbstudio-sql",
  "dbstudio-store",
@@ -1610,6 +1612,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "tracing",
  "uuid",
  "zstd",
 ]
