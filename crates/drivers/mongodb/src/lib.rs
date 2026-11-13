@@ -1,15 +1,34 @@
-//! MongoDB driver for DBStudio.
+//! MongoDB driver for DBStudio (MongoDB 4.4 and newer).
 //!
-//! Scaffold status: the driver registers and describes itself; `connect` returns
-//! `Error::Unsupported`. Package K implements it.
+//! * Everything runs as raw database commands (`find`, `aggregate`, `insert`, ...), so the same
+//!   code serves the pooled session and the lease (which adds a `ClientSession` for
+//!   transactions).
+//! * Collections are returned as one `$document` column; BSON maps losslessly onto `Value`
+//!   (see [`convert`]).
+//! * Scripts use the shell syntax parsed by `dbstudio_sql::mongo_shell`.
+
+mod conn;
+mod convert;
+mod edit;
+mod exec;
+mod lease;
+mod model;
+mod query;
+mod session;
+mod shell;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use dbstudio_core::{
     Capabilities, ConnectionConfig, DbKind, Driver, DriverDescriptor, DriverRegistry, DriverStatus,
-    Error, Result, Secret, Session,
+    Result, Secret, Session,
 };
+
+pub use convert::{
+    bson_to_value, doc_to_ejson, parse_ejson_doc, to_ejson, value_to_bson,
+};
+pub use session::MongoSession;
 
 /// Driver for MongoDB.
 #[derive(Debug, Default, Clone, Copy)]
@@ -37,8 +56,8 @@ impl Driver for MongoDriver {
         config: &ConnectionConfig,
         secret: Option<&Secret>,
     ) -> Result<Box<dyn Session>> {
-        let _ = (config, secret);
-        Err(Error::Unsupported("mongodb".into()))
+        let conn = conn::Conn::connect(config, secret).await?;
+        Ok(Box::new(MongoSession::new(conn)))
     }
 }
 
@@ -66,23 +85,5 @@ mod tests {
         let mut r = DriverRegistry::new();
         register(&mut r);
         assert!(r.get(DbKind::MongoDb).is_some());
-        let d = r
-            .descriptors()
-            .into_iter()
-            .find(|d| d.kind == DbKind::MongoDb)
-            .unwrap();
-        assert_eq!(d.status, DriverStatus::Available);
-    }
-
-    #[tokio::test]
-    async fn connect_is_unsupported() {
-        let cfg = ConnectionConfig::new(DbKind::MongoDb, "test", "localhost");
-        let err = MongoDriver::new().connect(&cfg, None).await.err().unwrap();
-        assert_eq!(err.kind(), "unsupported");
-    }
-
-    #[test]
-    fn client_crate_is_linked() {
-        let _ = std::any::type_name::<bson::Document>();
     }
 }
