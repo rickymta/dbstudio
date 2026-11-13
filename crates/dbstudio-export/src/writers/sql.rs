@@ -40,6 +40,18 @@ struct TableState {
     rows_in_stmt: usize,
     per_row: bool,
     batch_rows: usize,
+    /// Indexes of the columns that are written; generated columns are computed by the server
+    /// and cannot be inserted.
+    keep: Vec<usize>,
+}
+
+/// `extra` text of a column that the server computes (`GENERATED ALWAYS AS`).
+pub(crate) fn is_generated(extra: Option<&str>) -> bool {
+    let e = extra.unwrap_or("").to_ascii_lowercase();
+    e.contains("stored generated")
+        || e.contains("virtual generated")
+        || e.contains("generated stored")
+        || e.contains("generated virtual")
 }
 
 impl SqlWriter {
@@ -155,12 +167,13 @@ impl SqlWriter {
         }
     }
 
-    fn row_tuple(&self, row: &[Value]) -> String {
+    fn row_tuple(&self, row: &[Value], keep: &[usize]) -> String {
         let mut s = String::from("(");
-        for (i, v) in row.iter().enumerate() {
-            if i > 0 {
+        for (n, &i) in keep.iter().enumerate() {
+            if n > 0 {
                 s.push_str(", ");
             }
+            let v = row.get(i).unwrap_or(&Value::Null);
             s.push_str(&sql_literal(self.q, self.dialect, v));
         }
         s.push(')');
@@ -242,7 +255,12 @@ impl ResultSink for SqlWriter {
             return Ok(());
         }
         for row in &rows {
-            let tuple = self.row_tuple(row);
+            let keep = self
+                .table
+                .as_ref()
+                .map(|t| t.keep.clone())
+                .unwrap_or_default();
+            let tuple = self.row_tuple(row, &keep);
             let max_bytes = self.opts.max_statement_bytes as usize;
             let t = self.table.as_mut().expect("checked above");
             if t.rows_in_stmt > 0
@@ -313,11 +331,21 @@ impl TableWriter for SqlWriter {
         } else {
             q.quote_ident(meta.table_name())
         };
-        let columns = if self.opts.include_column_names {
-            let list: Vec<String> = meta
-                .columns
+        let generated: Vec<bool> = meta
+            .columns
+            .iter()
+            .map(|c| {
+                meta.details
+                    .as_ref()
+                    .and_then(|d| d.columns.iter().find(|x| x.name == c.name))
+                    .is_some_and(|d| is_generated(d.extra.as_deref()))
+            })
+            .collect();
+        let keep: Vec<usize> = (0..meta.columns.len()).filter(|i| !generated[*i]).collect();
+        let columns = if self.opts.include_column_names || keep.len() != meta.columns.len() {
+            let list: Vec<String> = keep
                 .iter()
-                .map(|c| q.quote_ident(&c.name))
+                .map(|&i| q.quote_ident(&meta.columns[i].name))
                 .collect();
             format!(" ({})", list.join(", "))
         } else {
@@ -341,6 +369,7 @@ impl TableWriter for SqlWriter {
             rows_in_stmt: 0,
             per_row,
             batch_rows,
+            keep,
         });
         Ok(())
     }

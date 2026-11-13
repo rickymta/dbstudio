@@ -225,20 +225,6 @@ async fn stub_commands_answer_unsupported() {
                 .unwrap_err(),
         ),
         (
-            "backup_jobs_list",
-            backup::jobs_list_impl(&f.state).await.unwrap_err(),
-        ),
-        (
-            "backup_job_delete",
-            backup::job_delete_impl(&f.state, Uuid::new_v4())
-                .await
-                .unwrap_err(),
-        ),
-        (
-            "schedule_preview",
-            backup::schedule_preview_impl("* * * * *".into(), "utc".into(), 3).unwrap_err(),
-        ),
-        (
             "key_read",
             keyvalue::key_read_impl(
                 &f.state,
@@ -554,7 +540,7 @@ async fn path_taking_commands_require_a_grant() {
         .grants
         .grant(&file, crate::grants::Purpose::Read)
         .unwrap();
-    // Granted: the import engine previews the file; the backup engine is still a scaffold.
+    // Granted: the import engine previews the file; a granted file that is not a backup is an integrity error for the backup engine.
     let preview = export::import_preview_impl(&f.state, preview())
         .await
         .unwrap();
@@ -564,7 +550,7 @@ async fn path_taking_commands_require_a_grant() {
             .await
             .unwrap_err()
             .kind(),
-        "unsupported"
+        "integrity"
     );
 }
 

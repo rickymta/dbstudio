@@ -114,9 +114,59 @@ export interface RestoreSpec {
   continueOnError?: boolean;
 }
 
+/** Encryption parameters of the clear header (no key material: the key comes from the passphrase). */
+export interface BackupEncryptionHeader {
+  alg: string;
+  kdf: string;
+  salt: string;
+  m: number;
+  t: number;
+  p: number;
+  noncePrefix: string;
+  chunkSize: number;
+}
+
+/** Clear header of a `.dbsbak` file (the `summary` is returned as `preamble`). */
+export interface BackupHeader {
+  formatVersion: number;
+  compression: 'none' | 'gzip' | 'zstd';
+  encryption: BackupEncryptionHeader | null;
+  native?: NativeTool | null;
+  createdAt: string;
+}
+
+/** An object listed in the preamble. */
+export interface BackupObject {
+  name: string;
+  kind: 'table' | 'view' | 'database' | string;
+}
+
+/** `preamble.json`: what the backup contains. */
+export interface BackupPreamble {
+  formatVersion: number;
+  /** `logical`: integrated SQL script; `native`: made by a native tool. */
+  engine: 'logical' | 'native';
+  createdAt: string;
+  /** Source database. */
+  database: string;
+  source: { kind: string; host: string; database: string; serverVersion: string };
+  /** `postgres` | `mysql` | ... (logical). */
+  dialect?: string;
+  content?: 'schema' | 'data' | 'both';
+  objects: BackupObject[];
+  /** Tables in the script (logical). */
+  tables?: number;
+  warnings?: string[];
+  /** What the backup does not contain. */
+  unsupported: string[];
+  /** Tool details (native). */
+  native?: { tool: NativeTool; format: string; version: string | null; file: string };
+}
+
 export interface BackupInspection {
-  header: unknown;
-  preamble: unknown;
+  header: BackupHeader;
+  /** `null` while an encrypted file has no (or a wrong) passphrase. */
+  preamble: BackupPreamble | null;
   encrypted: boolean;
   native: NativeTool | null;
 }

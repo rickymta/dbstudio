@@ -1598,8 +1598,11 @@ dependencies = [
  "chrono",
  "croner",
  "dbstudio-core",
+ "dbstudio-driver-mysql",
+ "dbstudio-driver-postgres",
  "dbstudio-export",
  "dbstudio-sql",
+ "dbstudio-ssh",
  "dbstudio-store",
  "fd-lock",
  "flate2",
@@ -1609,6 +1612,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "tracing",
  "uuid",
  "zstd",
 ]
@@ -1617,11 +1621,21 @@ dependencies = [
 name = "dbstudio-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "clap",
  "dbstudio-backup",
  "dbstudio-core",
+ "dbstudio-driver-mongodb",
+ "dbstudio-driver-mssql",
+ "dbstudio-driver-mysql",
+ "dbstudio-driver-oracle",
+ "dbstudio-driver-postgres",
+ "dbstudio-driver-redis",
  "dbstudio-export",
  "dbstudio-store",
+ "serde_json",
+ "tempfile",
  "tokio",
  "uuid",
 ]

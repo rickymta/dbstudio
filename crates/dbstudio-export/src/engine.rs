@@ -343,12 +343,21 @@ async fn run(
 
     // Structure first (SQL: the script's DDL; other formats collect it from the table models).
     let mut post: Vec<DdlItem> = Vec::new();
+    // Partitions are filled through their parent table: loading both would insert every row
+    // twice. Found from the DDL (`CREATE TABLE .. PARTITION OF ..`).
+    let mut partitions: std::collections::HashSet<Vec<(ObjectKind, String)>> =
+        std::collections::HashSet::new();
     if is_sql && work.content != ExportContent::Data {
         progress.phase("schema", None);
         let ExportFormat::Sql(sql_opts) = &spec.format else {
             unreachable!()
         };
         let (pre, after) = generate_ddl(ctx, work, &sql_opts.ddl).await?;
+        partitions.extend(
+            pre.iter()
+                .filter(|i| i.kind == ObjectKind::Table && i.sql.contains(" PARTITION OF "))
+                .map(|i| path_key(&i.path)),
+        );
         writer.write_ddl(DdlSection::PreData, &pre)?;
         post = after;
     }
@@ -386,6 +395,11 @@ async fn run(
             for table in &work.tables {
                 if cancel.is_cancelled() {
                     return Err(Error::Cancelled);
+                }
+                if partitions.contains(&path_key(&table.path)) {
+                    objects += 1;
+                    progress.object_done();
+                    continue;
                 }
                 let name = entry_name(table, work.multi_schema, ctx.dialect);
                 progress.phase("data", Some(name.clone()));
@@ -444,6 +458,15 @@ async fn run(
         bytes,
         warnings: std::mem::take(warnings),
     })
+}
+
+/// Path without `Folder` segments, comparable between tree paths and DDL item paths.
+fn path_key(p: &ObjectPath) -> Vec<(ObjectKind, String)> {
+    p.segments
+        .iter()
+        .filter(|s| s.kind != ObjectKind::Folder)
+        .map(|s| (s.kind, s.name.clone()))
+        .collect()
 }
 
 fn column_meta(c: &ColumnDetail) -> ColumnMeta {

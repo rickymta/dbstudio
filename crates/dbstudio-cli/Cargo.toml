@@ -16,9 +16,31 @@ dbstudio-core.workspace = true
 dbstudio-store.workspace = true
 dbstudio-backup.workspace = true
 dbstudio-export.workspace = true
+dbstudio-driver-postgres = { path = "../drivers/postgres", optional = true }
+dbstudio-driver-mysql = { path = "../drivers/mysql", optional = true }
+dbstudio-driver-mssql = { path = "../drivers/mssql", optional = true }
+dbstudio-driver-oracle = { path = "../drivers/oracle", optional = true }
+dbstudio-driver-mongodb = { path = "../drivers/mongodb", optional = true }
+dbstudio-driver-redis = { path = "../drivers/redis", optional = true }
+chrono.workspace = true
 clap.workspace = true
 uuid.workspace = true
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros", "signal", "time", "fs"] }
+
+[features]
+default = ["postgres", "mysql", "mssql", "oracle", "mongodb", "redis"]
+postgres = ["dep:dbstudio-driver-postgres"]
+mysql = ["dep:dbstudio-driver-mysql"]
+mssql = ["dep:dbstudio-driver-mssql"]
+oracle = ["dep:dbstudio-driver-oracle"]
+mongodb = ["dep:dbstudio-driver-mongodb"]
+redis = ["dep:dbstudio-driver-redis"]
+
+[dev-dependencies]
+tempfile.workspace = true
+dbstudio-core = { workspace = true, features = ["testing"] }
+async-trait.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

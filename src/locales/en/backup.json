@@ -2,8 +2,311 @@
   "tab": {
     "title": "Backup"
   },
-  "placeholder": {
-    "title": "Backup",
-    "description": "Backup and restore are not available yet."
+  "actions": {
+    "cancel": "Cancel",
+    "save": "Save",
+    "close": "Close",
+    "delete": "Delete",
+    "restoreFromFile": "Restore from file...",
+    "backupNow": "Back up now (one-off)",
+    "createJob": "Create job"
+  },
+  "section": {
+    "jobs": "Jobs",
+    "history": "Run history",
+    "tools": "Native tools",
+    "background": "Background"
+  },
+  "running": {
+    "title": "Running now"
+  },
+  "jobs": {
+    "col": {
+      "name": "Name",
+      "connection": "Connection",
+      "schedule": "Schedule",
+      "lastRun": "Last run",
+      "nextRun": "Next run",
+      "enabled": "Enabled"
+    },
+    "encrypted": "Encrypted",
+    "unknownConnection": "(deleted connection)",
+    "manual": "Manual only",
+    "toggle": "Enable job {{name}}",
+    "runNow": "Run now",
+    "edit": "Edit",
+    "delete": "Delete",
+    "runStarted": "Backup \"{{name}}\" started.",
+    "empty": {
+      "title": "No backup jobs yet",
+      "description": "Create a job to back up a database on a schedule, or run a one-off backup."
+    },
+    "deleteConfirm": {
+      "title": "Delete job \"{{name}}\"?",
+      "description": "Only the job definition is removed. Backup files it already created are kept on disk."
+    }
+  },
+  "status": {
+    "running": "Running",
+    "queued": "Queued",
+    "succeeded": "Succeeded",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "interrupted": "Interrupted"
+  },
+  "phase": {
+    "schema": "Schema",
+    "data": "Data",
+    "compress": "Compressing",
+    "encrypt": "Encrypting",
+    "verify": "Verifying",
+    "restore": "Restoring"
+  },
+  "progress": {
+    "counters": "{{objects}} objects, {{rows}} rows, {{bytes}}"
+  },
+  "cron": {
+    "mode": {
+      "label": "Schedule mode",
+      "preset": "Simple",
+      "advanced": "Advanced (cron)"
+    },
+    "expression": "Cron expression",
+    "expressionHint": "5 fields: minute hour day-of-month month day-of-week.",
+    "repeat": "Repeat",
+    "kind": {
+      "daily": "Daily",
+      "weekly": "Weekly",
+      "monthly": "Monthly"
+    },
+    "hour": "Hour",
+    "minute": "Minute",
+    "weekdays": "Days of the week",
+    "weekday": {
+      "0": "Sun",
+      "1": "Mon",
+      "2": "Tue",
+      "3": "Wed",
+      "4": "Thu",
+      "5": "Fri",
+      "6": "Sat"
+    },
+    "dayOfMonth": "Day of month",
+    "timezone": "Time zone",
+    "tz": {
+      "local": "Local time",
+      "utc": "UTC"
+    },
+    "invalid": "The cron expression must have 5 valid fields.",
+    "nextRuns": "Next {{count}} runs"
+  },
+  "job": {
+    "createTitle": "Create backup job",
+    "editTitle": "Edit backup job",
+    "section": {
+      "source": "Source",
+      "destination": "Destination",
+      "format": "Format and security",
+      "schedule": "Schedule",
+      "policy": "Retention and notifications"
+    },
+    "name": "Job name",
+    "connection": "Connection",
+    "connectionPlaceholder": "Choose a connection",
+    "database": "Database",
+    "databasePlaceholder": "Choose a database",
+    "databaseListFailed": "Could not list databases ({{error}}). Type the name instead.",
+    "productionNote": "This is a production connection.",
+    "enabled": "Job enabled",
+    "directory": "Destination folder",
+    "serverDirectory": "Folder on the database server",
+    "serverDirectoryHint": "This tool writes the backup on the database server, so the path is resolved there.",
+    "browse": "Browse...",
+    "fileTemplate": "File name template",
+    "fileTemplateHint": "Placeholders:",
+    "fileExample": "Example",
+    "engine": {
+      "label": "Engine",
+      "logical": "Logical (built in)",
+      "native": "Native tool"
+    },
+    "content": {
+      "label": "Content",
+      "both": "Schema and data",
+      "schema": "Schema only",
+      "data": "Data only"
+    },
+    "nativeTool": "Tool",
+    "nativeToolPlaceholder": "Choose a tool",
+    "toolProblem": "Tool not usable: {{problem}}",
+    "compression": {
+      "label": "Compression",
+      "none": "None",
+      "gzip": "gzip",
+      "zstd": "zstd",
+      "level": "Level"
+    },
+    "encryption": {
+      "label": "Encrypt the backup",
+      "suggestProduction": "This is a production database: encrypting its backups is strongly recommended.",
+      "enable": "Enable encryption",
+      "warning": "If you lose the passphrase, the backup cannot be recovered. It is not stored anywhere you can read it back.",
+      "passphrase": "Passphrase",
+      "repeat": "Repeat passphrase",
+      "keepPlaceholder": "Leave empty to keep the stored passphrase"
+    },
+    "scheduled": "Run on a schedule",
+    "manualOnly": "The job only runs when you start it.",
+    "missedRun": {
+      "label": "When a run was missed (app closed)",
+      "runOnce": "Run once when the app starts",
+      "skip": "Skip it"
+    },
+    "retention": {
+      "title": "Retention",
+      "hint": "Older backups are deleted after a successful run. Leave empty to keep everything.",
+      "keepLast": "Keep the latest N backups",
+      "maxAgeDays": "Keep backups for N days"
+    },
+    "notify": {
+      "title": "Notifications",
+      "onSuccess": "Notify when a run succeeds",
+      "onFailure": "Notify when a run fails"
+    },
+    "error": {
+      "nameRequired": "Enter a job name.",
+      "connectionRequired": "Choose a connection.",
+      "databaseRequired": "Choose or enter a database.",
+      "directoryRequired": "Choose a destination folder.",
+      "templateSeparator": "The template must not contain / or \\.",
+      "templateRequired": "Enter a file name template.",
+      "templateUnknown": "The template has an unknown placeholder.",
+      "toolRequired": "Choose a native tool.",
+      "toolMissing": "The selected tool was not found; set its path in the Native tools tab.",
+      "passphraseRequired": "Enter a passphrase.",
+      "passphraseMismatch": "The passphrases do not match.",
+      "cronInvalid": "The cron expression is not valid.",
+      "retentionInvalid": "Enter a whole number of 1 or more, or leave it empty."
+    }
+  },
+  "once": {
+    "title": "Back up now",
+    "run": "Start backup",
+    "started": "Backup started."
+  },
+  "tools": {
+    "description": "Native tools (pg_dump, mysqldump, ...) are found on PATH and in known folders. You can pick a different executable.",
+    "detect": "Detect again",
+    "found": "Found",
+    "missing": "Missing",
+    "notFound": "Not found",
+    "choose": "Choose path...",
+    "clear": "Clear setting",
+    "name": {
+      "pgDump": "pg_dump",
+      "pgRestore": "pg_restore",
+      "psql": "psql",
+      "mySqlDump": "mysqldump",
+      "mySqlClient": "mysql client",
+      "mongoDump": "mongodump",
+      "mongoRestore": "mongorestore",
+      "expdp": "expdp (Data Pump export)",
+      "impdp": "impdp (Data Pump import)",
+      "redisCli": "redis-cli",
+      "msSqlServerBackup": "SQL Server BACKUP"
+    },
+    "source": {
+      "configured": "Configured",
+      "path": "PATH",
+      "knownDir": "Known folder"
+    }
+  },
+  "runs": {
+    "filterJob": "Job",
+    "allJobs": "All jobs",
+    "empty": "No runs yet.",
+    "col": {
+      "started": "Started",
+      "job": "Job",
+      "kind": "Type",
+      "status": "Status",
+      "size": "Size",
+      "duration": "Duration"
+    },
+    "details": "Show details",
+    "kind": {
+      "backup": "Backup",
+      "restore": "Restore",
+      "verify": "Verify"
+    },
+    "trigger": {
+      "manual": "manual",
+      "schedule": "scheduled",
+      "catchUp": "catch-up",
+      "cli": "CLI"
+    },
+    "verify": "Verify integrity",
+    "restore": "Restore",
+    "verifyStarted": "Verification started.",
+    "engine": "Engine",
+    "file": "File",
+    "objects": "Objects",
+    "rows": "rows",
+    "checksum": "Checksum",
+    "logTail": "Log (end)",
+    "noLog": "(empty)",
+    "passphraseTitle": "Passphrase required",
+    "passphraseDescription": "This backup is encrypted. Enter its passphrase to verify it."
+  },
+  "restore": {
+    "title": "Restore from backup",
+    "description": "Restore a .dbsbak file into a database.",
+    "section": {
+      "file": "Backup file",
+      "contents": "Contents",
+      "target": "Target",
+      "run": "Run"
+    },
+    "chooseFile": "Choose .dbsbak file...",
+    "noFile": "No file selected",
+    "passphrase": "Passphrase",
+    "unlock": "Unlock",
+    "encryptedLocked": "This backup is encrypted. Enter the passphrase to read its contents.",
+    "encryptedHint": "Encrypted backup: the passphrase is needed to restore it.",
+    "wrongPassphrase": "Wrong passphrase, or the file is corrupted (integrity check failed).",
+    "nativeTool": "Native tool",
+    "objects": "Objects ({{count}})",
+    "selectAll": "Select all",
+    "selectNone": "Select none",
+    "scope": "Supported scope and details",
+    "targetConnection": "Target connection",
+    "targetDatabase": "Target database",
+    "readOnly": "read-only",
+    "productionWarning": "The target is a production connection: you will have to confirm the restore.",
+    "createDatabase": "Create the database if it does not exist",
+    "clean": "Drop existing objects first (clean)",
+    "cleanWarning": "Destructive: existing objects with the same names are dropped before restoring and their data is lost.",
+    "continueOnError": "Continue when an object fails",
+    "verify": "Verify integrity",
+    "start": "Restore"
+  },
+  "confirm": {
+    "title": "Confirm restore",
+    "confirm": "Restore",
+    "typePrompt": "To continue, type:",
+    "inputLabel": "Confirmation text",
+    "cleanMessage": "This restore drops existing objects in the target database. This cannot be undone.",
+    "productionMessage": "The target is a production database. This restore changes its data."
+  },
+  "background": {
+    "description": "Scheduled backups only run while DBStudio is running. Keeping it in the system tray lets schedules run when the window is closed.",
+    "closeToTray": {
+      "label": "When the window is closed",
+      "auto": "Keep running only if jobs are scheduled",
+      "always": "Always keep running in the tray",
+      "never": "Quit the application",
+      "hint": "Applies the next time you close the window."
+    },
+    "autostart": "Start DBStudio when I sign in"
   }
 }

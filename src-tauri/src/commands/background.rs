@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use super::blocking;
+use crate::background::{Autostart, NoAutostart, TauriAutostart};
 use crate::state::AppState;
 
 /// What the settings page shows and stores.
@@ -18,20 +19,24 @@ pub struct BackgroundSettings {
     pub autostart: bool,
 }
 
-pub(crate) async fn get_impl(state: &AppState) -> Result<BackgroundSettings> {
+/// Settings as stored, with the autostart state read from the operating system.
+pub(crate) async fn get_with(
+    state: &AppState,
+    autostart: &dyn Autostart,
+) -> Result<BackgroundSettings> {
     let svc = state.connections.clone();
     let settings = blocking(move || svc.settings()).await?;
     Ok(BackgroundSettings {
         close_to_tray: settings.close_to_tray,
-        // Package H wires the autostart plugin; until then it is never enabled.
-        autostart: false,
+        autostart: autostart.is_enabled()?,
     })
 }
 
-/// Persist `close_to_tray`. `autostart` is accepted but not applied yet (package H).
-pub(crate) async fn set_impl(
+/// Persist `close_to_tray` and switch launch-at-login on or off.
+pub(crate) async fn set_with(
     state: &AppState,
     settings: BackgroundSettings,
+    autostart: &dyn Autostart,
 ) -> Result<BackgroundSettings> {
     let svc = state.connections.clone();
     blocking(move || {
@@ -40,22 +45,42 @@ pub(crate) async fn set_impl(
         svc.set_settings(current)
     })
     .await?;
-    get_impl(state).await
+    if autostart.is_enabled()? != settings.autostart {
+        autostart.set_enabled(settings.autostart)?;
+    }
+    get_with(state, autostart).await
+}
+
+/// [`get_with`] without autostart support.
+pub(crate) async fn get_impl(state: &AppState) -> Result<BackgroundSettings> {
+    get_with(state, &NoAutostart).await
+}
+
+/// [`set_with`] without autostart support.
+pub(crate) async fn set_impl(
+    state: &AppState,
+    settings: BackgroundSettings,
+) -> Result<BackgroundSettings> {
+    set_with(state, settings, &NoAutostart).await
 }
 
 type R<T> = std::result::Result<T, Error>;
 
 #[tauri::command]
-pub async fn background_get(state: State<'_, AppState>) -> R<BackgroundSettings> {
+pub async fn background_get(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> R<BackgroundSettings> {
     tracing::debug!(command = "background_get", "ipc call");
-    get_impl(&state).await
+    get_with(&state, &TauriAutostart(app)).await
 }
 
 #[tauri::command]
 pub async fn background_set(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     settings: BackgroundSettings,
 ) -> R<BackgroundSettings> {
     tracing::debug!(command = "background_set", "ipc call");
-    set_impl(&state, settings).await
+    set_with(&state, settings, &TauriAutostart(app)).await
 }
