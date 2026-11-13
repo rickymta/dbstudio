@@ -49,6 +49,7 @@ import { TxBar } from './TxBar';
 const SqlEditor = lazy(() => import('./SqlEditor'));
 
 const ANALYZE_DELAY_MS = 600;
+const LIVE_ANALYZE_MAX_CHARS = 1_000_000;
 const DDL_PATTERN = /\b(create|alter|drop|truncate|rename)\b/i;
 
 export const EditorTab: FC<EditorTabPayload> = ({ tabStateId, connectionId, mode }) => {
@@ -88,18 +89,21 @@ function EditorBody({
     name: mode === 'mongo' ? 'mongoShell' : mode === 'redis' ? 'redisCli' : 'opaque',
   };
   const run = data.run;
-  const running = run?.status === 'running';
+  // Fetching more rows of the last result keeps the lease busy like a running statement.
+  const running = run?.status === 'running' || run?.fetchingMore === true;
   const caps = session?.descriptor.capabilities;
   const showTx = mode === 'sql' && (caps?.manualTransactions ?? true);
 
   // Lexer problems (unterminated string...) while typing.
   useEffect(() => {
-    if (!sessionId || mode === 'redis') return;
+    // Huge scripts are not analyzed while typing (the text would cross IPC on every pause).
+    if (!sessionId || mode === 'redis' || data.text.length > LIVE_ANALYZE_MAX_CHARS) return;
     const timer = setTimeout(() => void analyzeTab(id, sessionId, data.text), ANALYZE_DELAY_MS);
     return () => clearTimeout(timer);
   }, [id, sessionId, mode, data.text]);
 
-  const errorMark = run?.errorMark ?? null;
+  // The mark's position is only right for the document that ran.
+  const errorMark = run?.errorMark && data.text === run.docAtStart ? run.errorMark : null;
   const marks = useMemo(
     () => [...(errorMark ? [errorMark] : []), ...data.problems],
     [errorMark, data.problems],
@@ -111,6 +115,7 @@ function EditorBody({
         toast('info', t('connection.notConnected'));
         return;
       }
+      editor.current?.flush();
       const d = useEditorStore.getState().tabs[id];
       if (!d) return;
       const wholeAnalysis = await ipc.scriptAnalyze(sessionId, d.text).catch(() => null);
@@ -146,10 +151,19 @@ function EditorBody({
   };
 
   const saveFile = async (asNew: boolean) => {
+    editor.current?.flush();
     const d = useEditorStore.getState().tabs[id];
     if (!d) return;
     try {
-      const path = await ipc.sqlFileSave(asNew ? null : d.filePath, d.text);
+      let path: string | null;
+      try {
+        path = await ipc.sqlFileSave(asNew ? null : d.filePath, d.text);
+      } catch (e) {
+        // The write grant for the path lives in memory for an hour: after a reload (or later)
+        // the backend refuses it. Ask for a new path and keep the text.
+        if (asNew || toIpcError(e).kind !== 'permission') throw e;
+        path = await ipc.sqlFileSave(null, d.text);
+      }
       if (!path) return;
       patchTabData(id, { filePath: path, savedText: d.text });
       setEditorTitle(id, fileBaseName(path));
@@ -444,7 +458,12 @@ function EditorBody({
         onSubmit={(drafts) => {
           const pending = paramsFor;
           setParamsFor(null);
-          patchTabData(id, { params: drafts });
+          patchTabData(id, {
+            params: [
+              ...data.params.filter((p) => !drafts.some((d) => d.name === p.name)),
+              ...drafts,
+            ],
+          });
           pending?.run(drafts.map(toParamValue));
         }}
       />

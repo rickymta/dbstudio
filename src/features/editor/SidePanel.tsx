@@ -9,6 +9,7 @@ import {
   FolderPlus,
   Plus,
   Save,
+  SquarePlus,
   Trash2,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -168,6 +169,11 @@ export function HistoryList({ connectionId, runId, onInsert, onOpenInNewTab }: S
                 {h.rows !== null && <span>{t('history.rows', { count: h.rows })}</span>}
                 <span className="ml-auto flex opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
                   <IconButton
+                    label={t('history.openNew')}
+                    icon={<SquarePlus size={12} />}
+                    onClick={() => onOpenInNewTab(h.text)}
+                  />
+                  <IconButton
                     label={t('history.delete')}
                     icon={<Trash2 size={12} />}
                     onClick={() => void ipc.historyDelete([h.id]).then(refresh)}
@@ -179,7 +185,6 @@ export function HistoryList({ connectionId, runId, onInsert, onOpenInNewTab }: S
                 className="mt-0.5 block w-full text-left font-mono text-xs break-all whitespace-pre-wrap text-foreground hover:text-accent"
                 title={t('history.reopen')}
                 onClick={() => onInsert(h.text, false)}
-                onDoubleClick={() => onOpenInNewTab(h.text)}
               >
                 {h.text.length > 240 ? `${h.text.slice(0, 240)}…` : h.text}
               </button>

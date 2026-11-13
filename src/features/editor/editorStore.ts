@@ -29,6 +29,8 @@ export interface RunSnapshot {
   /** The last result set can be continued with `lease_fetch_more`. */
   canFetchMore: boolean;
   fetchingMore: boolean;
+  /** Whole document when the run started (error marks are valid only for it). */
+  docAtStart: string;
 }
 
 export type LeaseStatus = 'none' | 'opening' | 'ready' | 'error';
@@ -49,6 +51,8 @@ export interface EditorTabData {
   filePath: string | null;
   /** Text as last saved to / read from `filePath`; `null` when there is no file. */
   savedText: string | null;
+  /** Restored tab whose file had unsaved changes (the saved text is unknown). */
+  restoredDirty: boolean;
   database: string | null;
   schema: string | null;
   /** Desired mode; applied to the lease when it opens, then mirrors `leaseState`. */
@@ -79,6 +83,7 @@ export function newTabData(id: string, init: Partial<EditorTabData> = {}): Edito
     selection: { from: 0, to: 0 },
     filePath: null,
     savedText: null,
+    restoredDirty: false,
     database: null,
     schema: null,
     autoCommit: true,
@@ -141,13 +146,15 @@ export const useTabData = (id: string): EditorTabData | undefined =>
 
 /** A transaction is (or may be) open: closing the tab must ask first (QUERY-11). */
 export function hasOpenTransaction(data: EditorTabData | undefined): boolean {
+  // A broken lease took its transaction with it (the server rolled it back).
+  if (data?.leaseState?.broken) return false;
   const tx = data?.leaseState?.transaction;
   return tx === 'active' || tx === 'failed' || tx === 'unknown';
 }
 
 /** Whether the text differs from the file it came from. */
 export const isDirty = (d: EditorTabData): boolean =>
-  d.filePath !== null && d.savedText !== null && d.text !== d.savedText;
+  d.filePath !== null && (d.savedText !== null ? d.text !== d.savedText : d.restoredDirty);
 
 // -- cleanup when a tab disappears ----------------------------------------------------------
 

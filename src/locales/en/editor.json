@@ -49,6 +49,7 @@
     "errorAt": "Line {{line}}, column {{column}}",
     "truncated": "Showing the first {{formatted}} rows.",
     "truncatedFinal": "Showing {{formatted}} rows; more rows were not fetched.",
+    "moreHidden": "+ {{count}} more results (not shown)",
     "loadMore": "Load more",
     "cellViewer": "Cell viewer"
   },
@@ -58,6 +59,7 @@
     "commit": "Commit",
     "rollback": "Roll back",
     "cancel": "Cancel",
+    "lostError": "The connection was lost, so the transaction is gone (the server rolled it back).",
     "dismiss": "Dismiss",
     "lost": "The connection was lost while a transaction was open. The server rolled it back.",
     "decideTitle": "A transaction is open",
@@ -118,7 +120,8 @@
       "running": "Running"
     },
     "rows": "{{count}} rows",
-    "reopen": "Click to insert; double-click to open in a new tab",
+    "reopen": "Click to insert into the editor",
+    "openNew": "Open in a new tab",
     "delete": "Delete entry",
     "clear": "Clear history",
     "clearTitle": "Clear the history?",

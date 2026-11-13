@@ -6,6 +6,7 @@ import { ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Input } from '@/components/ui/Input';
+import { Spinner } from '@/components/ui/Spinner';
 import { valueToText, visibleWhitespace } from '@/features/data/format';
 import { cn } from '@/lib/cn';
 import type { Uuid, Vocabulary } from '@/lib/types';
@@ -26,6 +27,13 @@ export interface ConsoleViewProps {
 }
 
 let entryCounter = 0;
+
+function releaseEntry(entry: ConsoleEntry): void {
+  for (const r of entry.run.results) {
+    r.model?.dispose();
+    if (r.model) r.model.rows.length = 0;
+  }
+}
 
 /** Plain-text lines of a result (rows as tab separated cells), for the default rendering. */
 function resultLines(result: StatementResult): string[] {
@@ -96,7 +104,10 @@ export function ConsoleView({ data, mode, sessionId }: ConsoleViewProps) {
     const snap = await runText(data.id, sessionId, { text: command, baseChar: 0 });
     if (!snap) return;
     const entry: ConsoleEntry = { id: ++entryCounter, command, run: snap };
-    patchTabData(data.id, { console: [...data.console.slice(-MAX_LINES), entry] });
+    // Keep MAX_LINES entries in total and release what falls out (models, row arrays).
+    const keep = data.console.slice(-(MAX_LINES - 1));
+    for (const old of data.console.slice(0, data.console.length - keep.length)) releaseEntry(old);
+    patchTabData(data.id, { console: [...keep, entry] });
   };
 
   const walk = (dir: 1 | -1) => {
@@ -136,6 +147,14 @@ export function ConsoleView({ data, mode, sessionId }: ConsoleViewProps) {
             </div>
           </div>
         ))}
+        {running && (
+          <p
+            className="flex items-center gap-2 text-xs text-muted-foreground"
+            data-testid="console-running"
+          >
+            <Spinner size={12} /> {t('results.running')}
+          </p>
+        )}
       </div>
       {hints.length > 0 && (
         <ul

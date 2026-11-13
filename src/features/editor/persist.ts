@@ -6,7 +6,7 @@ import { ipc } from '@/lib/ipc';
 import type { DbKind, EditorTabState } from '@/lib/types';
 import { useTabsStore, type EditorMode, type TabItem } from '@/stores/tabs';
 import { addEditorTab } from './open';
-import { getTabData, useEditorStore } from './editorStore';
+import { getTabData, isDirty, useEditorStore, type EditorTabData } from './editorStore';
 
 export function modeOfKind(kind: DbKind | undefined): EditorMode {
   if (kind === 'mongodb') return 'mongo';
@@ -43,16 +43,45 @@ export function collectEditorTabs(): EditorTabState[] {
   return states;
 }
 
-/** Reopen the persisted tabs (once per app start). Resolves to how many were restored. */
-export async function restoreEditorTabs(): Promise<number> {
+const DIRTY_KEY = 'dbstudio.editor.dirtyTabs';
+
+/** Ids of file-backed tabs with unsaved changes (`EditorTabState` has no field for it). */
+function readDirty(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DIRTY_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeDirty(ids: string[]): void {
+  try {
+    localStorage.setItem(DIRTY_KEY, JSON.stringify(ids));
+  } catch {
+    // storage unavailable: the unsaved mark is just not kept
+  }
+}
+
+/**
+ * Reopen the persisted tabs (once per app start). Resolves to how many were restored, or `null`
+ * when the saved tabs could not be read (the caller must then not start saving).
+ */
+export async function restoreEditorTabs(): Promise<number | null> {
   let states: EditorTabState[];
-  let kinds: Map<string, DbKind>;
   try {
     states = await ipc.editorTabsGet();
+  } catch {
+    return null;
+  }
+  // Connections only decide the mode; without them every tab opens as SQL.
+  let kinds = new Map<string, DbKind>();
+  try {
     kinds = new Map((await ipc.connectionsList()).profiles.map((p) => [p.id, p.kind]));
   } catch {
-    return 0;
+    // keep the empty map
   }
+  const dirty = readDirty();
   const open = new Set(useTabsStore.getState().tabs.map((t) => t.id));
   const previous = useTabsStore.getState().activeId;
   let restored = 0;
@@ -72,7 +101,9 @@ export async function restoreEditorTabs(): Promise<number> {
         cursor,
         selection: { from: cursor, to: cursor },
         filePath: state.filePath,
-        savedText: state.filePath ? state.text : null,
+        // The saved text is unknown after a reload: remember only whether it differed.
+        savedText: state.filePath && !dirty.has(state.id) ? state.text : null,
+        restoredDirty: !!state.filePath && dirty.has(state.id),
         database: state.database,
         schema: state.schema,
         autoCommit: state.autoCommit,
@@ -85,10 +116,10 @@ export async function restoreEditorTabs(): Promise<number> {
   return restored;
 }
 
-let restoredOnce: Promise<number> | null = null;
+let restoredOnce: Promise<number | null> | null = null;
 
 /** `restoreEditorTabs` once per app start, however many times the host mounts. */
-export function restoreEditorTabsOnce(): Promise<number> {
+export function restoreEditorTabsOnce(): Promise<number | null> {
   restoredOnce ??= restoreEditorTabs();
   return restoredOnce;
 }
@@ -100,26 +131,66 @@ export function resetRestoreOnce(): void {
 
 const SAVE_DELAY_MS = 500;
 
+/** Whether anything that is persisted differs between two editor states. */
+function persistedChange(a: EditorTabData | undefined, b: EditorTabData): boolean {
+  return (
+    !a ||
+    a.text !== b.text ||
+    a.cursor !== b.cursor ||
+    a.title !== b.title ||
+    a.filePath !== b.filePath ||
+    a.savedText !== b.savedText ||
+    a.database !== b.database ||
+    a.schema !== b.schema ||
+    a.autoCommit !== b.autoCommit ||
+    a.leaseState?.database !== b.leaseState?.database ||
+    a.leaseState?.schema !== b.leaseState?.schema ||
+    a.leaseState?.autoCommit !== b.leaseState?.autoCommit
+  );
+}
+
+function dirtyIds(states: EditorTabState[]): string[] {
+  return states
+    .filter((s) => {
+      const d = getTabData(s.id);
+      return d ? isDirty(d) : false;
+    })
+    .map((s) => s.id);
+}
+
+function signatureNow(): string {
+  const states = collectEditorTabs();
+  return JSON.stringify(states) + dirtyIds(states).join(',');
+}
+
 /**
  * Write the editor tabs whenever they change (debounced). Returns a function that stops and
- * flushes. Call after `restoreEditorTabs`, or the restore would be overwritten by an empty list.
+ * flushes. Call only after a successful `restoreEditorTabs`, or the restore could be overwritten.
  */
 export function startEditorPersistence(): () => void {
-  let last = JSON.stringify(collectEditorTabs());
+  let last = signatureNow();
   let timer: ReturnType<typeof setTimeout> | null = null;
   const flush = () => {
     timer = null;
     const states = collectEditorTabs();
-    const signature = JSON.stringify(states);
+    const dirty = dirtyIds(states);
+    const signature = JSON.stringify(states) + dirty.join(',');
     if (signature === last) return;
     last = signature;
+    writeDirty(dirty);
     ipc.editorTabsSet(states).catch(() => undefined);
   };
   const schedule = () => {
     timer ??= setTimeout(flush, SAVE_DELAY_MS);
   };
   const stopTabs = useTabsStore.subscribe(schedule);
-  const stopEditors = useEditorStore.subscribe(schedule);
+  // Run results and lease progress change the store constantly; only persisted fields count.
+  const stopEditors = useEditorStore.subscribe((state, prev) => {
+    for (const [id, data] of Object.entries(state.tabs)) {
+      if (persistedChange(prev.tabs[id], data)) return schedule();
+    }
+    if (Object.keys(prev.tabs).some((id) => !(id in state.tabs))) schedule();
+  });
   return () => {
     stopTabs();
     stopEditors();

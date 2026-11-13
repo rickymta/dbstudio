@@ -34,6 +34,8 @@ import { keysOf, type ShortcutId } from './shortcuts';
 
 export interface SqlEditorHandle {
   focus: () => void;
+  /** Report pending text changes now (they are otherwise debounced). */
+  flush: () => void;
   /** Replace the whole document (keeps the cursor near its old place). */
   replaceDoc: (text: string) => void;
   /** Replace the selection, or the whole document when nothing is selected. */
@@ -60,6 +62,9 @@ export interface SqlEditorProps {
   onSelection: (selection: { from: number; to: number }) => void;
 }
 
+/** Typing reports the text after this pause: `toString` of a large document is not free. */
+const CHANGE_DEBOUNCE_MS = 150;
+
 const EDITOR_SHORTCUTS: ShortcutId[] = [
   'run',
   'runAll',
@@ -75,6 +80,8 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     const host = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const language = useRef(new Compartment());
+    const changeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const flushChange = useRef<() => void>(() => {});
     const latest = useRef(props);
     useEffect(() => {
       latest.current = props;
@@ -127,7 +134,10 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
             editorTheme,
             EditorView.contentAttributes.of({ 'aria-label': latest.current.ariaLabel }),
             EditorView.updateListener.of((u) => {
-              if (u.docChanged) latest.current.onChange(u.state.doc.toString());
+              if (u.docChanged) {
+                if (changeTimer.current) clearTimeout(changeTimer.current);
+                changeTimer.current = setTimeout(() => flushChange.current(), CHANGE_DEBOUNCE_MS);
+              }
               if (u.docChanged || u.selectionSet) {
                 const r = u.state.selection.main;
                 latest.current.onSelection({ from: r.from, to: r.to });
@@ -137,7 +147,14 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         }),
       });
       viewRef.current = view;
+      flushChange.current = () => {
+        if (changeTimer.current === null) return;
+        clearTimeout(changeTimer.current);
+        changeTimer.current = null;
+        latest.current.onChange(view.state.doc.toString());
+      };
       return () => {
+        flushChange.current(); // a tab switch right after typing must not lose text
         view.destroy();
         viewRef.current = null;
       };
@@ -170,6 +187,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       ref,
       () => ({
         focus: () => viewRef.current?.focus(),
+        flush: () => flushChange.current(),
         replaceDoc: (text) => {
           const view = viewRef.current;
           if (!view) return;

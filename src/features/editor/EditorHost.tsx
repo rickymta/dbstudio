@@ -23,17 +23,21 @@ type CloseAnswer = 'commit' | 'rollback' | 'cancel';
 
 function CloseTransactionDialog() {
   const { t } = useTranslation('editor');
-  const [pending, setPending] = useState<{ resolve: (a: CloseAnswer) => void } | null>(null);
+  // Requests queue up: a second close while the dialog is open waits its turn, never hangs.
+  const [queue, setQueue] = useState<{ resolve: (a: CloseAnswer) => void }[]>([]);
   useEffect(() => {
-    setCloseTransactionAsker(() => new Promise<CloseAnswer>((resolve) => setPending({ resolve })));
+    setCloseTransactionAsker(
+      () => new Promise<CloseAnswer>((resolve) => setQueue((q) => [...q, { resolve }])),
+    );
     return () => setCloseTransactionAsker(() => Promise.resolve('cancel'));
   }, []);
+  const head = queue[0];
   const answer = (a: CloseAnswer) => {
-    pending?.resolve(a);
-    setPending(null);
+    head?.resolve(a);
+    setQueue((q) => q.slice(1));
   };
   return (
-    <Dialog open={pending !== null} onOpenChange={(o) => !o && answer('cancel')}>
+    <Dialog open={head !== undefined} onOpenChange={(o) => !o && answer('cancel')}>
       <DialogContent
         title={t('close.title')}
         description={t('close.description')}
@@ -57,6 +61,10 @@ function useGlobalShortcuts(): void {
   useEffect(() => {
     const globals = SHORTCUTS.filter((s) => s.scope === 'global');
     const onKey = (e: KeyboardEvent) => {
+      // Already handled (the tab bar closes its own tab on Ctrl+W; the editor handles its keys),
+      // or a modal dialog has the focus: leave it alone.
+      if (e.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"]')) return;
       const hit = globals.find((s) => matchesKeys(e, s.keys));
       if (!hit) return;
       switch (hit.id) {
@@ -99,8 +107,9 @@ export function EditorHost() {
     const restored = restoreEditorTabsOnce();
     let stop: (() => void) | undefined;
     let alive = true;
-    void restored.then(() => {
-      if (alive) stop = startEditorPersistence();
+    void restored.then((count) => {
+      // A failed restore must not enable saving: it would overwrite the stored tabs.
+      if (alive && count !== null) stop = startEditorPersistence();
     });
     return () => {
       alive = false;

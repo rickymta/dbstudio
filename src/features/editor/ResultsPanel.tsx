@@ -2,7 +2,7 @@
 // a "Messages" tab with server messages, the error and timings.
 
 import { AlertCircle, CheckCircle2, Loader2, PanelRight, Table2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -21,9 +21,10 @@ import { resultKind, type StatementResult } from './results';
 const LAYOUT_KEY = 'dbstudio.editor.resultLayout';
 
 /** First word(s) of the statement a result belongs to, for the tab label. */
-function statementLabel(run: RunSnapshot, r: StatementResult): string {
+function statementLabel(chars: readonly string[], r: StatementResult): string {
   if (!r.range) return '';
-  const text = Array.from(run.text).slice(r.range.start, r.range.end).join('');
+  // Only the head of the statement is needed for the verb.
+  const text = chars.slice(r.range.start, Math.min(r.range.end, r.range.start + 40)).join('');
   return /^[\s(]*([\p{L}_.$]+)/u.exec(text)?.[1]?.toUpperCase() ?? '';
 }
 
@@ -39,11 +40,15 @@ export interface ResultsPanelProps {
 }
 
 const MESSAGES = 'messages';
+/** More result tabs than this are not drawn (a script can have thousands of statements). */
+const MAX_RESULT_TABS = 50;
 
 export function ResultsPanel({ tabStateId, run, onLoadMore }: ResultsPanelProps) {
   const { t } = useTranslation('editor');
   const [picked, setPicked] = useState<{ runId: number; key: string } | null>(null);
 
+  // Characters of the executed text, split once per run (statement ranges are scalar offsets).
+  const chars = useMemo(() => Array.from(run?.text ?? ''), [run?.text]);
   const results = run?.results ?? [];
   const hasMessages =
     !!run && (run.messages.length > 0 || results.some((r) => r.messages.length > 0) || !!run.error);
@@ -78,16 +83,24 @@ export function ResultsPanel({ tabStateId, run, onLoadMore }: ResultsPanelProps)
         aria-label={t('results.tabs')}
         className="flex h-8 shrink-0 items-end gap-1 overflow-x-auto border-b border-border bg-surface px-2"
       >
-        {results.map((r, i) => (
+        {results.slice(0, MAX_RESULT_TABS).map((r, i) => (
           <ResultTabButton
             key={r.key}
-            run={run}
+            chars={chars}
             result={r}
             n={i + 1}
             active={selected === r.key}
             onSelect={() => select(r.key)}
           />
         ))}
+        {results.length > MAX_RESULT_TABS && (
+          <span
+            className="shrink-0 px-1 text-xs text-muted-foreground"
+            data-testid="results-hidden"
+          >
+            {t('results.moreHidden', { count: results.length - MAX_RESULT_TABS })}
+          </span>
+        )}
         {hasMessages && (
           <button
             type="button"
@@ -128,13 +141,13 @@ const tabClass = (active: boolean) =>
   );
 
 function ResultTabButton({
-  run,
+  chars,
   result,
   n,
   active,
   onSelect,
 }: {
-  run: RunSnapshot;
+  chars: readonly string[];
   result: StatementResult;
   n: number;
   active: boolean;
@@ -142,7 +155,7 @@ function ResultTabButton({
 }) {
   const { t } = useTranslation('editor');
   const kind = resultKind(result);
-  const verb = statementLabel(run, result);
+  const verb = statementLabel(chars, result);
   const icon =
     kind === 'error' ? (
       <AlertCircle size={12} className="text-danger" aria-hidden />

@@ -5,6 +5,7 @@
 import { askConfirmation } from '@/features/safety/confirmStore';
 import { guardedCall } from '@/features/safety/useGuardedCall';
 import { useToastStore } from '@/components/ui/toastStore';
+import i18n from '@/lib/i18n';
 import { ipc, toIpcError } from '@/lib/ipc';
 import {
   DEFAULT_SETTINGS,
@@ -146,6 +147,7 @@ function snapshotOf(
     elapsedMs: null,
     canFetchMore: false,
     fetchingMore: false,
+    docAtStart: '',
   };
 }
 
@@ -198,13 +200,14 @@ export async function runText(
   input: RunOptions,
 ): Promise<RunSnapshot | null> {
   const data = getTabData(tabId);
-  if (!data || data.run?.status === 'running') return null;
+  if (!data || data.run?.status === 'running' || data.run?.fetchingMore) return null;
+  const docAtStart = data.text;
   const runId = ++runCounter;
   const queryId = crypto.randomUUID();
   collectors.get(tabId)?.dispose();
   const collector = new ResultCollector(sessionId, () => schedulePublish());
   collectors.set(tabId, collector);
-  patchTabData(tabId, { run: snapshotOf(runId, queryId, input, 'running') });
+  patchTabData(tabId, { run: { ...snapshotOf(runId, queryId, input, 'running'), docAtStart } });
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   const publish = () => {
@@ -268,8 +271,7 @@ export async function runText(
       return finish({ status: 'cancelled', error: null });
     }
     collector.fail(err);
-    const doc = getTabData(tabId)?.text ?? '';
-    const mark = locateError(doc, input.baseChar, err.position, err.message);
+    const mark = locateError(docAtStart, input.baseChar, err.position, err.message);
     await refreshState(tabId);
     return finish({ status: 'error', error: err, errorMark: mark });
   }
@@ -278,7 +280,7 @@ export async function runText(
 /** Cancel the running statement with the protocol's cancel mechanism (QUERY-06). */
 export async function cancelRun(tabId: string): Promise<void> {
   const data = getTabData(tabId);
-  if (!data?.leaseId || data.run?.status !== 'running') return;
+  if (!data?.leaseId || !(data.run?.status === 'running' || data.run?.fetchingMore)) return;
   try {
     await ipc.leaseCancel(data.leaseId, data.run.queryId);
   } catch (e) {
@@ -294,10 +296,10 @@ export async function fetchMore(tabId: string): Promise<void> {
   if (!data?.leaseId || !run || !collector || !run.canFetchMore || run.fetchingMore) return;
   const last = collector.lastResult;
   if (!last?.model) return;
+  updateRun(tabId, run.id, { fetchingMore: true });
   const settings = await readSettings();
   collector.resume(last);
   last.model.markLoading();
-  updateRun(tabId, run.id, { fetchingMore: true });
   try {
     const result = await ipc.leaseFetchMore(
       data.leaseId,
@@ -315,7 +317,7 @@ export async function fetchMore(tabId: string): Promise<void> {
   } catch (e) {
     last.model.finish(true);
     updateRun(tabId, run.id, { fetchingMore: false });
-    toast(e);
+    if (toIpcError(e).kind !== 'cancelled') toast(e);
     await refreshState(tabId);
   }
 }
@@ -334,12 +336,30 @@ function dropPending(tabId: string): void {
 
 // -- transactions -------------------------------------------------------------------------------
 
+/**
+ * Run a lease command. `begin` may open the lease; commit, rollback and auto-commit use the
+ * lease the transaction lives on and never open a new one (a new connection has no transaction,
+ * so "committing" there would report a false success).
+ */
 async function leaseCall(
   tabId: string,
   sessionId: Uuid,
   call: (leaseId: Uuid) => Promise<LeaseState>,
+  mayOpen: boolean,
 ): Promise<LeaseState> {
-  const leaseId = await ensureLease(tabId, sessionId);
+  let leaseId: Uuid;
+  if (mayOpen) {
+    leaseId = await ensureLease(tabId, sessionId);
+  } else {
+    const data = getTabData(tabId);
+    if (!data?.leaseId || data.leaseState?.broken) {
+      throw {
+        kind: 'connection',
+        message: i18n.t('editor:tx.lostError'),
+      } satisfies IpcError;
+    }
+    leaseId = data.leaseId;
+  }
   try {
     const state = await call(leaseId);
     patchTabData(tabId, { leaseState: state });
@@ -356,7 +376,7 @@ export async function beginTransaction(
   options: TxOptions = {},
 ): Promise<void> {
   try {
-    await leaseCall(tabId, sessionId, (id) => ipc.leaseBegin(id, options));
+    await leaseCall(tabId, sessionId, (id) => ipc.leaseBegin(id, options), true);
     dropPending(tabId);
   } catch (e) {
     toast(e);
@@ -370,8 +390,11 @@ export async function endTransaction(
   how: 'commit' | 'rollback',
 ): Promise<boolean> {
   try {
-    await leaseCall(tabId, sessionId, (id) =>
-      how === 'commit' ? ipc.leaseCommit(id) : ipc.leaseRollback(id),
+    await leaseCall(
+      tabId,
+      sessionId,
+      (id) => (how === 'commit' ? ipc.leaseCommit(id) : ipc.leaseRollback(id)),
+      false,
     );
     dropPending(tabId);
     return true;
@@ -392,13 +415,13 @@ export async function setAutoCommit(
 ): Promise<'ok' | 'needsDecision' | 'failed'> {
   const data = getTabData(tabId);
   if (!data) return 'failed';
-  if (!data.leaseId || sessionId === null) {
+  if (!data.leaseId || sessionId === null || data.leaseState?.broken) {
     patchTabData(tabId, { autoCommit: on });
     return 'ok';
   }
   if (on && hasOpenTransaction(data)) return 'needsDecision';
   try {
-    await leaseCall(tabId, sessionId, (id) => ipc.leaseSetAutoCommit(id, on));
+    await leaseCall(tabId, sessionId, (id) => ipc.leaseSetAutoCommit(id, on), false);
     patchTabData(tabId, { autoCommit: on });
     dropPending(tabId);
     return 'ok';

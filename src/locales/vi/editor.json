@@ -49,6 +49,7 @@
     "errorAt": "Dòng {{line}}, cột {{column}}",
     "truncated": "Đang hiển thị {{formatted}} dòng đầu tiên.",
     "truncatedFinal": "Đang hiển thị {{formatted}} dòng; các dòng còn lại chưa được tải.",
+    "moreHidden": "+ {{count}} kết quả nữa (không hiển thị)",
     "loadMore": "Tải thêm",
     "cellViewer": "Trình xem ô"
   },
@@ -58,6 +59,7 @@
     "commit": "Commit",
     "rollback": "Rollback",
     "cancel": "Huỷ",
+    "lostError": "Kết nối đã mất nên transaction không còn (server đã rollback).",
     "dismiss": "Đóng",
     "lost": "Kết nối bị mất khi đang có transaction mở. Server đã rollback transaction đó.",
     "decideTitle": "Đang có transaction mở",
@@ -118,7 +120,8 @@
       "running": "Đang chạy"
     },
     "rows": "{{count}} dòng",
-    "reopen": "Bấm để chèn vào editor; bấm đúp để mở trong tab mới",
+    "reopen": "Bấm để chèn vào editor",
+    "openNew": "Mở trong tab mới",
     "delete": "Xoá mục này",
     "clear": "Xoá lịch sử",
     "clearTitle": "Xoá toàn bộ lịch sử?",
