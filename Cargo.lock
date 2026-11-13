@@ -1770,8 +1770,11 @@ name = "dbstudio-ssh"
 version = "0.1.0"
 dependencies = [
  "dbstudio-core",
+ "rand 0.10.3",
  "russh",
+ "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -157,18 +157,17 @@ async fn query_execute_passes_driver_errors_and_receiver_stops() {
             ..
         }
     ));
-    // Parameters need the real binder (package A): the scaffold says unsupported, nothing runs.
+    // Parameters are bound by the real binder before the driver runs.
     let mut with_params = exec_request("select :a");
     with_params.params = vec![dbstudio_core::ParamValue {
         name: ":a".into(),
         value: dbstudio_core::ParamInput::Null,
     }];
     let before = f.probe.executed.lock().unwrap().len();
-    let err = editor::execute_impl(&f.state, id, with_params, |_| true)
+    editor::execute_impl(&f.state, id, with_params, |_| true)
         .await
-        .unwrap_err();
-    assert_eq!(err.kind(), "unsupported");
-    assert_eq!(f.probe.executed.lock().unwrap().len(), before);
+        .unwrap();
+    assert_eq!(f.probe.executed.lock().unwrap().len(), before + 1);
     // A receiver that is gone stops the driver.
     let err = editor::execute_impl(&f.state, id, exec_request("select 1"), |_| false)
         .await
