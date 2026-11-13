@@ -9,9 +9,9 @@ afterEach(() => {
 });
 
 describe('StatusBarSlot', () => {
-  it('renders nothing for the placeholder jobs indicator', () => {
+  it('renders the jobs indicator button', () => {
     const { container } = render(<StatusBarSlot name="jobs" />);
-    expect(container).toBeEmptyDOMElement();
+    expect(container.querySelector('[data-testid="jobs-indicator"]')).not.toBeNull();
   });
 
   it('renders nothing without a registered renderer and the renderer when present', () => {

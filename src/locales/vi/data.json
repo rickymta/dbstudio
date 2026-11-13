@@ -166,5 +166,93 @@
     "reset": "Đặt lại bố cục",
     "pin": "Ghim trái",
     "unpin": "Bỏ ghim"
+  },
+  "edit": {
+    "toggle": "Sửa dữ liệu",
+    "addRow": "Thêm dòng",
+    "duplicateRow": "Nhân bản dòng",
+    "deleteRow": "Xoá dòng",
+    "undoDelete": "Bỏ xoá",
+    "preview": "Xem trước",
+    "apply": "Áp dụng",
+    "applying": "Đang áp dụng...",
+    "discard": "Bỏ thay đổi",
+    "pending": "{{count}} thay đổi đang chờ",
+    "pendingOne": "1 thay đổi đang chờ",
+    "noPending": "Không có thay đổi chờ",
+    "readOnly": "Chỉ đọc: {{reason}}",
+    "reason": {
+      "noUniqueKey": "bảng không có khoá chính hoặc index unique NOT NULL nên không phân biệt được các dòng",
+      "notATable": "chỉ sửa được bảng, không sửa được view hay đối tượng khác",
+      "readOnlyConnection": "kết nối ở chế độ chỉ đọc",
+      "unsupported": "driver không hỗ trợ sửa đối tượng này"
+    },
+    "editabilityError": "Không kiểm tra được bảng có sửa được không: {{message}}",
+    "generatedColumn": "Cột sinh tự động, không sửa được",
+    "default": "DEFAULT",
+    "setNull": "NULL",
+    "setNullTitle": "Đặt giá trị thành NULL",
+    "setDefault": "DEFAULT",
+    "setDefaultTitle": "Dùng giá trị mặc định của cột",
+    "inputLabel": "Giá trị của {{column}}",
+    "editor": {
+      "title": "Sửa {{column}}",
+      "nullLabel": "Đặt thành NULL",
+      "nullHint": "NULL và chuỗi rỗng là hai giá trị khác nhau.",
+      "save": "Lưu",
+      "binaryOnlyNull": "Không nhập được giá trị nhị phân tại đây. Bạn có thể đặt giá trị thành NULL.",
+      "valid": "Hợp lệ"
+    },
+    "error": {
+      "invalidNumber": "Không phải số hợp lệ",
+      "invalidJson": "Không phải JSON hợp lệ",
+      "invalidBool": "Nhập true hoặc false"
+    },
+    "bool": {
+      "true": "true",
+      "false": "false"
+    },
+    "marker": {
+      "inserted": "Dòng mới",
+      "deleted": "Đánh dấu xoá",
+      "updated": "Đã sửa"
+    },
+    "previewDialog": {
+      "title": "Thay đổi đang chờ",
+      "description": "Các câu lệnh này chạy trong một transaction, theo đúng thứ tự. Một câu lỗi thì không lưu gì cả.",
+      "loading": "Đang chuẩn bị câu lệnh...",
+      "empty": "Không có gì để áp dụng.",
+      "statement": "Câu lệnh {{n}}",
+      "failedAt": "Câu lệnh {{n}} lỗi: {{message}}",
+      "errorTitle": "Không chuẩn bị được câu lệnh",
+      "close": "Đóng",
+      "keyOrderNote": "Các UPDATE chạy lần lượt theo thứ tự này. Đổi giá trị khoá (ví dụ hoán đổi giữa hai dòng) có thể vướng ràng buộc unique; hãy lưu các thay đổi đó thành từng bước riêng."
+    },
+    "failure": "Thay đổi {{n}} lỗi và chưa lưu gì: {{message}}",
+    "applied": "Đã lưu {{count}} thay đổi",
+    "appliedOne": "Đã lưu 1 thay đổi",
+    "applyError": "Không lưu được thay đổi: {{message}}",
+    "nonAtomic": "Kết nối này không áp dụng thay đổi theo kiểu tất cả hoặc không gì cả.",
+    "discardConfirm": "Bỏ toàn bộ thay đổi đang chờ của bảng này?",
+    "closeConfirm": "Bảng này có thay đổi chưa lưu. Đóng và mất các thay đổi đó?",
+    "copy": {
+      "row": "Sao chép dòng dạng",
+      "all": "Sao chép mọi dòng đã tải dạng",
+      "done": "Đã sao chép",
+      "noRow": "Hãy chọn một dòng trước",
+      "tooMany": "Quá nhiều dòng để sao chép một lần ({{count}}). Hãy lọc bớt.",
+      "error": "Không sao chép được: {{message}}",
+      "format": {
+        "tsv": "TSV",
+        "csv": "CSV",
+        "json": "JSON",
+        "markdown": "Markdown",
+        "in": "Danh sách IN (...)",
+        "insert": "SQL INSERT"
+      }
+    }
+  },
+  "header": {
+    "path": "Đường dẫn đối tượng"
   }
 }

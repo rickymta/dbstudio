@@ -670,6 +670,9 @@ pub struct IndexInfo {
     pub name: String,
     /// Column / expression list, with prefix lengths and `DESC` markers.
     pub columns: Vec<String>,
+    /// The same key parts as plain names (no quoting, prefix length or `DESC`); an expression
+    /// key part is `(expr)`. Prefix lengths and sort order live only in `columns` / the DDL.
+    pub names: Vec<String>,
     /// Enforces uniqueness.
     pub unique: bool,
     /// Primary key.
@@ -699,12 +702,17 @@ pub(crate) async fn fetch_indexes(
         let Some(name) = cell_named(r, "Key_name") else {
             continue;
         };
-        let col = cell_named(r, "Expression")
+        let expr = cell_named(r, "Expression")
             .filter(|e| !e.is_empty())
-            .map(|e| format!("({e})"))
-            .or_else(|| cell_named(r, "Column_name").map(|c| quote_ident(&c)))
-            .unwrap_or_default();
-        let mut col = col;
+            .map(|e| format!("({e})"));
+        let (plain, mut col) = match expr {
+            Some(e) => (e.clone(), e),
+            None => {
+                let c = cell_named(r, "Column_name").unwrap_or_default();
+                let quoted = quote_ident(&c);
+                (c, quoted)
+            }
+        };
         if let Some(sub) = cell_named(r, "Sub_part").filter(|s| !s.is_empty()) {
             col = format!("{col}({sub})");
         }
@@ -719,11 +727,13 @@ pub(crate) async fn fetch_indexes(
                 comment: cell_named(r, "Index_comment").unwrap_or_default(),
                 visible: cell_named(r, "Visible").is_none_or(|v| !v.eq_ignore_ascii_case("NO")),
                 columns: Vec::new(),
+                names: Vec::new(),
                 name,
             });
         }
         if let Some(last) = out.last_mut() {
             last.columns.push(col);
+            last.names.push(plain);
         }
     }
     Ok(out)
@@ -963,9 +973,10 @@ pub async fn table_details(
             .into_iter()
             .map(|i| IndexDetail {
                 definition: Some(index_ddl(&db, &table, &i).trim_end_matches(';').to_string()),
-                columns: i.columns.clone(),
+                columns: i.names.clone(),
                 unique: i.unique,
                 primary: i.primary,
+                partial: false,
                 method: non_empty(Some(i.method.clone())),
                 name: i.name,
             })
@@ -1069,6 +1080,7 @@ mod tests {
         IndexInfo {
             name: name.into(),
             columns: vec!["`a`".into(), "`b c`(10)".into()],
+            names: vec!["a".into(), "b c".into()],
             unique,
             primary,
             method: method.into(),

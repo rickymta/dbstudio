@@ -6,6 +6,7 @@ import i18n from '@/lib/i18n';
 import { ipc } from '@/lib/ipc';
 import { resetMockConnections, resetMockEvents, resetMockPhase2 } from '@/lib/mock';
 import { MOCK_PASSPHRASE } from '@/lib/mock/backup';
+import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
 import { RestoreDialog } from './RestoreDialog';
 
 beforeEach(async () => {
@@ -22,6 +23,7 @@ async function setup(file: string) {
   render(
     <Providers>
       <RestoreDialog open onOpenChange={() => {}} />
+      <ConfirmDestructiveHost />
     </Providers>,
   );
   await user.click(await screen.findByRole('button', { name: /Choose \.dbsbak file/ }));
@@ -67,15 +69,17 @@ describe('RestoreDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Unlock' }));
     const header = await screen.findByTestId('restore-header');
     expect(within(header).getByText('shop')).toBeInTheDocument();
-    expect(screen.getByLabelText('shop.customers')).toBeChecked();
+    expect(screen.getByText('shop.customers')).toBeInTheDocument();
     expect(screen.queryByText(/Wrong passphrase/)).toBeNull();
   });
 
-  it('restores a subset of objects into a development database', async () => {
+  it('restores an integrated backup as a whole into a development database', async () => {
     const start = vi.spyOn(ipc, 'restoreStart');
     const user = await setup('/backups/shop.dbsbak');
     expect(await screen.findByTestId('restore-header')).toBeInTheDocument();
-    await user.click(screen.getByLabelText('shop.orders'));
+    // Integrated backups list their objects but cannot be restored selectively.
+    expect(screen.queryByLabelText('shop.orders')).toBeNull();
+    expect(screen.getByText('shop.orders')).toBeInTheDocument();
     await pickTarget(user, 'PostgreSQL dev');
     await user.click(screen.getByRole('button', { name: 'Restore' }));
     await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
@@ -83,8 +87,9 @@ describe('RestoreDialog', () => {
       file: '/backups/shop.dbsbak',
       targetConnectionId: '00000000-0000-4000-8000-0000000000b1',
       targetDatabase: 'shop',
-      objects: ['shop.customers', 'shop.order_items', 'shop.v_revenue'],
     });
+    // An integrated backup is restored as a whole: no object subset is sent.
+    expect(start.mock.calls[0]![0]).not.toHaveProperty('objects');
     expect(start.mock.calls[0]![2]).toBeNull();
     expect(await screen.findByText('Succeeded', undefined, { timeout: 3000 })).toBeInTheDocument();
   });
@@ -98,11 +103,10 @@ describe('RestoreDialog', () => {
     expect(screen.getByTestId('restore-production')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Restore' }));
 
-    const dialog = await screen.findByRole('dialog', { name: 'Confirm restore' });
-    const confirm = within(dialog).getByRole('button', { name: 'Restore' });
+    const dialog = await screen.findByRole('dialog', { name: 'Confirm destructive statements' });
+    const confirm = within(dialog).getByRole('button', { name: 'Run anyway' });
     expect(confirm).toBeDisabled();
-    const text = within(dialog).getByText('shop', { selector: 'code' }).textContent!;
-    await user.type(within(dialog).getByLabelText('Confirmation text'), text);
+    await user.type(within(dialog).getByRole('textbox'), 'shop');
     await user.click(confirm);
 
     await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
@@ -110,7 +114,7 @@ describe('RestoreDialog', () => {
     expect(start.mock.calls[1]![2]).toMatchObject({ typed: 'shop' });
     expect(start.mock.calls[1]![2]!.token).toBeTruthy();
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Confirm restore' })).toBeNull(),
+      expect(screen.queryByRole('dialog', { name: 'Confirm destructive statements' })).toBeNull(),
     );
   });
 

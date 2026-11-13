@@ -1,0 +1,72 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "876.82"
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "c",
+          "access_type": "range",
+          "possible_keys": [
+            "PRIMARY"
+          ],
+          "key": "PRIMARY",
+          "used_key_parts": [
+            "id"
+          ],
+          "key_length": "4",
+          "rows_examined_per_scan": 49,
+          "rows_produced_per_join": 49,
+          "filtered": "100.00",
+          "cost_info": {
+            "read_cost": "5.17",
+            "eval_cost": "4.90",
+            "prefix_cost": "10.07",
+            "data_read_per_join": "8K"
+          },
+          "used_columns": [
+            "id",
+            "name",
+            "country"
+          ],
+          "attached_condition": "(`dbstudio`.`c`.`id` < 50)"
+        }
+      },
+      {
+        "table": {
+          "table_name": "o",
+          "access_type": "ref",
+          "possible_keys": [
+            "customer_id"
+          ],
+          "key": "customer_id",
+          "used_key_parts": [
+            "customer_id"
+          ],
+          "key_length": "5",
+          "ref": [
+            "dbstudio.c.id"
+          ],
+          "rows_examined_per_scan": 50,
+          "rows_produced_per_join": 2476,
+          "filtered": "100.00",
+          "cost_info": {
+            "read_cost": "619.11",
+            "eval_cost": "247.64",
+            "prefix_cost": "876.82",
+            "data_read_per_join": "154K"
+          },
+          "used_columns": [
+            "id",
+            "customer_id",
+            "status",
+            "amount",
+            "created"
+          ]
+        }
+      }
+    ]
+  }
+}

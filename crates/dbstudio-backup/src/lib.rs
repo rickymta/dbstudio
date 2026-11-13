@@ -22,7 +22,6 @@ pub mod logical;
 pub mod native;
 pub mod runner;
 pub mod scheduler;
-pub mod sqlscan;
 
 pub use chrono;
 pub use native::detect_tools;

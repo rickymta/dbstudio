@@ -1,0 +1,3 @@
+-> Filter: (plan_fx_orders.`status` = 'void')  (cost=10099 rows=10027)
+    -> Table scan on plan_fx_orders  (cost=10099 rows=100270)
+

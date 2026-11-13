@@ -11,6 +11,7 @@ authors.workspace = true
 dbstudio-core.workspace = true
 dbstudio-export.workspace = true
 dbstudio-sql.workspace = true
+dbstudio-ssh.workspace = true
 dbstudio-store.workspace = true
 aes-gcm.workspace = true
 argon2.workspace = true

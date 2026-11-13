@@ -66,7 +66,7 @@ describe('backup mock', () => {
 
   it('inspects encrypted files with a passphrase and throws integrity when it is wrong', async () => {
     const locked = await ipc.backupInspect('/b/x-enc.dbsbak', null);
-    expect(locked).toMatchObject({ encrypted: true, header: null });
+    expect(locked).toMatchObject({ encrypted: true, preamble: null });
     await expect(ipc.backupInspect('/b/x-enc.dbsbak', 'nope')).rejects.toMatchObject({
       kind: 'integrity',
     });

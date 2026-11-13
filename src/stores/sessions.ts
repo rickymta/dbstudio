@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { ipc } from '@/lib/ipc';
 import type { IpcError, SessionInfo, Uuid } from '@/lib/types';
+import { getTabGuard } from './tabGuard';
 import { useTabsStore } from './tabs';
 
 interface SessionsState {
@@ -12,6 +13,12 @@ interface SessionsState {
   open: (connectionId: Uuid, password?: string | null) => Promise<SessionInfo>;
   /** Close the session of a connection and every tab that belongs to it. */
   close: (connectionId: Uuid) => Promise<void>;
+  /**
+   * Like `close`, but first asks the tabs of the session for permission (an open transaction in
+   * an editor tab, pending edits in a data tab). Resolves to `false` when one of them vetoes:
+   * nothing is closed then.
+   */
+  requestClose: (connectionId: Uuid) => Promise<boolean>;
 }
 
 function omit<V>(record: Record<string, V>, key: string): Record<string, V> {
@@ -53,6 +60,21 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
       });
     inFlight.set(connectionId, promise);
     return promise;
+  },
+  requestClose: async (connectionId) => {
+    const info = get().sessionsByConnection[connectionId];
+    if (info) {
+      // One at a time, so the user answers one dialog per tab; the first "no" stops everything.
+      const owned = useTabsStore
+        .getState()
+        .tabs.filter((t) => t.payload?.sessionId === info.sessionId);
+      for (const tab of owned) {
+        const guard = getTabGuard(tab.id);
+        if (guard && !(await guard())) return false;
+      }
+    }
+    await get().close(connectionId);
+    return true;
   },
   close: async (connectionId) => {
     const info = get().sessionsByConnection[connectionId];

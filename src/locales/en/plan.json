@@ -2,8 +2,146 @@
   "tab": {
     "title": "Query plan"
   },
-  "placeholder": {
-    "title": "Query plan",
-    "description": "Query plan analysis is not available yet."
+  "toolbar": {
+    "analyze": "Run with ANALYZE",
+    "estimate": "Estimate only",
+    "rerun": "Run again",
+    "save": "Save plan file",
+    "open": "Open plan file",
+    "copyRaw": "Copy raw plan",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fit": "Fit to view",
+    "expandAll": "Expand all",
+    "collapseAll": "Collapse all",
+    "saved": "Plan saved to {{path}}",
+    "copied": "Plan copied to the clipboard",
+    "exportSvg": "Export diagram as SVG",
+    "exportPng": "Export diagram as PNG",
+    "exported": "Diagram saved to {{path}}",
+    "cancel": "Cancel"
+  },
+  "views": {
+    "label": "Plan views",
+    "graph": "Diagram",
+    "table": "Table",
+    "raw": "Raw"
+  },
+  "status": {
+    "loading": "Explaining the statement...",
+    "failed": "The statement could not be explained",
+    "parseError": "The plan could not be read: {{message}}. The raw plan is still available.",
+    "noPlan": "No plan loaded",
+    "analyzed": "Actual statistics",
+    "estimated": "Estimates only",
+    "rolledBack": "Executed and rolled back",
+    "hotPath": "Hot path",
+    "format": "Format",
+    "capturedAt": "Captured {{time}}",
+    "server": "Server {{version}}",
+    "layoutFailed": "The diagram could not be laid out: {{message}}"
+  },
+  "summary": {
+    "totalCost": "Total cost",
+    "planning": "Planning",
+    "execution": "Execution",
+    "rows": "Rows",
+    "nodes": "Operators",
+    "warnings": "Warnings: {{count}}",
+    "noWarnings": "No warnings"
+  },
+  "columns": {
+    "operation": "Operator",
+    "object": "Object",
+    "estRows": "Est. rows",
+    "actualRows": "Actual rows",
+    "loops": "Loops",
+    "selfTime": "Self time",
+    "time": "Time",
+    "cost": "Cost",
+    "share": "Share",
+    "warnings": "Warnings"
+  },
+  "node": {
+    "title": "Operator",
+    "none": "Select an operator to see its details.",
+    "object": "Object",
+    "index": "Index",
+    "condition": "Condition",
+    "estCost": "Est. cost",
+    "startupCost": "Startup cost",
+    "selfCost": "Self cost",
+    "estRows": "Est. rows",
+    "actualRows": "Actual rows per loop",
+    "actualRowsTotal": "Actual rows in total",
+    "time": "Time (inclusive)",
+    "selfTime": "Self time",
+    "loops": "Loops",
+    "attributes": "Attributes",
+    "warnings": "Warnings",
+    "onHotPath": "On the hot path",
+    "copy": "Copy details",
+    "expand": "Expand children",
+    "collapse": "Collapse children"
+  },
+  "warning": {
+    "fullScanLargeTable": "Full scan reading about {{rows}} rows",
+    "misestimateUnder": "The planner expected {{estimated}} rows but {{actual}} came out ({{factor}}x more)",
+    "misestimateOver": "The planner expected {{estimated}} rows but only {{actual}} came out ({{factor}}x fewer)",
+    "spillToDisk": "Spilled to disk ({{detail}})",
+    "nestedLoopManyRows": "The inner side runs {{loops}} times"
+  },
+  "severity": {
+    "info": "Info",
+    "warning": "Warning",
+    "critical": "Critical"
+  },
+  "format": {
+    "postgresJson": "PostgreSQL JSON",
+    "mySqlJson": "MySQL JSON",
+    "mySqlJsonV2": "MySQL JSON v2",
+    "mySqlTree": "MySQL tree",
+    "mariaDbJson": "MariaDB JSON",
+    "msSqlShowplanXml": "SQL Server showplan XML",
+    "oraclePlanRows": "Oracle plan rows",
+    "mongoExplain": "MongoDB explain"
+  },
+  "analyzeConfirm": {
+    "title": "Run the statement with ANALYZE?",
+    "read": "ANALYZE executes the statement to measure it. It runs inside a transaction that is rolled back.",
+    "write": "This statement changes data. ANALYZE executes it inside a transaction that is rolled back, so the data stays as it is, but effects outside the transaction (sequences, triggers that reach other systems) cannot be undone.",
+    "confirm": "Run with ANALYZE"
+  },
+  "errors": {
+    "unsupported": "This server cannot do that: {{what}}",
+    "analyzeWrites": "EXPLAIN ANALYZE of data-changing statements is not supported by this server.",
+    "analyzeDdl": "Schema-changing statements cannot be analyzed.",
+    "analyzeVersion": "This server version has no EXPLAIN ANALYZE."
+  },
+  "file": {
+    "openFailed": "Could not open the plan file: {{message}}"
+  },
+  "compare": {
+    "title": "Compare plans",
+    "description": "Operators are matched by type and object. The biggest changes come first.",
+    "none": "Open another plan to compare with this one.",
+    "with": "Compare with",
+    "current": "This plan",
+    "other": "Other plan",
+    "change": "Change",
+    "status": "Status",
+    "both": "In both",
+    "onlyCurrent": "Only in this plan",
+    "onlyOther": "Only in the other plan",
+    "close": "Close",
+    "open": "Compare plans",
+    "totals": {
+      "totalCost": "Total cost",
+      "planningTimeMs": "Planning time",
+      "executionTimeMs": "Execution time",
+      "rows": "Rows",
+      "nodeCount": "Operators",
+      "warnings": "Warnings"
+    }
   }
 }

@@ -9,6 +9,9 @@ import { create } from 'zustand';
 import type { ObjectPath, Uuid } from '@/lib/types';
 import { useTabsStore } from '@/stores/tabs';
 import { GridModel } from './gridModel';
+import { patchEditSession, useEditSessionStore } from './edit/editSession';
+import './edit/pendingGuard';
+import { usePendingChanges } from './edit/pendingChanges';
 import { EMPTY_LAYOUT, type ColumnLayout } from './columnLayout';
 import { emptyDraft, type FilterDraft } from './request';
 
@@ -90,7 +93,11 @@ export function getGridModel(tabId: string, sessionId: Uuid, table: ObjectPath):
       sessionId,
       table,
       // Row indexes mean other records after a reload: drop the selection.
-      onReset: () => useDataUiStore.getState().patch(tabId, { selection: null }),
+      onReset: () => {
+        useDataUiStore.getState().patch(tabId, { selection: null });
+        // An open cell editor points at a row index that no longer means the same row.
+        patchEditSession(tabId, { editing: null });
+      },
     });
     models.set(tabId, m);
   }
@@ -115,12 +122,16 @@ export function disposeTabData(tabId: string): void {
   models.delete(tabId);
   scrollPositions.delete(tabId);
   useDataUiStore.getState().drop(tabId);
+  usePendingChanges.getState().discard(tabId);
+  useEditSessionStore.getState().drop(tabId);
 }
 
 /** Test helper: forget all tabs. */
 export function resetDataStores(): void {
   for (const id of [...models.keys()]) disposeTabData(id);
   useDataUiStore.setState({ byTab: {} });
+  usePendingChanges.setState({ byTab: {} });
+  useEditSessionStore.setState({ byTab: {} });
 }
 
 // Clean up when a tab disappears from the tabs store.

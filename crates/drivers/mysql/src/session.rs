@@ -103,7 +103,7 @@ impl Ctl {
     }
 
     /// Turn a statement result into the final one, honouring cancel / timeout flags.
-    fn finalize<T>(&self, res: Result<T>) -> Result<T> {
+    pub(crate) fn finalize<T>(&self, res: Result<T>) -> Result<T> {
         if self.timed_out.load(Ordering::SeqCst) {
             Err(Error::Timeout)
         } else if self.cancelled.load(Ordering::SeqCst) {
@@ -148,16 +148,16 @@ impl std::fmt::Debug for Inner {
 }
 
 /// Guard of a registered statement; see [`Inner::begin`].
-struct QueryGuard {
+pub(crate) struct QueryGuard {
     inner: Arc<Inner>,
     id: Uuid,
-    ctl: Arc<Ctl>,
+    pub(crate) ctl: Arc<Ctl>,
     timer: Option<JoinHandle<()>>,
 }
 
 impl QueryGuard {
     /// Mark the statement finished (waiting for any in-flight `KILL`), unregister it.
-    async fn end(self) -> Arc<Ctl> {
+    pub(crate) async fn end(self) -> Arc<Ctl> {
         self.ctl.finish().await;
         if let Some(t) = &self.timer {
             t.abort();
@@ -286,7 +286,7 @@ impl Inner {
 
     /// Acquire a connection positioned in `database` (when given) or in the configured default
     /// database (repairing a connection left in another database by an earlier request).
-    async fn acquire_in(&self, database: Option<&str>) -> Result<Conn> {
+    pub(crate) async fn acquire_in(&self, database: Option<&str>) -> Result<Conn> {
         let mut attempts = 0;
         loop {
             let mut conn = self.acquire().await?;
@@ -352,7 +352,12 @@ impl Inner {
         }
     }
 
-    fn begin(self: &Arc<Self>, conn_id: u32, id: Uuid, timeout_ms: Option<u64>) -> QueryGuard {
+    pub(crate) fn begin(
+        self: &Arc<Self>,
+        conn_id: u32,
+        id: Uuid,
+        timeout_ms: Option<u64>,
+    ) -> QueryGuard {
         let ctl = Arc::new(Ctl::new(conn_id));
         self.running
             .lock()

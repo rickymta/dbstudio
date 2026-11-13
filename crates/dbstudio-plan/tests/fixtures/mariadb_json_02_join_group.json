@@ -1,0 +1,29 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "filesort": {
+      "sort_key": "count(0) desc",
+      "temporary_table": {
+        "table": {
+          "table_name": "c",
+          "access_type": "ALL",
+          "possible_keys": ["PRIMARY"],
+          "rows": 2000,
+          "filtered": 100
+        },
+        "table": {
+          "table_name": "o",
+          "access_type": "ref",
+          "possible_keys": ["customer_id", "created"],
+          "key": "customer_id",
+          "key_length": "5",
+          "used_key_parts": ["customer_id"],
+          "ref": ["dbstudio.c.id"],
+          "rows": 25,
+          "filtered": 50,
+          "attached_condition": "o.created > '2024-06-01'"
+        }
+      }
+    }
+  }
+}

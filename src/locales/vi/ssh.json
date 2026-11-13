@@ -1,0 +1,51 @@
+{
+  "section": "SSH tunnel",
+  "enable": "Kết nối qua SSH tunnel",
+  "enableHint": "Cơ sở dữ liệu được truy cập từ máy chủ SSH (bastion) thay vì kết nối trực tiếp.",
+  "host": "Máy chủ SSH",
+  "port": "Cổng SSH",
+  "username": "Người dùng SSH",
+  "auth": {
+    "label": "Xác thực",
+    "password": "Mật khẩu",
+    "privateKey": "Khoá riêng (private key)",
+    "agent": "SSH agent"
+  },
+  "password": "Mật khẩu SSH",
+  "passphrase": "Passphrase của khoá",
+  "secretKeep": "Đã lưu trong keychain",
+  "secretRemoved": "Sẽ bị xoá",
+  "clearSecret": "Xoá bí mật đã lưu",
+  "undoClearSecret": "Giữ bí mật đã lưu",
+  "showSecret": "Hiện bí mật",
+  "hideSecret": "Ẩn bí mật",
+  "keyPath": "Tệp khoá riêng",
+  "browseKey": "Chọn tệp khoá riêng",
+  "hasPassphrase": "Khoá được bảo vệ bằng passphrase",
+  "agentHint": "Dùng các khoá của SSH agent đang chạy (SSH_AUTH_SOCK, hoặc pipe OpenSSH trên Windows).",
+  "keepalive": "Keep-alive (giây)",
+  "keepaliveHint": "Để trống để tắt.",
+  "testNote": "Kiểm tra dùng bí mật SSH đã lưu; hãy lưu kết nối trước nếu muốn thử mật khẩu SSH mới.",
+  "validation": {
+    "hostRequired": "Nhập máy chủ SSH.",
+    "portRange": "Cổng SSH phải từ 1 đến 65535.",
+    "usernameRequired": "Nhập người dùng SSH.",
+    "keyRequired": "Chọn tệp khoá riêng.",
+    "keepalivePositive": "Nhập số giây nguyên lớn hơn 0."
+  },
+  "hostKey": {
+    "titleNew": "Tin cậy máy chủ SSH này?",
+    "titleChanged": "Khoá máy chủ SSH đã thay đổi",
+    "descriptionNew": "{{host}}:{{port}} chưa từng được thấy. Hãy đối chiếu vân tay với quản trị viên máy chủ trước khi tin cậy.",
+    "descriptionChanged": "Khoá mà {{host}}:{{port}} trình ra khác với khoá bạn đã tin cậy trước đó. Có thể máy chủ đã được cài lại, hoặc có người đang chặn kết nối.",
+    "warningChanged": "Chỉ tiếp tục nếu bạn biết khoá của máy chủ này đã thay đổi.",
+    "typeHost": "Gõ {{host}} để xác nhận",
+    "server": "Máy chủ",
+    "keyType": "Loại khoá",
+    "fingerprint": "Vân tay (SHA-256)",
+    "trust": "Tin cậy và tiếp tục",
+    "trustChanged": "Thay khoá đã tin cậy",
+    "cancel": "Huỷ",
+    "failed": "Không lưu được khoá: {{message}}"
+  }
+}

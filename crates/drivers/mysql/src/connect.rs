@@ -4,6 +4,11 @@
 //! man-in-the-middle attacks; only `VerifyCa`/`VerifyFull` authenticate the server. Without a CA
 //! file the bundled webpki-roots set is used, not the OS store. See the crate docs for the
 //! `VerifyCa` host-name limitation.
+//!
+//! Limitation (R6): `mysql_async` always validates the certificate against the host it connects
+//! to and has no override for the verified name, so `tls.server_name` is not honoured. Behind an
+//! SSH tunnel the host is `127.0.0.1`; `VerifyFull` then only succeeds when the certificate lists
+//! that address, otherwise use `VerifyCa` (chain only) or `Require`.
 
 use std::path::PathBuf;
 use std::time::Duration;

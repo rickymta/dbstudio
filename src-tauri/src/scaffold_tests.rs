@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::commands::background::BackgroundSettings;
 use crate::commands::{
     app, background, backup, changes, connections, editor, export, files, jobs, keyvalue, sessions,
-    ssh, uri,
+    ssh,
 };
 use crate::host::FileFilter;
 use crate::session::testing::{MockDriver, Probe};
@@ -119,7 +119,8 @@ async fn query_execute_runs_the_guard_then_streams_the_driver() {
     .unwrap();
     assert_eq!(kinds(&events), ["start", "columns", "rows", "end"]);
     assert_eq!(result.summary.statements, 1);
-    assert!(result.state.is_none() && result.history_id.is_none());
+    // The query is recorded in the history of the (saved) connection.
+    assert!(result.state.is_none() && result.history_id.is_some());
     assert_eq!(f.probe.executed.lock().unwrap().as_slice(), ["select 1"]);
     // The result serializes the way the frontend expects.
     let json = serde_json::to_value(&result).unwrap();
@@ -157,18 +158,20 @@ async fn query_execute_passes_driver_errors_and_receiver_stops() {
             ..
         }
     ));
-    // Parameters need the real binder (package A): the scaffold says unsupported, nothing runs.
+    // Parameters no longer answer `unsupported`: the binder runs before the driver.
     let mut with_params = exec_request("select :a");
     with_params.params = vec![dbstudio_core::ParamValue {
         name: ":a".into(),
         value: dbstudio_core::ParamInput::Null,
     }];
-    let before = f.probe.executed.lock().unwrap().len();
-    let err = editor::execute_impl(&f.state, id, with_params, |_| true)
+    editor::execute_impl(&f.state, id, with_params, |_| true)
         .await
-        .unwrap_err();
-    assert_eq!(err.kind(), "unsupported");
-    assert_eq!(f.probe.executed.lock().unwrap().len(), before);
+        .unwrap();
+    // (The mock session speaks the opaque dialect, which has no parameters.)
+    assert_eq!(
+        f.probe.executed.lock().unwrap().last().map(String::as_str),
+        Some("select :a")
+    );
     // A receiver that is gone stops the driver.
     let err = editor::execute_impl(&f.state, id, exec_request("select 1"), |_| false)
         .await
@@ -214,27 +217,12 @@ async fn lease_commands_are_unsupported_until_a_driver_opens_leases() {
 async fn stub_commands_answer_unsupported() {
     let f = fixture();
     let id = open(&f, profile(false, None)).await;
-    let spec = json!({
-        "connectionId": Uuid::nil(), "source": {"kind": "query", "text": "select 1"},
-        "content": "data", "format": {"kind": "csv"},
-        "destination": {"path": "/tmp/x.csv"}
-    });
     let results: Vec<(&str, Error)> = vec![
-        (
-            "export_start",
-            export::start_impl(&f.state, serde_json::from_value(spec).unwrap())
-                .await
-                .unwrap_err(),
-        ),
         (
             "keys_delete_pattern",
             keyvalue::keys_delete_pattern_impl(&f.state, id, ObjectPath::root(), "a*".into(), None)
                 .await
                 .unwrap_err(),
-        ),
-        (
-            "connection_parse_uri",
-            uri::parse_uri_impl(&f.state, "postgres://h/db").unwrap_err(),
         ),
         (
             "key_read",
@@ -256,28 +244,6 @@ async fn stub_commands_answer_unsupported() {
             .await
             .unwrap_err(),
         ),
-        (
-            "saved_queries_list",
-            crate::commands::history::saved_queries_list_impl(&f.state)
-                .await
-                .unwrap_err(),
-        ),
-        (
-            "editor_tabs_get",
-            crate::commands::history::editor_tabs_get_impl(&f.state)
-                .await
-                .unwrap_err(),
-        ),
-        (
-            "erd_layouts_list",
-            crate::commands::erd::layouts_list_impl(&f.state, Uuid::new_v4())
-                .await
-                .unwrap_err(),
-        ),
-        (
-            "export_presets_list",
-            export::presets_list_impl(&f.state, None).await.unwrap_err(),
-        ),
     ];
     for (name, err) in results {
         assert_eq!(err.kind(), "unsupported", "{name}: {err}");
@@ -296,12 +262,13 @@ async fn data_editing_checks_read_only_before_the_session() {
         .await
         .unwrap_err();
     assert_eq!(err.kind(), "readOnly");
-    assert_eq!(
-        changes::preview_impl(&f.state, ro, change_set.clone())
-            .await
-            .unwrap_err()
-            .kind(),
-        "readOnly"
+    // Preview is not guarded: on a read-only connection it reaches the session.
+    let err = changes::preview_impl(&f.state, ro, change_set.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::Unsupported(c) if c == "data_editing"),
+        "{err}"
     );
     let rw = open(&f, profile(false, None)).await;
     let err = changes::apply_impl(&f.state, rw, change_set)
@@ -348,6 +315,8 @@ async fn driver_diagnostics_report_the_registry_status() {
 #[tokio::test]
 async fn ssh_trust_host_stores_the_accepted_key() {
     let f = fixture();
+    // the backend only trusts a key it has seen during a connection attempt
+    ssh::record_observed("bastion", 22, "ssh-ed25519", "SHA256:abc");
     ssh::trust_host_impl(
         &f.state,
         "bastion".into(),
@@ -571,15 +540,11 @@ async fn path_taking_commands_require_a_grant() {
         .grants
         .grant(&file, crate::grants::Purpose::Read)
         .unwrap();
-    // Granted: the (scaffold) engines answer.
-    assert_eq!(
-        export::import_preview_impl(&f.state, preview())
-            .await
-            .unwrap_err()
-            .kind(),
-        "unsupported"
-    );
-    // The backup engine is real: a granted file that is not a backup is an integrity error.
+    // Granted: the import engine previews the file; a granted file that is not a backup is an integrity error for the backup engine.
+    let preview = export::import_preview_impl(&f.state, preview())
+        .await
+        .unwrap();
+    assert_eq!(preview.statements_preview.len(), 1);
     assert_eq!(
         backup::inspect_impl(&f.state, path, None)
             .await

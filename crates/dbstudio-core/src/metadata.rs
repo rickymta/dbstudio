@@ -56,7 +56,8 @@ pub struct ColumnDetail {
 pub struct IndexDetail {
     /// Index name.
     pub name: String,
-    /// Indexed columns (or expressions) in order.
+    /// Indexed column names in order (plain names, no quoting, prefix lengths or sort markers).
+    /// An expression key part is rendered as `(expr)`.
     pub columns: Vec<String>,
     /// Enforces uniqueness.
     pub unique: bool,
@@ -66,6 +67,9 @@ pub struct IndexDetail {
     pub method: Option<String>,
     /// Full `CREATE INDEX` definition when available.
     pub definition: Option<String>,
+    /// Partial index (has a predicate): covers only some rows, so it can never identify a row.
+    #[serde(default)]
+    pub partial: bool,
 }
 
 /// A foreign key constraint.
@@ -114,6 +118,7 @@ mod tests {
                 primary: true,
                 method: Some("btree".into()),
                 definition: None,
+                partial: false,
             }],
             foreign_keys: vec![ForeignKeyDetail {
                 name: "fk".into(),

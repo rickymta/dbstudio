@@ -213,14 +213,16 @@ fn primary_key(d: &TableDetails) -> Vec<String> {
         .collect()
 }
 
-fn key_columns(d: &TableDetails) -> Vec<String> {
+/// Columns that identify a row: the primary key, else the first non-partial unique index made
+/// only of plain NOT NULL columns (expression key parts never match a column name).
+pub fn key_columns(d: &TableDetails) -> Vec<String> {
     let pk = primary_key(d);
     if !pk.is_empty() {
         return pk;
     }
     d.indexes
         .iter()
-        .filter(|i| i.unique && !i.primary && !i.columns.is_empty())
+        .filter(|i| i.unique && !i.primary && !i.partial && !i.columns.is_empty())
         .find(|i| {
             i.columns.iter().all(|name| {
                 d.columns
@@ -438,6 +440,7 @@ mod tests {
             primary,
             method: None,
             definition: None,
+            partial: false,
         }
     }
 
@@ -716,6 +719,28 @@ mod tests {
         assert!(!e.editable);
         assert_eq!(e.reason, Some(NotEditableReason::NoUniqueKey));
         assert!(e.key_columns.is_empty());
+    }
+
+    #[tokio::test]
+    async fn editability_ignores_partial_and_expression_indexes() {
+        let mut m = Mock::default();
+        let mut partial = idx("p_a", &["a"], true, false);
+        partial.partial = true;
+        m.details.insert(
+            "p".into(),
+            details(
+                "p",
+                vec![col("a", false, true, None), col("b", false, false, None)],
+                vec![
+                    partial,
+                    idx("p_expr", &["(lower(b))"], true, false),
+                    idx("p_b", &["b"], true, false),
+                ],
+            ),
+        );
+        let e = editability_from_details(&m, &tpath("p")).await.unwrap();
+        assert!(e.editable);
+        assert_eq!(e.key_columns, vec!["b"]);
     }
 
     #[tokio::test]

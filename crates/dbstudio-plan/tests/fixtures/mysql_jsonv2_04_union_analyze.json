@@ -1,0 +1,106 @@
+{
+  "query": "/* select#1 */ select `dbstudio`.`plan_fx_orders`.`id` AS `id` from `dbstudio`.`plan_fx_orders` where (`dbstudio`.`plan_fx_orders`.`id` < 10) union all /* select#2 */ select `dbstudio`.`plan_fx_customers`.`id` AS `id` from `dbstudio`.`plan_fx_customers` where (`dbstudio`.`plan_fx_customers`.`id` < 10)",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "ranges": [
+                "(id < 10)"
+              ],
+              "covering": true,
+              "operation": "Covering index range scan on plan_fx_orders using PRIMARY over (id < 10)",
+              "index_name": "PRIMARY",
+              "table_name": "plan_fx_orders",
+              "access_type": "index",
+              "actual_rows": 9.0,
+              "schema_name": "dbstudio",
+              "actual_loops": 1,
+              "used_columns": [
+                "id"
+              ],
+              "estimated_rows": 9.0,
+              "index_access_type": "index_range_scan",
+              "actual_last_row_ms": 0.011667,
+              "actual_first_row_ms": 0.010416,
+              "estimated_total_cost": 2.0626361130254995
+            }
+          ],
+          "condition": "(plan_fx_orders.id < 10)",
+          "operation": "Filter: (plan_fx_orders.id < 10)",
+          "access_type": "filter",
+          "actual_rows": 9.0,
+          "actual_loops": 1,
+          "estimated_rows": 9.0,
+          "actual_last_row_ms": 0.013583,
+          "actual_first_row_ms": 0.011833,
+          "estimated_total_cost": 2.0626361130254995
+        }
+      ],
+      "operation": "Stream results",
+      "access_type": "stream",
+      "actual_rows": 9.0,
+      "actual_loops": 1,
+      "estimated_rows": 9.0,
+      "actual_last_row_ms": 0.016292,
+      "actual_first_row_ms": 0.013957,
+      "estimated_total_cost": 2.0626361130254995
+    },
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "ranges": [
+                "(id < 10)"
+              ],
+              "covering": true,
+              "operation": "Covering index range scan on plan_fx_customers using PRIMARY over (id < 10)",
+              "index_name": "PRIMARY",
+              "table_name": "plan_fx_customers",
+              "access_type": "index",
+              "actual_rows": 9.0,
+              "schema_name": "dbstudio",
+              "actual_loops": 1,
+              "used_columns": [
+                "id"
+              ],
+              "estimated_rows": 9.0,
+              "index_access_type": "index_range_scan",
+              "actual_last_row_ms": 0.002087,
+              "actual_first_row_ms": 0.001375,
+              "estimated_total_cost": 2.062083057796588
+            }
+          ],
+          "condition": "(plan_fx_customers.id < 10)",
+          "operation": "Filter: (plan_fx_customers.id < 10)",
+          "access_type": "filter",
+          "actual_rows": 9.0,
+          "actual_loops": 1,
+          "estimated_rows": 9.0,
+          "actual_last_row_ms": 0.002543,
+          "actual_first_row_ms": 0.0015,
+          "estimated_total_cost": 2.062083057796588
+        }
+      ],
+      "operation": "Stream results",
+      "access_type": "stream",
+      "actual_rows": 9.0,
+      "actual_loops": 1,
+      "estimated_rows": 9.0,
+      "actual_last_row_ms": 0.003164,
+      "actual_first_row_ms": 0.001626,
+      "estimated_total_cost": 2.062083057796588
+    }
+  ],
+  "operation": "Append",
+  "query_type": "select",
+  "access_type": "append",
+  "actual_rows": 18.0,
+  "actual_loops": 1,
+  "estimated_rows": 18.0,
+  "actual_last_row_ms": 0.022206,
+  "actual_first_row_ms": 0.015125,
+  "estimated_total_cost": 4.124719170822088
+}

@@ -245,8 +245,14 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
             call!(connections::group_delete_impl(state, id))
         }
         "connection_test" => {
-            args!(profile: ConnectionProfile = "profile", secret: SecretChange = "secret");
-            call!(connections::test_impl(state, profile, secret))
+            args!(
+                profile: ConnectionProfile = "profile",
+                secret: SecretChange = "secret",
+                ssh_secret: Option<SecretChange> = "sshSecret"
+            );
+            call!(connections::test_with_ssh_impl(
+                state, profile, secret, ssh_secret
+            ))
         }
         "connections_export" => {
             args!(path: String = "path", ids: Option<Vec<Uuid>> = "ids");
@@ -415,9 +421,12 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
                 id: Uuid = "sessionId",
                 lease: Option<Uuid> = "leaseId",
                 request: ExplainRequest = "request",
-                rules: Option<PlanRules> = "rules"
+                rules: Option<PlanRules> = "rules",
+                confirm: Option<ConfirmationGrant> = "confirm"
             );
-            call!(plan::explain_impl(state, id, lease, request, rules))
+            call!(plan::explain_impl(
+                state, id, lease, request, rules, confirm
+            ))
         }
         "plan_parse" => {
             args!(raw: RawPlan = "raw", rules: Option<PlanRules> = "rules");

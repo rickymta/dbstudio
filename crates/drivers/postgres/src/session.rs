@@ -30,7 +30,7 @@ struct Registration {
 
 /// A live PostgreSQL server session (several pooled connections behind one object).
 pub struct PostgresSession {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
     running: Mutex<HashMap<Uuid, Registration>>,
     /// Cached unique-key columns per table, used as ORDER BY tie-breakers (value expires).
     keys: Mutex<KeyCache>,
@@ -59,7 +59,7 @@ impl std::fmt::Debug for PostgresSession {
 }
 
 /// Removes the cancel registration when the request ends (also when its future is dropped).
-struct Unregister<'a> {
+pub(crate) struct Unregister<'a> {
     session: &'a PostgresSession,
     id: Uuid,
 }
@@ -93,7 +93,7 @@ impl PostgresSession {
         Ok(session)
     }
 
-    fn register(
+    pub(crate) fn register(
         &self,
         id: Option<Uuid>,
         conn: &PooledConn,
@@ -116,7 +116,7 @@ impl PostgresSession {
 
     /// Retire the request and return the connection to the pool when it is clean. A connection
     /// that has had (or is receiving) a cancel request is never reused.
-    async fn end_request(&self, conn: &mut PooledConn, running: &Running, clean: bool) {
+    pub(crate) async fn end_request(&self, conn: &mut PooledConn, running: &Running, clean: bool) {
         let cancelled = running.retire().await;
         if clean && !cancelled {
             conn.finish().await;
@@ -148,7 +148,7 @@ impl PostgresSession {
         }
     }
 
-    fn login_db(&self) -> &str {
+    pub(crate) fn login_db(&self) -> &str {
         &self.shared.login_db
     }
 

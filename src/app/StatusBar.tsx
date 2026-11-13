@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
+import { StatusTransaction } from '@/features/editor/StatusTransaction';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
 import { ipc, ipcTransport } from '@/lib/ipc';
 import { setLanguage, type Language } from '@/lib/i18n';
@@ -89,6 +90,7 @@ export function StatusBar() {
           </span>
         )}
         <ActiveConnection />
+        <StatusTransaction />
         <StatusBarSlot name="jobs" />
       </div>
       <div className="flex items-center gap-1">

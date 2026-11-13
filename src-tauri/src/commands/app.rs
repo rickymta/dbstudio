@@ -55,8 +55,13 @@ pub struct DriverDiagnostics {
     pub help_url: Option<String>,
 }
 
-/// Status of the driver of `kind` and an explanation. Package J refines the Oracle case.
+/// Status of the driver of `kind` and an explanation. Oracle has its own report
+/// ([`oracle_diagnostics_impl`]).
 pub(crate) fn driver_diagnostics_impl(state: &AppState, kind: DbKind) -> Result<DriverDiagnostics> {
+    #[cfg(feature = "oracle")]
+    if kind == DbKind::Oracle {
+        return oracle_diagnostics_impl(state);
+    }
     let descriptor = state
         .registry
         .descriptors()
@@ -89,6 +94,58 @@ pub(crate) fn driver_diagnostics_impl(state: &AppState, kind: DbKind) -> Result<
     Ok(DriverDiagnostics {
         status: descriptor.status,
         message,
+        help_url,
+    })
+}
+
+/// Text of the Oracle report: the state of the client library, the places that were searched and
+/// how to install it.
+#[cfg(feature = "oracle")]
+fn oracle_report(d: &dbstudio_driver_oracle::ClientDiagnostics) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    match (&d.version, d.available) {
+        (Some(v), true) => lines.push(format!("Oracle Client library: loaded (version {v}).")),
+        _ => lines.push(match d.reason {
+            Some(UnavailableReason::NativeClientTooOld) => {
+                "Oracle Client library: too old.".to_string()
+            }
+            _ => "Oracle Client library: not found.".to_string(),
+        }),
+    }
+    match &d.configured_dir {
+        Some(dir) => lines.push(format!("Configured folder: {dir}")),
+        None => lines.push("Configured folder: none (default locations are searched).".to_string()),
+    }
+    if let Some(error) = &d.error {
+        lines.push(format!("Reported error: {error}"));
+    }
+    if !d.available && !d.tried_paths.is_empty() {
+        lines.push("Locations tried:".to_string());
+        lines.extend(d.tried_paths.iter().map(|p| format!("  {p}")));
+    }
+    lines.push(d.install_hint.clone());
+    lines.join("\n")
+}
+
+/// Oracle driver status: applies the `oracle_client` setting, probes the client again (so a
+/// freshly installed client or a newly chosen folder is picked up without a restart) and
+/// explains the result.
+#[cfg(feature = "oracle")]
+pub(crate) fn oracle_diagnostics_impl(state: &AppState) -> Result<DriverDiagnostics> {
+    if let Ok(client) = state.connections.store().get_oracle_client() {
+        dbstudio_driver_oracle::configure_client(client.lib_dir.as_deref());
+    }
+    let report = dbstudio_driver_oracle::client_diagnostics();
+    let descriptor = state
+        .registry
+        .descriptors()
+        .into_iter()
+        .find(|d| d.kind == DbKind::Oracle)
+        .ok_or_else(|| Error::NotFound("driver oracle".into()))?;
+    let help_url = (!report.available).then(|| report.download_url.to_string());
+    Ok(DriverDiagnostics {
+        status: descriptor.status,
+        message: oracle_report(&report),
         help_url,
     })
 }
@@ -461,5 +518,69 @@ mod tests {
             [dir.path().join("logs")]
         );
         assert!(dir.path().join("logs").is_dir());
+    }
+    /// Oracle: the report explains the client state, mentions the configured folder and never
+    /// panics, whether or not Instant Client exists on the machine that runs the tests.
+    #[cfg(feature = "oracle")]
+    #[tokio::test]
+    async fn oracle_diagnostics_describe_the_client() {
+        let (state, _) = crate::state::testing::test_state(crate::state::build_registry());
+        let list = list_drivers_impl(&state);
+        let listed = list
+            .iter()
+            .find(|d| d.kind == DbKind::Oracle)
+            .expect("oracle is listed");
+        assert!(matches!(
+            listed.status,
+            DriverStatus::Available | DriverStatus::Unavailable { .. }
+        ));
+        state
+            .connections
+            .store()
+            .set_oracle_client(&dbstudio_store::OracleClientSettings {
+                lib_dir: Some("/nonexistent/instantclient".into()),
+            })
+            .unwrap();
+        let d = driver_diagnostics_impl(&state, DbKind::Oracle).unwrap();
+        match d.status {
+            DriverStatus::Available => {
+                assert!(d.message.contains("loaded"), "{}", d.message);
+                assert!(d.help_url.is_none());
+            }
+            DriverStatus::Unavailable { reason } => {
+                assert!(
+                    matches!(
+                        reason,
+                        UnavailableReason::NativeClientMissing
+                            | UnavailableReason::NativeClientTooOld
+                    ),
+                    "{reason:?}"
+                );
+                assert!(
+                    d.message.contains("/nonexistent/instantclient"),
+                    "{}",
+                    d.message
+                );
+                assert!(d.message.contains("Locations tried"), "{}", d.message);
+                assert!(d.message.contains("Instant Client"), "{}", d.message);
+                assert!(
+                    d.help_url
+                        .as_deref()
+                        .is_some_and(|u| u.starts_with("https://www.oracle.com/"))
+                );
+            }
+            other => panic!("unexpected status {other:?}"),
+        }
+        // Same answer as `list_drivers` after the probe.
+        let again = list_drivers_impl(&state);
+        assert_eq!(
+            again
+                .iter()
+                .find(|d| d.kind == DbKind::Oracle)
+                .unwrap()
+                .status,
+            d.status
+        );
+        dbstudio_driver_oracle::configure_client(None);
     }
 }

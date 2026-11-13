@@ -14,8 +14,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use dbstudio_core::{
-    ConfirmationGrant, ConfirmationRequest, ConnectionConfig, DbKind, DestructiveStatement,
-    Environment, Error, ParamValue, Result, ScriptAnalysis, ScriptDialect, TextRange,
+    ConfirmationGrant, ConfirmationRequest, ConnectionConfig, DbKind, DestructiveReason,
+    DestructiveStatement, Environment, Error, ParamValue, Result, ScriptAnalysis, ScriptDialect,
+    StatementClass, TextRange,
 };
 use dbstudio_sql::{BoundScript, OffsetMap, Policy, Verdict};
 use sha2::{Digest, Sha256};
@@ -199,6 +200,9 @@ pub struct GuardInput<'a> {
     pub confirm: Option<&'a ConfirmationGrant>,
     /// Identity of what runs (`session:<id>` / `lease:<id>`); part of the token digest.
     pub target_id: &'a str,
+    /// Where the text runs (effective database / schema); part of the token digest, so a token
+    /// issued in one context cannot be spent after the context changed.
+    pub context: &'a str,
 }
 
 /// A script that passed the guard.
@@ -225,6 +229,252 @@ fn map_range(map: &OffsetMap, r: TextRange) -> TextRange {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Defence in depth. `dbstudio_sql` decides from its parse; this layer works on plain tokens and
+// is deliberately blunt: it never needs the parser to be right.
+
+#[derive(Debug, Clone)]
+struct Tok {
+    /// Upper-cased word, or `;`.
+    word: String,
+    /// Character offsets in the scanned text.
+    start: u32,
+    end: u32,
+}
+
+/// Words and statement separators of `text`, without string literals, quoted identifiers and
+/// comments (so a keyword inside a string never counts and a hidden one cannot be missed).
+fn scan_tokens(dialect: ScriptDialect, text: &str) -> Vec<Tok> {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let hash_comment = matches!(dialect, ScriptDialect::MySql { .. });
+    let backslash = match dialect {
+        ScriptDialect::MySql {
+            backslash_escapes, ..
+        } => backslash_escapes,
+        _ => false,
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let c = chars[i];
+        match c {
+            '\'' | '"' | '`' => {
+                i += 1;
+                while i < n {
+                    if chars[i] == '\\' && backslash && c != '`' {
+                        i += 2;
+                        continue;
+                    }
+                    if chars[i] == c {
+                        if i + 1 < n && chars[i + 1] == c {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            '-' if i + 1 < n && chars[i + 1] == '-' => {
+                while i < n && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '#' if hash_comment => {
+                while i < n && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < n && chars[i + 1] == '*' => {
+                i += 2;
+                while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                i += 2;
+            }
+            '$' if matches!(dialect, ScriptDialect::Postgres) => {
+                // Dollar quote `$tag$ ... $tag$`.
+                let mut j = i + 1;
+                while j < n && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                    j += 1;
+                }
+                if j < n && chars[j] == '$' {
+                    let tag: String = chars[i..=j].iter().collect();
+                    let mut k = j + 1;
+                    let tag_chars: Vec<char> = tag.chars().collect();
+                    while k + tag_chars.len() <= n && chars[k..k + tag_chars.len()] != tag_chars[..]
+                    {
+                        k += 1;
+                    }
+                    i = (k + tag_chars.len()).min(n);
+                } else {
+                    i += 1;
+                }
+            }
+            ';' => {
+                out.push(Tok {
+                    word: ";".into(),
+                    start: i as u32,
+                    end: i as u32 + 1,
+                });
+                i += 1;
+            }
+            c if c.is_alphabetic() || c == '_' => {
+                let start = i;
+                while i < n && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
+                    i += 1;
+                }
+                out.push(Tok {
+                    word: chars[start..i].iter().collect::<String>().to_uppercase(),
+                    start: start as u32,
+                    end: i as u32,
+                });
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// Tokens grouped by statement (split at `;`).
+fn token_statements(tokens: &[Tok]) -> Vec<&[Tok]> {
+    tokens
+        .split(|t| t.word == ";")
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// A read-only connection must stay read-only: refuse the statements that switch it off,
+/// whatever class the analyzer gave them (`SET` and `BEGIN` are otherwise allowed).
+fn read_only_defense(dialect: ScriptDialect, text: &str, map: &OffsetMap) -> Result<()> {
+    let tokens = scan_tokens(dialect, text);
+    for stmt in token_statements(&tokens) {
+        let words: Vec<&str> = stmt.iter().map(|t| t.word.as_str()).collect();
+        let has = |w: &str| words.contains(&w);
+        let offender = if words.windows(2).any(|p| p == ["READ", "WRITE"]) {
+            Some("READ WRITE")
+        } else if has("SET_CONFIG") {
+            Some("set_config")
+        } else if has("SET")
+            && words
+                .iter()
+                .any(|w| w.ends_with("_READ_ONLY") || *w == "TX_READ_ONLY")
+        {
+            Some("changing the read-only setting")
+        } else if words.first() == Some(&"SET") && has("SQL_MODE") {
+            Some("changing sql_mode")
+        } else {
+            None
+        };
+        if let Some(what) = offender {
+            return Err(Error::ReadOnlyViolation {
+                message: format!("{what} is not allowed on a read-only connection"),
+                position: Some(map.to_original(stmt[0].start)),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Production fallback for statements the analyzer could not classify (`Unknown`,
+/// `Procedural`): keywords that destroy data are enough to ask for a confirmation
+/// (design risk R5: be conservative).
+fn production_fallback(
+    dialect: ScriptDialect,
+    analysis: &ScriptAnalysis,
+    text: &str,
+) -> Vec<DestructiveStatement> {
+    let tokens = scan_tokens(dialect, text);
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    for (index, stmt) in token_statements(&tokens).into_iter().enumerate() {
+        let start = stmt[0].start;
+        let analysed = analysis
+            .statements
+            .iter()
+            .find(|s| s.range.start <= start && start < s.range.end.max(s.range.start + 1))
+            .map(|s| s.class);
+        if !matches!(
+            analysed,
+            None | Some(StatementClass::Unknown | StatementClass::Procedural)
+        ) {
+            continue;
+        }
+        let words: Vec<&str> = stmt.iter().map(|t| t.word.as_str()).collect();
+        let reason = if words.contains(&"DROP") {
+            Some(DestructiveReason::Drop)
+        } else if words.contains(&"TRUNCATE") {
+            Some(DestructiveReason::Truncate)
+        } else if words.contains(&"ALTER") {
+            Some(DestructiveReason::AlterDrop)
+        } else if words.contains(&"DELETE") {
+            Some(DestructiveReason::DeleteWithoutWhere)
+        } else if words.contains(&"UPDATE") && !words.contains(&"WHERE") {
+            Some(DestructiveReason::UpdateWithoutWhere)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            let end = stmt[stmt.len() - 1].end;
+            out.push(DestructiveStatement {
+                index: u32::try_from(index).unwrap_or(u32::MAX),
+                range: TextRange { start, end },
+                text: chars[start as usize..end as usize]
+                    .iter()
+                    .take(2000)
+                    .collect(),
+                reason,
+            });
+        }
+    }
+    out
+}
+
+/// Why a MySQL script cannot be split reliably: its statement boundaries differ between the two
+/// settings of `NO_BACKSLASH_ESCAPES` (guard and server could then disagree on what runs).
+fn split_ambiguity(dialect: ScriptDialect, text: &str) -> Option<String> {
+    let ScriptDialect::MySql {
+        mariadb,
+        backslash_escapes,
+    } = dialect
+    else {
+        return None;
+    };
+    let other = ScriptDialect::MySql {
+        mariadb,
+        backslash_escapes: !backslash_escapes,
+    };
+    (dbstudio_sql::split(dialect, text) != dbstudio_sql::split(other, text)).then(|| {
+        "the statement boundaries depend on the NO_BACKSLASH_ESCAPES sql_mode (a quote escaped \
+         with a backslash); write the literal with '' so the script means the same in both modes"
+            .to_string()
+    })
+}
+
+/// What a confirmation token is bound to besides the target: where the text runs, the databases
+/// its statements act on, what the user has to type, and the text itself.
+fn token_payload(
+    input: &GuardInput<'_>,
+    bound_text: &str,
+    confirm_text: &str,
+    databases: &[Option<String>],
+) -> Vec<u8> {
+    let dbs: Vec<&str> = databases
+        .iter()
+        .map(|d| d.as_deref().unwrap_or("-"))
+        .collect();
+    format!(
+        "{}\0{}\0{}\0{}",
+        input.context,
+        confirm_text,
+        dbs.join("\u{1}"),
+        bound_text
+    )
+    .into_bytes()
+}
+
 /// Steps 3-4 of the flow on an already analysed script: policy, verdict, token handling.
 pub fn evaluate(
     tokens: &ConfirmTokens,
@@ -237,7 +487,17 @@ pub fn evaluate(
         production: input.production,
         confirm_text: input.confirm_text.to_string(),
     };
-    match dbstudio_sql::guard::check_with_text(&policy, analysis, &bound.text) {
+    if input.read_only {
+        read_only_defense(input.dialect, &bound.text, &bound.map)?;
+    }
+    let mut verdict = dbstudio_sql::guard::check_with_text(&policy, analysis, &bound.text);
+    if input.production && matches!(verdict, Verdict::Allow) {
+        let extra = production_fallback(input.dialect, analysis, &bound.text);
+        if !extra.is_empty() {
+            verdict = Verdict::Confirm(extra);
+        }
+    }
+    match verdict {
         Verdict::Allow => Ok(()),
         Verdict::Deny(Error::ReadOnlyViolation { message, position }) => {
             Err(Error::ReadOnlyViolation {
@@ -247,14 +507,19 @@ pub fn evaluate(
         }
         Verdict::Deny(other) => Err(other),
         Verdict::Confirm(statements) => {
+            // The user types the database the destructive statements really act on (a `USE`
+            // earlier in the script moves them), not just the one the tab started in.
+            let databases = dbstudio_sql::statement_databases(input.dialect, &bound.text, analysis);
+            let confirm_text =
+                dbstudio_sql::confirm_text_for(input.confirm_text, &databases, &statements);
+            let payload = token_payload(input, &bound.text, &confirm_text, &databases);
             if let Some(grant) = input.confirm {
-                match tokens.consume(grant, input.target_id, bound.text.as_bytes()) {
+                match tokens.consume(grant, input.target_id, &payload) {
                     Ok(()) => return Ok(()),
                     Err(why) => tracing::debug!(?why, "confirmation refused"),
                 }
             }
-            let (token, expires_in_ms) =
-                tokens.issue(input.target_id, bound.text.as_bytes(), input.confirm_text);
+            let (token, expires_in_ms) = tokens.issue(input.target_id, &payload, &confirm_text);
             let statements: Vec<DestructiveStatement> = statements
                 .into_iter()
                 .map(|s| DestructiveStatement {
@@ -264,7 +529,7 @@ pub fn evaluate(
                 .collect();
             Err(Error::ConfirmationRequired(Box::new(ConfirmationRequest {
                 token,
-                confirm_text: input.confirm_text.to_string(),
+                confirm_text,
                 statements,
                 expires_in_ms,
             })))
@@ -272,10 +537,26 @@ pub fn evaluate(
     }
 }
 
+/// Analysis step of the flow (an indirection so command tests can substitute a keyword
+/// classifier while `dbstudio_sql::analyze` is still the scaffold).
+fn analyze(dialect: ScriptDialect, text: &str) -> ScriptAnalysis {
+    #[cfg(test)]
+    if let Some(f) = test_support::OVERRIDE.with(std::cell::Cell::get) {
+        return f(dialect, text);
+    }
+    dbstudio_sql::analyze(dialect, text)
+}
+
 /// The five-step flow for a script: bind, analyze, policy, check, verdict.
 pub fn run_guard(tokens: &ConfirmTokens, input: &GuardInput<'_>) -> Result<Guarded> {
     let bound = dbstudio_sql::bind(input.dialect, input.text, input.params)?;
-    let analysis = dbstudio_sql::analyze(input.dialect, &bound.text);
+    if let Some(message) = split_ambiguity(input.dialect, &bound.text) {
+        return Err(Error::Query {
+            message,
+            position: None,
+        });
+    }
+    let analysis = analyze(input.dialect, &bound.text);
     evaluate(tokens, input, &bound, &analysis)?;
     Ok(Guarded { bound, analysis })
 }
@@ -290,6 +571,141 @@ pub fn ensure_writable(config: &ConnectionConfig, what: &str) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// Helpers shared by the command tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use dbstudio_core::{DestructiveReason, StatementClass, StatementInfo, TxControl};
+
+    use super::*;
+
+    type AnalyzeFn = fn(ScriptDialect, &str) -> ScriptAnalysis;
+
+    thread_local! {
+        pub(super) static OVERRIDE: Cell<Option<AnalyzeFn>> = const { Cell::new(None) };
+    }
+
+    /// Restores the real analyzer when dropped.
+    pub struct KeywordClassifier;
+
+    impl Drop for KeywordClassifier {
+        fn drop(&mut self) {
+            OVERRIDE.with(|c| c.set(None));
+        }
+    }
+
+    /// Classify statements by their first keyword on the current thread (use a current-thread
+    /// runtime in the test). Only for tests.
+    pub fn use_keyword_classifier() -> KeywordClassifier {
+        OVERRIDE.with(|c| c.set(Some(keyword_analyze)));
+        KeywordClassifier
+    }
+
+    /// Whether `dbstudio_sql::analyze` already classifies statements (package A finished).
+    pub fn real_classifier_available() -> bool {
+        dbstudio_sql::analyze(ScriptDialect::Postgres, "select 1")
+            .statements
+            .first()
+            .is_some_and(|s| s.class == StatementClass::Read)
+    }
+
+    /// A minimal classifier: verb decides the class, `DROP`/`TRUNCATE` and `DELETE`/`UPDATE`
+    /// without `WHERE` are destructive.
+    pub fn keyword_analyze(dialect: ScriptDialect, text: &str) -> ScriptAnalysis {
+        let chars: Vec<char> = text.chars().collect();
+        let statements = dbstudio_sql::split(ScriptDialect::Postgres, text)
+            .into_iter()
+            .enumerate()
+            .map(|(i, range)| {
+                let sql: String = chars[range.start as usize..range.end as usize]
+                    .iter()
+                    .collect::<String>()
+                    .to_ascii_uppercase();
+                let verb = sql.split_whitespace().next().unwrap_or("").to_string();
+                let has_where = sql.contains(" WHERE ");
+                let (class, destructive) = match verb.as_str() {
+                    "SELECT" | "SHOW" | "WITH" | "VALUES" => (StatementClass::Read, None),
+                    "INSERT" => (StatementClass::Write, None),
+                    "UPDATE" => (
+                        StatementClass::Write,
+                        (!has_where).then_some(DestructiveReason::UpdateWithoutWhere),
+                    ),
+                    "DELETE" => (
+                        StatementClass::Write,
+                        (!has_where).then_some(DestructiveReason::DeleteWithoutWhere),
+                    ),
+                    "DROP" => (StatementClass::Ddl, Some(DestructiveReason::Drop)),
+                    "TRUNCATE" => (StatementClass::Ddl, Some(DestructiveReason::Truncate)),
+                    "CREATE" | "ALTER" => (StatementClass::Ddl, None),
+                    "BEGIN" => (
+                        StatementClass::Transaction {
+                            op: TxControl::Begin,
+                        },
+                        None,
+                    ),
+                    "COMMIT" => (
+                        StatementClass::Transaction {
+                            op: TxControl::Commit,
+                        },
+                        None,
+                    ),
+                    "ROLLBACK" => (
+                        StatementClass::Transaction {
+                            op: TxControl::Rollback,
+                        },
+                        None,
+                    ),
+                    "SET" | "USE" => (StatementClass::Session, None),
+                    _ => (StatementClass::Unknown, None),
+                };
+                StatementInfo {
+                    index: i as u32,
+                    range,
+                    class,
+                    verb,
+                    destructive,
+                    implicit_commit: false,
+                    targets: Vec::new(),
+                }
+            })
+            .collect();
+        ScriptAnalysis {
+            dialect,
+            statements,
+            params: Vec::new(),
+            problems: Vec::new(),
+        }
+    }
+
+    /// Clock that only moves when told to.
+    #[derive(Debug)]
+    pub struct TestClock {
+        base: Instant,
+        offset_ms: AtomicU64,
+    }
+
+    impl TestClock {
+        pub fn new() -> Arc<Self> {
+            Arc::new(TestClock {
+                base: Instant::now(),
+                offset_ms: AtomicU64::new(0),
+            })
+        }
+        pub fn advance(&self, d: Duration) {
+            self.offset_ms
+                .fetch_add(u64::try_from(d.as_millis()).unwrap(), Ordering::SeqCst);
+        }
+    }
+
+    impl Clock for TestClock {
+        fn now(&self) -> Instant {
+            self.base + Duration::from_millis(self.offset_ms.load(Ordering::SeqCst))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -474,6 +890,7 @@ mod tests {
             confirm_text: "app",
             confirm,
             target_id: "session:1",
+            context: "ctx",
         }
     }
 
@@ -670,10 +1087,10 @@ mod tests {
     }
 
     #[test]
-    fn run_guard_with_the_scaffold_analyzer() {
-        // The stub analyzer classifies everything as Unknown, which read-only refuses.
+    fn run_guard_with_the_real_analyzer() {
         let (t, _) = tokens();
-        let err = run_guard(&t, &input("select 1", true, false, None)).unwrap_err();
+        run_guard(&t, &input("select 1", true, false, None)).unwrap();
+        let err = run_guard(&t, &input("insert into t values (1)", true, false, None)).unwrap_err();
         assert_eq!(err.kind(), "readOnly");
         let ok = run_guard(&t, &input("select 1", false, false, None)).unwrap();
         assert_eq!(ok.bound.text, "select 1");
@@ -706,5 +1123,131 @@ mod tests {
         );
         cfg.read_only = false;
         ensure_writable(&cfg, "changes").unwrap();
+    }
+
+    #[test]
+    fn tokens_skip_strings_comments_and_quoted_identifiers() {
+        let words =
+            |d, t: &str| -> Vec<String> { scan_tokens(d, t).into_iter().map(|x| x.word).collect() };
+        assert_eq!(
+            words(
+                ScriptDialect::Postgres,
+                "select 'a;b' /* drop */ , \"c d\" -- x\n from t;"
+            ),
+            ["SELECT", "FROM", "T", ";"]
+        );
+        assert_eq!(
+            words(ScriptDialect::Postgres, "do $f$ drop $f$ ; select 1"),
+            ["DO", ";", "SELECT"]
+        );
+        let mysql = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+        };
+        assert_eq!(words(mysql, "select 'it\\'s' # drop\n, 1"), ["SELECT"]);
+        let t = scan_tokens(ScriptDialect::Postgres, "é; DROP");
+        assert_eq!((t[2].start, t[2].end), (3, 7));
+    }
+
+    #[test]
+    fn mysql_scripts_with_sql_mode_dependent_boundaries_are_refused() {
+        let attack = "SELECT 'a\\'; DROP TABLE t; -- '";
+        let mysql = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+        };
+        let (t, _) = tokens();
+        let mut i = input(attack, false, false, None);
+        i.dialect = mysql;
+        let err = run_guard(&t, &i).unwrap_err();
+        assert!(err.to_string().contains("NO_BACKSLASH_ESCAPES"), "{err}");
+        i.dialect = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: false,
+        };
+        assert!(run_guard(&t, &i).is_err());
+        // Unambiguous scripts and other dialects are untouched.
+        i.dialect = mysql;
+        i.text = "SELECT 'it''s'; SELECT 2";
+        run_guard(&t, &i).unwrap();
+        i.dialect = ScriptDialect::Postgres;
+        i.text = attack;
+        run_guard(&t, &i).unwrap();
+    }
+
+    #[test]
+    fn confirmation_asks_for_the_database_the_statement_really_hits() {
+        let mysql = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+        };
+        let text = "USE other; DROP TABLE t";
+        let (t, _) = tokens();
+        let mut i = input(text, false, true, None);
+        i.dialect = mysql;
+        let c = match run_guard(&t, &i).unwrap_err() {
+            Error::ConfirmationRequired(c) => *c,
+            other => panic!("{other:?}"),
+        };
+        // Typing the tab's database ("app") is not enough: the DROP acts on `other`.
+        assert_eq!(c.confirm_text, "other");
+        let wrong = ConfirmationGrant {
+            token: c.token.clone(),
+            typed: "app".into(),
+        };
+        i.confirm = Some(&wrong);
+        let c2 = match run_guard(&t, &i).unwrap_err() {
+            Error::ConfirmationRequired(c) => *c,
+            other => panic!("{other:?}"),
+        };
+        let right = ConfirmationGrant {
+            token: c2.token,
+            typed: "other".into(),
+        };
+        i.confirm = Some(&right);
+        run_guard(&t, &i).unwrap();
+        // Without a USE it is the tab's database.
+        let mut j = input("DROP TABLE t", false, true, None);
+        j.dialect = mysql;
+        let c = match run_guard(&t, &j).unwrap_err() {
+            Error::ConfirmationRequired(c) => *c,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(c.confirm_text, "app");
+    }
+
+    #[test]
+    fn production_fallback_ignores_strings_and_comments() {
+        let unknown = |text: &str| {
+            analysis(vec![stmt(
+                0,
+                0,
+                text.chars().count() as u32,
+                StatementClass::Unknown,
+                None,
+            )])
+        };
+        for ok in [
+            "SELECT 'DROP TABLE t' /* DELETE FROM t */",
+            "-- TRUNCATE t\nSELECT \"delete\" FROM t",
+            "UPDATE t SET a = 1 WHERE id = 1",
+        ] {
+            let a = unknown(ok);
+            assert!(
+                production_fallback(ScriptDialect::Postgres, &a, ok).is_empty(),
+                "{ok}"
+            );
+        }
+        for bad in [
+            "DROP TABLE t",
+            "select 1; truncate t",
+            "CALL p(); DELETE FROM t",
+        ] {
+            let a = unknown(bad);
+            assert!(
+                !production_fallback(ScriptDialect::Postgres, &a, bad).is_empty(),
+                "{bad}"
+            );
+        }
     }
 }

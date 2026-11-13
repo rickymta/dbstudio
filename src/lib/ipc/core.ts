@@ -459,8 +459,17 @@ export const coreApi = {
     call('group_save', () => mock.groupSave(group), { group }),
   groupDelete: (id: Uuid): Promise<void> =>
     call('group_delete', () => mock.groupDelete(id), { id }),
-  connectionTest: (profile: ConnectionProfile, secret: SecretChange): Promise<ServerInfo> =>
-    call('connection_test', () => mock.connectionTest(profile), { profile, secret }),
+  /** `sshSecret` is the SSH password / key passphrase just typed; omitted = use the stored one. */
+  connectionTest: (
+    profile: ConnectionProfile,
+    secret: SecretChange,
+    sshSecret?: SecretChange,
+  ): Promise<ServerInfo> =>
+    call('connection_test', () => mock.connectionTest(profile), {
+      profile,
+      secret,
+      ...(sshSecret ? { sshSecret } : {}),
+    }),
   connectionsExport: (path: string, ids?: Uuid[] | null): Promise<number> =>
     call('connections_export', () => mock.connectionsExport(ids ?? null), {
       path,

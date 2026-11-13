@@ -9,9 +9,10 @@ use dbstudio_backup::{
     Retention,
 };
 use dbstudio_core::{
-    Capabilities, ColumnMeta, ConnectionConfig, DbKind, Driver, DriverDescriptor, DriverStatus,
-    EndOutcome, Environment, ExecSummary, ObjectKind, ObjectNode, ObjectPath, QueryRequest,
-    ResultSink, ScriptDialect, ServerInfo, Session, StatementEnd, TableDataRequest, Value,
+    Capabilities, ColumnDetail, ColumnMeta, ConnectionConfig, DbKind, DdlItem, DdlLanguage,
+    DdlRequest, DdlSection, Driver, DriverDescriptor, DriverStatus, EndOutcome, Environment,
+    ExecSummary, ObjectKind, ObjectNode, ObjectPath, QueryRequest, ResultSink, SchemaModel,
+    SchemaModelRequest, ScriptDialect, ServerInfo, Session, StatementEnd, TableModel, Value,
     ValueKind, folder,
 };
 use dbstudio_export::ExportContent;
@@ -157,74 +158,91 @@ impl Session for FakeSession {
     async fn execute(
         &self,
         req: QueryRequest,
-        _sink: &mut dyn ResultSink,
-    ) -> dbstudio_core::Result<ExecSummary> {
-        self.executed.lock().unwrap().push((req.database, req.text));
-        Ok(ExecSummary::default())
-    }
-    async fn list_children(&self, parent: &ObjectPath) -> dbstudio_core::Result<Vec<ObjectNode>> {
-        let last = parent.segments.last().map(|s| s.kind);
-        Ok(match last {
-            Some(ObjectKind::Database) => {
-                let path = parent.child(ObjectKind::Folder, folder::TABLES);
-                vec![ObjectNode {
-                    path,
-                    kind: ObjectKind::Folder,
-                    name: folder::TABLES.into(),
-                    has_children: true,
-                    detail: None,
-                }]
-            }
-            Some(ObjectKind::Folder) => ["accounts", "items"]
-                .iter()
-                .map(|n| ObjectNode {
-                    path: parent.child(ObjectKind::Table, *n),
-                    kind: ObjectKind::Table,
-                    name: (*n).into(),
-                    has_children: false,
-                    detail: None,
-                })
-                .collect(),
-            _ => vec![],
-        })
-    }
-    async fn object_ddl(&self, path: &ObjectPath) -> dbstudio_core::Result<String> {
-        let name = &path.last().unwrap().name;
-        Ok(format!("CREATE TABLE \"{name}\" (id int, name text);\n"))
-    }
-    async fn fetch_table(
-        &self,
-        req: TableDataRequest,
         sink: &mut dyn ResultSink,
     ) -> dbstudio_core::Result<ExecSummary> {
-        let col = |n: &str, k| ColumnMeta {
-            name: n.into(),
-            type_name: String::new(),
-            value_kind: k,
-            nullable: None,
-        };
-        sink.on_columns(vec![
-            col("id", ValueKind::Int),
-            col("name", ValueKind::Text),
-        ])?;
-        let rows: Vec<Vec<Value>> = if req.offset == 0 {
-            vec![
+        if req.text.starts_with("SELECT") {
+            // The export engine reads tables with a plain SELECT on a session without leases.
+            let col = |n: &str, k| ColumnMeta {
+                name: n.into(),
+                type_name: String::new(),
+                value_kind: k,
+                nullable: None,
+            };
+            sink.on_columns(vec![
+                col("id", ValueKind::Int),
+                col("name", ValueKind::Text),
+            ])?;
+            sink.on_rows(vec![
                 vec![Value::Int(1), Value::Text("it's".into())],
                 vec![Value::Int(2), Value::Null],
-            ]
+            ])?;
+            sink.on_statement_end(StatementEnd {
+                outcome: EndOutcome::Rows {
+                    row_count: 2,
+                    truncated: false,
+                },
+                elapsed_ms: 0,
+            })?;
         } else {
-            vec![]
-        };
-        let n = rows.len() as u64;
-        sink.on_rows(rows)?;
-        sink.on_statement_end(StatementEnd {
-            outcome: EndOutcome::Rows {
-                row_count: n,
-                truncated: false,
-            },
-            elapsed_ms: 0,
-        })?;
+            self.executed.lock().unwrap().push((req.database, req.text));
+        }
         Ok(ExecSummary::default())
+    }
+    async fn list_children(&self, _parent: &ObjectPath) -> dbstudio_core::Result<Vec<ObjectNode>> {
+        Ok(vec![])
+    }
+    async fn schema_model(&self, req: SchemaModelRequest) -> dbstudio_core::Result<SchemaModel> {
+        let col = |name: &str, ordinal, kind| ColumnDetail {
+            name: name.into(),
+            ordinal,
+            type_name: String::new(),
+            value_kind: kind,
+            nullable: true,
+            default: None,
+            comment: None,
+            primary_key: false,
+            extra: None,
+        };
+        let table = |name: &str| TableModel {
+            path: req
+                .scope
+                .child(ObjectKind::Folder, folder::TABLES)
+                .child(ObjectKind::Table, name),
+            kind: ObjectKind::Table,
+            schema: None,
+            name: name.into(),
+            comment: None,
+            columns: vec![
+                col("id", 1, ValueKind::Int),
+                col("name", 2, ValueKind::Text),
+            ],
+            primary_key: vec![],
+            unique_keys: vec![],
+            estimated_rows: None,
+        };
+        Ok(SchemaModel {
+            scope: req.scope.clone(),
+            tables: vec![table("accounts"), table("items")],
+            relations: vec![],
+            inferred: false,
+            truncated: false,
+        })
+    }
+    async fn generate_ddl(&self, req: DdlRequest) -> dbstudio_core::Result<Vec<DdlItem>> {
+        Ok(["accounts", "items"]
+            .iter()
+            .map(|n| DdlItem {
+                path: req
+                    .scope
+                    .child(ObjectKind::Folder, folder::TABLES)
+                    .child(ObjectKind::Table, *n),
+                kind: ObjectKind::Table,
+                section: DdlSection::PreData,
+                sql: format!("CREATE TABLE \"{n}\" (id int, name text);"),
+                language: DdlLanguage::Sql,
+                depends_on: vec![],
+            })
+            .collect())
     }
     async fn close(&self) -> dbstudio_core::Result<()> {
         Ok(())
@@ -669,7 +687,7 @@ async fn verify_and_restore_with_confirmation_rules() {
         .collect();
     assert!(
         sql.iter()
-            .any(|s| s.starts_with("DROP TABLE IF EXISTS \"items\""))
+            .any(|s| s.starts_with("DROP SCHEMA IF EXISTS \"public\" CASCADE"))
     );
 }
 

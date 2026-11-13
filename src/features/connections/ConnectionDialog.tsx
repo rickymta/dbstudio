@@ -40,7 +40,18 @@ import {
   TLS_VERIFYING,
 } from './kindConfig';
 import { needsTlsWarning } from './tlsWarning';
+import { OptionsEditor } from '@/features/document/OptionsEditor';
+import { UriPaste } from '@/features/document/UriPaste';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
+import { useHostKeyPrompt } from './useHostKeyPrompt';
+import { SshSection } from './SshSection';
+import {
+  initialSshForm,
+  sshSecretChange,
+  validateSsh,
+  withSsh,
+  type SshFormState,
+} from './sshForm';
 
 export interface ConnectionDialogProps {
   open: boolean;
@@ -94,6 +105,9 @@ function ConnectionDialogBody({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [test, setTest] = useState<TestState>({ status: 'idle' });
+  const [ssh, setSsh] = useState<SshFormState>(() => initialSshForm(profile));
+  const sshErrors = useMemo(() => validateSsh(ssh), [ssh]);
+  const { run: runWithHostKey, dialog: hostKeyDialog } = useHostKeyPrompt();
 
   const drivers = useQuery({ queryKey: ['drivers'], queryFn: ipc.listDrivers });
   const { data: snapshot } = useConnectionsSnapshot();
@@ -103,6 +117,12 @@ function ConnectionDialogBody({
 
   const update = (patch: Partial<ConnectionForm>) => {
     setForm((f) => ({ ...f, ...patch }));
+    setTest({ status: 'idle' });
+    setSaveError(null);
+  };
+
+  const updateSsh = (patch: Partial<SshFormState>) => {
+    setSsh((s) => ({ ...s, ...patch }));
     setTest({ status: 'idle' });
     setSaveError(null);
   };
@@ -151,15 +171,22 @@ function ConnectionDialogBody({
 
   const runTest = async () => {
     // A name is not needed to test; the server address is.
-    if (errors.host || errors.port || errors.timeout) {
+    if (errors.host || errors.port || errors.timeout || Object.keys(sshErrors).length > 0) {
       setSubmitted(true);
       return;
     }
     setTest({ status: 'running' });
     try {
-      const info = await ipc.connectionTest(
+      const testProfile = withSsh(
         profileFromForm(form, profile, () => crypto.randomUUID()),
-        testSecret(form),
+        ssh,
+      );
+      // The SSH password typed in the dialog is used for this test even before it is saved.
+      const sshSecret = sshSecretChange(ssh, profile);
+      const info = await runWithHostKey(() =>
+        sshSecret
+          ? ipc.connectionTest(testProfile, testSecret(form), sshSecret)
+          : ipc.connectionTest(testProfile, testSecret(form)),
       );
       setTest({ status: 'ok', info });
     } catch (e) {
@@ -169,12 +196,18 @@ function ConnectionDialogBody({
 
   const submit = async () => {
     setSubmitted(true);
-    if (saving || Object.keys(errors).length > 0) return;
+    if (saving || Object.keys(errors).length > 0 || Object.keys(sshErrors).length > 0) return;
     setSaving(true);
     setSaveError(null);
-    const built = profileFromForm(form, profile, () => crypto.randomUUID());
+    const built = withSsh(
+      profileFromForm(form, profile, () => crypto.randomUUID()),
+      ssh,
+    );
+    const sshSecret = sshSecretChange(ssh, profile);
     try {
-      await ipc.connectionSave(built, saveSecret(form));
+      await (sshSecret
+        ? ipc.connectionSave(built, saveSecret(form), sshSecret)
+        : ipc.connectionSave(built, saveSecret(form)));
       await qc.invalidateQueries({ queryKey: connectionsQueryKey });
       onClose();
     } catch (e) {
@@ -253,6 +286,7 @@ function ConnectionDialogBody({
         )}
 
         <Section title={t('section.general')}>
+          {!isEdit && <UriPaste id={`${formId}-uri`} onParsed={update} />}
           <Field label={t('field.kind')} htmlFor={`${formId}-kind`}>
             <Select
               id={`${formId}-kind`}
@@ -442,6 +476,13 @@ function ConnectionDialogBody({
           )}
         </Section>
 
+        <SshSection
+          value={ssh}
+          onChange={updateSsh}
+          errors={showErrors ? sshErrors : {}}
+          profile={profile}
+        />
+
         <Section title={t('section.advanced')}>
           <Field
             label={t('field.timeout')}
@@ -458,8 +499,12 @@ function ConnectionDialogBody({
               onChange={(e) => update({ timeoutSec: e.target.value })}
             />
           </Field>
+          {form.kind === 'mongodb' && (
+            <OptionsEditor value={form.options} onChange={(options) => update({ options })} />
+          )}
         </Section>
       </form>
+      {hostKeyDialog}
     </DialogContent>
   );
 }

@@ -20,7 +20,11 @@ pub(crate) async fn open_impl(
     let svc = state.connections.clone();
     let (profile, secret) =
         blocking(move || svc.session_credentials(connection_id, password)).await?;
-    state.sessions.open(&profile.config, secret.as_ref()).await
+    let ssh = super::ssh::ssh_env(state, &profile.config).await?;
+    state
+        .sessions
+        .open_with_ssh(&profile.config, secret.as_ref(), ssh.as_ref())
+        .await
 }
 
 pub(crate) async fn close_impl(state: &AppState, session_id: Uuid) -> Result<()> {

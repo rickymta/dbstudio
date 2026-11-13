@@ -1,1 +1,41 @@
-{}
+{
+  "title": "Background jobs",
+  "description": "Exports, imports and other long tasks of this session.",
+  "empty": {
+    "title": "No jobs yet",
+    "description": "Exports and imports you start show up here."
+  },
+  "clearFinished": "Clear finished",
+  "cancel": "Cancel",
+  "progress": "Progress",
+  "status": {
+    "queued": "Waiting",
+    "running": "Running",
+    "succeeded": "Done",
+    "failed": "Failed",
+    "cancelled": "Cancelled"
+  },
+  "phase": {
+    "schema": "Structure",
+    "data": "Data",
+    "import": "Importing",
+    "script": "Running the script",
+    "finish": "Finishing",
+    "compress": "Compressing",
+    "encrypt": "Encrypting",
+    "verify": "Verifying",
+    "restore": "Restoring"
+  },
+  "indicator": {
+    "idle": "Background jobs",
+    "running": "{{count}} running",
+    "failed": "{{count}} failed"
+  },
+  "result": {
+    "rows": "{{count}} row(s)",
+    "inserted": "{{count}} row(s) inserted",
+    "skipped": "{{count}} skipped",
+    "errorLine": "Line {{line}}",
+    "moreErrors": "and {{count}} more error(s)"
+  }
+}

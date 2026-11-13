@@ -53,6 +53,19 @@
     "openEditor": "Open SQL editor",
     "showErd": "Show diagram",
     "exportData": "Export...",
-    "backup": "Back up..."
-  }
+    "backup": "Back up...",
+    "openKey": "Open key",
+    "filterPattern": "Filter by pattern...",
+    "deleteByPattern": "Delete keys by pattern..."
+  },
+  "loadMore": "Load more",
+  "pattern": {
+    "title": "Filter {{name}}",
+    "description": "Glob pattern matched against the part of the key name after this node (* ? [..]); open sub-folders are filtered too.",
+    "label": "Pattern",
+    "apply": "Apply",
+    "clear": "Clear filter",
+    "active": "Filter: {{pattern}}"
+  },
+  "loadMoreCount": "Load more ({{count}})"
 }

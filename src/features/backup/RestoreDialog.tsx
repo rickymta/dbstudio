@@ -10,18 +10,12 @@ import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { useConnectionsSnapshot } from '@/features/connections/queries';
 import { describeError } from '@/features/connections/errors';
+import { useGuardedCall } from '@/features/safety/useGuardedCall';
 import { ipc, toIpcError } from '@/lib/ipc';
-import type {
-  BackupInspection,
-  ConfirmationGrant,
-  ConfirmationRequest,
-  JobId,
-  RestoreSpec,
-} from '@/lib/types';
+import type { BackupInspection, JobId, RestoreSpec } from '@/lib/types';
 import { JobProgressView } from './JobProgress';
 import { readInspection } from './inspection';
 import { isActive, useBackupEvents } from './queries';
-import { TypedConfirmDialog } from './TypedConfirmDialog';
 
 export interface RestoreDialogProps {
   open: boolean;
@@ -62,7 +56,6 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
 
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
-  const [pending, setPending] = useState<ConfirmationRequest | null>(null);
   const [restoreJob, setRestoreJob] = useState<JobId | null>(null);
   const [verifyJob, setVerifyJob] = useState<JobId | null>(null);
 
@@ -85,7 +78,13 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
       if (err.kind === 'integrity' && pass) {
         setPassError(t('restore.wrongPassphrase'));
       } else if (err.kind === 'integrity') {
-        setInfo({ header: null, preamble: null, encrypted: true, native: null });
+        // The header is readable without the passphrase; the content is not.
+        setInfo({
+          header: { formatVersion: 1, compression: 'none', encryption: null, createdAt: '' },
+          preamble: null,
+          encrypted: true,
+          native: null,
+        });
       } else {
         setInfo(null);
         setInspectError(describeError(t, e));
@@ -116,7 +115,9 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
 
   const buildSpec = (): RestoreSpec => {
     const all = view?.objects ?? [];
-    const subset = selected && selected.size < all.length ? [...selected] : undefined;
+    // An integrated backup is one SQL script: it is restored as a whole.
+    const subset =
+      !view?.integrated && selected && selected.size < all.length ? [...selected] : undefined;
     return {
       file: file!,
       targetConnectionId: targetId,
@@ -128,17 +129,21 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
     };
   };
 
-  const start = async (grant: ConfirmationGrant | null) => {
+  const guard = useGuardedCall();
+  const start = async () => {
     setStarting(true);
     setStartError(null);
     try {
-      const jobId = await ipc.restoreStart(buildSpec(), passphrase || null, grant);
+      // A production target (or `clean`) answers `confirmationRequired`: the shared dialog asks
+      // for the typed text and the call is repeated with the grant.
+      const spec = buildSpec();
+      const jobId = await guard((grant) =>
+        ipc.restoreStart(spec, passphrase || null, grant ?? null),
+      );
       setRestoreJob(jobId);
-      setPending(null);
     } catch (e) {
       const err = toIpcError(e);
-      if (err.kind === 'confirmationRequired' && err.confirmation) setPending(err.confirmation);
-      else setStartError(describeError(t, e));
+      if (err.kind !== 'cancelled') setStartError(describeError(t, e));
     } finally {
       setStarting(false);
     }
@@ -165,7 +170,7 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
     !locked &&
     !!targetId &&
     !(info.encrypted && !passphrase) &&
-    !(view.objects.length > 0 && objectsSel.size === 0) &&
+    !(!view.integrated && view.objects.length > 0 && objectsSel.size === 0) &&
     !busy;
 
   return (
@@ -177,7 +182,7 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
         footer={
           <>
             <Button onClick={() => onOpenChange(false)}>{t('actions.close')}</Button>
-            <Button variant="primary" disabled={!canRestore} onClick={() => void start(null)}>
+            <Button variant="primary" disabled={!canRestore} onClick={() => void start()}>
               {starting && <Spinner size={12} className="text-accent-foreground" />}
               {t('restore.start')}
             </Button>
@@ -260,33 +265,37 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
                 <div className="flex flex-col gap-1">
                   <div className="flex items-center justify-between">
                     <Label>{t('restore.objects', { count: view.objects.length })}</Label>
-                    <div className="flex gap-1">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setSelected(new Set(view.objects))}
-                      >
-                        {t('restore.selectAll')}
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-                        {t('restore.selectNone')}
-                      </Button>
-                    </div>
+                    {!view.integrated && (
+                      <div className="flex gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setSelected(new Set(view.objects))}
+                        >
+                          {t('restore.selectAll')}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+                          {t('restore.selectNone')}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                   <ul className="max-h-32 overflow-y-auto rounded-md border border-border p-1">
                     {view.objects.map((name) => (
                       <li key={name}>
                         <label className="flex items-center gap-2 px-1 py-0.5 text-xs">
-                          <Checkbox
-                            checked={objectsSel.has(name)}
-                            aria-label={name}
-                            onCheckedChange={(v) => {
-                              const next = new Set(objectsSel);
-                              if (v === true) next.add(name);
-                              else next.delete(name);
-                              setSelected(next);
-                            }}
-                          />
+                          {!view.integrated && (
+                            <Checkbox
+                              checked={objectsSel.has(name)}
+                              aria-label={name}
+                              onCheckedChange={(v) => {
+                                const next = new Set(objectsSel);
+                                if (v === true) next.add(name);
+                                else next.delete(name);
+                                setSelected(next);
+                              }}
+                            />
+                          )}
                           <span className="font-mono">{name}</span>
                         </label>
                       </li>
@@ -392,12 +401,6 @@ function RestoreBody({ onOpenChange, initialFile = null }: RestoreDialogProps) {
           )}
         </div>
       </DialogContent>
-      <TypedConfirmDialog
-        request={pending}
-        message={clean ? t('confirm.cleanMessage') : t('confirm.productionMessage')}
-        onCancel={() => setPending(null)}
-        onConfirm={(grant) => void start(grant)}
-      />
     </>
   );
 }

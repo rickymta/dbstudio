@@ -5,7 +5,8 @@
 #
 #   server.crt/.key      pg16, mysql8 (localhost / 127.0.0.1)
 #   other-ca.crt/.key    unrelated CA: verification against it must fail
-#   mongo.pem            mongo7 server cert + key combined (+ ca.crt as the CA file)
+#   mongo.pem            mongo7 server cert + key combined (+ ca.crt as the CA file);
+#                        EKU serverAuth,clientAuth (re-issued when it lacks clientAuth)
 #   mongo-client.pem     client cert + key combined (Mongo X.509-style tests, CN=dbstudio-client)
 #   redis.crt/.key       redis7 server cert + key (ca.crt is the CA)
 set -eu
@@ -57,8 +58,20 @@ if [ ! -f redis.crt ] || [ ! -f redis.key ]; then
   echo "generated redis.crt"
 fi
 
+# The Mongo server certificate doubles as the replica-set member certificate, so it needs both
+# serverAuth and clientAuth. A mongo.pem generated earlier without clientAuth is re-issued (the CA
+# is untouched). To force a new one: rm docker/certs/mongo.pem && docker/gen-certs.sh, then
+# recreate the mongo containers (the mongod keyFile / TLS files are read at start-up).
+mongo_ext="$san
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth,clientAuth"
+if [ -f mongo.pem ] && ! openssl x509 -in mongo.pem -noout -text 2>/dev/null | grep -q "Client Authentication"; then
+  echo "mongo.pem has no clientAuth extended key usage: re-issuing it"
+  rm -f mongo.pem
+fi
 if [ ! -f mongo.pem ]; then
-  issue mongo-srv localhost "$srv_ext"
+  issue mongo-srv localhost "$mongo_ext"
   cat mongo-srv.crt mongo-srv.key > mongo.pem
   rm -f mongo-srv.crt mongo-srv.key
   echo "generated mongo.pem"

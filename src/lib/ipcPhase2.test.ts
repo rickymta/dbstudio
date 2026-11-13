@@ -62,7 +62,7 @@ describe('mock sessions and leases', () => {
       events.push(e.type);
       if (e.type === 'statementStart') expect(e.start.range).toEqual({ start: 0, end: 8 });
     });
-    expect(events).toEqual(['statementStart', 'columns', 'statementEnd']);
+    expect(events).toEqual(['statementStart', 'columns', 'rows', 'statementEnd']);
     expect(res.summary.statements).toBe(1);
     expect((await ipc.leaseBegin(lease.leaseId, {})).transaction).toBe('active');
     await expect(ipc.leaseSetAutoCommit(lease.leaseId, true)).rejects.toMatchObject({
@@ -76,7 +76,7 @@ describe('mock sessions and leases', () => {
   it('analyzes scripts and runs query_execute', async () => {
     const s = await open();
     const a = await ipc.scriptAnalyze(s.sessionId, 'drop table x');
-    expect(a.statements[0]).toMatchObject({ verb: 'DROP', class: { kind: 'unknown' } });
+    expect(a.statements[0]).toMatchObject({ verb: 'DROP', class: { kind: 'ddl' } });
     expect((await ipc.scriptAnalyze(s.sessionId, '  ')).statements).toEqual([]);
     const events: string[] = [];
     const r = await ipc.queryExecute(s.sessionId, { text: 'select 1', queryId: 'q' }, (e) =>
@@ -118,21 +118,28 @@ describe('mock stores and stubs', () => {
     await expect(
       ipc.changesApply(s.sessionId, { model: 'rows', table, keyColumns: [], changes: [] }),
     ).rejects.toMatchObject({ kind: 'unsupported' });
-    await expect(
-      ipc.planExplain(s.sessionId, null, { queryId: 'q', text: 'select 1' }),
-    ).rejects.toMatchObject({ kind: 'unsupported' });
+    // Plans are answered with captured fixtures since package E.
+    expect(
+      (await ipc.planExplain(s.sessionId, null, { queryId: 'q', text: 'select 1' })).raw.format,
+    ).toBe('postgresJson');
     expect((await ipc.schemaModel(s.sessionId, { scope: ROOT_PATH })).tables).toEqual([]);
     expect(await ipc.ddlGenerate(s.sessionId, { scope: ROOT_PATH })).toEqual([]);
     expect(await ipc.jobsList()).toEqual([]);
     expect(await ipc.backupJobsList()).toEqual([]);
     expect(await ipc.exportPresetsList()).toEqual([]);
-    await expect(ipc.exportStart({} as never)).rejects.toMatchObject({ kind: 'unsupported' });
+    await expect(ipc.exportStart({ destination: { path: '' } } as never)).rejects.toMatchObject({
+      kind: 'permission',
+    });
     expect(await ipc.filePickSave('a.csv', [])).toBeNull();
     expect(await ipc.backgroundGet()).toEqual({ closeToTray: 'auto', autostart: false });
     expect((await ipc.driverDiagnostics('oracle')).status.state).toBe('planned');
-    await expect(ipc.connectionParseUri('mongodb://x')).rejects.toMatchObject({
-      kind: 'unsupported',
+    // Only `mongodb://` URIs are understood by the browser mock.
+    expect((await ipc.connectionParseUri('mongodb://x')).profile).toMatchObject({
+      kind: 'mongodb',
+      host: 'x',
+      port: 27017,
     });
+    await expect(ipc.connectionParseUri('postgres://x')).rejects.toMatchObject({ kind: 'other' });
   });
 
   it('pages the object tree', async () => {

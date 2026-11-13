@@ -1,0 +1,97 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Append",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 13.67,
+      "Total Cost": 24.83,
+      "Plan Rows": 112,
+      "Plan Width": 36,
+      "Subplans Removed": 0,
+      "Plans": [
+        {
+          "Node Type": "Subquery Scan",
+          "Parent Relationship": "Member",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Alias": "*SELECT* 1",
+          "Startup Cost": 13.67,
+          "Total Cost": 15.73,
+          "Plan Rows": 103,
+          "Plan Width": 36,
+          "Plans": [
+            {
+              "Node Type": "WindowAgg",
+              "Parent Relationship": "Subquery",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 13.67,
+              "Total Cost": 15.73,
+              "Plan Rows": 103,
+              "Plan Width": 40,
+              "Plans": [
+                {
+                  "Node Type": "Sort",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Startup Cost": 13.67,
+                  "Total Cost": 13.92,
+                  "Plan Rows": 103,
+                  "Plan Width": 12,
+                  "Sort Key": ["orders.customer_id", "orders.id"],
+                  "Plans": [
+                    {
+                      "Node Type": "Index Scan",
+                      "Parent Relationship": "Outer",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Scan Direction": "Forward",
+                      "Index Name": "orders_pkey",
+                      "Relation Name": "orders",
+                      "Alias": "orders",
+                      "Startup Cost": 0.42,
+                      "Total Cost": 10.22,
+                      "Plan Rows": 103,
+                      "Plan Width": 12,
+                      "Index Cond": "(id < 100)"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "Node Type": "Subquery Scan",
+          "Parent Relationship": "Member",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Alias": "*SELECT* 2",
+          "Startup Cost": 0.28,
+          "Total Cost": 8.55,
+          "Plan Rows": 9,
+          "Plan Width": 36,
+          "Plans": [
+            {
+              "Node Type": "Index Only Scan",
+              "Parent Relationship": "Subquery",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Scan Direction": "Forward",
+              "Index Name": "customers_pkey",
+              "Relation Name": "customers",
+              "Alias": "customers",
+              "Startup Cost": 0.28,
+              "Total Cost": 8.43,
+              "Plan Rows": 9,
+              "Plan Width": 8,
+              "Index Cond": "(id < 10)"
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

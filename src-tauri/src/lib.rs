@@ -50,7 +50,14 @@ fn build_state(app: &tauri::App) -> Result<state::AppState, Box<dyn std::error::
     if logging::set_level(settings.log_level) {
         tracing::info!(level = ?settings.log_level, "log level applied from settings");
     }
-    let state = state::AppState::new(state::build_registry(), connections, secrets, host);
+    // The Oracle driver loads Instant Client lazily from the `oracle_client` setting: tell it
+    // where to look before the registry (and its first probe) exists.
+    #[cfg(feature = "oracle")]
+    if let Ok(client) = connections.store().get_oracle_client() {
+        dbstudio_driver_oracle::configure_client(client.lib_dir.as_deref());
+    }
+    let state = state::AppState::new(state::build_registry(), connections, secrets, host)
+        .with_data_dir(data_dir);
     state.events.attach_tauri(app.handle().clone());
     Ok(state)
 }
@@ -66,6 +73,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // The opener plugin is only used from Rust; no capability grants it to the webview.
         .plugin(tauri_plugin_opener::init())
+        // A page (re)load discards the editor tabs that held the leases: close them so no
+        // connection keeps a transaction open for a tab that no longer exists.
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                if let Some(state) = webview.try_state::<state::AppState>() {
+                    let state = state.inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        state.leases.close_all().await;
+                    });
+                }
+            }
+        })
         // The notification and autostart plugins are only used from Rust (see `background`);
         // registering them is side-effect free: nothing is shown and autostart stays off.
         .plugin(tauri_plugin_notification::init())
@@ -86,8 +105,7 @@ pub fn run() {
                 not(feature = "custom-protocol")
             ))]
             bridge::spawn_from_env(state.clone());
-            let data_dir = app.path().app_data_dir()?;
-            background::setup(app.handle(), &state, &data_dir);
+            background::setup(app.handle(), &state);
             app.manage(state);
             Ok(())
         })

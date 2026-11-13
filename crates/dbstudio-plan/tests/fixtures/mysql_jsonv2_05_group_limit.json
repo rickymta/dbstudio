@@ -1,0 +1,82 @@
+{
+  "limit": 10,
+  "query": "/* select#1 */ select `o`.`id` AS `id`,count(`i`.`id`) AS `count(i.id)` from `dbstudio`.`plan_fx_orders` `o` join `dbstudio`.`plan_fx_items` `i` where (`i`.`order_id` = `o`.`id`) group by `o`.`id` order by count(`i`.`id`) desc limit 10",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "alias": "o",
+                      "covering": true,
+                      "operation": "Covering index scan on o using PRIMARY",
+                      "index_name": "PRIMARY",
+                      "table_name": "plan_fx_orders",
+                      "access_type": "index",
+                      "schema_name": "dbstudio",
+                      "used_columns": [
+                        "id"
+                      ],
+                      "estimated_rows": 100270.0,
+                      "index_access_type": "index_scan",
+                      "estimated_total_cost": 10099.25
+                    },
+                    {
+                      "alias": "i",
+                      "covering": true,
+                      "operation": "Covering index lookup on i using order_id (order_id=o.id)",
+                      "index_name": "order_id",
+                      "table_name": "plan_fx_items",
+                      "access_type": "index",
+                      "schema_name": "dbstudio",
+                      "used_columns": [
+                        "id",
+                        "order_id"
+                      ],
+                      "estimated_rows": 2.0,
+                      "lookup_condition": "order_id=o.id",
+                      "index_access_type": "index_lookup",
+                      "estimated_total_cost": 0.25027641832474934
+                    }
+                  ],
+                  "join_type": "inner join",
+                  "operation": "Nested loop inner join",
+                  "access_type": "join",
+                  "estimated_rows": 200540.0,
+                  "join_algorithm": "nested_loop",
+                  "estimated_total_cost": 55248.26646542261
+                }
+              ],
+              "group_by": true,
+              "functions": [
+                "count(i.id)"
+              ],
+              "operation": "Group aggregate: count(i.id)",
+              "access_type": "aggregate",
+              "estimated_rows": 100270.0,
+              "estimated_total_cost": 75302.26646542261
+            }
+          ],
+          "operation": "Stream results",
+          "access_type": "stream",
+          "estimated_rows": 100270.0,
+          "estimated_total_cost": 75302.26646542261
+        }
+      ],
+      "operation": "Sort: count(i.id) DESC, limit input to 10 row(s) per chunk",
+      "access_type": "sort",
+      "sort_fields": [
+        "count(i.id) DESC"
+      ],
+      "per_chunk_limit": 10
+    }
+  ],
+  "operation": "Limit: 10 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "limit_offset": 0
+}

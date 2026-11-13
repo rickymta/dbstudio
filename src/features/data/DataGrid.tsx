@@ -13,7 +13,21 @@ import {
 import { observeElementOffset, observeElementRect, useVirtualizer } from '@tanstack/react-virtual';
 import { useTranslation } from 'react-i18next';
 import type { Value } from '@/lib/types';
+import { CellEditorDialog } from './edit/CellEditorDialog';
+import { EditableCell } from './edit/EditableCell';
+import { editDisplayValue, editEqualsOriginal, needsDialogEditor } from './edit/cellEdit';
+import { patchEditSession, useEditSession } from './edit/editSession';
+import {
+  changeTargets,
+  extractKey,
+  rowKeyString,
+  usePending,
+  usePendingChanges,
+  type PendingInsert,
+  type PendingUpdate,
+} from './edit/pendingChanges';
 import { cn } from '@/lib/cn';
+import type { EditValue } from '@/lib/types';
 import { Spinner } from '@/components/ui/Spinner';
 import { ColumnMenu } from './ColumnMenu';
 import {
@@ -81,6 +95,13 @@ function validRect(
   return r;
 }
 
+/** Pending state of the row being drawn. */
+interface RowContext {
+  insert?: PendingInsert;
+  update?: PendingUpdate;
+  deleted: boolean;
+}
+
 interface DataGridProps {
   tabId: string;
   model: GridModel;
@@ -108,7 +129,29 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
   const cellId = (r: number, c: number) => `${gridId}-r${r}c${c}`;
 
   const { columns, rows } = model;
-  const rowCount = rows.length;
+  const loadedCount = rows.length;
+
+  // Edit mode: pending changes overlay the loaded rows; new rows are shown after them.
+  const pending = usePending(tabId);
+  const session = useEditSession(tabId);
+  const editability = session.editability;
+  const editMode = session.editMode && editability?.editable === true;
+  const keyColumns = editability?.keyColumns;
+  const readOnlyColumns = editability?.readOnlyColumns;
+  const inserts = pending.inserts;
+  const insertCount = inserts.length;
+  // New rows are shown at the top, so loading more pages never moves them.
+  const rowCount = insertCount + loadedCount;
+  const insertAt = (i: number): PendingInsert | undefined =>
+    i < insertCount ? inserts[i] : undefined;
+  const loadedAt = (i: number): Value[] | undefined =>
+    i >= insertCount ? rows[i - insertCount] : undefined;
+  const hasKeyed =
+    Object.keys(pending.updates).length > 0 || Object.keys(pending.deletes).length > 0;
+  const failedTarget = useMemo(() => {
+    if (!session.failure) return null;
+    return changeTargets(pending)[session.failure.index] ?? null;
+  }, [session.failure, pending]);
 
   // Column layout is by NAME; everything below maps to real column indexes (selection, copy,
   // sort and the viewer keep using the real index / name, never the display position).
@@ -259,7 +302,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
       const el = scrollRef.current;
       if (!el) return;
       const top = scrollTopToRevealRow(pos.row, ROW_HEIGHT, el.scrollTop, bodyViewport, scale);
-      if (top !== null) el.scrollTo({ top });
+      if (top !== null && typeof el.scrollTo === 'function') el.scrollTo({ top });
       const free = freeIdx.indexOf(pos.col);
       if (free >= 0) colVirtualizer.scrollToIndex(free);
     },
@@ -269,15 +312,91 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
 
   const copySelected = useCallback(() => {
     if (!selection) return;
-    const value = rows[selection.row]?.[selection.col];
-    if (!value) return;
+    const value = rows[selection.row - insertCount]?.[selection.col];
+    if (!value || selection.row < insertCount) return;
     if (estimateValueSize(value) > LARGE_COPY_BYTES && !window.confirm(t('grid.copyLarge'))) return;
     void navigator.clipboard?.writeText(valueToText(value, timestamp)).catch(() => undefined);
-  }, [rows, selection, t, timestamp]);
+  }, [rows, insertCount, selection, t, timestamp]);
+
+  // -- editing --------------------------------------------------------------------------------
+
+  const startEdit = (pos: CellPos): boolean => {
+    const name = columns[pos.col]?.name;
+    if (!editMode || session.applying || !name || readOnlyColumns?.includes(name)) return false;
+    if (pos.row >= insertCount) {
+      const row = loadedAt(pos.row);
+      if (!row || !extractKey(row, columns, keyColumns ?? [])) return false;
+    }
+    patchEditSession(tabId, { editing: pos });
+    return true;
+  };
+
+  const stopEdit = () => {
+    patchEditSession(tabId, { editing: null });
+    scrollRef.current?.focus({ preventScroll: true });
+  };
+
+  const commitEdit = (pos: CellPos, edit: EditValue) => {
+    const col = columns[pos.col];
+    if (!col) return;
+    const store = usePendingChanges.getState();
+    const ins = insertAt(pos.row);
+    if (ins) {
+      store.setInsertCell(tabId, ins.id, col.name, edit);
+    } else {
+      const row = loadedAt(pos.row);
+      const key = row ? extractKey(row, columns, keyColumns ?? []) : null;
+      const original = row?.[pos.col];
+      if (key && original) {
+        const same = editEqualsOriginal(original, edit);
+        store.setUpdateCell(tabId, key, col.name, same ? null : edit);
+      }
+    }
+    patchEditSession(tabId, { editing: null, failure: null });
+    scrollRef.current?.focus({ preventScroll: true });
+  };
+
+  const deleteSelectedRow = () => {
+    if (!selection) return;
+    const store = usePendingChanges.getState();
+    if (session.applying) return;
+    const ins = insertAt(selection.row);
+    if (ins) {
+      store.removeInsert(tabId, ins.id);
+      patchUi({ selection: null });
+      return;
+    }
+    const row = loadedAt(selection.row);
+    const key = row ? extractKey(row, columns, keyColumns ?? []) : null;
+    if (key) store.toggleDelete(tabId, key);
+  };
+
+  // A new row scrolls into view.
+  const insertCountRef = useRef(inserts.length);
+  useEffect(() => {
+    if (inserts.length > insertCountRef.current) {
+      select({ row: 0, col: selection?.col ?? displayOrder[0] ?? 0 }, true);
+    }
+    insertCountRef.current = inserts.length;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inserts.length]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (session.editing) return; // the cell editor owns the keyboard
     const nCols = displayOrder.length;
     if (rowCount === 0 || nCols === 0) return;
+    if (editMode && selection) {
+      if (e.key === 'F2' || e.key === 'Enter') {
+        e.preventDefault();
+        if (!startEdit(selection)) patchUi({ viewerOpen: true });
+        return;
+      }
+      if (e.key === 'Delete') {
+        e.preventDefault();
+        deleteSelectedRow();
+        return;
+      }
+    }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
       e.preventDefault();
       copySelected();
@@ -483,17 +602,35 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
 
   const renderCell = (
     r: number,
-    row: Value[],
+    row: Value[] | undefined,
     ci: number,
     left: number,
     width: number,
     rowSelected: boolean,
     key: React.Key,
+    ctx: RowContext,
   ) => {
-    const value = row[ci];
-    if (!value) return null;
-    const d = formatCell(value, undefined, timestamp);
+    const col = columns[ci];
+    if (!col) return null;
+    const edit: EditValue | undefined = ctx.insert?.cells[col.name] ?? ctx.update?.cells[col.name];
+    const editing = session.editing?.row === r && session.editing.col === ci;
+    let value = row?.[ci];
+    let isDefault = false;
+    if (edit) {
+      const shown = editDisplayValue(edit, col.valueKind);
+      if (shown) value = shown;
+      else isDefault = true;
+    } else if (!row) {
+      isDefault = true; // a new row's cell nobody typed in: the column default applies
+    }
+    if (!value && !isDefault) return null;
+    const d = isDefault
+      ? { text: t('edit.default'), align: 'left' as const, kind: 'null' as const }
+      : formatCell(value!, undefined, timestamp);
     const selected = rowSelected && selection?.col === ci;
+    const current: Value | EditValue | null = edit ?? row?.[ci] ?? null;
+    const dialog = editing && needsDialogEditor(col, current);
+    const pos = { row: r, col: ci };
     return (
       <div
         key={key}
@@ -502,15 +639,40 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
         aria-selected={selected || undefined}
         data-r={r}
         data-c={ci}
+        data-pending={edit ? (ctx.insert ? 'inserted' : 'updated') : undefined}
+        title={
+          editMode && readOnlyColumns?.includes(col.name) ? t('edit.generatedColumn') : undefined
+        }
         className={cn(
           'absolute top-0 truncate border-r border-b border-border/60 px-2 leading-[23px] [unicode-bidi:isolate]',
           d.align === 'right' && 'text-right',
           TONE[d.kind],
+          edit && !ctx.insert && 'bg-warning-soft not-italic',
+          ctx.deleted && 'text-muted-foreground line-through',
           selected && 'z-[5] bg-accent/15 not-italic outline-2 -outline-offset-2 outline-accent',
+          editing && !dialog && 'z-[6] overflow-visible p-0',
         )}
         style={{ left, width, height: ROW_HEIGHT }}
       >
-        {d.text}
+        {editing && !dialog ? (
+          <EditableCell
+            column={col}
+            current={current}
+            allowDefault={!!ctx.insert}
+            onCommit={(e) => commitEdit(pos, e)}
+            onCancel={stopEdit}
+          />
+        ) : (
+          d.text
+        )}
+        {dialog && (
+          <CellEditorDialog
+            column={col}
+            current={current}
+            onCommit={(e) => commitEdit(pos, e)}
+            onCancel={stopEdit}
+          />
+        )}
       </div>
     );
   };
@@ -583,21 +745,54 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
               const pos = cellFromEvent(e);
               if (pos) {
                 select(pos, false);
+                if (editMode && startEdit(pos)) return;
                 patchUi({ selection: pos, viewerOpen: true });
               }
             }}
           >
             {vRows.map((vr) => {
-              const row = rows[vr.index];
-              if (!row) return null;
+              const insert = insertAt(vr.index);
+              const row = loadedAt(vr.index);
+              if (!row && !insert) return null;
               const top = rowTop(vr.index, ROW_HEIGHT, realTop, virtualOffset);
               const rowSelected = selection?.row === vr.index;
+              let update: PendingUpdate | undefined;
+              let deleted = false;
+              let rowKey: string | null = null;
+              if (row && hasKeyed && keyColumns) {
+                const key = extractKey(row, columns, keyColumns);
+                if (key) {
+                  rowKey = rowKeyString(key);
+                  update = pending.updates[rowKey];
+                  deleted = rowKey in pending.deletes;
+                }
+              }
+              const ctx: RowContext = { insert, update, deleted };
+              const rowState = insert
+                ? 'inserted'
+                : deleted
+                  ? 'deleted'
+                  : update
+                    ? 'updated'
+                    : null;
+              const failed =
+                failedTarget !== null &&
+                (failedTarget.kind === 'insert'
+                  ? insert?.id === failedTarget.id
+                  : rowKey === failedTarget.rowKey);
               return (
                 <div
                   key={vr.index}
                   role="row"
                   aria-rowindex={vr.index + 2}
-                  className="group absolute left-0 flex hover:bg-accent/5"
+                  data-pending={rowState ?? undefined}
+                  data-failed={failed || undefined}
+                  className={cn(
+                    'group absolute left-0 flex hover:bg-accent/5',
+                    rowState === 'inserted' && 'bg-success-soft',
+                    rowState === 'deleted' && 'bg-danger-soft',
+                    failed && 'outline-2 -outline-offset-2 outline-danger',
+                  )}
                   style={{ top, height: ROW_HEIGHT, width: totalWidth }}
                 >
                   <div
@@ -607,7 +802,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
                     )}
                     style={{ width: ROWNUM_WIDTH, height: ROW_HEIGHT }}
                   >
-                    {vr.index + 1}
+                    {insert ? '+' : deleted ? '\u2212' : vr.index + 1}
                   </div>
                   {pinnedIdx.length > 0 && (
                     <div
@@ -623,6 +818,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
                           pinnedWidths[i]!,
                           rowSelected,
                           `p${ci}`,
+                          ctx,
                         ),
                       )}
                     </div>
@@ -631,7 +827,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
                     const ci = freeIdx[vc.index];
                     return ci === undefined
                       ? null
-                      : renderCell(vr.index, row, ci, vc.start, vc.size, rowSelected, vc.key);
+                      : renderCell(vr.index, row, ci, vc.start, vc.size, rowSelected, vc.key, ctx);
                   })}
                 </div>
               );

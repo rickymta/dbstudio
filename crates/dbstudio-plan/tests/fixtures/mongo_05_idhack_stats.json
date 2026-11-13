@@ -1,0 +1,89 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "shop.customers",
+    "parsedQuery": {},
+    "indexFilterSet": false,
+    "queryHash": "3F4A9C21",
+    "planCacheKey": "7B1D2E90",
+    "optimizationTimeMillis": {
+      "$numberInt": "0"
+    },
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "IDHACK"
+    },
+    "rejectedPlans": []
+  },
+  "executionStats": {
+    "executionSuccess": true,
+    "nReturned": {
+      "$numberInt": "1"
+    },
+    "executionTimeMillis": {
+      "$numberInt": "0"
+    },
+    "totalKeysExamined": {
+      "$numberInt": "1"
+    },
+    "totalDocsExamined": {
+      "$numberInt": "1"
+    },
+    "executionStages": {
+      "stage": "IDHACK",
+      "nReturned": {
+        "$numberInt": "1"
+      },
+      "executionTimeMillisEstimate": {
+        "$numberInt": "0"
+      },
+      "works": {
+        "$numberInt": "2"
+      },
+      "advanced": {
+        "$numberInt": "1"
+      },
+      "needTime": {
+        "$numberInt": "0"
+      },
+      "needYield": {
+        "$numberInt": "0"
+      },
+      "saveState": {
+        "$numberInt": "0"
+      },
+      "restoreState": {
+        "$numberInt": "0"
+      },
+      "isEOF": {
+        "$numberInt": "1"
+      },
+      "keysExamined": {
+        "$numberInt": "1"
+      },
+      "docsExamined": {
+        "$numberInt": "1"
+      }
+    }
+  },
+  "command": {
+    "find": "customers",
+    "filter": {
+      "_id": {
+        "$oid": "6650f1c2a1b2c3d4e5f60718"
+      }
+    },
+    "$db": "shop"
+  },
+  "serverInfo": {
+    "host": "mongo7",
+    "port": {
+      "$numberInt": "27017"
+    },
+    "version": "7.0.14",
+    "gitVersion": "ee6d8a1ac9f9ee5c5e1c8c4e5d3d5a0c3d2a1b0f"
+  },
+  "ok": 1.0
+}

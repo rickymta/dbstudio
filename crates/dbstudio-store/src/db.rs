@@ -199,11 +199,6 @@ pub(crate) fn invalid(msg: impl Display) -> Error {
     Error::Storage(format!("invalid data: {msg}"))
 }
 
-/// Error returned by repository methods whose implementation belongs to a later work package.
-pub(crate) fn not_implemented<T>(what: &str) -> Result<T> {
-    Err(Error::Unsupported(format!("{what} (not implemented yet)")))
-}
-
 /// Current time as an ISO-8601 (RFC 3339, UTC) string.
 pub(crate) fn now_iso() -> String {
     OffsetDateTime::now_utc()

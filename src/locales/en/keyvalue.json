@@ -2,8 +2,149 @@
   "tab": {
     "title": "Key"
   },
-  "placeholder": {
-    "title": "Key",
-    "description": "The key viewer is not available yet."
+  "actions": {
+    "cancel": "Cancel",
+    "close": "Close",
+    "delete": "Delete",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "ttl": "TTL",
+    "rename": "Rename",
+    "deleteKey": "Delete key"
+  },
+  "header": {
+    "ttl": "Time to live",
+    "persistent": "No expiry",
+    "expired": "Expired",
+    "length": "Length",
+    "memory": "Memory",
+    "encoding": "Encoding"
+  },
+  "emptyValue": "(empty)",
+  "noEntries": "No entries.",
+  "edit": {
+    "hint": "Double-click to edit",
+    "cell": "Edit value"
+  },
+  "loaded": "{{loaded}} of {{total}} loaded",
+  "loadMore": "Load more",
+  "search": {
+    "label": "Search pattern",
+    "placeholder": "Glob pattern, e.g. user*",
+    "apply": "Search",
+    "clear": "Clear"
+  },
+  "missing": {
+    "title": "Key not found",
+    "description": "The key does not exist (it may have been deleted, renamed or expired)."
+  },
+  "error": {
+    "title": "Could not read the key"
+  },
+  "string": {
+    "mode": "Display mode",
+    "modes": {
+      "text": "Text",
+      "json": "JSON",
+      "hex": "Hex"
+    },
+    "value": "String value",
+    "truncated": "The value is truncated ({{shown}} of {{total}} bytes shown); editing is disabled to avoid losing data.",
+    "notConvertible": "This value cannot be shown in that mode.",
+    "invalidJson": "Not valid JSON",
+    "invalidHex": "Not valid hex.",
+    "revert": "Revert",
+    "save": "Stage change",
+    "bytes": "{{count}} B"
+  },
+  "hash": {
+    "field": "Field",
+    "value": "Value",
+    "newField": "New field",
+    "newValue": "New value",
+    "add": "Add field"
+  },
+  "list": {
+    "index": "Index",
+    "value": "Value",
+    "newValue": "New element",
+    "pushHead": "Push to head",
+    "pushTail": "Push to tail"
+  },
+  "set": {
+    "member": "Member",
+    "newMember": "New member",
+    "add": "Add member"
+  },
+  "zset": {
+    "member": "Member",
+    "score": "Score",
+    "newMember": "New member",
+    "newScore": "New score",
+    "add": "Add member"
+  },
+  "stream": {
+    "id": "ID",
+    "fields": "Fields",
+    "newId": "Entry ID",
+    "idAuto": "ID (auto)",
+    "newFields": "Entry fields",
+    "fieldsHint": "One field=value per line",
+    "add": "Add entry",
+    "groups": "Consumer groups: {{count}}"
+  },
+  "json": {
+    "readOnly": "RedisJSON values are read-only here."
+  },
+  "unsupported": {
+    "title": "Unsupported type: {{type}}",
+    "description": "DBStudio cannot display or edit this key type yet."
+  },
+  "pending": {
+    "noRollback": "Redis does not roll back: changes are applied one by one.",
+    "discard": "Discard",
+    "preview": "Preview commands",
+    "apply": "Apply",
+    "count": "Pending changes: {{count}}"
+  },
+  "preview": {
+    "title": "Commands to run",
+    "description": "These Redis commands will be sent in order."
+  },
+  "apply": {
+    "failed": "Change #{{index}} failed: {{message}}. Redis does not roll back: {{applied}} earlier change(s) were already applied.",
+    "done": "Changes applied: {{count}}"
+  },
+  "ttl": {
+    "title": "Expiry",
+    "description": "Seconds until the key expires.",
+    "seconds": "Seconds",
+    "set": "Set TTL",
+    "persist": "Remove TTL"
+  },
+  "rename": {
+    "title": "Rename key",
+    "newName": "New key name",
+    "apply": "Rename"
+  },
+  "delete": {
+    "title": "Delete key?",
+    "description": "The key \"{{name}}\" will be deleted. This cannot be undone."
+  },
+  "deletePattern": {
+    "title": "Delete keys by pattern",
+    "description": "Deletes every key of the database that matches the glob pattern.",
+    "pattern": "Pattern",
+    "hint": "Glob syntax: * any text, ? one character, [ab] a set. Matches the full key name.",
+    "start": "Delete matching keys",
+    "running": "Deleted {{done}} of {{total}} keys...",
+    "cancelJob": "Cancel job",
+    "status": {
+      "failed": "The job failed after deleting {{count}} keys.",
+      "cancelled": "Cancelled after deleting {{count}} keys.",
+      "running": "Running",
+      "queued": "Queued",
+      "succeeded": "Done. Keys deleted: {{count}}."
+    }
   }
 }

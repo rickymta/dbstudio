@@ -1,10 +1,12 @@
 import { backupMock, resetMockBackup } from './backup';
 import { mockChildren, mockObjectDdl, mockTableDetails } from './catalog';
+import { mockParseMongoUri } from './catalogMongo';
 import { changesMock } from './changes';
 import { erdMock, resetMockErd } from './erd';
 import { exportMock, resetMockExport } from './export';
 import { historyMock, resetMockHistory } from './history';
 import { jobsMock, resetMockJobs } from './jobs';
+import { resetMockRedis } from './catalogRedis';
 import { keyvalueMock } from './keyvalue';
 import { leasesMock, resetMockLeases } from './leases';
 import { planMock } from './plan';
@@ -13,8 +15,8 @@ import * as data from './data';
 import { mockObjectSearch } from './search';
 import * as sessions from './sessions';
 import * as settings from './settings';
-import { ipcError, sleep } from './util';
-import type { DbKind, DriverDiagnostics, ParsedConnectionUri } from '../types';
+import { sleep } from './util';
+import type { DbKind, DriverDiagnostics } from '../types';
 import { mockDriverFor } from './drivers';
 
 export { mockAppInfo, mockDrivers } from './drivers';
@@ -31,6 +33,7 @@ export function resetMockPhase2(): void {
   resetMockJobs();
   resetMockExport();
   resetMockBackup();
+  resetMockRedis();
 }
 
 type Path = Parameters<typeof mockChildren>[1];
@@ -64,10 +67,7 @@ export const mock = {
   settingsGet: settings.settingsGet,
   settingsSet: settings.settingsSet,
   saveCellValue: settings.saveCellValue,
-  async connectionParseUri(uri: string): Promise<ParsedConnectionUri> {
-    void uri;
-    throw ipcError('unsupported', 'URI parsing is not available in the browser mock');
-  },
+  connectionParseUri: mockParseMongoUri,
   async driverDiagnostics(kind: DbKind): Promise<DriverDiagnostics> {
     return { status: mockDriverFor(kind).status, message: '', helpUrl: null };
   },

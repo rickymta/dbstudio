@@ -5,8 +5,6 @@
 //! ([`on_second_instance`]), the window event hook ([`on_window_event`]), [`setup`] (tray,
 //! scheduler, hidden start) and the autostart launch argument [`BACKGROUND_ARG`].
 
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use dbstudio_backup::{BackupJob, BackupRun, RunStatus};
@@ -23,16 +21,7 @@ pub const MAIN_WINDOW: &str = "main";
 /// Argument the autostart entry passes: start hidden in the tray.
 pub const BACKGROUND_ARG: &str = "--background";
 
-static LOCKS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static TRAY_READY: AtomicBool = AtomicBool::new(false);
-
-/// Directory of the per-job lock files, shared with `dbstudio-cli` (`<data dir>/locks`).
-pub fn locks_dir() -> PathBuf {
-    LOCKS_DIR
-        .get()
-        .cloned()
-        .unwrap_or_else(|| std::env::temp_dir().join("dbstudio-locks"))
-}
 
 /// Whether a tray icon exists (closing the window must not hide the app without one).
 pub fn tray_ready() -> bool {
@@ -113,8 +102,7 @@ pub fn on_second_instance(app: &AppHandle, _args: Vec<String>, _cwd: String) {
 }
 
 /// Start-up wiring: lock directory, tray icon, hidden start at login, scheduler.
-pub fn setup(app: &AppHandle, state: &AppState, data_dir: &Path) {
-    let _ = LOCKS_DIR.set(data_dir.join("locks"));
+pub fn setup(app: &AppHandle, state: &AppState) {
     match crate::tray::install(app) {
         Ok(()) => set_tray_ready(true),
         Err(e) => {

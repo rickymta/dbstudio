@@ -16,6 +16,7 @@
     "format": {
       "delimiter": ",",
       "encoding": "utf8Bom",
+      "excelSafe": false,
       "header": true,
       "kind": "csv",
       "lineEnding": "crlf",

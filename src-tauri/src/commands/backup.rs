@@ -60,7 +60,7 @@ pub(crate) fn run_env(state: &AppState) -> RunEnv {
         service: state.connections.clone(),
         secrets: state.secrets.clone(),
         registry: state.registry.clone(),
-        locks_dir: crate::background::locks_dir(),
+        locks_dir: state.locks_dir(),
     }
 }
 

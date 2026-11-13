@@ -7,6 +7,19 @@ use dbstudio_core::{ScriptDialect, Value, ValueKind};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dialect(pub ScriptDialect);
 
+/// Dialect of a MySQL / MariaDB session from its `sql_mode` value (`NO_BACKSLASH_ESCAPES`
+/// switches off backslash escapes in strings). `ANSI_QUOTES` (double quotes as identifiers) is
+/// not modelled: `"x"` lexes as a string, which only matters for text that mixes both.
+pub fn mysql_dialect_from_sql_mode(sql_mode: &str, mariadb: bool) -> ScriptDialect {
+    let no_bs = sql_mode
+        .split(',')
+        .any(|m| m.trim().eq_ignore_ascii_case("NO_BACKSLASH_ESCAPES"));
+    ScriptDialect::MySql {
+        mariadb,
+        backslash_escapes: !no_bs,
+    }
+}
+
 /// Oracle string literals are limited to 4000 bytes; longer text becomes `TO_CLOB(..)||..`.
 const ORACLE_CHUNK: usize = 4000;
 
@@ -34,6 +47,11 @@ impl Dialect {
             } => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''")),
             ScriptDialect::MsSql => format!("N'{}'", s.replace('\'', "''")),
             ScriptDialect::Oracle => oracle_text(s),
+            // Safe whatever `standard_conforming_strings` is: with a backslash use the
+            // escape string form.
+            ScriptDialect::Postgres if s.contains('\\') => {
+                format!("E'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
+            }
             _ => format!("'{}'", s.replace('\'', "''")),
         }
     }
@@ -218,6 +236,111 @@ mod tests {
         assert_eq!(
             Dialect(ScriptDialect::Oracle).type_for(ValueKind::Bool),
             "number(1)"
+        );
+    }
+
+    #[test]
+    fn literals_are_single_tokens() {
+        // Whatever the content, a text literal lexes as exactly one string token.
+        for d in [
+            ScriptDialect::Postgres,
+            MY,
+            ScriptDialect::MsSql,
+            ScriptDialect::Oracle,
+        ] {
+            for s in [
+                "",
+                "plain",
+                "it's",
+                "a\\b",
+                "'; drop table x; --",
+                "\\'",
+                "é😀",
+                "a\nb",
+                "\"q\"",
+            ] {
+                let lit = Dialect(d).literal_text(s);
+                let toks: Vec<_> = crate::lexer::tokenize(d, &lit)
+                    .into_iter()
+                    .filter(|t| t.kind != crate::lexer::TokenKind::Whitespace)
+                    .collect();
+                assert_eq!(toks.len(), 1, "{d:?} {s:?} -> {lit}");
+                assert_eq!(toks[0].kind, crate::lexer::TokenKind::String);
+                assert_eq!(crate::split(d, &lit).len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn identifiers_are_single_tokens() {
+        for d in [
+            ScriptDialect::Postgres,
+            MY,
+            ScriptDialect::MsSql,
+            ScriptDialect::Oracle,
+        ] {
+            for s in ["a", "we ird", "a\"b", "a`b", "a]b", "x;y", "é"] {
+                let q = Dialect(d).quote_ident(s);
+                let toks: Vec<_> = crate::lexer::tokenize(d, &q);
+                assert_eq!(toks.len(), 1, "{d:?} {s:?} -> {q}");
+                assert_eq!(toks[0].kind, crate::lexer::TokenKind::QuotedIdent);
+            }
+        }
+    }
+
+    #[test]
+    fn more_value_literals() {
+        let pg = Dialect(ScriptDialect::Postgres);
+        assert_eq!(pg.literal(&Value::UInt(7)), "7");
+        assert_eq!(pg.literal(&Value::Float(f64::NAN)), "'NaN'");
+        assert_eq!(pg.literal(&Value::Float(f64::INFINITY)), "'inf'");
+        assert_eq!(pg.literal(&Value::Decimal("NaN".into())), "'NaN'");
+        assert_eq!(pg.literal(&Value::Uuid("u'x".into())), "'u''x'");
+        assert_eq!(Dialect(MY).literal(&Value::Bool(true)), "TRUE");
+        assert_eq!(
+            Dialect(ScriptDialect::MsSql).literal(&Value::Bytes(vec![1, 255])),
+            "0x01ff"
+        );
+        assert_eq!(
+            Dialect(ScriptDialect::Oracle).literal(&Value::Bool(true)),
+            "1"
+        );
+    }
+
+    #[test]
+    fn postgres_literal_with_backslash_is_an_escape_string() {
+        let pg = Dialect(ScriptDialect::Postgres);
+        assert_eq!(pg.literal_text("a\\b"), "E'a\\\\b'");
+        assert_eq!(
+            pg.literal_text("\\'; drop table x; --"),
+            "E'\\\\''; drop table x; --'"
+        );
+        assert_eq!(pg.literal_text("plain"), "'plain'");
+        // other dialects are unchanged
+        assert_eq!(
+            Dialect(ScriptDialect::MsSql).literal_text("a\\b"),
+            "N'a\\b'"
+        );
+    }
+
+    #[test]
+    fn sql_mode_to_dialect() {
+        let d = |m, mariadb| mysql_dialect_from_sql_mode(m, mariadb);
+        assert_eq!(d("", false), MY);
+        assert_eq!(d("STRICT_TRANS_TABLES,ONLY_FULL_GROUP_BY", false), MY);
+        assert_eq!(
+            d("ANSI,NO_BACKSLASH_ESCAPES", true),
+            ScriptDialect::MySql {
+                mariadb: true,
+                backslash_escapes: false
+            }
+        );
+        assert_eq!(
+            d("no_backslash_escapes", false),
+            ScriptDialect::MySql {
+                mariadb: false,
+                backslash_escapes: false
+            }
         );
     }
 }

@@ -1,9 +1,177 @@
 {
   "tab": {
-    "title": "Trình soạn thảo"
-  },
-  "placeholder": {
     "title": "Trình soạn thảo",
-    "description": "Trình soạn thảo truy vấn chưa khả dụng."
+    "untitled": "Truy vấn {{n}}"
+  },
+  "editor": {
+    "label": "Trình soạn thảo truy vấn"
+  },
+  "toolbar": {
+    "label": "Thanh công cụ trình soạn thảo",
+    "run": "Chạy",
+    "runAll": "Chạy cả script",
+    "cancel": "Huỷ",
+    "format": "Định dạng SQL",
+    "open": "Mở file .sql",
+    "save": "Lưu file .sql",
+    "saveAs": "Lưu thành…",
+    "history": "Lịch sử và truy vấn đã lưu",
+    "shortcuts": "Phím tắt",
+    "context": "Database và schema",
+    "explain": "Giải thích kế hoạch"
+  },
+  "run": {
+    "nothing": "Không có gì để chạy."
+  },
+  "connection": {
+    "notConnected": "Chưa kết nối: hãy kết nối để chạy câu lệnh.",
+    "notConnectedTo": "Chưa kết nối tới {{name}}. Hãy kết nối để chạy câu lệnh.",
+    "connect": "Kết nối",
+    "reconnect": "Kết nối lại",
+    "broken": "Kết nối đã bị mất. Hãy kết nối lại để tiếp tục.",
+    "leaseFailed": "Không mở được kết nối riêng cho tab này: {{message}}"
+  },
+  "results": {
+    "empty": "Chưa có kết quả",
+    "emptyHint": "Chạy một câu lệnh để xem kết quả ở đây.",
+    "tabs": "Kết quả",
+    "tabLabel": "#{{n}} {{verb}}",
+    "messages": "Thông điệp",
+    "noMessages": "Không có thông điệp.",
+    "noResults": "Lần chạy không có kết quả.",
+    "running": "Đang chạy…",
+    "cancelled": "Đã huỷ",
+    "failed": "Lỗi",
+    "statements": "{{count}} câu lệnh",
+    "elapsed": "{{ms}} ms",
+    "rows": "{{formatted}} dòng",
+    "affected": "Ảnh hưởng {{formatted}} dòng",
+    "done": "Câu lệnh đã hoàn tất",
+    "errorAt": "Dòng {{line}}, cột {{column}}",
+    "truncated": "Đang hiển thị {{formatted}} dòng đầu tiên.",
+    "truncatedFinal": "Đang hiển thị {{formatted}} dòng; các dòng còn lại chưa được tải.",
+    "moreHidden": "+ {{count}} kết quả nữa (không hiển thị)",
+    "loadMore": "Tải thêm",
+    "cellViewer": "Trình xem ô",
+    "viewTable": "Bảng",
+    "viewDocuments": "Tài liệu"
+  },
+  "tx": {
+    "autoCommit": "Tự động commit",
+    "begin": "Bắt đầu",
+    "commit": "Commit",
+    "rollback": "Rollback",
+    "cancel": "Huỷ",
+    "lostError": "Kết nối đã mất nên transaction không còn (server đã rollback).",
+    "dismiss": "Đóng",
+    "lost": "Kết nối bị mất khi đang có transaction mở. Server đã rollback transaction đó.",
+    "decideTitle": "Đang có transaction mở",
+    "decideDescription": "Muốn chuyển sang tự động commit thì phải kết thúc transaction đang mở trước.",
+    "commitAndSwitch": "Commit rồi chuyển",
+    "rollbackAndSwitch": "Rollback rồi chuyển",
+    "status": {
+      "idleAuto": "Tự động commit",
+      "idleManual": "Thủ công: chưa có transaction",
+      "active": "Transaction đang mở",
+      "failed": "Transaction lỗi: hãy rollback",
+      "unknown": "Không rõ trạng thái transaction"
+    }
+  },
+  "close": {
+    "title": "Transaction vẫn đang mở",
+    "description": "Tab này có transaction chưa commit. Hãy commit hoặc rollback trước khi đóng tab.",
+    "commit": "Commit rồi đóng",
+    "rollback": "Rollback rồi đóng",
+    "cancel": "Giữ tab lại"
+  },
+  "params": {
+    "title": "Tham số truy vấn",
+    "description": "Nhập giá trị cho từng tham số của câu lệnh.",
+    "run": "Chạy",
+    "cancel": "Huỷ",
+    "typeOf": "Kiểu của {{name}}",
+    "valueOf": "Giá trị của {{name}}",
+    "numberInvalid": "Không phải số hợp lệ.",
+    "rawEmpty": "Biểu thức đang trống.",
+    "kind": {
+      "text": "Văn bản",
+      "number": "Số",
+      "bool": "Logic",
+      "null": "NULL",
+      "raw": "Biểu thức SQL"
+    }
+  },
+  "format": {
+    "failed": "Không định dạng được: hãy kiểm tra cú pháp SQL."
+  },
+  "file": {
+    "saved": "Đã lưu {{name}}",
+    "saveFailed": "Không lưu được file: {{message}}",
+    "openFailed": "Không mở được file: {{message}}",
+    "unsaved": "có thay đổi chưa lưu"
+  },
+  "history": {
+    "title": "Lịch sử",
+    "search": "Tìm trong lịch sử",
+    "statusFilter": "Lọc theo trạng thái",
+    "empty": "Lịch sử chưa có truy vấn nào.",
+    "status": {
+      "all": "Tất cả",
+      "ok": "Thành công",
+      "error": "Lỗi",
+      "cancelled": "Đã huỷ",
+      "running": "Đang chạy"
+    },
+    "rows": "{{count}} dòng",
+    "reopen": "Bấm để chèn vào editor",
+    "openNew": "Mở trong tab mới",
+    "delete": "Xoá mục này",
+    "clear": "Xoá lịch sử",
+    "clearTitle": "Xoá toàn bộ lịch sử?",
+    "clearDescription": "Mọi mục của kết nối này sẽ bị xoá và không khôi phục được.",
+    "loadMore": "Tải thêm"
+  },
+  "saved": {
+    "title": "Đã lưu",
+    "empty": "Chưa có truy vấn nào được lưu.",
+    "saveCurrent": "Lưu nội dung hiện tại",
+    "name": "Tên",
+    "folder": "Thư mục",
+    "noFolder": "Không có thư mục",
+    "snippet": "Snippet",
+    "save": "Lưu truy vấn",
+    "newFolder": "Thư mục mới",
+    "addFolder": "Thêm thư mục",
+    "deleteFolder": "Xoá thư mục {{name}}",
+    "insert": "Chèn vào editor",
+    "delete": "Xoá {{name}}"
+  },
+  "console": {
+    "empty": "Gõ lệnh rồi nhấn Enter.",
+    "placeholder": "Lệnh",
+    "input": "Ô nhập lệnh của console",
+    "hints": "Gợi ý lệnh"
+  },
+  "shortcuts": {
+    "title": "Phím tắt",
+    "description": "Phím tắt của trình soạn thảo và của ứng dụng.",
+    "scope": {
+      "editor": "Trong editor",
+      "global": "Mọi nơi"
+    },
+    "action": {
+      "run": "Chạy vùng chọn hoặc câu lệnh tại con trỏ",
+      "runAll": "Chạy cả script",
+      "cancel": "Huỷ câu lệnh đang chạy",
+      "format": "Định dạng SQL",
+      "save": "Lưu file .sql",
+      "open": "Mở file .sql",
+      "history": "Hiện hoặc ẩn lịch sử",
+      "newTab": "Tab editor mới",
+      "closeTab": "Đóng tab",
+      "findObject": "Tìm đối tượng ở thanh bên",
+      "help": "Hiện bảng phím tắt",
+      "explain": "Xem kế hoạch thực thi"
+    }
   }
 }

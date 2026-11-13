@@ -11,6 +11,7 @@ import { ipc } from '@/lib/ipc';
 import type { ObjectKind } from '@/lib/types';
 import { resetMockConnections } from '@/lib/mock';
 import { useSessionsStore } from '@/stores/sessions';
+import { registerTabGuard } from '@/stores/tabGuard';
 import { useTabsStore, WELCOME_TAB } from '@/stores/tabs';
 import { ConnectionsSidebar } from './ConnectionsSidebar';
 
@@ -399,6 +400,53 @@ describe('ConnectionsSidebar', () => {
     await screen.findByTestId('object-tree', {}, WAIT);
     await menuAction(screen.getByRole('treeitem', { name: 'PostgreSQL dev' }), 'Disconnect', user);
     await waitFor(() => expect(screen.queryByTestId('object-tree')).toBeNull(), WAIT);
+  });
+
+  it('asks to trust an unknown SSH host key, then connects again', async () => {
+    const open = vi.spyOn(ipc, 'sessionOpen');
+    open.mockRejectedValueOnce({
+      kind: 'sshHostKey',
+      message: 'bastion',
+      host: 'bastion',
+      port: 22,
+      keyType: 'ssh-ed25519',
+      fingerprint: 'SHA256:abc123',
+      changed: false,
+    });
+    const trust = vi.spyOn(ipc, 'sshTrustHost').mockResolvedValue();
+    const user = setup();
+    await user.dblClick(await profileRow('PostgreSQL dev'));
+    const dialog = await screen.findByRole('dialog', {}, WAIT);
+    expect(dialog).toHaveTextContent('SHA256:abc123');
+    expect(useSessionsStore.getState().sessionsByConnection[PG_DEV]).toBeUndefined();
+    await user.click(within(dialog).getByRole('button', { name: /trust/i }));
+    await waitFor(
+      () => expect(useSessionsStore.getState().sessionsByConnection[PG_DEV]).toBeDefined(),
+      WAIT,
+    );
+    expect(trust).toHaveBeenCalledWith('bastion', 22, 'ssh-ed25519', 'SHA256:abc123');
+    expect(open).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the connection when a tab vetoes the disconnect', async () => {
+    const user = setup();
+    await user.dblClick(await profileRow('PostgreSQL dev'));
+    await screen.findByTestId('object-tree', {}, WAIT);
+    const sessionId = useSessionsStore.getState().sessionsByConnection[PG_DEV]!.sessionId;
+    const tabId = 'guarded-tab';
+    useTabsStore.getState().openTab({
+      id: tabId,
+      kind: 'table',
+      title: 'x',
+      closable: true,
+      payload: { sessionId, connectionId: PG_DEV, path: { segments: [] } },
+    });
+    const off = registerTabGuard(tabId, () => false);
+    await menuAction(screen.getByRole('treeitem', { name: 'PostgreSQL dev' }), 'Disconnect', user);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(useSessionsStore.getState().sessionsByConnection[PG_DEV]).toBeDefined();
+    expect(screen.getByTestId('object-tree')).toBeInTheDocument();
+    off();
   });
 
   it('asks for the password of a profile that does not save one', async () => {

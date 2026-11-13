@@ -1,0 +1,29 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "10099.25"
+    },
+    "table": {
+      "table_name": "plan_fx_orders",
+      "access_type": "ALL",
+      "rows_examined_per_scan": 100270,
+      "rows_produced_per_join": 10027,
+      "filtered": "10.00",
+      "cost_info": {
+        "read_cost": "9096.55",
+        "eval_cost": "1002.70",
+        "prefix_cost": "10099.25",
+        "data_read_per_join": "626K"
+      },
+      "used_columns": [
+        "id",
+        "customer_id",
+        "status",
+        "amount",
+        "created"
+      ],
+      "attached_condition": "(`dbstudio`.`plan_fx_orders`.`status` = 'void')"
+    }
+  }
+}

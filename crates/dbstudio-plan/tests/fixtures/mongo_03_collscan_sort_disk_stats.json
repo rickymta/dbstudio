@@ -1,0 +1,154 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "shop.events",
+    "parsedQuery": {},
+    "indexFilterSet": false,
+    "queryHash": "3F4A9C21",
+    "planCacheKey": "7B1D2E90",
+    "optimizationTimeMillis": {
+      "$numberInt": "0"
+    },
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "SORT",
+      "sortPattern": {
+        "ts": -1
+      },
+      "memLimit": {
+        "$numberInt": "104857600"
+      },
+      "type": "simple",
+      "inputStage": {
+        "stage": "COLLSCAN",
+        "filter": {
+          "kind": {
+            "$eq": "click"
+          }
+        },
+        "direction": "forward"
+      }
+    },
+    "rejectedPlans": []
+  },
+  "executionStats": {
+    "executionSuccess": true,
+    "nReturned": {
+      "$numberInt": "250000"
+    },
+    "executionTimeMillis": {
+      "$numberInt": "2480"
+    },
+    "totalKeysExamined": {
+      "$numberInt": "0"
+    },
+    "totalDocsExamined": {
+      "$numberInt": "1200000"
+    },
+    "executionStages": {
+      "stage": "SORT",
+      "nReturned": {
+        "$numberInt": "250000"
+      },
+      "executionTimeMillisEstimate": {
+        "$numberInt": "2300"
+      },
+      "works": {
+        "$numberInt": "1450003"
+      },
+      "advanced": {
+        "$numberInt": "250000"
+      },
+      "needTime": {
+        "$numberInt": "1200002"
+      },
+      "needYield": {
+        "$numberInt": "0"
+      },
+      "saveState": {
+        "$numberInt": "1450"
+      },
+      "restoreState": {
+        "$numberInt": "1450"
+      },
+      "isEOF": {
+        "$numberInt": "1"
+      },
+      "sortPattern": {
+        "ts": -1
+      },
+      "memLimit": {
+        "$numberInt": "104857600"
+      },
+      "type": "simple",
+      "totalDataSizeSorted": {
+        "$numberLong": "312000000"
+      },
+      "usedDisk": true,
+      "spills": {
+        "$numberInt": "3"
+      },
+      "inputStage": {
+        "stage": "COLLSCAN",
+        "filter": {
+          "kind": {
+            "$eq": "click"
+          }
+        },
+        "nReturned": {
+          "$numberInt": "250000"
+        },
+        "executionTimeMillisEstimate": {
+          "$numberInt": "950"
+        },
+        "works": {
+          "$numberInt": "1200002"
+        },
+        "advanced": {
+          "$numberInt": "250000"
+        },
+        "needTime": {
+          "$numberInt": "950001"
+        },
+        "needYield": {
+          "$numberInt": "0"
+        },
+        "saveState": {
+          "$numberInt": "1450"
+        },
+        "restoreState": {
+          "$numberInt": "1450"
+        },
+        "isEOF": {
+          "$numberInt": "1"
+        },
+        "direction": "forward",
+        "docsExamined": {
+          "$numberInt": "1200000"
+        }
+      }
+    }
+  },
+  "command": {
+    "find": "events",
+    "filter": {
+      "kind": "click"
+    },
+    "sort": {
+      "ts": -1
+    },
+    "allowDiskUse": true,
+    "$db": "shop"
+  },
+  "serverInfo": {
+    "host": "mongo7",
+    "port": {
+      "$numberInt": "27017"
+    },
+    "version": "7.0.14",
+    "gitVersion": "ee6d8a1ac9f9ee5c5e1c8c4e5d3d5a0c3d2a1b0f"
+  },
+  "ok": 1.0
+}

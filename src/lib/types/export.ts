@@ -42,6 +42,8 @@ export interface CsvOptions {
   encoding?: TextEncoding;
   lineEnding?: LineEnding;
   nullText?: string;
+  /** Prefix text cells that start like a formula with `'` (CSV injection). */
+  excelSafe?: boolean;
 }
 
 export interface JsonOptions {

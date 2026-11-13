@@ -1565,7 +1565,7 @@ Quy ước: tham số camelCase phía JS; mỗi command có `*_impl(&AppState, .
 | `object_children_page` | `sessionId, request: ChildrenPageRequest` | `ChildrenPage` | — | L |
 | `key_read` | `sessionId, request: KeyReadRequest` | `KeyValuePage` | — | L |
 | `keys_delete_pattern` | `sessionId, database: ObjectPath, pattern, confirm?` | `JobId` | `job://progress` | L |
-| `connection_parse_uri` | `uri` | `{ profile: ConnectionProfile, hasPassword: boolean }` (mật khẩu giữ trong `PendingSecrets`, trả `pendingSecretId`) | — | K |
+| `connection_parse_uri` | `uri` | `{ profile: ConnectionProfile, hasPassword: boolean }` (mật khẩu bị bỏ, UI nhập lại) | — | K |
 | `driver_diagnostics` | `kind` | `{ status, message, helpUrl? }` | — | J |
 | `ssh_trust_host` | `host, port, keyType, fingerprint` | `()` | — | A |
 | `connection_save` (GĐ1, thêm) | `+ sshSecret?: SecretChange` | như cũ | — | A |

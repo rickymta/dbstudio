@@ -3,6 +3,7 @@
 
 import type {
   BackgroundSettings,
+  BackupHeader,
   BackupInspection,
   BackupJob,
   BackupRun,
@@ -362,6 +363,26 @@ function toolInfo(tool: NativeTool): NativeToolInfo {
   );
 }
 
+function mockHeader(encrypted: boolean): BackupHeader {
+  return {
+    formatVersion: 1,
+    compression: 'gzip',
+    encryption: encrypted
+      ? {
+          alg: 'aes-256-gcm-chunked',
+          kdf: 'argon2id',
+          salt: '00',
+          m: 65536,
+          t: 3,
+          p: 1,
+          noncePrefix: '00',
+          chunkSize: 1048576,
+        }
+      : null,
+    createdAt: '2026-11-01T02:00:00Z',
+  };
+}
+
 export const backupMock = {
   async backupJobsList(): Promise<BackupJob[]> {
     return clone([...jobs].sort((a, b) => a.name.localeCompare(b.name)));
@@ -427,27 +448,37 @@ export const backupMock = {
   async backupInspect(path: string, passphrase: string | null): Promise<BackupInspection> {
     const encrypted = path.includes('enc');
     if (encrypted && passphrase === null) {
-      return { header: null, preamble: null, encrypted: true, native: null };
+      return {
+        header: mockHeader(true),
+        preamble: null,
+        encrypted: true,
+        native: null,
+      };
     }
     checkPassphrase(path, passphrase);
     return {
-      header: {
-        format: 'dbsbak',
-        version: 1,
-        createdAt: '2026-11-01T02:00:00Z',
-        connection: 'MySQL staging',
-        database: 'shop',
-        engine: 'logical',
-        compression: 'gzip',
-      },
+      header: mockHeader(encrypted),
       preamble: {
+        formatVersion: 2,
+        engine: 'logical',
+        createdAt: '2026-11-01T02:00:00Z',
+        database: 'shop',
+        source: {
+          kind: 'mysql',
+          host: 'staging.example',
+          database: 'shop',
+          serverVersion: '8.4.0',
+        },
+        dialect: 'mysql',
+        content: 'both',
         objects: [
           { name: 'shop.customers', kind: 'table' },
           { name: 'shop.orders', kind: 'table' },
           { name: 'shop.order_items', kind: 'table' },
           { name: 'shop.v_revenue', kind: 'view' },
         ],
-        scope: { schema: true, data: true, routines: false, grants: false },
+        tables: 3,
+        unsupported: ['roles and grants', 'server level settings'],
       },
       encrypted,
       native: null,

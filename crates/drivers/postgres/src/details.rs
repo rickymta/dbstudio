@@ -165,8 +165,13 @@ pub async fn table_details(
         .query(
             "SELECT ic.relname::text, i.indisunique, i.indisprimary, am.amname::text, \
                     pg_get_indexdef(i.indexrelid), \
-                    ARRAY(SELECT pg_get_indexdef(i.indexrelid, k, true) \
-                          FROM generate_series(1, i.indnkeyatts::int4) k ORDER BY k)::text[] \
+                    ARRAY(SELECT CASE WHEN i.indkey[k - 1] = 0 \
+                                      THEN '(' || pg_get_indexdef(i.indexrelid, k, true) || ')' \
+                                      ELSE (SELECT a.attname::text FROM pg_attribute a \
+                                            WHERE a.attrelid = i.indrelid \
+                                              AND a.attnum = i.indkey[k - 1]) END \
+                          FROM generate_series(1, i.indnkeyatts::int4) k ORDER BY k)::text[], \
+                    i.indpred IS NOT NULL \
              FROM pg_index i \
              JOIN pg_class ic ON ic.oid = i.indexrelid \
              JOIN pg_am am ON am.oid = ic.relam \
@@ -185,6 +190,7 @@ pub async fn table_details(
             method: Some(r.get(3)),
             definition: Some(r.get(4)),
             columns: r.get(5),
+            partial: r.get(6),
         })
         .collect();
 

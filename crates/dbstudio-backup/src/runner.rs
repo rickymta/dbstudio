@@ -14,6 +14,7 @@ use dbstudio_core::{
 };
 use dbstudio_store::{
     BackupJobRow, BackupRunRow, ConnectionService, SecretStore, backup_secret_account,
+    ssh_secret_account,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -385,22 +386,108 @@ where
 // Connecting
 // ---------------------------------------------------------------------------------------------
 
-/// Profile config, stored password and an open session for `connection_id`.
-pub async fn connect(
-    env: &RunEnv,
-    connection_id: Uuid,
-) -> Result<(ConnectionConfig, Option<Secret>, Arc<dyn Session>)> {
+/// [`dbstudio_ssh::KnownHosts`] backed by the `ssh_known_hosts` table. A host that is unknown or
+/// changed stops the run: nobody is there to confirm the key.
+struct StoreKnownHosts(Arc<ConnectionService>);
+
+impl dbstudio_ssh::KnownHosts for StoreKnownHosts {
+    fn check(
+        &self,
+        host: &str,
+        port: u16,
+        key_type: &str,
+        fingerprint: &str,
+    ) -> dbstudio_ssh::HostKeyStatus {
+        use dbstudio_ssh::HostKeyStatus;
+        match self.0.store().known_hosts_for(host, port) {
+            Ok(keys) if keys.is_empty() => HostKeyStatus::Unknown,
+            Ok(keys) => {
+                if keys
+                    .iter()
+                    .any(|k| k.key_type == key_type && k.fingerprint == fingerprint)
+                {
+                    HostKeyStatus::Known
+                } else {
+                    HostKeyStatus::Changed
+                }
+            }
+            Err(_) => HostKeyStatus::Unknown,
+        }
+    }
+}
+
+/// A connection for one run. With an SSH profile the run opens its own tunnel (the same
+/// bastion, secret and trusted host keys the application uses) that lives as long as this value:
+/// the session connects to its local end and native tools get it as `tunnel_addr`.
+pub struct Connected {
+    /// Profile settings as saved (the real host and port).
+    pub config: ConnectionConfig,
+    /// Stored password.
+    pub secret: Option<Secret>,
+    /// Open session.
+    pub session: Arc<dyn Session>,
+    /// Local end of the SSH tunnel, when the profile has one.
+    pub tunnel_addr: Option<std::net::SocketAddr>,
+    _tunnel: Option<dbstudio_ssh::Tunnel>,
+}
+
+impl std::fmt::Debug for Connected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Connected")
+            .field("config", &self.config)
+            .field("tunnel_addr", &self.tunnel_addr)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Open a session (and the SSH tunnel) for `connection_id`.
+pub async fn connect(env: &RunEnv, connection_id: Uuid) -> Result<Connected> {
     let svc = env.service.clone();
-    let (profile, secret) =
-        tokio::task::spawn_blocking(move || svc.session_credentials(connection_id, None))
-            .await
-            .map_err(|e| Error::Other(format!("background task failed: {e}")))??;
+    let secrets = env.secrets.clone();
+    let (profile, secret, ssh_secret) = tokio::task::spawn_blocking(move || {
+        let (profile, secret) = svc.session_credentials(connection_id, None)?;
+        let ssh_secret = if profile.config.ssh.is_some() {
+            secrets.get_account(&ssh_secret_account(connection_id))?
+        } else {
+            None
+        };
+        Ok::<_, Error>((profile, secret, ssh_secret))
+    })
+    .await
+    .map_err(|e| Error::Other(format!("background task failed: {e}")))??;
     let driver = env.registry.get(profile.config.kind).ok_or_else(|| {
         Error::Unsupported(format!("driver for {}", profile.config.kind.display_name()))
     })?;
+    let config = profile.config;
+    let (driver_config, tunnel) = match &config.ssh {
+        Some(cfg) => {
+            let known = StoreKnownHosts(env.service.clone());
+            let t = dbstudio_ssh::Tunnel::open(
+                cfg,
+                ssh_secret.as_ref(),
+                (config.host.clone(), config.port),
+                &known,
+            )
+            .await?;
+            let mut c = config.clone();
+            c.host = "127.0.0.1".to_string();
+            c.port = t.local_addr().port();
+            if c.tls.server_name.is_none() {
+                c.tls.server_name = Some(config.host.clone());
+            }
+            (c, Some(t))
+        }
+        None => (config.clone(), None),
+    };
     let session: Arc<dyn Session> =
-        Arc::from(driver.connect(&profile.config, secret.as_ref()).await?);
-    Ok((profile.config, secret, session))
+        Arc::from(driver.connect(&driver_config, secret.as_ref()).await?);
+    Ok(Connected {
+        tunnel_addr: tunnel.as_ref().map(dbstudio_ssh::Tunnel::local_addr),
+        config,
+        secret,
+        session,
+        _tunnel: tunnel,
+    })
 }
 
 /// Native tool paths configured in settings.
@@ -426,12 +513,13 @@ pub async fn execute_backup(
     job_name: Option<String>,
     reporter: Arc<dyn JobReporter>,
 ) -> Result<BackupOutcome> {
-    let (config, secret, session) = connect(env, spec.connection_id).await?;
+    let conn = connect(env, spec.connection_id).await?;
+    let session = conn.session.clone();
     let ctx = BackupContext {
         session: session.clone(),
-        config,
-        secret,
-        tunnel_addr: None,
+        config: conn.config.clone(),
+        secret: conn.secret.clone(),
+        tunnel_addr: conn.tunnel_addr,
         reporter,
         job_name,
         tool_overrides: tool_overrides(env)?,
@@ -450,8 +538,9 @@ pub async fn execute_restore(
     passphrase: Option<Secret>,
     reporter: Arc<dyn JobReporter>,
 ) -> Result<RestoreOutcome> {
-    let (config, secret, session) = connect(env, spec.target_connection_id).await?;
-    if config.read_only {
+    let conn = connect(env, spec.target_connection_id).await?;
+    let session = conn.session.clone();
+    if conn.config.read_only {
         let _ = session.close().await;
         return Err(Error::ReadOnlyViolation {
             message: "restore is not allowed on a read-only connection".into(),
@@ -460,9 +549,9 @@ pub async fn execute_restore(
     }
     let ctx = BackupContext {
         session: session.clone(),
-        config,
-        secret,
-        tunnel_addr: None,
+        config: conn.config.clone(),
+        secret: conn.secret.clone(),
+        tunnel_addr: conn.tunnel_addr,
         reporter,
         job_name: None,
         tool_overrides: tool_overrides(env)?,

@@ -2,8 +2,98 @@
   "tab": {
     "title": "Tài liệu"
   },
-  "placeholder": {
-    "title": "Tài liệu",
-    "description": "Giao diện tài liệu chưa khả dụng."
+  "view": {
+    "label": "Chế độ xem",
+    "table": "Bảng",
+    "tree": "Cây",
+    "json": "JSON"
+  },
+  "filter": {
+    "label": "Bộ lọc (EJSON)",
+    "placeholder": "{\"age\": {\"$gt\": 30}}",
+    "apply": "Áp dụng",
+    "clear": "Xoá lọc",
+    "active": "Đang lọc",
+    "errorTitle": "Lọc thất bại",
+    "sort": "Sắp xếp",
+    "clearSort": "Bỏ sắp xếp"
+  },
+  "actions": {
+    "add": "Thêm tài liệu",
+    "edit": "Sửa",
+    "delete": "Xoá"
+  },
+  "locked": {
+    "loading": "Đang kiểm tra khả năng chỉnh sửa của collection...",
+    "readOnlyConnection": "Không thể sửa: kết nối ở chế độ chỉ đọc.",
+    "noUniqueKey": "Không thể sửa: tài liệu không có khoá duy nhất.",
+    "notATable": "Không thể sửa: đối tượng này không phải collection.",
+    "unsupported": "Không hỗ trợ chỉnh sửa ở đây."
+  },
+  "cell": {
+    "fieldOne": "1 trường",
+    "fieldMany": "{{count}} trường",
+    "itemOne": "1 phần tử",
+    "itemMany": "{{count}} phần tử",
+    "null": "null",
+    "missing": "Tài liệu này không có trường đó"
+  },
+  "table": {
+    "rowNumber": "#",
+    "empty": "Collection này chưa có tài liệu nào.",
+    "emptyFiltered": "Không có tài liệu nào khớp bộ lọc.",
+    "columnsTruncated": "Chỉ hiển thị {{count}} khoá đầu tiên thành cột. Dùng chế độ Cây hoặc JSON để xem phần còn lại.",
+    "label": "Tài liệu",
+    "notSortable": "Khoá này không thể dùng để sắp xếp",
+    "sortAscending": "Đang sắp xếp tăng dần",
+    "sortDescending": "Đang sắp xếp giảm dần"
+  },
+  "nav": {
+    "previous": "Tài liệu trước",
+    "next": "Tài liệu sau",
+    "position": "{{index}} / {{total}}",
+    "noSelection": "Chọn một tài liệu ở chế độ Bảng để xem tại đây.",
+    "noDocuments": "Không có tài liệu để hiển thị."
+  },
+  "editor": {
+    "insertTitle": "Thêm tài liệu",
+    "editTitle": "Sửa tài liệu",
+    "description": "Viết tài liệu dưới dạng Extended JSON, ví dụ {\"$oid\": \"...\"} cho ObjectId.",
+    "label": "Tài liệu (EJSON)",
+    "valid": "JSON hợp lệ",
+    "parseError": "Dòng {{line}}, cột {{col}}: {{message}}",
+    "noId": "Tài liệu này không có _id nên không thể sửa.",
+    "preview": "Xem trước lệnh",
+    "previewTitle": "Lệnh sẽ được chạy",
+    "previewFailed": "Xem trước thất bại",
+    "save": "Lưu",
+    "saving": "Đang lưu...",
+    "cancel": "Huỷ",
+    "saveFailed": "Lưu thất bại",
+    "noChanges": "Không có thay đổi để lưu.",
+    "idChanged": "Không thể đổi _id.",
+    "dollarKey": "Không thể lưu khoá cấp cao nhất bắt đầu bằng $: máy chủ sẽ hiểu nhầm là toán tử.",
+    "convertFailed": "Không thể lưu tài liệu này: {{message}}",
+    "notAtomic": "Thay đổi trên máy chủ này không mang tính nguyên tử."
+  },
+  "delete": {
+    "title": "Xoá tài liệu",
+    "description": "Thao tác này xoá vĩnh viễn tài liệu có _id bên dưới và không thể hoàn tác.",
+    "confirm": "Xoá",
+    "failed": "Xoá thất bại"
+  },
+  "uri": {
+    "label": "URI kết nối",
+    "placeholder": "mongodb://user@host:27017/db",
+    "parse": "Điền từ URI",
+    "applied": "Đã điền các trường từ URI.",
+    "appliedPassword": "Đã điền các trường từ URI. Hãy nhập lại mật khẩu bên dưới."
+  },
+  "options": {
+    "hint": "Tuỳ chọn driver (khoá = giá trị), được giữ lại khi lưu.",
+    "key": "Tên tuỳ chọn",
+    "value": "Giá trị tuỳ chọn",
+    "remove": "Xoá tuỳ chọn",
+    "add": "Thêm tuỳ chọn"
   }
 }

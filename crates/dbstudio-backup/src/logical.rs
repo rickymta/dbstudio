@@ -1,98 +1,46 @@
-//! Integrated ("logical") backup: DDL + `INSERT` scripts written through the session, and the
-//! matching restore.
+//! Integrated ("logical") backup: one SQL script per database written by the `dbstudio-export`
+//! engine (structure from `generate_ddl` in PreData / PostData order, rows streamed through a
+//! read-only repeatable-read lease), and the matching restore on a dedicated connection.
 //!
-//! Content of the tar (see `container`): `schema/pre.sql` (schemas, sequences, tables in
-//! dependency order), `data/NNNN-<object>.sql` (one `INSERT` script per table),
-//! `schema/post.sql` (views, sequence ownership and values). Every object's statements are
-//! wrapped in `-- @object NAME` / `-- @end` comments so a restore can pick a subset.
+//! Content of the tar (see `container`): `data/dump.sql` only (plus the preamble and manifest).
+//! The script restores in one pass: PreData (schemas, types, sequences, tables, views,
+//! routines), rows, then PostData (indexes, foreign keys, triggers, sequence values, comments).
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::sync::Arc;
 
 use dbstudio_core::{
-    ColumnMeta, Error, JobProgress, JobReporter, ObjectKind, ObjectPath, QueryRequest, Result,
-    ResultSink, ScriptDialect, Session, SortKey, StatementEnd, TableDataRequest, Value,
+    CancelToken, ColumnMeta, DdlOptions, EndOutcome, Error, JobProgress, JobReporter, Lease,
+    LeaseOptions, ModelDetail, ObjectKind, ObjectPath, QueryRequest, Result, ResultSink,
+    SchemaModelRequest, ScriptDialect, Session, StatementEnd, TxOptions, Value,
 };
-use dbstudio_export::{ExportContent, RowError};
-use dbstudio_sql::Dialect;
+use dbstudio_export::{
+    ExportContent, ExportContext, ExportDestination, ExportFormat, ExportSource, ExportSpec,
+    RowError, SqlOptions, ValueFormat, run_export,
+};
+use dbstudio_sql::StreamSplitter;
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
-use crate::container::{Scanned, SpoolEntry, SpoolWriter};
-use crate::sqlscan::{Marker, split_statements, strip_markers};
+use crate::container::{Scanned, SpoolEntry};
 
-/// Rows fetched per `fetch_table` call.
-const PAGE_ROWS: u64 = 5_000;
-/// Rows per multi-row `INSERT`.
-const INSERT_ROWS: usize = 100;
-/// Flush an `INSERT` when its text exceeds this many bytes.
-const INSERT_BYTES: usize = 512 * 1024;
+/// Name of the script inside the container.
+pub const DUMP_ENTRY: &str = "data/dump.sql";
 
 /// Things a logical backup does not contain (shown in the preamble and the restore preview).
-pub const UNSUPPORTED_SCOPE: [&str; 6] = [
-    "roles/grants",
-    "extensions",
-    "functions and procedures",
-    "triggers",
-    "materialized views",
-    "table partitioning details",
-];
+pub const UNSUPPORTED_SCOPE: [&str; 2] = ["roles and grants", "server level settings"];
 
-#[derive(Debug, Clone)]
-pub(crate) struct Obj {
-    pub kind: ObjectKind,
-    pub path: ObjectPath,
-    pub schema: Option<String>,
-    pub name: String,
-}
+/// Errors kept in the restore outcome when the script is allowed to continue.
+const MAX_REPORTED_ERRORS: usize = 1000;
 
-impl Obj {
-    fn from_path(path: &ObjectPath, kind: ObjectKind) -> Option<(String, Obj)> {
-        let segs: Vec<_> = path
-            .segments
-            .iter()
-            .filter(|s| s.kind != ObjectKind::Folder)
-            .collect();
-        let db = segs.iter().find(|s| s.kind == ObjectKind::Database)?;
-        let schema = segs
-            .iter()
-            .find(|s| s.kind == ObjectKind::Schema)
-            .map(|s| s.name.clone());
-        let last = segs.last()?;
-        Some((
-            db.name.clone(),
-            Obj {
-                kind,
-                path: path.clone(),
-                schema,
-                name: last.name.clone(),
-            },
-        ))
-    }
-
-    /// Name shown in the preamble and used in markers.
-    pub(crate) fn display(&self) -> String {
-        match &self.schema {
-            Some(s) => format!("{s}.{}", self.name),
-            None => self.name.clone(),
-        }
-    }
-
-    fn qualified(&self, d: &Dialect) -> String {
-        match &self.schema {
-            Some(s) => format!("{}.{}", d.quote_ident(s), d.quote_ident(&self.name)),
-            None => d.quote_ident(&self.name),
-        }
-    }
-
-    fn kind_name(&self) -> &'static str {
-        match self.kind {
-            ObjectKind::View => "view",
-            ObjectKind::Sequence => "sequence",
-            _ => "table",
-        }
-    }
+/// Database name of a target path, when it has one.
+pub(crate) fn database_of(path: &ObjectPath) -> Option<String> {
+    path.segments
+        .iter()
+        .find(|s| s.kind == ObjectKind::Database)
+        .map(|s| s.name.clone())
 }
 
 fn dialect_name(d: ScriptDialect) -> Result<&'static str> {
@@ -107,259 +55,175 @@ fn dialect_name(d: ScriptDialect) -> Result<&'static str> {
     }
 }
 
-fn is_system_schema(name: &str) -> bool {
-    matches!(name, "pg_catalog" | "information_schema" | "pg_toast")
-        || name.starts_with("pg_temp")
-        || name.starts_with("pg_toast_temp")
+/// What the dump produced for one database.
+pub(crate) struct Dump {
+    pub entries: Vec<SpoolEntry>,
+    pub preamble: Json,
+    pub objects: u32,
+    pub rows: u64,
 }
 
-fn wanted_folder(name: &str) -> bool {
-    matches!(
-        name,
-        dbstudio_core::folder::SCHEMAS
-            | dbstudio_core::folder::TABLES
-            | dbstudio_core::folder::VIEWS
-            | dbstudio_core::folder::SEQUENCES
-    )
+/// Source of the export for `targets` (all in `database`).
+fn export_source(database: &str, targets: &[ObjectPath]) -> Result<ExportSource> {
+    let db_path = ObjectPath::root().child(ObjectKind::Database, database);
+    let kinds: Vec<Option<ObjectKind>> = targets
+        .iter()
+        .map(|t| {
+            t.segments
+                .iter()
+                .rfind(|s| s.kind != ObjectKind::Folder)
+                .map(|s| s.kind)
+        })
+        .collect();
+    if targets.is_empty() || kinds.contains(&Some(ObjectKind::Database)) {
+        return Ok(ExportSource::Database { path: db_path });
+    }
+    if kinds
+        .iter()
+        .all(|k| matches!(k, Some(ObjectKind::Table | ObjectKind::View)))
+    {
+        return Ok(ExportSource::Tables {
+            paths: targets.to_vec(),
+        });
+    }
+    if targets.len() == 1 && kinds[0] == Some(ObjectKind::Schema) {
+        return Ok(ExportSource::Schema {
+            path: targets[0].clone(),
+        });
+    }
+    Err(Error::Other(
+        "choose a whole database, one schema, or a list of tables to back up".into(),
+    ))
 }
 
-/// Tables, views and sequences below `start`.
-fn walk<'a>(
-    session: &'a dyn Session,
-    start: ObjectPath,
-    out: &'a mut Vec<Obj>,
-    cancel: &'a dyn JobReporter,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-    Box::pin(async move {
-        if cancel.cancel_token().is_cancelled() {
-            return Err(Error::Cancelled);
+/// Names of the tables and views of `source` for the preamble (best effort).
+async fn list_objects(session: &dyn Session, source: &ExportSource) -> Vec<Json> {
+    let (scope, tables) = match source {
+        ExportSource::Database { path } | ExportSource::Schema { path } => {
+            (path.clone(), Vec::new())
         }
-        for node in session.list_children(&start).await? {
-            match node.kind {
-                ObjectKind::Folder if wanted_folder(&node.name) => {
-                    walk(session, node.path, out, cancel).await?;
-                }
-                ObjectKind::Schema if !is_system_schema(&node.name) => {
-                    walk(session, node.path, out, cancel).await?;
-                }
-                ObjectKind::Table | ObjectKind::View | ObjectKind::Sequence => {
-                    if let Some((_, obj)) = Obj::from_path(&node.path, node.kind) {
-                        out.push(obj);
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok(())
+        ExportSource::Tables { paths } => (
+            paths.first().cloned().map(scope_of).unwrap_or_default(),
+            paths.clone(),
+        ),
+        _ => return Vec::new(),
+    };
+    let req = SchemaModelRequest {
+        scope,
+        tables,
+        include_views: true,
+        include_comments: false,
+        detail: ModelDetail::Keys,
+        sample_size: None,
+    };
+    match session.schema_model(req).await {
+        Ok(m) => m
+            .tables
+            .iter()
+            .map(|t| {
+                let name = match &t.schema {
+                    Some(s) => format!("{s}.{}", t.name),
+                    None => t.name.clone(),
+                };
+                json!({"name": name, "kind": if t.kind == ObjectKind::View { "view" } else { "table" }})
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn scope_of(mut path: ObjectPath) -> ObjectPath {
+    while matches!(
+        path.segments.last().map(|s| s.kind),
+        Some(ObjectKind::Table | ObjectKind::View | ObjectKind::Folder)
+    ) {
+        path.segments.pop();
+    }
+    path
+}
+
+/// Dump the objects of `database` selected by `targets` (empty = the whole database).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn dump(
+    session: &Arc<dyn Session>,
+    kind: dbstudio_core::DbKind,
+    spool: &Path,
+    database: &str,
+    targets: &[ObjectPath],
+    content: ExportContent,
+    ddl: &DdlOptions,
+    source: Json,
+    reporter: &Arc<dyn JobReporter>,
+) -> Result<Dump> {
+    let sd = session.script_dialect();
+    let dname = dialect_name(sd)?;
+    let src = export_source(database, targets)?;
+    let objects = list_objects(session.as_ref(), &src).await;
+    let mut ddl = ddl.clone();
+    if matches!(sd, ScriptDialect::MySql { .. }) {
+        // MySQL names carry the database; a restore into another name must not.
+        ddl.qualify_schema = false;
+    }
+    let file = spool.join("dump.sql");
+    let spec = ExportSpec {
+        connection_id: Uuid::nil(),
+        source: src,
+        content,
+        format: ExportFormat::Sql(SqlOptions {
+            ddl,
+            wrap_in_transaction: false,
+            disable_fk_checks: matches!(sd, ScriptDialect::MySql { .. }),
+            ..SqlOptions::default()
+        }),
+        destination: ExportDestination {
+            path: file.to_string_lossy().into_owned(),
+            overwrite: true,
+        },
+        values: ValueFormat::default(),
+    };
+    let ctx = ExportContext {
+        session: Arc::clone(session),
+        kind,
+        dialect: sd,
+        reporter: Arc::clone(reporter),
+    };
+    let report = run_export(ctx, spec).await?;
+    for w in &report.warnings {
+        reporter.log(w);
+    }
+    let mut entry = crate::ops::spool_entry_from_file(DUMP_ENTRY, &file)?;
+    entry.rows = report.rows;
+    let preamble = json!({
+        "formatVersion": 2,
+        "engine": "logical",
+        "createdAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "database": database,
+        "source": source,
+        "dialect": dname,
+        "content": match content {
+            ExportContent::Schema => "schema",
+            ExportContent::Data => "data",
+            ExportContent::Both => "both",
+        },
+        "dumpFile": DUMP_ENTRY,
+        "objects": objects,
+        "tables": report.objects,
+        "warnings": report.warnings,
+        "unsupported": UNSUPPORTED_SCOPE,
+    });
+    Ok(Dump {
+        objects: report.objects,
+        rows: report.rows,
+        entries: vec![entry],
+        preamble,
     })
 }
 
-/// Database name of a target path, when it has one.
-pub(crate) fn database_of(path: &ObjectPath) -> Option<String> {
-    path.segments
-        .iter()
-        .find(|s| s.kind == ObjectKind::Database)
-        .map(|s| s.name.clone())
-}
+// ---------------------------------------------------------------------------------------------
+// Restore
+// ---------------------------------------------------------------------------------------------
 
-/// Objects selected by one target.
-pub(crate) async fn discover(
-    session: &dyn Session,
-    target: &ObjectPath,
-    reporter: &dyn JobReporter,
-) -> Result<Vec<Obj>> {
-    let mut out = Vec::new();
-    let last = target
-        .segments
-        .iter()
-        .rfind(|s| s.kind != ObjectKind::Folder);
-    match last.map(|s| s.kind) {
-        Some(k @ (ObjectKind::Table | ObjectKind::View | ObjectKind::Sequence)) => {
-            if let Some((_, obj)) = Obj::from_path(target, k) {
-                out.push(obj);
-            }
-        }
-        _ => walk(session, target.clone(), &mut out, reporter).await?,
-    }
-    Ok(out)
-}
-
-/// Order tables so that referenced tables come first (cycles keep their listed order).
-async fn order_tables(session: &dyn Session, tables: Vec<Obj>) -> Vec<Obj> {
-    let names: BTreeSet<String> = tables.iter().map(Obj::display).collect();
-    let mut deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for t in &tables {
-        let mut set = BTreeSet::new();
-        if let Ok(d) = session.table_details(&t.path).await {
-            for fk in d.foreign_keys {
-                if let Some((_, r)) = Obj::from_path(&fk.referenced_table, ObjectKind::Table) {
-                    let n = r.display();
-                    if n != t.display() && names.contains(&n) {
-                        set.insert(n);
-                    }
-                }
-            }
-        }
-        deps.insert(t.display(), set);
-    }
-    let mut remaining = tables;
-    let mut done: BTreeSet<String> = BTreeSet::new();
-    let mut ordered = Vec::new();
-    while !remaining.is_empty() {
-        let (ready, rest): (Vec<Obj>, Vec<Obj>) = remaining
-            .into_iter()
-            .partition(|t| deps[&t.display()].is_subset(&done));
-        if ready.is_empty() {
-            // Cycle: keep the rest as listed.
-            ordered.extend(rest);
-            break;
-        }
-        done.extend(ready.iter().map(Obj::display));
-        ordered.extend(ready);
-        remaining = rest;
-    }
-    ordered
-}
-
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(80)
-        .collect()
-}
-
-/// PostgreSQL array text literal body (`{a,"b"}`).
-fn pg_array_text(items: &[Value]) -> String {
-    let parts: Vec<String> = items
-        .iter()
-        .map(|v| match v {
-            Value::Null => "NULL".to_string(),
-            Value::Array(inner) => pg_array_text(inner),
-            Value::Bool(b) => b.to_string(),
-            Value::Int(i) => i.to_string(),
-            Value::UInt(u) => u.to_string(),
-            Value::Float(f) => f.to_string(),
-            Value::Decimal(s) => s.clone(),
-            Value::Bytes(b) => {
-                let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
-                format!("\"\\\\x{hex}\"")
-            }
-            Value::Text(s)
-            | Value::Date(s)
-            | Value::Time(s)
-            | Value::DateTime(s)
-            | Value::Timestamp(s)
-            | Value::Uuid(s)
-            | Value::Json(s) => quote_array_elem(s),
-            Value::Ext(e) => quote_array_elem(&e.text),
-            Value::Document(_) => "NULL".to_string(),
-        })
-        .collect();
-    format!("{{{}}}", parts.join(","))
-}
-
-fn quote_array_elem(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-fn literal(d: &Dialect, v: &Value) -> String {
-    match (d.0, v) {
-        (ScriptDialect::Postgres, Value::Array(items)) => d.literal_text(&pg_array_text(items)),
-        _ => d.literal(v),
-    }
-}
-
-/// Writes `INSERT` statements for the rows it receives.
-struct InsertSink<'a> {
-    out: &'a mut SpoolWriter,
-    dialect: Dialect,
-    table: String,
-    skip: &'a BTreeSet<String>,
-    /// Indexes of the columns that are written.
-    keep: Vec<usize>,
-    head: String,
-    pending: Vec<String>,
-    pending_bytes: usize,
-    rows: u64,
-}
-
-impl<'a> InsertSink<'a> {
-    fn flush(&mut self) -> Result<()> {
-        if self.pending.is_empty() {
-            return Ok(());
-        }
-        let body = self.pending.join(",\n");
-        self.out.write_all(self.head.as_bytes())?;
-        self.out.write_all(body.as_bytes())?;
-        self.out.write_all(b";\n")?;
-        self.pending.clear();
-        self.pending_bytes = 0;
-        Ok(())
-    }
-}
-
-impl ResultSink for InsertSink<'_> {
-    fn on_columns(&mut self, columns: Vec<ColumnMeta>) -> Result<()> {
-        self.keep = columns
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| !self.skip.contains(&c.name))
-            .map(|(i, _)| i)
-            .collect();
-        let names: Vec<String> = self
-            .keep
-            .iter()
-            .map(|&i| self.dialect.quote_ident(&columns[i].name))
-            .collect();
-        let overriding = if matches!(self.dialect.0, ScriptDialect::Postgres) {
-            " OVERRIDING SYSTEM VALUE"
-        } else {
-            ""
-        };
-        self.head = format!(
-            "INSERT INTO {} ({}){} VALUES\n",
-            self.table,
-            names.join(", "),
-            overriding
-        );
-        Ok(())
-    }
-
-    fn on_rows(&mut self, rows: Vec<Vec<Value>>) -> Result<()> {
-        for row in rows {
-            let cells: Vec<String> = self
-                .keep
-                .iter()
-                .map(|&i| literal(&self.dialect, row.get(i).unwrap_or(&Value::Null)))
-                .collect();
-            let tuple = format!("({})", cells.join(", "));
-            self.pending_bytes += tuple.len();
-            self.pending.push(tuple);
-            self.rows += 1;
-            self.out.rows += 1;
-            if self.pending.len() >= INSERT_ROWS || self.pending_bytes >= INSERT_BYTES {
-                self.flush()?;
-            }
-        }
-        Ok(())
-    }
-
-    fn on_message(&mut self, _message: String) -> Result<()> {
-        Ok(())
-    }
-
-    fn on_statement_end(&mut self, _end: StatementEnd) -> Result<()> {
-        Ok(())
-    }
-}
-
-/// Discards everything (used to run DDL / `INSERT`).
+/// Discards result sets, remembers affected rows.
 struct NullSink;
 
 impl ResultSink for NullSink {
@@ -372,403 +236,69 @@ impl ResultSink for NullSink {
     fn on_message(&mut self, _: String) -> Result<()> {
         Ok(())
     }
-    fn on_statement_end(&mut self, _: StatementEnd) -> Result<()> {
+    fn on_statement_end(&mut self, end: StatementEnd) -> Result<()> {
+        let _ = matches!(end.outcome, EndOutcome::Done);
         Ok(())
     }
 }
 
-async fn dump_table(
-    session: &dyn Session,
-    dialect: &Dialect,
-    obj: &Obj,
-    out: &mut SpoolWriter,
-    reporter: &dyn JobReporter,
-    progress: &mut JobProgress,
-) -> Result<()> {
-    let details = session.table_details(&obj.path).await.ok();
-    let mut skip = BTreeSet::new();
-    let mut sort = Vec::new();
-    if let Some(d) = &details {
-        for c in &d.columns {
-            let extra = c.extra.as_deref().unwrap_or("").to_ascii_lowercase();
-            if extra.contains("generated") && !extra.contains("identity") {
-                skip.insert(c.name.clone());
-            }
-        }
-        let mut pk: Vec<_> = d.columns.iter().filter(|c| c.primary_key).collect();
-        pk.sort_by_key(|c| c.ordinal);
-        sort = pk
-            .into_iter()
-            .map(|c| SortKey {
-                column: c.name.clone(),
-                descending: false,
-            })
-            .collect();
-        if sort.is_empty() {
-            if let Some(ix) = d.indexes.iter().find(|i| i.primary || i.unique) {
-                sort = ix
-                    .columns
-                    .iter()
-                    .map(|c| SortKey {
-                        column: c.clone(),
-                        descending: false,
-                    })
-                    .collect();
-            }
-        }
-    }
-    let table = obj.qualified(dialect);
-    let mut offset = 0u64;
-    loop {
-        if reporter.cancel_token().is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        let mut sink = InsertSink {
-            out,
-            dialect: *dialect,
-            table: table.clone(),
-            skip: &skip,
-            keep: Vec::new(),
-            head: String::new(),
-            pending: Vec::new(),
-            pending_bytes: 0,
-            rows: 0,
+/// One connection the script runs on: a lease (session state such as `search_path` and
+/// `FOREIGN_KEY_CHECKS` and an optional transaction) or, without lease support, the session.
+struct Target {
+    session: Arc<dyn Session>,
+    lease: Option<Box<dyn Lease>>,
+    database: String,
+}
+
+impl Target {
+    async fn open(session: &Arc<dyn Session>, database: &str) -> Result<Target> {
+        let opts = LeaseOptions {
+            database: Some(database.to_string()),
+            ..LeaseOptions::default()
         };
-        session
-            .fetch_table(
-                TableDataRequest {
-                    query_id: Uuid::new_v4(),
-                    table: obj.path.clone(),
-                    filters: Vec::new(),
-                    raw_where: None,
-                    sort: sort.clone(),
-                    offset,
-                    limit: PAGE_ROWS,
-                    batch_size: Some(1000),
-                },
-                &mut sink,
-            )
-            .await?;
-        sink.flush()?;
-        let n = sink.rows;
-        offset += n;
-        progress.rows_done += n;
-        progress.bytes_done += 0;
-        reporter.progress(progress);
-        if n < PAGE_ROWS {
-            return Ok(());
-        }
+        let lease = match session.open_lease(opts).await {
+            Ok(l) => Some(l),
+            Err(Error::Unsupported(_)) => None,
+            Err(e) => return Err(e),
+        };
+        Ok(Target {
+            session: Arc::clone(session),
+            lease,
+            database: database.to_string(),
+        })
     }
-}
 
-fn marker_block(name: &str, sql: &str) -> String {
-    let body = sql.trim_end();
-    // `SHOW CREATE` output has no terminator.
-    let semi = if body.is_empty() || body.ends_with(';') {
-        ""
-    } else {
-        ";"
-    };
-    format!("-- @object {name}\n{body}{semi}\n-- @end\n\n")
-}
-
-/// Split a PostgreSQL sequence DDL into the `CREATE` part and the `OWNED BY` part.
-fn split_sequence_ddl(ddl: &str) -> (String, Option<String>) {
-    match ddl.find("ALTER SEQUENCE") {
-        Some(i) => (
-            ddl[..i].trim_end().to_string(),
-            Some(ddl[i..].trim_end().to_string()),
-        ),
-        None => (ddl.trim_end().to_string(), None),
-    }
-}
-
-/// `schema.table` of an `ALTER SEQUENCE .. OWNED BY "schema"."table"."column"` statement.
-fn owner_table(alter: &str) -> Option<String> {
-    let rest = alter.split("OWNED BY").nth(1)?.trim().trim_end_matches(';');
-    // `format('%I.%I.%I')` output: identifiers are quoted only when needed.
-    let mut parts = Vec::new();
-    let mut cur = String::new();
-    let mut quoted = false;
-    let mut chars = rest.chars().peekable();
-    while let Some(c) = chars.next() {
-        match (c, quoted) {
-            ('"', false) => quoted = true,
-            ('"', true) if chars.peek() == Some(&'"') => {
-                cur.push('"');
-                chars.next();
-            }
-            ('"', true) => quoted = false,
-            ('.', false) => parts.push(std::mem::take(&mut cur)),
-            (c, _) => cur.push(c),
-        }
-    }
-    parts.push(cur);
-    (parts.len() == 3).then(|| format!("{}.{}", parts[0], parts[1]))
-}
-
-/// What the dump produced for one database.
-pub(crate) struct Dump {
-    pub entries: Vec<SpoolEntry>,
-    pub preamble: Json,
-    pub objects: u32,
-    pub rows: u64,
-}
-
-/// Dump the objects of `database` selected by `targets` (empty = the whole database).
-pub(crate) async fn dump(
-    session: &dyn Session,
-    spool: &Path,
-    database: &str,
-    targets: &[ObjectPath],
-    content: ExportContent,
-    source: Json,
-    reporter: &dyn JobReporter,
-) -> Result<Dump> {
-    let sd = session.script_dialect();
-    let dname = dialect_name(sd)?;
-    let dialect = Dialect::new(sd);
-    let mut found = Vec::new();
-    for t in targets {
-        found.extend(discover(session, t, reporter).await?);
-    }
-    let mut seen = BTreeSet::new();
-    found.retain(|o| seen.insert((o.kind_name(), o.display())));
-    let sequences: Vec<Obj> = found
-        .iter()
-        .filter(|o| o.kind == ObjectKind::Sequence)
-        .cloned()
-        .collect();
-    let views: Vec<Obj> = found
-        .iter()
-        .filter(|o| o.kind == ObjectKind::View)
-        .cloned()
-        .collect();
-    let tables = order_tables(
-        session,
-        found
-            .into_iter()
-            .filter(|o| o.kind == ObjectKind::Table)
-            .collect(),
-    )
-    .await;
-
-    let mut progress = JobProgress {
-        phase: "schema".into(),
-        objects_total: Some((tables.len() + views.len() + sequences.len()) as u32),
-        ..Default::default()
-    };
-    reporter.progress(&progress);
-
-    let want_schema = content != ExportContent::Data;
-    let want_data = content != ExportContent::Schema;
-    let mut entries = Vec::new();
-    let mut idx = 0usize;
-    let mut pre = String::from("-- DBStudio logical backup: structure\n\n");
-    let mut post = String::from("-- DBStudio logical backup: views, sequence state\n\n");
-    let mut objects_json = Vec::new();
-
-    if want_schema {
-        // Schemas other than the default one (PostgreSQL).
-        if sd == ScriptDialect::Postgres {
-            let schemas: BTreeSet<&String> = tables
-                .iter()
-                .chain(&views)
-                .chain(&sequences)
-                .filter_map(|o| o.schema.as_ref())
-                .filter(|s| s.as_str() != "public")
-                .collect();
-            for s in schemas {
-                pre.push_str(&format!(
-                    "CREATE SCHEMA IF NOT EXISTS {};\n",
-                    dialect.quote_ident(s)
-                ));
-            }
-            pre.push('\n');
-        }
-        for s in &sequences {
-            let ddl = session.object_ddl(&s.path).await?;
-            let (create, owned) = split_sequence_ddl(&ddl);
-            // A sequence owned by a column travels with its table in a subset restore.
-            let marker = owned
-                .as_deref()
-                .and_then(owner_table)
-                .unwrap_or_else(|| s.display());
-            pre.push_str(&marker_block(&marker, &create));
-            let mut tail = String::new();
-            if let Some(o) = owned {
-                tail.push_str(&o);
-                tail.push('\n');
-            }
-            if sd == ScriptDialect::Postgres {
-                let sql = format!(
-                    "SELECT last_value, is_called FROM {}",
-                    s.qualified(&dialect)
-                );
-                let mut req = QueryRequest::new(sql);
-                req.database = Some(database.to_string());
-                let r = dbstudio_core::execute_collect(session, req).await?;
-                if let Some(row) = r.iter().find_map(|r| match &r.outcome {
-                    dbstudio_core::StatementOutcome::Rows(rs) => rs.rows.first().cloned(),
-                    _ => None,
-                }) {
-                    if let (Some(Value::Int(last)), Some(Value::Bool(called))) =
-                        (row.first(), row.get(1))
-                    {
-                        tail.push_str(&format!(
-                            "SELECT pg_catalog.setval({}, {last}, {called});\n",
-                            dialect.literal_text(&s.qualified(&dialect))
-                        ));
-                    }
+    async fn run(&self, token: &CancelToken, sql: String) -> Result<()> {
+        let mut req = QueryRequest::new(sql);
+        let query_id = req.query_id;
+        let mut sink = NullSink;
+        let exec = async {
+            match &self.lease {
+                Some(l) => l.execute(req, &mut sink).await.map(|_| ()),
+                None => {
+                    req.database = Some(self.database.clone());
+                    self.session.execute(req, &mut sink).await.map(|_| ())
                 }
             }
-            post.push_str(&marker_block(&marker, &tail));
-            objects_json.push(json!({"name": s.display(), "kind": "sequence"}));
-            progress.objects_done += 1;
-        }
-        for t in &tables {
-            let ddl = session.object_ddl(&t.path).await?;
-            pre.push_str(&marker_block(&t.display(), &ddl));
-            progress.object = Some(t.display());
-            progress.objects_done += 1;
-            reporter.progress(&progress);
-        }
-        for v in &views {
-            let ddl = session.object_ddl(&v.path).await?;
-            post.push_str(&marker_block(&v.display(), &ddl));
-            objects_json.push(json!({"name": v.display(), "kind": "view"}));
-            progress.objects_done += 1;
-        }
-    }
-
-    let mut rows_total = 0u64;
-    let mut table_json = Vec::new();
-    if want_data {
-        progress.phase = "data".into();
-        progress.objects_done = 0;
-        for t in &tables {
-            if reporter.cancel_token().is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            progress.object = Some(t.display());
-            reporter.progress(&progress);
-            idx += 1;
-            let name = format!("data/{idx:04}-{}.sql", sanitize(&t.display()));
-            let mut w = SpoolWriter::create(spool, idx, &name)?;
-            dump_table(session, &dialect, t, &mut w, reporter, &mut progress).await?;
-            rows_total += w.rows;
-            entries.push(w.finish()?);
-            table_json.push(json!({"name": t.display(), "kind": "table", "dataFile": name}));
-            progress.objects_done += 1;
-        }
-    } else {
-        for t in &tables {
-            table_json.push(json!({"name": t.display(), "kind": "table"}));
-        }
-    }
-    let mut all_objects = table_json;
-    all_objects.extend(objects_json);
-
-    let mut head = Vec::new();
-    if want_schema {
-        for (n, text) in [("schema/pre.sql", &pre), ("schema/post.sql", &post)] {
-            idx += 1;
-            let mut w = SpoolWriter::create(spool, 10_000 + idx, n)?;
-            w.write_all(text.as_bytes())?;
-            head.push(w.finish()?);
-        }
-    }
-    head.extend(entries);
-
-    let preamble = json!({
-        "formatVersion": 1,
-        "engine": "logical",
-        "createdAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "database": database,
-        "source": source,
-        "dialect": dname,
-        "backslashEscapes": matches!(sd, ScriptDialect::MySql { backslash_escapes: true, .. }),
-        "content": match content {
-            ExportContent::Schema => "schema",
-            ExportContent::Data => "data",
-            ExportContent::Both => "both",
-        },
-        "objects": all_objects,
-        "unsupported": UNSUPPORTED_SCOPE,
-    });
-    Ok(Dump {
-        objects: all_objects_count(&preamble),
-        rows: rows_total,
-        entries: head,
-        preamble,
-    })
-}
-
-fn all_objects_count(preamble: &Json) -> u32 {
-    preamble["objects"].as_array().map_or(0, |a| a.len() as u32)
-}
-
-// ---------------------------------------------------------------------------------------------
-// Restore
-// ---------------------------------------------------------------------------------------------
-
-/// Statement runner shared by the restore phases.
-struct Runner<'a> {
-    session: &'a dyn Session,
-    database: String,
-    errors: Vec<RowError>,
-    continue_on_error: bool,
-    line: u64,
-}
-
-impl Runner<'_> {
-    async fn run(&mut self, sql: &str) -> Result<bool> {
-        self.line += 1;
-        let mut req = QueryRequest::new(sql.to_string());
-        req.database = Some(self.database.clone());
-        match self.session.execute(req, &mut NullSink).await {
-            Ok(_) => Ok(true),
-            Err(Error::Cancelled) => Err(Error::Cancelled),
-            Err(e) if self.continue_on_error => {
-                self.errors.push(RowError {
-                    line: self.line,
-                    message: e.message(),
-                });
-                Ok(false)
-            }
-            Err(e) => Err(e),
-        }
-    }
-}
-
-/// Statements of a script file that belong to the selection.
-fn select_statements(
-    text: &str,
-    backslash: bool,
-    subset: &BTreeSet<String>,
-) -> Vec<(Option<String>, String)> {
-    let mut current: Option<String> = None;
-    let mut out = Vec::new();
-    for raw in split_statements(text, backslash) {
-        let (markers, sql) = strip_markers(&raw);
-        for m in markers {
-            match m {
-                Marker::Object(n) => current = Some(n),
-                Marker::End => current = None,
-            }
-        }
-        if sql.is_empty() {
-            continue;
-        }
-        let wanted = match &current {
-            Some(n) => subset.is_empty() || subset.contains(n),
-            None => true,
         };
-        if wanted {
-            out.push((current.clone(), sql.to_string()));
+        tokio::select! {
+            r = exec => r,
+            () = token.cancelled() => {
+                // Ask the server to stop the statement, then report the cancellation.
+                match &self.lease {
+                    Some(l) => { let _ = l.cancel(query_id).await; }
+                    None => { let _ = self.session.cancel(query_id).await; }
+                }
+                Err(Error::Cancelled)
+            }
         }
     }
-    out
+
+    async fn close(&self) {
+        if let Some(l) = &self.lease {
+            let _ = l.close().await;
+        }
+    }
 }
 
 fn same_family(a: &str, b: ScriptDialect) -> bool {
@@ -781,9 +311,53 @@ fn same_family(a: &str, b: ScriptDialect) -> bool {
     )
 }
 
+/// Statements that empty the target before the script runs (`clean`).
+fn clean_statements(pre: &Json, sd: ScriptDialect, database: &str) -> Vec<String> {
+    let q = dbstudio_sql::Dialect::new(sd);
+    match sd {
+        ScriptDialect::Postgres => {
+            let mut schemas: Vec<String> = pre["objects"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|o| o["name"].as_str())
+                .filter_map(|n| n.split_once('.').map(|(s, _)| s.to_string()))
+                .collect();
+            schemas.sort();
+            schemas.dedup();
+            if schemas.is_empty() {
+                schemas.push("public".into());
+            }
+            // The script creates every schema itself except `public`, which always exists.
+            schemas
+                .iter()
+                .flat_map(|s| {
+                    let mut v = vec![format!(
+                        "DROP SCHEMA IF EXISTS {} CASCADE",
+                        q.quote_ident(s)
+                    )];
+                    if s == "public" {
+                        v.push(format!("CREATE SCHEMA {}", q.quote_ident(s)));
+                    }
+                    v
+                })
+                .collect()
+        }
+        ScriptDialect::MySql { .. } => vec![
+            format!("DROP DATABASE IF EXISTS {}", q.quote_ident(database)),
+            format!("CREATE DATABASE {}", q.quote_ident(database)),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// Restore the extracted logical backup into `session`.
+///
+/// The script runs on its own lease. On PostgreSQL the whole restore is one transaction (all or
+/// nothing) unless `continue_on_error` is set; MySQL commits DDL implicitly, so a failed
+/// restore leaves what was created so far.
 pub(crate) async fn restore(
-    session: &dyn Session,
+    session: &Arc<dyn Session>,
     scanned: &Scanned,
     spec: &crate::RestoreSpec,
     reporter: &dyn JobReporter,
@@ -796,257 +370,274 @@ pub(crate) async fn restore(
             "this backup was made from {src_dialect}; restore it into a server of the same kind"
         )));
     }
-    let dialect = Dialect::new(sd);
-    let backslash = pre["backslashEscapes"].as_bool().unwrap_or(false);
+    if !spec.objects.is_empty() {
+        return Err(Error::Unsupported(
+            "restoring selected objects is not available for integrated backups; restore the whole backup"
+                .into(),
+        ));
+    }
     let target_db = spec
         .target_database
         .clone()
         .or_else(|| pre["database"].as_str().map(str::to_string))
         .ok_or_else(|| Error::Other("target database is not specified".into()))?;
-    let subset: BTreeSet<String> = spec.objects.iter().cloned().collect();
-    let mut runner = Runner {
-        session,
-        database: target_db.clone(),
-        errors: Vec::new(),
-        continue_on_error: spec.continue_on_error,
-        line: 0,
-    };
+    let dump_name = pre["dumpFile"].as_str().unwrap_or(DUMP_ENTRY);
+    let dump_path = scanned
+        .files
+        .get(dump_name)
+        .ok_or_else(|| Error::Integrity("the script is missing from the backup".into()))?;
+    let cancel = reporter.cancel_token().clone();
     let mut progress = JobProgress {
         phase: "restore".into(),
+        objects_total: pre["tables"].as_u64().map(|n| n as u32),
         ..Default::default()
     };
     reporter.progress(&progress);
 
+    let q = dbstudio_sql::Dialect::new(sd);
     if spec.create_database {
         let (sql, over) = match sd {
             ScriptDialect::Postgres => (
-                format!("CREATE DATABASE {}", dialect.quote_ident(&target_db)),
-                Some("postgres"),
+                format!("CREATE DATABASE {}", q.quote_ident(&target_db)),
+                Some("postgres".to_string()),
             ),
             _ => (
                 format!(
                     "CREATE DATABASE IF NOT EXISTS {}",
-                    dialect.quote_ident(&target_db)
+                    q.quote_ident(&target_db)
                 ),
                 None,
             ),
         };
         let mut req = QueryRequest::new(sql);
-        req.database = over.map(str::to_string);
+        req.database = over;
         if let Err(e) = session.execute(req, &mut NullSink).await {
-            // An existing database is fine: the data goes into it.
+            // An existing database is fine: the script goes into it.
             if !e.message().contains("already exists") {
                 return Err(e);
             }
         }
     }
-
-    let objects = pre["objects"].as_array().cloned().unwrap_or_default();
-    let selected =
-        |o: &Json| subset.is_empty() || subset.contains(o["name"].as_str().unwrap_or(""));
-
-    if spec.clean {
-        // Reverse of creation order: views, tables (reverse dependency order), sequences.
-        let names = |kind: &str| -> Vec<String> {
-            objects
-                .iter()
-                .filter(|o| o["kind"] == kind && selected(o))
-                .filter_map(|o| o["name"].as_str().map(str::to_string))
-                .collect()
-        };
-        let quote = |display: &str| -> String {
-            match display.split_once('.') {
-                Some((s, n)) if sd == ScriptDialect::Postgres => {
-                    format!("{}.{}", dialect.quote_ident(s), dialect.quote_ident(n))
-                }
-                _ => dialect.quote_ident(display),
-            }
-        };
-        let cascade = if sd == ScriptDialect::Postgres {
-            " CASCADE"
-        } else {
-            ""
-        };
-        for v in names("view") {
-            runner
-                .run(&format!("DROP VIEW IF EXISTS {}{cascade}", quote(&v)))
-                .await?;
-        }
-        for t in names("table").into_iter().rev() {
-            runner
-                .run(&format!("DROP TABLE IF EXISTS {}{cascade}", quote(&t)))
-                .await?;
-        }
-        for s in names("sequence") {
-            runner
-                .run(&format!("DROP SEQUENCE IF EXISTS {}{cascade}", quote(&s)))
-                .await?;
-        }
-    }
-
-    let read = |name: &str| -> Result<Option<String>> {
-        match scanned.files.get(name) {
-            Some(p) => Ok(Some(std::fs::read_to_string(p)?)),
-            None => Ok(None),
-        }
+    // MySQL `clean` replaces the whole database: do it on the session, before the lease opens.
+    let clean = if spec.clean {
+        clean_statements(pre, sd, &target_db)
+    } else {
+        Vec::new()
     };
-
-    // Structure.
-    if let Some(text) = read("schema/pre.sql")? {
-        for (_, sql) in select_statements(&text, backslash, &subset) {
-            if reporter.cancel_token().is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            runner.run(&sql).await?;
+    if matches!(sd, ScriptDialect::MySql { .. }) {
+        for sql in &clean {
+            let mut req = QueryRequest::new(sql.clone());
+            req.database = None;
+            session.execute(req, &mut NullSink).await?;
         }
     }
 
-    // Data.
-    progress.phase = "data".into();
-    progress.objects_total = Some(
-        objects
-            .iter()
-            .filter(|o| o["dataFile"].is_string() && selected(o))
-            .count() as u32,
-    );
-    let mut rows_done = 0u64;
-    let mut restored = 0u32;
-    for o in objects.iter().filter(|o| selected(o)) {
-        let Some(file) = o["dataFile"].as_str() else {
-            continue;
-        };
-        let Some(text) = read(file)? else { continue };
-        progress.object = o["name"].as_str().map(str::to_string);
-        let errors_before = runner.errors.len();
-        for (_, sql) in select_statements(&text, backslash, &BTreeSet::new()) {
-            if reporter.cancel_token().is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            runner.run(&sql).await?;
-        }
-        if runner.errors.len() == errors_before {
-            let rows = scanned
-                .manifest
-                .entries
-                .iter()
-                .find(|e| e.path == file)
-                .map_or(0, |e| e.rows);
-            rows_done += rows;
-        }
-        restored += 1;
-        progress.objects_done += 1;
-        progress.rows_done = rows_done;
-        reporter.progress(&progress);
-    }
-
-    // Views and sequence state; a view may depend on a later one, so retry failures.
-    if let Some(text) = read("schema/post.sql")? {
-        let mut pending: Vec<String> = select_statements(&text, backslash, &subset)
-            .into_iter()
-            .map(|(_, s)| s)
-            .collect();
-        let saved = runner.continue_on_error;
-        for pass in 0..3 {
-            let mut failed = Vec::new();
-            let last = pass == 2;
-            runner.continue_on_error = saved || !last;
-            let before = runner.errors.len();
-            for sql in &pending {
-                if reporter.cancel_token().is_cancelled() {
-                    return Err(Error::Cancelled);
-                }
-                if !runner.run(sql).await? {
-                    failed.push(sql.clone());
-                }
-            }
-            if failed.is_empty() {
-                runner.errors.truncate(before);
-                break;
-            }
-            if !last {
-                runner.errors.truncate(before);
-            }
-            pending = failed;
-        }
-        runner.continue_on_error = saved;
-    }
-
+    let target = Target::open(session, &target_db).await?;
+    let single_tx =
+        matches!(sd, ScriptDialect::Postgres) && !spec.continue_on_error && target.lease.is_some();
+    let result = run_script(
+        &target,
+        &cancel,
+        sd,
+        pre,
+        &clean,
+        dump_path,
+        spec,
+        single_tx,
+        &mut progress,
+        reporter,
+    )
+    .await;
+    target.close().await;
+    let errors = result?;
+    let rows = scanned
+        .manifest
+        .entries
+        .iter()
+        .find(|e| e.path == dump_name)
+        .map_or(0, |e| e.rows);
     Ok(crate::RestoreOutcome {
-        objects: restored,
-        rows: rows_done,
-        errors: runner.errors,
+        objects: pre["tables"].as_u64().unwrap_or(0) as u32,
+        rows: if errors.is_empty() { rows } else { 0 },
+        errors,
     })
 }
 
-/// Pure helper for tests: statements selected from a script for `subset`.
-#[cfg(test)]
-pub(crate) fn selected_for_test(text: &str, subset: &[&str]) -> Vec<String> {
-    let set = subset.iter().map(|s| s.to_string()).collect();
-    select_statements(text, false, &set)
-        .into_iter()
-        .map(|(_, s)| s)
-        .collect()
+#[allow(clippy::too_many_arguments)]
+async fn run_script(
+    target: &Target,
+    cancel: &CancelToken,
+    sd: ScriptDialect,
+    pre: &Json,
+    clean: &[String],
+    path: &Path,
+    spec: &crate::RestoreSpec,
+    single_tx: bool,
+    progress: &mut JobProgress,
+    reporter: &dyn JobReporter,
+) -> Result<Vec<RowError>> {
+    // Same session state as the export: values are written in UTC.
+    let zone = match sd {
+        ScriptDialect::MySql { .. } => Some("SET time_zone = '+00:00'"),
+        ScriptDialect::Postgres => Some("SET TIME ZONE 'UTC'"),
+        _ => None,
+    };
+    if let Some(sql) = zone {
+        target.run(cancel, sql.into()).await?;
+    }
+    if single_tx {
+        if let Some(l) = &target.lease {
+            l.begin(TxOptions {
+                read_only: false,
+                isolation: None,
+            })
+            .await?;
+        }
+    }
+    // PostgreSQL `clean` runs inside the transaction: a failed restore keeps the old content.
+    if matches!(sd, ScriptDialect::Postgres) {
+        for sql in clean {
+            target.run(cancel, sql.clone()).await?;
+        }
+    }
+    let _ = pre;
+    let file =
+        File::open(path).map_err(|e| Error::Other(format!("cannot read the script: {e}")))?;
+    let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    progress.bytes_total = Some(size);
+    let mut reader = BufReader::with_capacity(256 * 1024, file);
+    let mut splitter = StreamSplitter::new(script_dialect_of(sd));
+    let mut errors: Vec<RowError> = Vec::new();
+    let (mut n, mut bytes) = (0u64, 0u64);
+    let mut line = String::new();
+    let mut eof = false;
+    while !eof {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|e| Error::Other(format!("cannot read the script: {e}")))?;
+        bytes += read as u64;
+        let statements = if read == 0 {
+            eof = true;
+            splitter.clone().finish()
+        } else {
+            splitter.push(&line)
+        };
+        for stmt in statements {
+            if stmt.trim().is_empty() {
+                continue;
+            }
+            if cancel.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            n += 1;
+            match target.run(cancel, stmt).await {
+                Ok(()) => {}
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(e) if spec.continue_on_error => {
+                    if errors.len() < MAX_REPORTED_ERRORS {
+                        errors.push(RowError {
+                            line: n,
+                            message: e.message(),
+                        });
+                    }
+                }
+                Err(e) => {
+                    return Err(Error::Query {
+                        message: format!("statement {n}: {}", e.message()),
+                        position: None,
+                    });
+                }
+            }
+            if n % 50 == 0 {
+                progress.rows_done = n;
+                progress.bytes_done = bytes;
+                reporter.progress(progress);
+            }
+        }
+    }
+    if single_tx {
+        if let Some(l) = &target.lease {
+            l.commit().await?;
+        }
+    }
+    progress.rows_done = n;
+    progress.bytes_done = bytes;
+    reporter.progress(progress);
+    Ok(errors)
+}
+
+fn script_dialect_of(sd: ScriptDialect) -> ScriptDialect {
+    match sd {
+        ScriptDialect::MySql { mariadb, .. } => ScriptDialect::MySql {
+            mariadb,
+            backslash_escapes: true,
+        },
+        other => other,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn db(n: &str) -> ObjectPath {
+        ObjectPath::root().child(ObjectKind::Database, n)
+    }
+
     #[test]
-    fn subset_selection_follows_markers() {
-        let script = "-- @object a\nCREATE TABLE a (x int);\nCREATE INDEX i ON a (x);\n-- @end\n\n\
-                      -- @object b\nCREATE TABLE b (y int);\n-- @end\n\nSELECT 1;\n";
+    fn export_source_follows_the_targets() {
+        assert!(matches!(
+            export_source("app", &[]).unwrap(),
+            ExportSource::Database { .. }
+        ));
+        assert!(matches!(
+            export_source("app", &[db("app")]).unwrap(),
+            ExportSource::Database { .. }
+        ));
+        let t = db("app").child(ObjectKind::Table, "t");
+        assert!(matches!(
+            export_source("app", std::slice::from_ref(&t)).unwrap(),
+            ExportSource::Tables { .. }
+        ));
+        let s = db("app").child(ObjectKind::Schema, "s");
+        assert!(matches!(
+            export_source("app", std::slice::from_ref(&s)).unwrap(),
+            ExportSource::Schema { .. }
+        ));
+        assert!(export_source("app", &[s.clone(), s]).is_err());
+        assert_eq!(scope_of(t).segments.len(), 1);
+    }
+
+    #[test]
+    fn clean_replaces_schemas_or_the_database() {
+        let pre =
+            json!({"objects": [{"name": "app.users"}, {"name": "app.orders"}, {"name": "x.t"}]});
+        let pg = clean_statements(&pre, ScriptDialect::Postgres, "d");
+        assert_eq!(pg[0], "DROP SCHEMA IF EXISTS \"app\" CASCADE");
+        assert_eq!(pg.len(), 2);
+        let my = clean_statements(
+            &pre,
+            ScriptDialect::MySql {
+                mariadb: false,
+                backslash_escapes: true,
+            },
+            "d",
+        );
+        assert_eq!(my, ["DROP DATABASE IF EXISTS `d`", "CREATE DATABASE `d`"]);
         assert_eq!(
-            selected_for_test(script, &["a"]),
+            clean_statements(&json!({}), ScriptDialect::Postgres, "d"),
             [
-                "CREATE TABLE a (x int)",
-                "CREATE INDEX i ON a (x)",
-                "SELECT 1"
+                "DROP SCHEMA IF EXISTS \"public\" CASCADE",
+                "CREATE SCHEMA \"public\""
             ]
         );
-        assert_eq!(selected_for_test(script, &[]).len(), 4);
-        assert_eq!(
-            selected_for_test(script, &["b"]),
-            ["CREATE TABLE b (y int)", "SELECT 1"]
-        );
     }
 
     #[test]
-    fn sequence_ddl_is_split_and_arrays_are_quoted() {
-        let (a, b) = split_sequence_ddl("CREATE SEQUENCE s;\n\nALTER SEQUENCE s OWNED BY t.c;\n");
-        assert_eq!(a, "CREATE SEQUENCE s;");
-        assert_eq!(b.as_deref(), Some("ALTER SEQUENCE s OWNED BY t.c;"));
-        assert_eq!(
-            pg_array_text(&[
-                Value::Int(1),
-                Value::Null,
-                Value::Text("a\"b".into()),
-                Value::Array(vec![Value::Bool(true)]),
-            ]),
-            "{1,NULL,\"a\\\"b\",{true}}"
-        );
-        let d = Dialect::new(ScriptDialect::Postgres);
-        assert_eq!(
-            literal(&d, &Value::Array(vec![Value::Text("x'y".into())])),
-            "'{\"x''y\"}'"
-        );
-    }
-
-    #[test]
-    fn owned_sequences_follow_their_table() {
-        assert_eq!(
-            owner_table("ALTER SEQUENCE app.s OWNED BY app.customers.id;").as_deref(),
-            Some("app.customers")
-        );
-        assert_eq!(
-            owner_table("ALTER SEQUENCE s OWNED BY \"My App\".\"Tab\"\"x\".id;").as_deref(),
-            Some("My App.Tab\"x")
-        );
-        assert_eq!(owner_table("CREATE SEQUENCE s;"), None);
-    }
-
-    #[test]
-    fn names_are_sanitized() {
-        assert_eq!(sanitize("public.my table/../x"), "public.my_table_.._x");
+    fn dialect_families() {
+        assert!(same_family("postgres", ScriptDialect::Postgres));
+        assert!(!same_family("postgres", ScriptDialect::MsSql));
+        assert_eq!(dialect_name(ScriptDialect::Oracle).unwrap(), "oracle");
     }
 }

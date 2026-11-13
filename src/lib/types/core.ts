@@ -125,11 +125,10 @@ export interface DriverDiagnostics {
   helpUrl?: string | null;
 }
 
-/** Result of `connection_parse_uri`; the password stays in the backend (`pendingSecretId`). */
+/** Result of `connection_parse_uri`; the password is dropped (`hasPassword` asks the UI for it). */
 export interface ParsedConnectionUri {
   profile: ConnectionProfile;
   hasPassword: boolean;
-  pendingSecretId?: string | null;
 }
 
 export interface AppInfo {
@@ -443,6 +442,8 @@ export interface IndexDetail {
   primary: boolean;
   method?: string | null;
   definition?: string | null;
+  /** Partial index (has a predicate): never a row key. */
+  partial?: boolean;
 }
 
 export interface ForeignKeyDetail {

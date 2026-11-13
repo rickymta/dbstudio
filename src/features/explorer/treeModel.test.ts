@@ -230,3 +230,12 @@ describe('capabilities and unknown kinds', () => {
     expect(nodeActions({ kind: unknown, hasChildren: true })).toEqual(['copyName', 'refresh']);
   });
 });
+
+describe('binary prefixes', () => {
+  it('offers no delete-by-pattern for a binary prefix', () => {
+    const caps = { keyValueStore: true, pagedTree: true } as unknown as Capabilities;
+    const bin = { kind: 'keyPrefix' as const, hasChildren: true, name: '\u0000b64:/zo=' };
+    expect(nodeActions(bin, caps)).not.toContain('deleteByPattern');
+    expect(nodeActions({ ...bin, name: 'user:' }, caps)).toContain('deleteByPattern');
+  });
+});

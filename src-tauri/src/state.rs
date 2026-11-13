@@ -36,6 +36,8 @@ pub struct AppState {
     pub confirm: Arc<ConfirmTokens>,
     /// Paths the webview may make the backend read or write.
     pub grants: Arc<PathGrants>,
+    /// Application data directory (database, per-job backup lock files shared with the CLI).
+    pub data_dir: Arc<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -46,6 +48,10 @@ impl AppState {
         secrets: Arc<dyn SecretStore>,
         host: Arc<dyn Host>,
     ) -> Self {
+        // History rows still `running` were left by a process that died mid-statement.
+        if let Err(e) = connections.store().history_mark_interrupted() {
+            tracing::warn!(error = %e, "cannot close stale history entries");
+        }
         let registry = Arc::new(registry);
         let events = EventHub::new();
         let emitter: Arc<dyn EventEmitter> = events.clone();
@@ -64,7 +70,19 @@ impl AppState {
             leases,
             confirm: Arc::new(ConfirmTokens::new()),
             grants: Arc::new(PathGrants::new()),
+            data_dir: Arc::new(std::env::temp_dir().join("dbstudio")),
         }
+    }
+
+    /// The same state with the real application data directory.
+    pub fn with_data_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.data_dir = Arc::new(dir);
+        self
+    }
+
+    /// Directory of the per-job lock files, shared with `dbstudio-cli`.
+    pub fn locks_dir(&self) -> std::path::PathBuf {
+        self.data_dir.join("locks")
     }
 }
 

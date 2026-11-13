@@ -1,9 +1,9 @@
 // Mock background jobs: the list is empty; mocks that create jobs push into `mockJobs` and emit
 // `job://progress` events through `mockEmit`.
 
-import type { JobId, JobInfo } from '../types';
+import type { JobId, JobInfo, JobKind } from '../types';
 import { mockEmit } from './events';
-import { clone, ipcError } from './util';
+import { clone, ipcError, newId } from './util';
 
 const jobs: JobInfo[] = [];
 
@@ -11,6 +11,82 @@ const jobs: JobInfo[] = [];
 export function mockAddJob(job: JobInfo): void {
   jobs.push(clone(job));
   mockEmit('job://progress', { type: 'started', job: clone(job) });
+}
+
+/** Milliseconds between the progress steps of a simulated job (tests lower it). */
+export const mockJobTiming = { stepMs: 120, steps: 5 };
+
+/**
+ * Create a job that advances by itself: `steps` progress events, then `finished` with `result`
+ * (or a failure when `fail` is given). Cancelling it stops the timer.
+ */
+export function mockRunJob(options: {
+  kind: JobKind;
+  title: string;
+  connectionId: string | null;
+  rowsTotal: number;
+  result: unknown;
+  fail?: { kind: string; message: string };
+}): JobId {
+  const now = new Date().toISOString();
+  const job: JobInfo = {
+    id: newId(),
+    kind: options.kind,
+    title: options.title,
+    connectionId: options.connectionId as JobInfo['connectionId'],
+    status: 'running',
+    progress: {
+      phase: 'data',
+      object: null,
+      objectsDone: 0,
+      objectsTotal: 1,
+      rowsDone: 0,
+      rowsTotal: options.rowsTotal,
+      bytesDone: 0,
+      bytesTotal: null,
+      message: null,
+    },
+    createdAt: now,
+    startedAt: now,
+    finishedAt: null,
+    error: null,
+    result: null,
+    cancellable: true,
+  };
+  mockAddJob(job);
+  const stored = jobs[jobs.length - 1]!;
+  let step = 0;
+  const timer = setInterval(() => {
+    if (stored.status !== 'running') {
+      clearInterval(timer);
+      return;
+    }
+    step += 1;
+    if (step < mockJobTiming.steps) {
+      stored.progress = {
+        ...stored.progress,
+        rowsDone: Math.round((options.rowsTotal * step) / mockJobTiming.steps),
+      };
+      mockEmit('job://progress', {
+        type: 'progress',
+        jobId: stored.id,
+        progress: clone(stored.progress),
+      });
+      return;
+    }
+    clearInterval(timer);
+    stored.finishedAt = new Date().toISOString();
+    if (options.fail) {
+      stored.status = 'failed';
+      stored.error = options.fail;
+    } else {
+      stored.status = 'succeeded';
+      stored.progress = { ...stored.progress, rowsDone: options.rowsTotal };
+      stored.result = options.result;
+    }
+    mockEmit('job://progress', { type: 'finished', job: clone(stored) });
+  }, mockJobTiming.stepMs);
+  return stored.id;
 }
 
 export const jobsMock = {

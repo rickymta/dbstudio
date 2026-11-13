@@ -1,0 +1,8 @@
+-> Append  (cost=4.12 rows=18) (actual time=0.0212..0.0288 rows=18 loops=1)
+    -> Stream results  (cost=2.06 rows=9) (actual time=0.0192..0.0217 rows=9 loops=1)
+        -> Filter: (plan_fx_orders.id < 10)  (cost=2.06 rows=9) (actual time=0.0168..0.0187 rows=9 loops=1)
+            -> Covering index range scan on plan_fx_orders using PRIMARY over (id < 10)  (cost=2.06 rows=9) (actual time=0.0128..0.0143 rows=9 loops=1)
+    -> Stream results  (cost=2.06 rows=9) (actual time=0.00208..0.00359 rows=9 loops=1)
+        -> Filter: (plan_fx_customers.id < 10)  (cost=2.06 rows=9) (actual time=0.00192..0.003 rows=9 loops=1)
+            -> Covering index range scan on plan_fx_customers using PRIMARY over (id < 10)  (cost=2.06 rows=9) (actual time=0.00175..0.00229 rows=9 loops=1)
+

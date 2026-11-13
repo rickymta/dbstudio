@@ -2,8 +2,102 @@
   "tab": {
     "title": "Diagram"
   },
-  "placeholder": {
-    "title": "Diagram",
-    "description": "Entity-relationship diagrams are not available yet."
+  "loading": "Loading the schema…",
+  "laying": "Arranging the tables…",
+  "empty": {
+    "title": "No tables",
+    "description": "This database or schema has no tables to draw."
+  },
+  "error": {
+    "title": "Could not load the schema",
+    "unsupported": "Diagrams are not supported for this database.",
+    "retry": "Retry"
+  },
+  "node": {
+    "expand": "Show columns",
+    "collapse": "Hide columns",
+    "view": "view"
+  },
+  "status": {
+    "missing": "missing",
+    "new": "new",
+    "changed": "changed",
+    "changedHint": "Columns changed since this layout was saved"
+  },
+  "diff": {
+    "hint": "Saving the layout again updates it.",
+    "missing": "Saved tables that no longer exist: {{n}}",
+    "changed": "Tables changed since the layout was saved: {{n}}",
+    "forget": "Forget missing tables"
+  },
+  "toolbar": {
+    "label": "Diagram tools",
+    "search": "Find a table",
+    "searchPlaceholder": "Find a table…",
+    "clearSearch": "Clear search",
+    "depth": "Levels",
+    "showAll": "Show all tables",
+    "focus": "Table + neighbours",
+    "focusHint": "Select a table, then show only it and the tables related to it",
+    "view": "View",
+    "keysOnly": "Key columns only",
+    "showTypes": "Show column types",
+    "showViews": "Show views",
+    "autoLayout": "Auto layout",
+    "fit": "Fit to screen",
+    "refresh": "Reload the schema",
+    "color": "Table color",
+    "colorClear": "Default color",
+    "save": "Save layout",
+    "layouts": "Layouts",
+    "export": "Export",
+    "ddl": "DDL",
+    "count": "{{shown}} of {{total}} tables",
+    "levels": "Depth {{n}}"
+  },
+  "export": {
+    "png": "PNG image",
+    "svg": "SVG image",
+    "pdf": "PDF document",
+    "currentTheme": "Current theme",
+    "light": "Light",
+    "dark": "Dark",
+    "saved": "Diagram saved to {{path}}",
+    "failed": "Could not export the diagram: {{message}}"
+  },
+  "ddl": {
+    "panel": "Table DDL",
+    "loading": "Generating DDL…",
+    "unsupported": "DDL generation is not supported for this database.",
+    "error": "Could not generate the DDL",
+    "ariaLabel": "DDL of {{name}}",
+    "copy": "Copy",
+    "copied": "Copied",
+    "close": "Close"
+  },
+  "save": {
+    "title": "Save layout",
+    "description": "Stores the table positions, colors and view options of this diagram.",
+    "name": "Name",
+    "defaultName": "{{name}} diagram",
+    "save": "Save",
+    "asNew": "Save as new",
+    "cancel": "Cancel"
+  },
+  "layouts": {
+    "title": "Saved layouts",
+    "description": "Layouts saved for this database or schema.",
+    "empty": "No saved layouts yet",
+    "current": "(open)",
+    "open": "Open",
+    "delete": "Delete layout",
+    "tables": "Tables: {{n}}"
+  },
+  "truncated": "The schema has more than 2000 tables: only the first 2000 (by name) are shown.",
+  "conflict": {
+    "title": "Layout changed elsewhere",
+    "description": "This layout was saved by someone else (or another window) after you opened it. Overwrite it with your version, or load the saved one and lose your changes.",
+    "overwrite": "Overwrite",
+    "reload": "Load saved"
   }
 }

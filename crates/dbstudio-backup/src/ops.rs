@@ -72,7 +72,7 @@ fn file_sha256(path: &Path) -> Result<String> {
     Ok(hex(&h.finalize()))
 }
 
-fn spool_entry_from_file(name: &str, path: &Path) -> Result<SpoolEntry> {
+pub(crate) fn spool_entry_from_file(name: &str, path: &Path) -> Result<SpoolEntry> {
     Ok(SpoolEntry {
         name: name.to_string(),
         path: path.to_path_buf(),
@@ -264,15 +264,17 @@ pub async fn run_backup(
             .tempdir_in(&dir)?;
         let source = source_json(&ctx, &server_version, &database);
         let (mut entries, mut preamble, objects, rows, native_tool) = match &spec.engine {
-            BackupEngine::Logical { content, .. } => {
+            BackupEngine::Logical { content, ddl } => {
                 let d = logical::dump(
-                    ctx.session.as_ref(),
+                    &ctx.session,
+                    ctx.config.kind,
                     spool.path(),
                     &database,
                     &targets,
                     *content,
+                    ddl,
                     source,
-                    reporter.as_ref(),
+                    &reporter,
                 )
                 .await?;
                 (d.entries, d.preamble, d.objects, d.rows, None)
@@ -535,7 +537,7 @@ pub async fn run_restore(
     })
     .await?;
     match scanned.header.native {
-        None => logical::restore(ctx.session.as_ref(), &scanned, spec, reporter.as_ref()).await,
+        None => logical::restore(&ctx.session, &scanned, spec, reporter.as_ref()).await,
         Some(tool) => native_restore(&ctx, &scanned, tool, spec, work.path()).await,
     }
 }

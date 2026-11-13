@@ -323,9 +323,9 @@ async fn details_of_tables_and_views() {
         let idx: Vec<_> = d.indexes.iter().map(|i| i.name.as_str()).collect();
         assert!(idx.contains(&"PRIMARY") && idx.contains(&"idx_note") && idx.contains(&"uq_child"));
         let pk = d.indexes.iter().find(|i| i.primary).unwrap();
-        assert!(pk.unique && pk.columns == ["`id`"]);
+        assert!(pk.unique && pk.columns == ["id"]);
         let uq = d.indexes.iter().find(|i| i.name == "uq_child").unwrap();
-        assert!(uq.unique && !uq.primary && uq.columns == ["`parent_id`", "`note`"]);
+        assert!(uq.unique && !uq.primary && uq.columns == ["parent_id", "note"]);
         assert!(
             uq.definition
                 .as_deref()

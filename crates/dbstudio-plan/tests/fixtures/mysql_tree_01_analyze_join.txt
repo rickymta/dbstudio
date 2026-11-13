@@ -1,0 +1,8 @@
+-> Sort: `count(*)` DESC  (actual time=77.5..77.5 rows=4 loops=1)
+    -> Table scan on <temporary>  (actual time=77..77 rows=4 loops=1)
+        -> Aggregate using temporary table  (actual time=77..77 rows=4 loops=1)
+            -> Nested loop inner join  (cost=27646 rows=50135) (actual time=0.511..60.3 rows=58079 loops=1)
+                -> Filter: ((o.created > DATE'2024-06-01') and (o.customer_id is not null))  (cost=10099 rows=50135) (actual time=0.181..18.9 rows=58079 loops=1)
+                    -> Table scan on o  (cost=10099 rows=100270) (actual time=0.162..13 rows=100000 loops=1)
+                -> Single-row index lookup on c using PRIMARY (id=o.customer_id)  (cost=0.25 rows=1) (actual time=566e-6..588e-6 rows=1 loops=58079)
+
