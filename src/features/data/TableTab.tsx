@@ -5,10 +5,13 @@ import { cn } from '@/lib/cn';
 import { pathKey } from '@/lib/objectPath';
 import { useAppSettings } from '@/features/settings/queries';
 import { tableTabId, type TableTabPayload } from '@/stores/tabs';
+import { useTabGuard } from '@/stores/tabGuard';
 import { layoutStorageKey, loadLayout } from './columnLayout';
 import { CellViewer } from './CellViewer';
 import { DataGrid } from './DataGrid';
 import { DdlViewer } from './DdlViewer';
+import { EditBar } from './edit/EditBar';
+import { countChanges, usePendingChanges } from './edit/pendingChanges';
 import { FilterBar } from './FilterBar';
 import { GridStatusBar } from './GridStatusBar';
 import { ObjectHeader } from './ObjectHeader';
@@ -20,6 +23,11 @@ export function TableTab({ sessionId, connectionId, path }: TableTabPayload) {
   const { t } = useTranslation('data');
   const tabId = tableTabId(sessionId, path);
   const [ui, patchUi] = useTabUi(tabId);
+  // Closing the tab would lose the pending edits: ask first.
+  useTabGuard(tabId, () => {
+    const pending = usePendingChanges.getState().byTab[tabId];
+    return !pending || countChanges(pending) === 0 || window.confirm(t('edit.closeConfirm'));
+  });
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="table-tab">
@@ -82,6 +90,7 @@ function DataPane({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <FilterBar tabId={tabId} model={model} />
+      <EditBar tabId={tabId} sessionId={sessionId} path={path} model={model} />
       <div
         className={cn(
           'flex min-h-0 flex-1',
