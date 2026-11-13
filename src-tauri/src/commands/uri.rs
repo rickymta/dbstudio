@@ -3,8 +3,7 @@
 //! `connection_parse_uri` turns `mongodb://`, `mongodb+srv://`, `redis://`, `rediss://`,
 //! `postgres(ql)://`, `mysql://`, `sqlserver://` and `oracle://` URIs into a connection profile.
 //! The password never goes to the frontend and is not kept in memory either: the command
-//! reports `hasPassword` and the UI asks the user to type the password again (`pendingSecretId`
-//! stays `None`).
+//! reports `hasPassword` and the UI asks the user to type the password again.
 
 use dbstudio_core::{ConnectionConfig, DbKind, Error, TlsMode};
 use dbstudio_store::ConnectionProfile;
@@ -16,13 +15,12 @@ use crate::state::AppState;
 type Result<T> = std::result::Result<T, Error>;
 
 /// Result of `connection_parse_uri`. The password is dropped: `has_password` tells the UI to ask
-/// for it; `pending_secret_id` is always `None` (kept for the contract).
+/// for it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParsedConnectionUri {
     pub profile: ConnectionProfile,
     pub has_password: bool,
-    pub pending_secret_id: Option<String>,
 }
 
 fn invalid(msg: &str) -> Error {
@@ -361,7 +359,6 @@ pub(crate) fn parse_uri_impl(state: &AppState, uri: &str) -> Result<ParsedConnec
     Ok(ParsedConnectionUri {
         profile,
         has_password,
-        pending_secret_id: None,
     })
 }
 
@@ -476,7 +473,6 @@ mod tests {
         let json = serde_json::to_string(&ParsedConnectionUri {
             profile,
             has_password,
-            pending_secret_id: None,
         })
         .unwrap();
         assert!(!json.contains("\"pw\"") && json.contains("\"hasPassword\":true"));

@@ -468,7 +468,6 @@ export async function mockParseMongoUri(uri: string): Promise<ParsedConnectionUr
   for (const [k, v] of url.searchParams) if (k !== 'tls' && k !== 'ssl') options[k] = v;
   return {
     hasPassword: url.password !== '',
-    pendingSecretId: null,
     profile: {
       id: crypto.randomUUID(),
       name: url.hostname,

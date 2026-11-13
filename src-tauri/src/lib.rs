@@ -50,6 +50,12 @@ fn build_state(app: &tauri::App) -> Result<state::AppState, Box<dyn std::error::
     if logging::set_level(settings.log_level) {
         tracing::info!(level = ?settings.log_level, "log level applied from settings");
     }
+    // The Oracle driver loads Instant Client lazily from the `oracle_client` setting: tell it
+    // where to look before the registry (and its first probe) exists.
+    #[cfg(feature = "oracle")]
+    if let Ok(client) = connections.store().get_oracle_client() {
+        dbstudio_driver_oracle::configure_client(client.lib_dir.as_deref());
+    }
     let state = state::AppState::new(state::build_registry(), connections, secrets, host);
     state.events.attach_tauri(app.handle().clone());
     Ok(state)
