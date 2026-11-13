@@ -2,8 +2,311 @@
   "tab": {
     "title": "Sao lưu"
   },
-  "placeholder": {
-    "title": "Sao lưu",
-    "description": "Sao lưu và khôi phục chưa khả dụng."
+  "actions": {
+    "cancel": "Huỷ",
+    "save": "Lưu",
+    "close": "Đóng",
+    "delete": "Xoá",
+    "restoreFromFile": "Khôi phục từ file...",
+    "backupNow": "Sao lưu ngay (một lần)",
+    "createJob": "Tạo tác vụ"
+  },
+  "section": {
+    "jobs": "Tác vụ",
+    "history": "Lịch sử chạy",
+    "tools": "Công cụ gốc",
+    "background": "Chạy nền"
+  },
+  "running": {
+    "title": "Đang chạy"
+  },
+  "jobs": {
+    "col": {
+      "name": "Tên",
+      "connection": "Kết nối",
+      "schedule": "Lịch",
+      "lastRun": "Lần chạy cuối",
+      "nextRun": "Lần chạy tới",
+      "enabled": "Bật"
+    },
+    "encrypted": "Mã hoá",
+    "unknownConnection": "(kết nối đã xoá)",
+    "manual": "Chỉ chạy thủ công",
+    "toggle": "Bật tác vụ {{name}}",
+    "runNow": "Chạy ngay",
+    "edit": "Sửa",
+    "delete": "Xoá",
+    "runStarted": "Đã bắt đầu sao lưu \"{{name}}\".",
+    "empty": {
+      "title": "Chưa có tác vụ sao lưu",
+      "description": "Tạo tác vụ để sao lưu cơ sở dữ liệu theo lịch, hoặc chạy một lần sao lưu ngay."
+    },
+    "deleteConfirm": {
+      "title": "Xoá tác vụ \"{{name}}\"?",
+      "description": "Chỉ xoá định nghĩa tác vụ. Các file sao lưu đã tạo vẫn được giữ trên đĩa."
+    }
+  },
+  "status": {
+    "running": "Đang chạy",
+    "queued": "Đang chờ",
+    "succeeded": "Thành công",
+    "failed": "Thất bại",
+    "cancelled": "Đã huỷ",
+    "interrupted": "Bị gián đoạn"
+  },
+  "phase": {
+    "schema": "Cấu trúc",
+    "data": "Dữ liệu",
+    "compress": "Đang nén",
+    "encrypt": "Đang mã hoá",
+    "verify": "Đang xác minh",
+    "restore": "Đang khôi phục"
+  },
+  "progress": {
+    "counters": "{{objects}} đối tượng, {{rows}} dòng, {{bytes}}"
+  },
+  "cron": {
+    "mode": {
+      "label": "Chế độ lịch",
+      "preset": "Đơn giản",
+      "advanced": "Nâng cao (cron)"
+    },
+    "expression": "Biểu thức cron",
+    "expressionHint": "5 trường: phút giờ ngày-trong-tháng tháng thứ-trong-tuần.",
+    "repeat": "Lặp lại",
+    "kind": {
+      "daily": "Hàng ngày",
+      "weekly": "Hàng tuần",
+      "monthly": "Hàng tháng"
+    },
+    "hour": "Giờ",
+    "minute": "Phút",
+    "weekdays": "Các ngày trong tuần",
+    "weekday": {
+      "0": "CN",
+      "1": "T2",
+      "2": "T3",
+      "3": "T4",
+      "4": "T5",
+      "5": "T6",
+      "6": "T7"
+    },
+    "dayOfMonth": "Ngày trong tháng",
+    "timezone": "Múi giờ",
+    "tz": {
+      "local": "Giờ máy",
+      "utc": "UTC"
+    },
+    "invalid": "Biểu thức cron phải có 5 trường hợp lệ.",
+    "nextRuns": "{{count}} lần chạy tới"
+  },
+  "job": {
+    "createTitle": "Tạo tác vụ sao lưu",
+    "editTitle": "Sửa tác vụ sao lưu",
+    "section": {
+      "source": "Nguồn",
+      "destination": "Đích",
+      "format": "Định dạng và bảo mật",
+      "schedule": "Lịch",
+      "policy": "Giữ lại và thông báo"
+    },
+    "name": "Tên tác vụ",
+    "connection": "Kết nối",
+    "connectionPlaceholder": "Chọn kết nối",
+    "database": "Database",
+    "databasePlaceholder": "Chọn database",
+    "databaseListFailed": "Không liệt kê được database ({{error}}). Hãy nhập tên thủ công.",
+    "productionNote": "Đây là kết nối production.",
+    "enabled": "Bật tác vụ",
+    "directory": "Thư mục đích",
+    "serverDirectory": "Thư mục trên máy chủ CSDL",
+    "serverDirectoryHint": "Công cụ này ghi bản sao lưu trên máy chủ CSDL nên đường dẫn được hiểu ở máy chủ.",
+    "browse": "Chọn...",
+    "fileTemplate": "Mẫu tên file",
+    "fileTemplateHint": "Placeholder:",
+    "fileExample": "Ví dụ",
+    "engine": {
+      "label": "Engine",
+      "logical": "Logical (tích hợp)",
+      "native": "Công cụ gốc"
+    },
+    "content": {
+      "label": "Nội dung",
+      "both": "Cấu trúc và dữ liệu",
+      "schema": "Chỉ cấu trúc",
+      "data": "Chỉ dữ liệu"
+    },
+    "nativeTool": "Công cụ",
+    "nativeToolPlaceholder": "Chọn công cụ",
+    "toolProblem": "Công cụ không dùng được: {{problem}}",
+    "compression": {
+      "label": "Nén",
+      "none": "Không nén",
+      "gzip": "gzip",
+      "zstd": "zstd",
+      "level": "Mức nén"
+    },
+    "encryption": {
+      "label": "Mã hoá bản sao lưu",
+      "suggestProduction": "Đây là database production: nên mã hoá các bản sao lưu của nó.",
+      "enable": "Bật mã hoá",
+      "warning": "Mất passphrase = mất bản sao lưu, không thể khôi phục. Passphrase không được lưu ở nơi bạn có thể đọc lại.",
+      "passphrase": "Passphrase",
+      "repeat": "Nhập lại passphrase",
+      "keepPlaceholder": "Để trống để giữ passphrase đã lưu"
+    },
+    "scheduled": "Chạy theo lịch",
+    "manualOnly": "Tác vụ chỉ chạy khi bạn bấm chạy.",
+    "missedRun": {
+      "label": "Khi bỏ lỡ lần chạy (ứng dụng đang tắt)",
+      "runOnce": "Chạy bù một lần khi mở ứng dụng",
+      "skip": "Bỏ qua"
+    },
+    "retention": {
+      "title": "Giữ lại",
+      "hint": "Bản cũ bị xoá sau mỗi lần chạy thành công. Để trống để giữ tất cả.",
+      "keepLast": "Giữ N bản mới nhất",
+      "maxAgeDays": "Giữ bản trong N ngày"
+    },
+    "notify": {
+      "title": "Thông báo",
+      "onSuccess": "Báo khi chạy thành công",
+      "onFailure": "Báo khi chạy thất bại"
+    },
+    "error": {
+      "nameRequired": "Nhập tên tác vụ.",
+      "connectionRequired": "Chọn kết nối.",
+      "databaseRequired": "Chọn hoặc nhập database.",
+      "directoryRequired": "Chọn thư mục đích.",
+      "templateSeparator": "Mẫu không được chứa / hoặc \\.",
+      "templateRequired": "Nhập mẫu tên file.",
+      "templateUnknown": "Mẫu có placeholder không hợp lệ.",
+      "toolRequired": "Chọn công cụ gốc.",
+      "toolMissing": "Không tìm thấy công cụ đã chọn; đặt đường dẫn ở tab Công cụ gốc.",
+      "passphraseRequired": "Nhập passphrase.",
+      "passphraseMismatch": "Hai passphrase không khớp.",
+      "cronInvalid": "Biểu thức cron không hợp lệ.",
+      "retentionInvalid": "Nhập số nguyên từ 1 trở lên hoặc để trống."
+    }
+  },
+  "once": {
+    "title": "Sao lưu ngay",
+    "run": "Bắt đầu sao lưu",
+    "started": "Đã bắt đầu sao lưu."
+  },
+  "tools": {
+    "description": "Công cụ gốc (pg_dump, mysqldump, ...) được tìm trong PATH và các thư mục quen thuộc. Bạn có thể chọn file thực thi khác.",
+    "detect": "Dò lại",
+    "found": "Đã tìm thấy",
+    "missing": "Thiếu",
+    "notFound": "Không tìm thấy",
+    "choose": "Chọn đường dẫn...",
+    "clear": "Xoá cấu hình",
+    "name": {
+      "pgDump": "pg_dump",
+      "pgRestore": "pg_restore",
+      "psql": "psql",
+      "mySqlDump": "mysqldump",
+      "mySqlClient": "mysql client",
+      "mongoDump": "mongodump",
+      "mongoRestore": "mongorestore",
+      "expdp": "expdp (xuất Data Pump)",
+      "impdp": "impdp (nhập Data Pump)",
+      "redisCli": "redis-cli",
+      "msSqlServerBackup": "SQL Server BACKUP"
+    },
+    "source": {
+      "configured": "Đã cấu hình",
+      "path": "PATH",
+      "knownDir": "Thư mục quen thuộc"
+    }
+  },
+  "runs": {
+    "filterJob": "Tác vụ",
+    "allJobs": "Tất cả tác vụ",
+    "empty": "Chưa có lần chạy nào.",
+    "col": {
+      "started": "Bắt đầu",
+      "job": "Tác vụ",
+      "kind": "Loại",
+      "status": "Trạng thái",
+      "size": "Kích thước",
+      "duration": "Thời lượng"
+    },
+    "details": "Xem chi tiết",
+    "kind": {
+      "backup": "Sao lưu",
+      "restore": "Khôi phục",
+      "verify": "Xác minh"
+    },
+    "trigger": {
+      "manual": "thủ công",
+      "schedule": "theo lịch",
+      "catchUp": "chạy bù",
+      "cli": "CLI"
+    },
+    "verify": "Xác minh toàn vẹn",
+    "restore": "Khôi phục",
+    "verifyStarted": "Đã bắt đầu xác minh.",
+    "engine": "Engine",
+    "file": "File",
+    "objects": "Đối tượng",
+    "rows": "dòng",
+    "checksum": "Checksum",
+    "logTail": "Log (cuối)",
+    "noLog": "(trống)",
+    "passphraseTitle": "Cần passphrase",
+    "passphraseDescription": "Bản sao lưu này được mã hoá. Nhập passphrase để xác minh."
+  },
+  "restore": {
+    "title": "Khôi phục từ bản sao lưu",
+    "description": "Khôi phục file .dbsbak vào một database.",
+    "section": {
+      "file": "File sao lưu",
+      "contents": "Nội dung",
+      "target": "Đích",
+      "run": "Thực hiện"
+    },
+    "chooseFile": "Chọn file .dbsbak...",
+    "noFile": "Chưa chọn file",
+    "passphrase": "Passphrase",
+    "unlock": "Mở khoá",
+    "encryptedLocked": "Bản sao lưu này được mã hoá. Nhập passphrase để đọc nội dung.",
+    "encryptedHint": "Bản sao lưu mã hoá: cần passphrase để khôi phục.",
+    "wrongPassphrase": "Sai passphrase hoặc file bị hỏng (kiểm tra toàn vẹn thất bại).",
+    "nativeTool": "Công cụ gốc",
+    "objects": "Đối tượng ({{count}})",
+    "selectAll": "Chọn tất cả",
+    "selectNone": "Bỏ chọn",
+    "scope": "Phạm vi hỗ trợ và chi tiết",
+    "targetConnection": "Kết nối đích",
+    "targetDatabase": "Database đích",
+    "readOnly": "chỉ đọc",
+    "productionWarning": "Đích là kết nối production: bạn sẽ phải xác nhận khi khôi phục.",
+    "createDatabase": "Tạo database nếu chưa có",
+    "clean": "Xoá đối tượng có sẵn trước (clean)",
+    "cleanWarning": "Phá huỷ: các đối tượng cùng tên bị xoá trước khi khôi phục và dữ liệu của chúng sẽ mất.",
+    "continueOnError": "Tiếp tục khi một đối tượng lỗi",
+    "verify": "Xác minh toàn vẹn",
+    "start": "Khôi phục"
+  },
+  "confirm": {
+    "title": "Xác nhận khôi phục",
+    "confirm": "Khôi phục",
+    "typePrompt": "Để tiếp tục, hãy gõ:",
+    "inputLabel": "Chuỗi xác nhận",
+    "cleanMessage": "Lần khôi phục này xoá các đối tượng có sẵn trong database đích. Không thể hoàn tác.",
+    "productionMessage": "Đích là database production. Lần khôi phục này làm thay đổi dữ liệu của nó."
+  },
+  "background": {
+    "description": "Sao lưu theo lịch chỉ chạy khi DBStudio đang chạy. Giữ ứng dụng ở khay hệ thống để lịch vẫn chạy khi đã đóng cửa sổ.",
+    "closeToTray": {
+      "label": "Khi đóng cửa sổ",
+      "auto": "Giữ chạy nếu có tác vụ theo lịch",
+      "always": "Luôn giữ chạy ở khay hệ thống",
+      "never": "Thoát ứng dụng",
+      "hint": "Có hiệu lực từ lần đóng cửa sổ tiếp theo."
+    },
+    "autostart": "Khởi động DBStudio khi tôi đăng nhập"
   }
 }
