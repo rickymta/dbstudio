@@ -49,7 +49,7 @@ mod edit;
 mod error;
 mod explain;
 mod lease;
-mod model;
+pub mod model;
 mod session;
 mod sql;
 mod stream;
