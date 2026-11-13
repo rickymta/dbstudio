@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::commands::background::BackgroundSettings;
 use crate::commands::{
     app, background, backup, changes, connections, editor, export, files, jobs, keyvalue, sessions,
-    ssh, uri,
+    ssh,
 };
 use crate::host::FileFilter;
 use crate::session::testing::{MockDriver, Probe};
@@ -234,10 +234,6 @@ async fn stub_commands_answer_unsupported() {
             keyvalue::keys_delete_pattern_impl(&f.state, id, ObjectPath::root(), "a*".into(), None)
                 .await
                 .unwrap_err(),
-        ),
-        (
-            "connection_parse_uri",
-            uri::parse_uri_impl(&f.state, "postgres://h/db").unwrap_err(),
         ),
         (
             "backup_jobs_list",

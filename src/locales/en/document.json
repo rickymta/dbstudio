@@ -2,8 +2,98 @@
   "tab": {
     "title": "Documents"
   },
-  "placeholder": {
-    "title": "Documents",
-    "description": "The document view is not available yet."
+  "view": {
+    "label": "View",
+    "table": "Table",
+    "tree": "Tree",
+    "json": "JSON"
+  },
+  "filter": {
+    "label": "Filter (EJSON)",
+    "placeholder": "{\"age\": {\"$gt\": 30}}",
+    "apply": "Apply",
+    "clear": "Clear",
+    "active": "Filter active",
+    "errorTitle": "Filter failed",
+    "sort": "Sort",
+    "clearSort": "Clear sort"
+  },
+  "actions": {
+    "add": "Add document",
+    "edit": "Edit",
+    "delete": "Delete"
+  },
+  "locked": {
+    "loading": "Checking whether this collection can be edited...",
+    "readOnlyConnection": "Editing is off: the connection is read-only.",
+    "noUniqueKey": "Editing is off: documents have no unique key.",
+    "notATable": "Editing is off: this object is not a collection.",
+    "unsupported": "Editing is not supported here."
+  },
+  "cell": {
+    "fieldOne": "1 field",
+    "fieldMany": "{{count}} fields",
+    "itemOne": "1 item",
+    "itemMany": "{{count}} items",
+    "null": "null",
+    "missing": "This document has no such field"
+  },
+  "table": {
+    "rowNumber": "#",
+    "empty": "This collection has no documents.",
+    "emptyFiltered": "No document matches the filter.",
+    "columnsTruncated": "Only the first {{count}} keys are shown as columns. Use the Tree or JSON view to see the rest.",
+    "label": "Documents",
+    "notSortable": "This key cannot be used to sort",
+    "sortAscending": "Sorted ascending",
+    "sortDescending": "Sorted descending"
+  },
+  "nav": {
+    "previous": "Previous document",
+    "next": "Next document",
+    "position": "{{index}} of {{total}}",
+    "noSelection": "Select a document in the Table view to see it here.",
+    "noDocuments": "There are no documents to show."
+  },
+  "editor": {
+    "insertTitle": "Add document",
+    "editTitle": "Edit document",
+    "description": "Write the document as Extended JSON, for example {\"$oid\": \"...\"} for an ObjectId.",
+    "label": "Document (EJSON)",
+    "valid": "Valid JSON",
+    "parseError": "Line {{line}}, column {{col}}: {{message}}",
+    "noId": "This document has no _id, so it cannot be edited.",
+    "preview": "Preview command",
+    "previewTitle": "Command that will run",
+    "previewFailed": "Preview failed",
+    "save": "Save",
+    "saving": "Saving...",
+    "cancel": "Cancel",
+    "saveFailed": "Save failed",
+    "noChanges": "No changes to save.",
+    "idChanged": "The _id cannot be changed.",
+    "dollarKey": "Top-level keys starting with $ cannot be saved: the server would read them as operators.",
+    "convertFailed": "This document cannot be saved: {{message}}",
+    "notAtomic": "Changes on this server are not atomic."
+  },
+  "delete": {
+    "title": "Delete document",
+    "description": "This permanently deletes the document with the _id below. This cannot be undone.",
+    "confirm": "Delete",
+    "failed": "Delete failed"
+  },
+  "uri": {
+    "label": "Connection URI",
+    "placeholder": "mongodb://user@host:27017/db",
+    "parse": "Fill from URI",
+    "applied": "Fields filled in from the URI.",
+    "appliedPassword": "Fields filled in from the URI. Type the password again below."
+  },
+  "options": {
+    "hint": "Driver options (key = value), kept when you save.",
+    "key": "Option name",
+    "value": "Option value",
+    "remove": "Remove option",
+    "add": "Add option"
   }
 }

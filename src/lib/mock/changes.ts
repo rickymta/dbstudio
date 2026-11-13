@@ -16,6 +16,7 @@ import type {
 } from '../types';
 import { lastSegment } from '../objectPath';
 import { findRelation } from './catalog';
+import { mongoApply, mongoEditability, mongoPreview } from './catalogMongo';
 import { mockSessionKind } from './sessions';
 import { ipcError, sleep } from './util';
 
@@ -97,6 +98,7 @@ function carriesFailMarker(change: RowChange): boolean {
 
 export const changesMock = {
   async tableEditability(sessionId: Uuid, path: ObjectPath): Promise<Editability> {
+    if (mockSessionKind(sessionId) === 'mongodb') return mongoEditability(path);
     const kind = mockSessionKind(sessionId);
     await sleep(20, 60);
     const rel = findRelation(kind, path);
@@ -117,6 +119,7 @@ export const changesMock = {
 
   async changesPreview(sessionId: Uuid, changes: ChangeSet): Promise<string[]> {
     mockSessionKind(sessionId);
+    if (changes.model === 'documents') return mongoPreview(changes.collection, changes.changes);
     if (changes.model !== 'rows') throw ipcError('unsupported', 'data_editing');
     const name = lastSegment(changes.table)?.name ?? 'table';
     const table = quote(name);
@@ -125,6 +128,7 @@ export const changesMock = {
 
   async changesApply(sessionId: Uuid, changes: ChangeSet): Promise<ApplyResult> {
     mockSessionKind(sessionId);
+    if (changes.model === 'documents') return mongoApply(changes.collection, changes.changes);
     if (changes.model !== 'rows') throw ipcError('unsupported', 'data_editing');
     // Like the real drivers: a table that cannot be edited is refused.
     const ed = await changesMock.tableEditability(sessionId, changes.table);

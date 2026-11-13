@@ -13,6 +13,7 @@ import type {
 } from '../types';
 import { lastSegment } from '../objectPath';
 import { findRelation, type MockColumn, type MockTable } from './catalog';
+import { mongoCount, mongoFetch } from './catalogMongo';
 import { mockSessionKind } from './sessions';
 import { ipcError, sleep } from './util';
 
@@ -224,6 +225,7 @@ const cancelled = new Set<Uuid>();
  * count takes a little while (long enough to cancel) and `queryCancel` rejects it `cancelled`.
  */
 export async function tableCount(sessionId: Uuid, req: TableCountRequest): Promise<number> {
+  if (mockSessionKind(sessionId) === 'mongodb') return mongoCount(req);
   const id = req.queryId;
   if (id) running.add(id); // registered immediately so an early cancel is not lost
   try {
@@ -277,6 +279,7 @@ export async function tableFetch(
   req: TableDataRequest,
   onEvent: (e: QueryEvent) => void,
 ): Promise<ExecSummary> {
+  if (mockSessionKind(sessionId) === 'mongodb') return mongoFetch(req, onEvent);
   const started = performance.now();
   const deferred: QueryEvent[] = [];
   const emit = (e: QueryEvent) => {

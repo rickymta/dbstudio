@@ -40,6 +40,8 @@ import {
   TLS_VERIFYING,
 } from './kindConfig';
 import { needsTlsWarning } from './tlsWarning';
+import { OptionsEditor } from '@/features/document/OptionsEditor';
+import { UriPaste } from '@/features/document/UriPaste';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
 import { useHostKeyPrompt } from './useHostKeyPrompt';
 import { SshSection } from './SshSection';
@@ -282,6 +284,7 @@ function ConnectionDialogBody({
         )}
 
         <Section title={t('section.general')}>
+          {!isEdit && <UriPaste id={`${formId}-uri`} onParsed={update} />}
           <Field label={t('field.kind')} htmlFor={`${formId}-kind`}>
             <Select
               id={`${formId}-kind`}
@@ -494,6 +497,9 @@ function ConnectionDialogBody({
               onChange={(e) => update({ timeoutSec: e.target.value })}
             />
           </Field>
+          {form.kind === 'mongodb' && (
+            <OptionsEditor value={form.options} onChange={(options) => update({ options })} />
+          )}
         </Section>
       </form>
       {hostKeyDialog}
