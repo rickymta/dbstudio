@@ -40,6 +40,7 @@ import {
   TLS_VERIFYING,
 } from './kindConfig';
 import { needsTlsWarning } from './tlsWarning';
+import { UriPaste } from '@/features/document/UriPaste';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
 
 export interface ConnectionDialogProps {
@@ -253,6 +254,7 @@ function ConnectionDialogBody({
         )}
 
         <Section title={t('section.general')}>
+          {!isEdit && <UriPaste id={`${formId}-uri`} onParsed={update} />}
           <Field label={t('field.kind')} htmlFor={`${formId}-kind`}>
             <Select
               id={`${formId}-kind`}
