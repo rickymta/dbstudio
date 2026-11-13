@@ -283,12 +283,6 @@ async fn stub_commands_answer_unsupported() {
                 .unwrap_err(),
         ),
         (
-            "erd_layouts_list",
-            crate::commands::erd::layouts_list_impl(&f.state, Uuid::new_v4())
-                .await
-                .unwrap_err(),
-        ),
-        (
             "export_presets_list",
             export::presets_list_impl(&f.state, None).await.unwrap_err(),
         ),
