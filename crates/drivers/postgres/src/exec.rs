@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use dbstudio_core::{
-    ColumnMeta, EndOutcome, Error, Result, ResultSink, StatementEnd, StatementStart, TextRange,
-    Value,
+    ColumnMeta, EndOutcome, Error, Result, ResultSink, ScriptDialect, StatementEnd, StatementStart,
+    TextRange, Value,
 };
 use tokio_postgres::types::Type;
 use tokio_postgres::{SimpleQueryMessage, SimpleQueryRow};
@@ -150,6 +150,28 @@ pub async fn run_script(
     run_script_ex(conn, text, &opts, sink, running, &mut None).await
 }
 
+/// Statements of `text` as found by the shared splitter (`dbstudio-sql`).
+fn split_script(text: &str) -> Vec<Stmt> {
+    let ranges = dbstudio_sql::split(ScriptDialect::Postgres, text);
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    // Byte offset of every character (plus the end) to slice by character ranges.
+    let mut offsets: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    offsets.push(text.len());
+    ranges
+        .into_iter()
+        .filter_map(|r| {
+            let from = *offsets.get(r.start as usize)?;
+            let to = *offsets.get(r.end as usize)?;
+            Some(Stmt {
+                text: text[from..to].to_string(),
+                char_offset: r.start as usize,
+            })
+        })
+        .collect()
+}
+
 /// First keyword of a statement is transaction control (no implicit `BEGIN` before it).
 fn is_tx_control(stmt: &str) -> bool {
     matches!(
@@ -186,7 +208,7 @@ pub async fn run_script_ex(
     running: &Running,
     pending: &mut Option<PendingCursor>,
 ) -> Result<u32> {
-    let stmts = sql::split_statements(text);
+    let stmts = split_script(text);
     let last = stmts.len().saturating_sub(1);
     let mut count = 0;
     for (index, stmt) in stmts.iter().enumerate() {

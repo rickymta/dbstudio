@@ -295,7 +295,9 @@ pub struct Stmt {
 }
 
 /// Split a script at top-level semicolons, dropping statements that contain nothing but
-/// whitespace and comments.
+/// whitespace and comments. Superseded by `dbstudio_sql::split` in production code; kept as
+/// the reference of the differential test.
+#[cfg(test)]
 pub fn split_statements(sql: &str) -> Vec<Stmt> {
     let masked = mask(sql);
     let mut out = Vec::new();
@@ -324,6 +326,7 @@ pub fn split_statements(sql: &str) -> Vec<Stmt> {
 
 /// True while `stmt` (masked text up to a `;`) is a `CREATE FUNCTION/PROCEDURE ... BEGIN ATOMIC`
 /// body that has not reached its closing `END` yet (PostgreSQL 14+).
+#[cfg(test)]
 fn open_atomic_body(stmt: &str) -> bool {
     let w = words(stmt);
     let mut it = w.iter().map(String::as_str);

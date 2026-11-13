@@ -8,7 +8,7 @@
 //! * The server does not report its transaction state to the client in a form `mysql_async`
 //!   exposes, so the state is tracked from the statements that ran (`START TRANSACTION`,
 //!   `COMMIT`, `ROLLBACK`, implicit commits of DDL, and in manual mode any data statement).
-//! * A script is split into statements (see [`split_statements`]) so that each one can be
+//! * A script is split into statements (shared splitter of `dbstudio-sql`) so that each one can be
 //!   reported with its range and so only the last one needs to stay open.
 //! * `fetch_more`: `mysql_async` result streams borrow the connection, so when the last
 //!   statement of a request may stay open it runs on a *parked task* that owns the connection
@@ -23,8 +23,8 @@ use async_trait::async_trait;
 use dbstudio_core::lease_kit::{ActorLease, Canceller, LeaseBackend, LeaseEvent};
 use dbstudio_core::{
     ColumnMeta, EndOutcome, Error, ExecSummary, IsolationLevel, Lease, LeaseContext, LeaseOptions,
-    QueryRequest, Result, ResultSink, StatementEnd, StatementStart, TextRange, TxControl,
-    TxOptions, TxStatus, Value,
+    QueryRequest, Result, ResultSink, ScriptDialect, StatementEnd, StatementStart, TextRange,
+    TxControl, TxOptions, TxStatus, Value,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, Row};
@@ -71,7 +71,10 @@ pub(crate) async fn open(session: &MySqlSession, opts: LeaseOptions) -> Result<B
             opts: inner.opts.clone(),
             conn_id,
         }),
-        backslash_escapes: inner.backslash_escapes,
+        dialect: ScriptDialect::MySql {
+            mariadb: inner.is_mariadb,
+            backslash_escapes: inner.backslash_escapes,
+        },
         conn: Some(conn),
         auto_commit: opts.auto_commit,
         in_tx: false,
@@ -98,94 +101,27 @@ pub(crate) struct Piece {
     pub range: (usize, usize),
 }
 
-/// Split a script at top-level semicolons, honouring quotes (`'`, `"`, `` ` ``) and comments
-/// (`-- `, `#`, `/* */`). Pieces made of whitespace and comments only are dropped. The client
-/// command `DELIMITER` is not supported.
-pub(crate) fn split_statements(script: &str, backslash_escapes: bool) -> Vec<Piece> {
-    let chars: Vec<char> = script.chars().collect();
-    let n = chars.len();
-    let mut out = Vec::new();
-    let mut seg_start = 0usize;
-    let mut has_code = false;
-    let mut i = 0usize;
-    let flush = |from: usize, to: usize, has_code: bool, out: &mut Vec<Piece>| {
-        if !has_code {
-            return;
-        }
-        let mut s = from;
-        let mut e = to;
-        while s < e && chars[s].is_whitespace() {
-            s += 1;
-        }
-        while e > s && chars[e - 1].is_whitespace() {
-            e -= 1;
-        }
-        out.push(Piece {
-            text: chars[s..e].iter().collect(),
-            range: (s, e),
-        });
-    };
-    while i < n {
-        let c = chars[i];
-        match c {
-            '\'' | '"' | '`' => {
-                has_code = true;
-                i += 1;
-                while i < n {
-                    if chars[i] == '\\' && backslash_escapes && c != '`' {
-                        i += 2;
-                        continue;
-                    }
-                    if chars[i] == c {
-                        if i + 1 < n && chars[i + 1] == c {
-                            i += 2;
-                            continue;
-                        }
-                        break;
-                    }
-                    i += 1;
-                }
-                i += 1;
-            }
-            '-' if i + 1 < n
-                && chars[i + 1] == '-'
-                && (i + 2 >= n || chars[i + 2].is_whitespace() || chars[i + 2].is_control()) =>
-            {
-                while i < n && chars[i] != '\n' {
-                    i += 1;
-                }
-            }
-            '#' => {
-                while i < n && chars[i] != '\n' {
-                    i += 1;
-                }
-            }
-            '/' if i + 1 < n && chars[i + 1] == '*' => {
-                // `/*! ... */` and `/*+ ... */` carry code or hints: they count as code.
-                if i + 2 < n && (chars[i + 2] == '!' || chars[i + 2] == '+') {
-                    has_code = true;
-                }
-                i += 2;
-                while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
-                    i += 1;
-                }
-                i += 2;
-            }
-            ';' => {
-                flush(seg_start, i, has_code, &mut out);
-                seg_start = i + 1;
-                has_code = false;
-                i += 1;
-            }
-            c if c.is_whitespace() => i += 1,
-            _ => {
-                has_code = true;
-                i += 1;
-            }
-        }
+/// Statements of `script` as found by the shared splitter (`dbstudio-sql`): honours quotes,
+/// comments, `NO_BACKSLASH_ESCAPES` and the `DELIMITER` command.
+pub(crate) fn split_statements(script: &str, dialect: ScriptDialect) -> Vec<Piece> {
+    let ranges = dbstudio_sql::split(dialect, script);
+    if ranges.is_empty() {
+        return Vec::new();
     }
-    flush(seg_start, n.min(chars.len()), has_code, &mut out);
-    out
+    // Byte offset of every character (plus the end) to slice by character ranges.
+    let mut offsets: Vec<usize> = script.char_indices().map(|(i, _)| i).collect();
+    offsets.push(script.len());
+    ranges
+        .into_iter()
+        .filter_map(|r| {
+            let from = *offsets.get(r.start as usize)?;
+            let to = *offsets.get(r.end as usize)?;
+            Some(Piece {
+                text: script[from..to].to_string(),
+                range: (r.start as usize, r.end as usize),
+            })
+        })
+        .collect()
 }
 
 /// Upper-cased words at the start of a statement (comments skipped).
@@ -805,7 +741,7 @@ struct Parked {
 
 struct MyBackend {
     killer: Arc<Killer>,
-    backslash_escapes: bool,
+    dialect: ScriptDialect,
     /// `None` while a parked task owns it, or after the connection was lost / closed.
     conn: Option<Conn>,
     auto_commit: bool,
@@ -1022,7 +958,7 @@ impl LeaseBackend for MyBackend {
     ) -> Result<ExecSummary> {
         self.drop_pending().await;
         let started = Instant::now();
-        let pieces = split_statements(&req.text, self.backslash_escapes);
+        let pieces = split_statements(&req.text, self.dialect);
         let last = pieces.len().saturating_sub(1);
         let mut statements = 0u32;
         for (index, piece) in pieces.iter().enumerate() {
@@ -1197,7 +1133,7 @@ impl LeaseBackend for MyBackend {
         if self.conn.is_none() {
             return Ok(None);
         }
-        let switched = split_statements(executed_text, self.backslash_escapes)
+        let switched = split_statements(executed_text, self.dialect)
             .iter()
             .any(|p| starts_with_use(&p.text));
         if !switched {
@@ -1242,54 +1178,34 @@ impl LeaseBackend for MyBackend {
 mod tests {
     use super::*;
 
+    const MYSQL: ScriptDialect = ScriptDialect::MySql {
+        mariadb: false,
+        backslash_escapes: true,
+    };
+
     fn texts(script: &str) -> Vec<String> {
-        split_statements(script, true)
+        split_statements(script, MYSQL)
             .into_iter()
             .map(|p| p.text)
             .collect()
     }
 
     #[test]
-    fn splits_at_top_level_semicolons() {
+    fn splits_with_the_shared_splitter() {
         assert_eq!(
             texts("select 1; select ';' ; -- c;\n select `a;b`; /* x; */ ;  "),
             ["select 1", "select ';'", "-- c;\n select `a;b`"]
         );
-        assert_eq!(texts("select 1"), ["select 1"]);
         assert!(texts("  # nothing\n /* at all */ ; -- x").is_empty());
-        assert_eq!(
-            texts("select 'it''s;'; select \"a\\\";\""),
-            ["select 'it''s;'", "select \"a\\\";\""]
-        );
-    }
-
-    #[test]
-    fn backslash_escapes_follow_the_sql_mode() {
-        assert_eq!(texts("select 'a\\'; select 2").len(), 1);
-        let s = split_statements("select 'a\\'; select 2", false);
-        assert_eq!(s.len(), 2);
-        assert_eq!(s[1].text, "select 2");
-    }
-
-    #[test]
-    fn ranges_are_character_offsets_without_surrounding_whitespace() {
-        let s = split_statements("select 1;\nselect 'é😀'; select 3", true);
+        let s = split_statements("select 1;\nselect 'é😀'; select 3", MYSQL);
         let r: Vec<_> = s.iter().map(|p| p.range).collect();
         assert_eq!(r, [(0, 8), (10, 21), (23, 31)]);
-    }
-
-    #[test]
-    fn executable_comments_stay_part_of_the_statement() {
-        assert_eq!(
-            texts("/*!40101 SET x=1 */; select 2"),
-            ["/*!40101 SET x=1 */", "select 2"]
+        assert_eq!(s[1].text, "select 'é😀'");
+        let delim = texts(
+            "DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END$$\nDELIMITER ;\nSELECT 3",
         );
-        assert_eq!(
-            texts("select /*+ MAX_EXECUTION_TIME(5) */ 1; "),
-            ["select /*+ MAX_EXECUTION_TIME(5) */ 1"]
-        );
-        // `--` needs a space, otherwise it is arithmetic.
-        assert_eq!(texts("select 1--1; select 2"), ["select 1--1", "select 2"]);
+        assert_eq!(delim.len(), 2, "{delim:?}");
+        assert!(delim[0].starts_with("CREATE PROCEDURE"));
     }
 
     #[test]

@@ -1676,6 +1676,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "dbstudio-core",
+ "dbstudio-sql",
  "mysql_async",
  "rustls",
  "serde",
@@ -1703,6 +1704,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "dbstudio-core",
+ "dbstudio-sql",
  "rustls",
  "rustls-native-certs",
  "tokio",
