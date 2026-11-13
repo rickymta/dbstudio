@@ -204,3 +204,32 @@ async fn analyze_timeout_kills_the_statement() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn analyze_cancel_by_query_id() {
+    if !it_enabled() {
+        return;
+    }
+    for t in targets() {
+        if !t.mariadb && t.version.starts_with("5.") {
+            continue;
+        }
+        let (s, _db) = setup(t, "xpl_cancel").await;
+        let r = req("SELECT SLEEP(30)", true);
+        let id = r.query_id;
+        let s2 = s.clone();
+        let started = std::time::Instant::now();
+        let task = tokio::spawn(async move { s2.explain(r).await });
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        s.cancel(id).await.unwrap();
+        let e = task.await.unwrap().unwrap_err();
+        assert!(matches!(e, Error::Cancelled), "[{}] {e:?}", t.name);
+        assert!(
+            started.elapsed() < slack(t, std::time::Duration::from_secs(2)),
+            "[{}] {:?}",
+            t.name,
+            started.elapsed()
+        );
+        assert_eq!(query(&*s, "SELECT 1").await.rows, vec![vec![Value::Int(1)]]);
+    }
+}

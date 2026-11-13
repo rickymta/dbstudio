@@ -167,6 +167,25 @@ async fn other_database(port: u16) {
     );
 }
 
+async fn analyze_cancel(port: u16) {
+    let s: std::sync::Arc<dyn Session> = std::sync::Arc::from(connect(port).await);
+    let r = req("SELECT pg_sleep(30)", true);
+    let id = r.query_id;
+    let s2 = s.clone();
+    let started = std::time::Instant::now();
+    let task = tokio::spawn(async move { s2.explain(r).await });
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    s.cancel(id).await.unwrap();
+    let e = task.await.unwrap().unwrap_err();
+    assert!(matches!(e, Error::Cancelled), "{e:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(scalar(&*s, "SELECT 1").await, Value::Int(1));
+}
+
 macro_rules! both {
     ($f:ident, $a:ident, $b:ident) => {
         #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -193,3 +212,4 @@ both!(
 both!(analyze_errors, analyze_errors_pg16, analyze_errors_pg12);
 both!(analyze_timeout, analyze_timeout_pg16, analyze_timeout_pg12);
 both!(other_database, other_database_pg16, other_database_pg12);
+both!(analyze_cancel, analyze_cancel_pg16, analyze_cancel_pg12);

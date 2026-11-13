@@ -33,24 +33,30 @@ pub(crate) async fn explain(session: &PostgresSession, req: ExplainRequest) -> R
         .unwrap_or(&session.shared.login_db)
         .to_string();
     let mut conn = session.shared.acquire(&db).await?;
-    let run = run(&mut conn, &req, &statement);
+    // Registered under the query id, so `Session::cancel` reaches this statement.
+    let (running, _unregister) = session.register(Some(req.query_id), &conn);
+    let token = conn.cancel.clone();
+    let work = run(&mut conn, &req, &statement);
     let result = match req.timeout_ms {
-        Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), run).await {
+        Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), work).await {
             Ok(r) => r,
             Err(_) => {
                 // Stop the statement on the server; the connection is not reused.
-                let _ = session.shared.cancel_token(&conn.cancel).await;
+                let _ = running.send_cancel(&session.shared, &token).await;
                 return Err(Error::Timeout);
             }
         },
-        None => run.await,
+        None => work.await,
     };
-    match &result {
-        // A failed ANALYZE leaves its transaction open (or aborted): clean up through
-        // `finish`, which rolls back; a broken connection is simply dropped.
-        Ok(_) | Err(Error::Query { .. }) => conn.finish().await,
-        Err(_) => {}
-    }
+    // A cancelled statement fails with a server error; report it as a cancellation.
+    let result = match result {
+        Err(Error::Query { .. }) if running.is_cancelled() => Err(Error::Cancelled),
+        other => other,
+    };
+    // A failed or cancelled ANALYZE leaves its transaction open: `end_request` rolls back
+    // through `finish` (and drops connections that were cancelled).
+    let clean = matches!(&result, Ok(_) | Err(Error::Query { .. } | Error::Cancelled));
+    session.end_request(&mut conn, &running, clean).await;
     result
 }
 

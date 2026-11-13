@@ -7,7 +7,7 @@
 //! transaction that is rolled back); write statements answer `Unsupported`, because tables of
 //! a non-transactional engine cannot be rolled back.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use dbstudio_core::{Error, ExplainRequest, PlanFormat, RawPlan, Result};
 use mysql_async::prelude::Queryable;
@@ -16,7 +16,6 @@ use mysql_async::{Conn, Row};
 use crate::error::map_query_error;
 use crate::normalize_version;
 use crate::session::{MySqlSession, value_to_string};
-use crate::sql::quote_ident;
 
 /// What a statement does, as far as EXPLAIN ANALYZE is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,22 +42,15 @@ pub(crate) async fn explain(session: &MySqlSession, req: ExplainRequest) -> Resu
             Kind::Other => return Err(Error::Unsupported("explain_analyze_ddl".into())),
         }
     }
-    let mut conn = session.inner.acquire().await?;
-    let conn_id = conn.id();
-    let mut dirty = false;
-    let work = run(session, &mut conn, &req, &statement, &mut dirty);
-    let result = match req.timeout_ms {
-        Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), work).await {
-            Ok(r) => r,
-            Err(_) => {
-                kill_query(session, conn_id).await;
-                session.inner.release(conn, true).await;
-                return Err(Error::Timeout);
-            }
-        },
-        None => work.await,
-    };
-    let broken = dirty || matches!(&result, Err(Error::Connection(_) | Error::Timeout));
+    let database = req.database.as_deref().filter(|d| !d.is_empty());
+    let mut conn = session.inner.acquire_in(database).await?;
+    // Registers the statement for `Session::cancel` and arms the timeout (KILL QUERY).
+    let guard = session.inner.begin(conn.id(), req.query_id, req.timeout_ms);
+    let result = run(session, &mut conn, &req, &statement).await;
+    let ctl = guard.end().await;
+    let stopped = ctl.stopped();
+    let result = ctl.finalize(result);
+    let broken = stopped || matches!(&result, Err(Error::Connection(_)));
     session.inner.release(conn, broken).await;
     result
 }
@@ -68,7 +60,6 @@ async fn run(
     conn: &mut Conn,
     req: &ExplainRequest,
     statement: &str,
-    dirty: &mut bool,
 ) -> Result<RawPlan> {
     let raw_version: String = conn
         .query_first("SELECT VERSION()")
@@ -80,21 +71,6 @@ async fn run(
     if req.analyze && !mariadb && !supports_explain_analyze(&version) {
         return Err(Error::Unsupported("explain_analyze".into()));
     }
-
-    // Per-request database: the pool does not forget `USE`, so remember and restore it.
-    let previous_db = match req.database.as_deref().filter(|d| !d.is_empty()) {
-        Some(db) => {
-            let previous: Option<Option<String>> = conn
-                .query_first("SELECT DATABASE()")
-                .await
-                .map_err(map_query_error)?;
-            conn.query_drop(format!("USE {}", quote_ident(db)))
-                .await
-                .map_err(map_query_error)?;
-            Some(previous.flatten())
-        }
-        None => None,
-    };
 
     let (sql, format) = match (mariadb, req.analyze) {
         (true, false) => (
@@ -114,18 +90,7 @@ async fn run(
             PlanFormat::MySqlTree,
         ),
     };
-    let outcome = fetch(conn, &sql, req.analyze).await;
-
-    // A connection without a default database cannot be put back to "none": drop it instead.
-    *dirty = match previous_db {
-        Some(Some(prev)) => conn
-            .query_drop(format!("USE {}", quote_ident(&prev)))
-            .await
-            .is_err(),
-        Some(None) => true,
-        None => false,
-    };
-    let text = outcome?;
+    let text = fetch(conn, &sql, req.analyze).await?;
     Ok(RawPlan {
         format,
         text,
@@ -155,21 +120,6 @@ async fn fetch(conn: &mut Conn, sql: &str, analyze: bool) -> Result<String> {
         .and_then(|r| r.as_ref(0))
         .and_then(value_to_string)
         .ok_or_else(|| Error::Other("EXPLAIN returned no plan".into()))
-}
-
-/// `KILL QUERY` over a short-lived connection.
-async fn kill_query(session: &MySqlSession, conn_id: u32) {
-    let opts = session.inner.opts.clone();
-    let work = async move {
-        let mut c = Conn::new(opts).await?;
-        c.query_drop(format!("KILL QUERY {conn_id}")).await?;
-        c.disconnect().await
-    };
-    match tokio::time::timeout(Duration::from_secs(5), work).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::warn!("KILL QUERY {conn_id} failed: {e}"),
-        Err(_) => tracing::warn!("KILL QUERY {conn_id} timed out"),
-    }
 }
 
 /// MySQL 8.0.18 introduced EXPLAIN ANALYZE.
