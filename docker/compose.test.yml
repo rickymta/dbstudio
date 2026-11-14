@@ -328,7 +328,7 @@ services:
     mem_limit: 1g
     command:
       - --smp=1
-      - --memory=750M
+      - --memory=450M
       - --overprovisioned=1
       - --developer-mode=1
       - --authenticator=PasswordAuthenticator

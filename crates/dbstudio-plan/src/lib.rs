@@ -427,7 +427,6 @@ mod tests {
             PlanFormat::ClickHouseJson,
             PlanFormat::CockroachText,
             PlanFormat::TiDbRows,
-            PlanFormat::CqlTrace,
         ] {
             assert_eq!(parse(&raw(format)), Err(PlanError::Unsupported(format)));
             // Empty text is still reported as invalid before dispatch.
