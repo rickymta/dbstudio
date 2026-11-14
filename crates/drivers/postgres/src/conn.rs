@@ -304,21 +304,27 @@ impl Shared {
         if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(Error::Connection("invalid session id".into()));
         }
-        let mut conn = self.acquire_catalog(&self.login_db).await?;
-        // A cursor (`DECLARE ... FOR SELECT`) runs its query on an internal session that shares
-        // the client address and has the application name prefixed with `$$ `: cancel both.
-        let sql = format!(
-            "CANCEL QUERIES SELECT query_id FROM [SHOW CLUSTER STATEMENTS] \
-             WHERE session_id = '{session_id}' \
-                OR (left(application_name, 3) = '$$ ' AND client_address = \
-                    (SELECT client_address FROM [SHOW CLUSTER STATEMENTS] \
-                     WHERE session_id = '{session_id}' LIMIT 1))"
-        );
-        let r = conn.client.batch_execute(&sql).await.map_err(map_error);
-        if r.is_ok() {
-            conn.mark_reusable();
-        }
-        r
+        // A dedicated connection with a short timeout: the cancel must neither wait for a
+        // pool slot (all of them may be busy running the very statement to cancel) nor hold
+        // the request's gate for long.
+        let work = async {
+            let conn = self.open_dedicated(&self.login_db).await?;
+            // A cursor (`DECLARE ... FOR SELECT`) runs its query on an internal session that
+            // shares the client address and has the application name prefixed with `$$ `:
+            // cancel both. The address comes from the sessions list, so it is found while the
+            // main session is idle between two FETCHes too.
+            let sql = format!(
+                "CANCEL QUERIES SELECT query_id FROM [SHOW CLUSTER STATEMENTS] \
+                 WHERE user_name = current_user AND (session_id = '{session_id}' \
+                    OR (left(application_name, 3) = '$$ ' AND client_address = \
+                        (SELECT client_address FROM [SHOW CLUSTER SESSIONS] \
+                         WHERE session_id = '{session_id}' LIMIT 1)))"
+            );
+            conn.client.batch_execute(&sql).await.map_err(map_error)
+        };
+        tokio::time::timeout(Duration::from_secs(5), work)
+            .await
+            .map_err(|_| Error::Timeout)?
     }
 
     fn pool_for(&self, db: &str) -> Arc<Pool> {

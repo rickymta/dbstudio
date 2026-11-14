@@ -458,10 +458,12 @@ impl Session for PostgresSession {
                 .cancelled
                 .store(true, std::sync::atomic::Ordering::Release);
         }
-        self.shared.close();
+        // Cancel before closing: CockroachDB cancels through a new connection, which a closed
+        // session refuses to open.
         for (running, token) in &active {
             let _ = running.send_cancel(&self.shared, token).await;
         }
+        self.shared.close();
         Ok(())
     }
 }

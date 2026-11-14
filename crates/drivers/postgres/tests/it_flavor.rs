@@ -1345,3 +1345,202 @@ async fn cockroach_second_database_tree() {
     )
     .await;
 }
+
+// ----------------------------------------------------------------------------------------------
+// CockroachDB: DDL options, types, triggers; closing a session cancels its statements
+// ----------------------------------------------------------------------------------------------
+
+async fn replay(s: &dyn Session, db: &str, items: &[DdlItem]) {
+    for item in items {
+        let mut req = QueryRequest::new(item.sql.clone());
+        req.database = Some(db.to_string());
+        if let Err(e) = execute_collect(s, req).await {
+            panic!("replay failed: {e}\n{}", item.sql);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cockroach_ddl_options_types_and_triggers() {
+    if !run_on(Server::Cockroach, "cockroach_ddl_options") {
+        return;
+    }
+    let s = connect(Server::Cockroach).await;
+    let sc = unique("flv_ddl");
+    let copy = unique("dbs_flv_ddlcopy");
+    drop_schema(&*s, &sc).await;
+    let _ = execute_collect(
+        &*s,
+        QueryRequest::new(format!("DROP DATABASE IF EXISTS {copy} CASCADE")),
+    )
+    .await;
+    exec(
+        &*s,
+        &format!(
+            "CREATE SCHEMA {sc}; CREATE TYPE {sc}.mood AS ENUM ('a', 'b'); \
+             CREATE TABLE {sc}.t (id int PRIMARY KEY, m {sc}.mood, v int, INDEX v_idx (v)); \
+             CREATE TABLE {sc}.other (id int PRIMARY KEY); \
+             CREATE MATERIALIZED VIEW {sc}.mv AS SELECT id FROM {sc}.t; \
+             CREATE FUNCTION {sc}.f(a int) RETURNS int LANGUAGE SQL AS 'SELECT a + 1'; \
+             CREATE FUNCTION {sc}.tf() RETURNS TRIGGER LANGUAGE PLpgSQL AS 'BEGIN RETURN NEW; END'; \
+             CREATE TRIGGER trg BEFORE INSERT ON {sc}.t FOR EACH ROW EXECUTE FUNCTION {sc}.tf()"
+        ),
+    )
+    .await;
+    let scope = schema_path("dbstudio", &sc);
+    let req = |options: DdlOptions, objects: Vec<ObjectPath>| DdlRequest {
+        scope: scope.clone(),
+        objects,
+        options,
+    };
+    let all = s
+        .generate_ddl(req(DdlOptions::default(), vec![]))
+        .await
+        .unwrap();
+    let text: String = all
+        .iter()
+        .map(|i| i.sql.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("CREATE TYPE"), "{text}");
+    assert!(text.contains("CREATE MATERIALIZED VIEW"));
+    assert!(text.contains("CREATE FUNCTION"));
+    assert!(text.contains("CREATE TRIGGER"), "{text}");
+    assert!(
+        !text.contains("dbstudio."),
+        "database qualifier must be stripped: {text}"
+    );
+    assert!(
+        all.iter()
+            .any(|i| i.kind == ObjectKind::Trigger && i.section == DdlSection::PostData)
+    );
+
+    // include_drop: replays twice into the same database (drops, then types, then tables).
+    let dropping = DdlOptions {
+        include_drop: true,
+        ..DdlOptions::default()
+    };
+    let items = s.generate_ddl(req(dropping, vec![])).await.unwrap();
+    let sqls: Vec<&str> = items.iter().map(|i| i.sql.as_str()).collect();
+    assert!(
+        !sqls
+            .iter()
+            .any(|q| q.starts_with("DROP TYPE") && q.contains("CASCADE"))
+    );
+    assert!(sqls.iter().any(|q| q.starts_with("DROP MATERIALIZED VIEW")));
+    let pos = |needle: &str| sqls.iter().position(|q| q.starts_with(needle)).unwrap();
+    assert!(pos("DROP TABLE") < pos("DROP TYPE") && pos("DROP TYPE") < pos("CREATE TYPE"));
+    exec(&*s, &format!("CREATE DATABASE {copy}")).await;
+    replay(&*s, &copy, &items).await;
+    replay(&*s, &copy, &items).await;
+    let n = scalar(
+        &*s,
+        &format!(
+            "SELECT count(*) FROM {copy}.information_schema.tables WHERE table_schema = '{sc}'"
+        ),
+    )
+    .await;
+    assert_eq!(n, Value::Int(3));
+
+    // Selection: the table, the enum it uses (not the other table), no routines.
+    let one = s
+        .generate_ddl(req(DdlOptions::default(), vec![table_path(&sc, "t")]))
+        .await
+        .unwrap();
+    let one_text: String = one
+        .iter()
+        .map(|i| i.sql.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        one_text.contains("CREATE TYPE") && one_text.contains("CREATE TABLE"),
+        "{one_text}"
+    );
+    assert!(
+        !one_text.contains("other") && !one_text.contains("CREATE FUNCTION"),
+        "{one_text}"
+    );
+    // The selection can name the routine itself.
+    let f = schema_path("dbstudio", &sc)
+        .child(ObjectKind::Folder, "functions")
+        .child(ObjectKind::Function, "f(a bigint)");
+    let fo = s
+        .generate_ddl(req(DdlOptions::default(), vec![f]))
+        .await
+        .unwrap();
+    assert!(
+        fo.iter().any(|i| i.sql.contains("CREATE FUNCTION"))
+            && !fo.iter().any(|i| i.sql.contains("CREATE TABLE"))
+    );
+
+    // Unqualified, no indexes, no triggers.
+    let lean = DdlOptions {
+        qualify_schema: false,
+        include_indexes: false,
+        include_triggers: false,
+        ..DdlOptions::default()
+    };
+    let lean_items = s.generate_ddl(req(lean, vec![])).await.unwrap();
+    let lean_text: String = lean_items
+        .iter()
+        .map(|i| i.sql.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(lean_text.contains("CREATE TABLE t ("), "{lean_text}");
+    assert!(!lean_text.contains(&format!("{sc}.t")) && !lean_text.contains("INDEX v_idx"));
+    assert!(!lean_text.contains("CREATE TRIGGER"));
+    // Grants are not supported: refused, not silently ignored.
+    let g = DdlOptions {
+        include_grants: true,
+        ..DdlOptions::default()
+    };
+    assert!(matches!(
+        s.generate_ddl(req(g, vec![])).await,
+        Err(Error::Unsupported(_))
+    ));
+    let _ = execute_collect(
+        &*s,
+        QueryRequest::new(format!("DROP DATABASE IF EXISTS {copy} CASCADE")),
+    )
+    .await;
+    drop_schema(&*s, &sc).await;
+}
+
+/// `Session::close` cancels what is still running (the cancel goes through a new connection,
+/// so it must happen before the session refuses connections).
+async fn close_cancels_running(server: Server) {
+    let s: Arc<Box<dyn Session>> = Arc::new(connect(server).await);
+    let marker = unique("close_marker").replace('_', "");
+    let s2 = s.clone();
+    let m = marker.clone();
+    let h = tokio::spawn(async move {
+        execute_collect(
+            &**s2,
+            QueryRequest::new(format!("SELECT pg_sleep(30), '{m}'")),
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    s.close().await.unwrap();
+    let t = Instant::now();
+    let res = h.await.unwrap();
+    assert!(res.is_err(), "{res:?}");
+    assert!(
+        t.elapsed() < Duration::from_secs(5),
+        "took {:?}",
+        t.elapsed()
+    );
+    // The statement is gone on the server, not just abandoned by the client.
+    let other = connect(server).await;
+    let running = match server {
+        Server::Cockroach => format!(
+            "SELECT count(*) FROM [SHOW CLUSTER STATEMENTS] WHERE query LIKE '%{marker}%' AND query NOT LIKE '%count(*)%'"
+        ),
+        Server::Yugabyte => format!(
+            "SELECT count(*) FROM pg_stat_activity WHERE query LIKE '%{marker}%' AND state = 'active' AND query NOT LIKE '%count(*)%'"
+        ),
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(scalar(&*other, &running).await, Value::Int(0));
+}
+on_flavors!(close_cancels_running, close_crdb, close_yb);

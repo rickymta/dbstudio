@@ -2,11 +2,14 @@
 //!
 //! `SHOW CREATE ALL TABLES` returns tables, views and sequences in dependency order with the
 //! foreign keys (and their validation) after all tables, which maps directly onto the
-//! `PreData` / `PostData` split. Schemas, types and routines come from their own statements.
+//! `PreData` / `PostData` split. Schemas, types, routines and triggers come from their own
+//! statements. Not supported: grants (`include_grants` is refused with `Unsupported`).
 
 use dbstudio_core::{
-    DdlItem, DdlLanguage, DdlOptions, DdlRequest, DdlSection, ObjectKind, ObjectPath, Result,
+    DdlItem, DdlLanguage, DdlOptions, DdlRequest, DdlSection, Error, ObjectKind, ObjectPath,
+    Result, ScriptDialect, folder,
 };
+use dbstudio_sql::lexer::{Token, TokenKind, tokenize};
 use tokio_postgres::Client;
 
 use crate::browse::{object_path, schema_path};
@@ -20,37 +23,34 @@ pub(crate) async fn generate(
     req: &DdlRequest,
     target: &Target,
 ) -> Result<Vec<DdlItem>> {
+    let opts = &req.options;
+    if opts.include_grants {
+        return Err(Error::Unsupported("ddl_grants on CockroachDB".into()));
+    }
     let database = target
         .database
         .clone()
         .unwrap_or_else(|| session.login_db().to_string());
+    let triggers = opts.include_triggers && session.shared.flavor().capabilities().triggers;
     let mut conn = session.shared.acquire_catalog(&database).await?;
-    let opts = &req.options;
     let result = async {
         let client = &conn.client;
-        let mut items = Vec::new();
+        let mut parsed: Vec<Parsed> = Vec::new();
+        let mut collect = |stmts: Vec<String>| {
+            parsed.extend(stmts.iter().filter_map(|s| classify(s)));
+        };
         if target.selection.is_none() {
-            for stmt in show_all(client, "SCHEMAS").await? {
-                if let Some(item) = classify(&database, &stmt) {
-                    if item.schema == "public" || !wants_schema(target, &item.schema) {
-                        continue;
-                    }
-                    items.push(item.into_item(&database, opts));
-                }
-            }
-            for stmt in show_all(client, "TYPES").await? {
-                keep(&mut items, &database, target, opts, &stmt);
-            }
+            collect(show_all(client, "SCHEMAS").await?);
         }
-        for stmt in show_all(client, "TABLES").await? {
-            keep(&mut items, &database, target, opts, &stmt);
+        collect(show_all(client, "TYPES").await?);
+        collect(show_all(client, "TABLES").await?);
+        if opts.include_routines {
+            collect(show_all(client, "ROUTINES").await?);
         }
-        if opts.include_routines && target.selection.is_none() {
-            for stmt in show_all(client, "ROUTINES").await? {
-                keep(&mut items, &database, target, opts, &stmt);
-            }
+        if triggers {
+            collect(show_all(client, "TRIGGERS").await?);
         }
-        Ok(items)
+        Ok(build(&database, target, opts, parsed))
     }
     .await;
     if result.is_ok() {
@@ -67,176 +67,403 @@ async fn show_all(client: &Client, what: &str) -> Result<Vec<String>> {
     Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
 }
 
-fn wants_schema(target: &Target, schema: &str) -> bool {
-    target.schema.as_deref().is_none_or(|s| s == schema)
-}
-
-fn keep(items: &mut Vec<DdlItem>, database: &str, target: &Target, opts: &DdlOptions, stmt: &str) {
-    let Some(parsed) = classify(database, stmt) else {
-        return;
-    };
-    if !wants_schema(target, &parsed.schema) {
-        return;
-    }
-    if let Some(cat) = parsed.cat {
-        if !target.wants(cat, &parsed.schema, &parsed.name) {
-            return;
-        }
-    }
-    let allowed = match parsed.what {
-        What::Sequence => opts.include_sequences,
-        What::View => opts.include_views,
-        What::Comment => opts.include_comments,
-        What::ForeignKey => opts.include_foreign_keys,
-        What::Routine => opts.include_routines,
-        _ => true,
-    };
-    if allowed {
-        items.push(parsed.into_item(database, opts));
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum What {
     Schema,
     Type,
     Table,
     View,
+    MaterializedView,
     Sequence,
     Routine,
+    Trigger,
     Comment,
     ForeignKey,
     Other,
 }
 
+#[derive(Debug)]
 struct Parsed {
     what: What,
-    cat: Option<Cat>,
     schema: String,
     name: String,
     sql: String,
+    /// Table a trigger / foreign key / comment belongs to; table referenced by a foreign key.
+    references: Option<(String, String)>,
 }
 
-impl Parsed {
-    fn into_item(self, database: &str, opts: &DdlOptions) -> DdlItem {
-        let (kind, section) = match self.what {
-            What::Schema => (ObjectKind::Schema, DdlSection::PreData),
-            What::Type => (ObjectKind::Type, DdlSection::PreData),
-            What::Table => (ObjectKind::Table, DdlSection::PreData),
-            What::View => (ObjectKind::View, DdlSection::PreData),
-            What::Sequence => (ObjectKind::Sequence, DdlSection::PreData),
-            What::Routine => (ObjectKind::Function, DdlSection::PreData),
-            What::Comment | What::ForeignKey | What::Other => {
-                (ObjectKind::Table, DdlSection::PostData)
-            }
-        };
-        let path: ObjectPath = if self.what == What::Schema {
-            schema_path(database, &self.name)
-        } else {
-            object_path(database, &self.schema, kind, &self.name)
-        };
-        // Views and routines name tables as `database.schema.name`; the DDL must replay into
-        // another database too (cross-database references are off by default).
-        let mut sql = strip_database(&self.sql, database);
-        let drop = match self.what {
-            What::Table => Some(format!(
-                "DROP TABLE IF EXISTS {} CASCADE;\n",
-                qualified(&self.schema, &self.name)
-            )),
-            What::View => Some(format!(
-                "DROP VIEW IF EXISTS {} CASCADE;\n",
-                qualified(&self.schema, &self.name)
-            )),
-            What::Sequence => Some(format!(
-                "DROP SEQUENCE IF EXISTS {} CASCADE;\n",
-                qualified(&self.schema, &self.name)
-            )),
-            What::Type => Some(format!(
-                "DROP TYPE IF EXISTS {} CASCADE;\n",
-                qualified(&self.schema, &self.name)
-            )),
-            _ => None,
-        };
-        if opts.if_not_exists {
-            for kw in [
-                "CREATE TABLE ",
-                "CREATE VIEW ",
-                "CREATE SEQUENCE ",
-                "CREATE SCHEMA ",
-            ] {
-                if let Some(rest) = sql.strip_prefix(kw) {
-                    sql = format!("{kw}IF NOT EXISTS {rest}");
-                    break;
-                }
-            }
-        }
-        if opts.include_drop {
-            if let Some(d) = drop {
-                sql = format!("{d}{sql}");
-            }
-        }
-        DdlItem {
-            path,
-            kind,
-            section,
-            sql,
-            language: DdlLanguage::Sql,
-            depends_on: Vec::new(),
-        }
+fn wants_routine(target: &Target, schema: &str, name: &str) -> bool {
+    match &target.selection {
+        None => true,
+        Some(sel) => sel.iter().any(|(c, s, n)| {
+            *c == Cat::Routine && s == schema && n.split('(').next() == Some(name)
+        }),
     }
 }
 
-/// Remove the `database.` qualifier of three-part names (outside string literals), plain or
-/// quoted.
-fn strip_database(sql: &str, database: &str) -> String {
-    let quoted = format!("\"{}\"", database.replace('"', "\"\""));
-    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    let mut out = String::with_capacity(sql.len());
-    let mut in_str = false;
-    let mut prev: Option<char> = None;
-    let mut i = 0;
-    while i < sql.len() {
-        let ch = sql[i..].chars().next().expect("in range");
-        if ch == '\'' {
-            in_str = !in_str;
+/// Filter by scope and selection, apply the options and order the items.
+fn build(database: &str, target: &Target, opts: &DdlOptions, parsed: Vec<Parsed>) -> Vec<DdlItem> {
+    let in_scope = |p: &Parsed| target.schema.as_deref().is_none_or(|s| s == p.schema);
+    let rel_wanted = |s: &str, n: &str| target.wants(Cat::Relation, s, n);
+    // Tables, views and sequences first: types are kept when something kept uses them.
+    let mut kept: Vec<Parsed> = Vec::new();
+    let mut types: Vec<Parsed> = Vec::new();
+    let mut others: Vec<Parsed> = Vec::new();
+    for p in parsed {
+        if p.what != What::Schema && !in_scope(&p) {
+            continue;
         }
-        if !in_str && prev.is_none_or(|p| !(is_ident(p) || p == '.' || p == '"')) {
-            if let Some(skip) = qualifier_len(&sql[i..], &quoted, database) {
-                i += skip;
-                prev = Some('.');
-                continue;
+        match p.what {
+            What::Schema => {
+                if p.name != "public" && target.schema.as_deref().is_none_or(|s| s == p.name) {
+                    kept.push(p);
+                }
+            }
+            What::Type => types.push(p),
+            What::Table | What::View | What::MaterializedView => {
+                if rel_wanted(&p.schema, &p.name) && (p.what == What::Table || opts.include_views) {
+                    kept.push(p);
+                }
+            }
+            What::Sequence => {
+                if target.wants(Cat::Sequence, &p.schema, &p.name) && opts.include_sequences {
+                    kept.push(p);
+                }
+            }
+            What::Routine => {
+                if opts.include_routines && wants_routine(target, &p.schema, &p.name) {
+                    others.push(p);
+                }
+            }
+            What::Trigger | What::Comment | What::ForeignKey | What::Other => {
+                let table_ok = rel_wanted(&p.schema, &p.name);
+                let allowed = match p.what {
+                    What::Trigger => opts.include_triggers,
+                    What::Comment => opts.include_comments,
+                    What::ForeignKey => {
+                        opts.include_foreign_keys
+                            && p.references.as_ref().is_none_or(|(s, n)| rel_wanted(s, n))
+                    }
+                    _ => true,
+                };
+                if table_ok && allowed {
+                    others.push(p);
+                }
             }
         }
-        out.push(ch);
-        i += ch.len_utf8();
-        prev = Some(ch);
+    }
+    // Types: all of them without a selection; else the selected ones and those used by the
+    // kept relations and routines.
+    let used_text: String = kept
+        .iter()
+        .filter(|p| p.what != What::Schema)
+        .chain(others.iter().filter(|p| p.what == What::Routine))
+        .map(|p| p.sql.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let types: Vec<Parsed> = types
+        .into_iter()
+        .filter(|t| {
+            target.selection.is_none()
+                || target.wants(Cat::Type, &t.schema, &t.name)
+                || used_text.contains(&format!("{}.{}", t.schema, t.name))
+        })
+        .collect();
+
+    let mut items: Vec<DdlItem> = Vec::new();
+    let (schemas, rels): (Vec<_>, Vec<_>) = kept.into_iter().partition(|p| p.what == What::Schema);
+    for p in schemas {
+        items.push(to_item(database, opts, p, true));
+    }
+    if opts.include_drop {
+        // Drops come first, dependants before what they depend on: views, tables and
+        // sequences (in reverse creation order), then the types.
+        for p in rels.iter().rev() {
+            if let Some(sql) = drop_sql(opts, p) {
+                items.push(raw_item(database, p, sql));
+            }
+        }
+        for p in types.iter().rev() {
+            if let Some(sql) = drop_sql(opts, p) {
+                items.push(raw_item(database, p, sql));
+            }
+        }
+    }
+    for p in types.into_iter().chain(rels) {
+        items.push(to_item(database, opts, p, false));
+    }
+    // Routines may use tables and types: after them. Foreign keys, comments and triggers
+    // (PostData) come last, in the order of the server.
+    let (routines, post): (Vec<_>, Vec<_>) =
+        others.into_iter().partition(|p| p.what == What::Routine);
+    for p in routines.into_iter().chain(post) {
+        items.push(to_item(database, opts, p, false));
+    }
+    items
+}
+
+fn kind_of(what: What) -> ObjectKind {
+    match what {
+        What::Schema => ObjectKind::Schema,
+        What::Type => ObjectKind::Type,
+        What::View => ObjectKind::View,
+        What::MaterializedView => ObjectKind::MaterializedView,
+        What::Sequence => ObjectKind::Sequence,
+        What::Routine => ObjectKind::Function,
+        What::Trigger => ObjectKind::Trigger,
+        _ => ObjectKind::Table,
+    }
+}
+
+fn path_of(database: &str, p: &Parsed) -> ObjectPath {
+    match p.what {
+        What::Schema => schema_path(database, &p.name),
+        What::Trigger => object_path(database, &p.schema, ObjectKind::Table, &p.name)
+            .child(ObjectKind::Folder, folder::TRIGGERS)
+            .child(
+                ObjectKind::Trigger,
+                p.references
+                    .as_ref()
+                    .map(|r| r.1.clone())
+                    .unwrap_or_default(),
+            ),
+        _ => object_path(database, &p.schema, kind_of(p.what), &p.name),
+    }
+}
+
+fn section_of(what: What) -> DdlSection {
+    match what {
+        What::Schema
+        | What::Type
+        | What::Table
+        | What::View
+        | What::MaterializedView
+        | What::Sequence
+        | What::Routine => DdlSection::PreData,
+        _ => DdlSection::PostData,
+    }
+}
+
+fn raw_item(database: &str, p: &Parsed, sql: String) -> DdlItem {
+    DdlItem {
+        path: path_of(database, p),
+        kind: kind_of(p.what),
+        section: DdlSection::PreData,
+        sql,
+        language: DdlLanguage::Sql,
+        depends_on: Vec::new(),
+    }
+}
+
+/// `DROP ...` of an object (CockroachDB has no `DROP TYPE ... CASCADE`, nor a drop for the
+/// unnamed-signature routines: those are replaced instead).
+fn drop_sql(opts: &DdlOptions, p: &Parsed) -> Option<String> {
+    let name = if opts.qualify_schema {
+        qualified(&p.schema, &p.name)
+    } else {
+        quote_ident(&p.name)
+    };
+    Some(match p.what {
+        What::Table => format!("DROP TABLE IF EXISTS {name} CASCADE;"),
+        What::View => format!("DROP VIEW IF EXISTS {name} CASCADE;"),
+        What::MaterializedView => format!("DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"),
+        What::Sequence => format!("DROP SEQUENCE IF EXISTS {name} CASCADE;"),
+        What::Type => format!("DROP TYPE IF EXISTS {name};"),
+        _ => return None,
+    })
+}
+
+fn to_item(database: &str, opts: &DdlOptions, p: Parsed, schema_item: bool) -> DdlItem {
+    // Views and routines name tables as `database.schema.name`; the DDL must replay into
+    // another database too (cross-database references are off by default).
+    let mut sql = strip_qualifier(&p.sql, database, 3);
+    if !opts.qualify_schema && !schema_item && !p.schema.is_empty() {
+        sql = strip_qualifier(&sql, &p.schema, 2);
+    }
+    if !opts.include_indexes {
+        sql = drop_inline_indexes(&sql);
+    }
+    if p.what == What::MaterializedView {
+        sql = drop_hidden_rowid_column(&sql);
+    }
+    if opts.if_not_exists || (schema_item && opts.include_drop) {
+        for kw in [
+            "CREATE TABLE ",
+            "CREATE VIEW ",
+            "CREATE MATERIALIZED VIEW ",
+            "CREATE SEQUENCE ",
+            "CREATE SCHEMA ",
+        ] {
+            if let Some(rest) = sql.strip_prefix(kw) {
+                sql = format!("{kw}IF NOT EXISTS {rest}");
+                break;
+            }
+        }
+    }
+    if opts.include_drop {
+        // Routines have no drop here: replace them.
+        if let Some(rest) = sql.strip_prefix("CREATE FUNCTION ") {
+            sql = format!("CREATE OR REPLACE FUNCTION {rest}");
+        } else if let Some(rest) = sql.strip_prefix("CREATE PROCEDURE ") {
+            sql = format!("CREATE OR REPLACE PROCEDURE {rest}");
+        }
+    }
+    DdlItem {
+        path: path_of(database, &p),
+        kind: kind_of(p.what),
+        section: section_of(p.what),
+        sql,
+        language: DdlLanguage::Sql,
+        depends_on: Vec::new(),
+    }
+}
+
+/// `SHOW CREATE` of a materialized view lists the hidden `rowid` among its columns, which the
+/// statement cannot be replayed with ("specifies 2 column names, but data source has 1").
+fn drop_hidden_rowid_column(sql: &str) -> String {
+    let lines: Vec<&str> = sql.lines().collect();
+    let Some(i) = lines
+        .iter()
+        .position(|l| matches!(l.trim(), "rowid" | "rowid,"))
+    else {
+        return sql.to_string();
+    };
+    let mut owned: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    owned.remove(i);
+    if i > 0 && lines[i].trim() == "rowid" {
+        // It was the last column: the previous one loses its comma.
+        owned[i - 1] = owned[i - 1].trim_end().trim_end_matches(',').to_string();
+    }
+    owned.join("\n")
+}
+
+/// Remove the non-unique inline `INDEX ...` lines of a `CREATE TABLE`.
+fn drop_inline_indexes(sql: &str) -> String {
+    if !sql.starts_with("CREATE TABLE") {
+        return sql.to_string();
+    }
+    let mut lines: Vec<&str> = sql
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !(t.starts_with("INDEX ") || t.starts_with("INVERTED INDEX "))
+        })
+        .collect();
+    // The last element before the closing `)` must not end with a comma.
+    if let Some(close) = lines.iter().rposition(|l| l.trim_start().starts_with(')')) {
+        if close > 0 {
+            let prev = lines[close - 1]
+                .trim_end()
+                .trim_end_matches(',')
+                .to_string();
+            let mut owned: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+            owned[close - 1] = prev;
+            return owned.join("\n");
+        }
+    }
+    lines.retain(|_| true);
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Names
+// ---------------------------------------------------------------------------------------------
+
+/// Text of an identifier token (unquoted), `None` for other tokens.
+fn ident_text(chars: &[char], t: &Token) -> Option<String> {
+    let raw: String = chars[t.range.start as usize..t.range.end as usize]
+        .iter()
+        .collect();
+    match t.kind {
+        TokenKind::Word => Some(raw),
+        TokenKind::QuotedIdent => {
+            let inner = raw.strip_prefix('"')?.strip_suffix('"')?;
+            Some(inner.replace("\"\"", "\""))
+        }
+        _ => None,
+    }
+}
+
+/// Remove a leading qualifier `first.` from names that have at least `parts` dotted parts
+/// (`database.schema.name` with 3, `schema.name` with 2), outside strings and comments. The
+/// text comes from the lexer of the Postgres dialect, so quoted identifiers such as `"it's"`
+/// and strings such as `E'\''` are never misread.
+fn strip_qualifier(sql: &str, first: &str, parts: usize) -> String {
+    let chars: Vec<char> = sql.chars().collect();
+    let tokens: Vec<Token> = tokenize(ScriptDialect::Postgres, sql);
+    let sig: Vec<usize> = (0..tokens.len())
+        .filter(|&i| !tokens[i].kind.is_trivia())
+        .collect();
+    let is_dot = |t: &Token| t.kind == TokenKind::Punct && chars[t.range.start as usize] == '.';
+    let mut skip: Vec<(usize, usize)> = Vec::new();
+    let mut k = 0;
+    while k < sig.len() {
+        let t = &tokens[sig[k]];
+        let chain_start = k == 0 || !is_dot(&tokens[sig[k - 1]]);
+        if chain_start && ident_text(&chars, t).as_deref() == Some(first) {
+            // Count the identifiers of the dotted chain starting here.
+            let mut n = 1;
+            let mut j = k;
+            while j + 2 < sig.len()
+                && is_dot(&tokens[sig[j + 1]])
+                && ident_text(&chars, &tokens[sig[j + 2]]).is_some()
+            {
+                n += 1;
+                j += 2;
+            }
+            if n >= parts {
+                let dot = &tokens[sig[k + 1]];
+                skip.push((t.range.start as usize, dot.range.end as usize));
+            }
+            k = j + 1;
+            continue;
+        }
+        k += 1;
+    }
+    let mut out = String::with_capacity(sql.len());
+    for (i, c) in chars.iter().enumerate() {
+        if !skip.iter().any(|(a, b)| i >= *a && i < *b) {
+            out.push(*c);
+        }
     }
     out
 }
 
-/// Length of a leading `database.` when it starts a three-part name `database.schema.name`.
-fn qualifier_len(rest: &str, quoted: &str, database: &str) -> Option<usize> {
-    for pat in [quoted, database] {
-        let Some(after) = rest.strip_prefix(pat).and_then(|r| r.strip_prefix('.')) else {
-            continue;
-        };
-        let end = if let Some(quoted_name) = after.strip_prefix('"') {
-            quoted_name.find('"').map(|p| p + 2)
+/// Identifiers of the dotted name that starts `text` (quoted ones unquoted).
+fn qualified_name(text: &str) -> Vec<String> {
+    let text = text.trim_start();
+    let chars: Vec<char> = text.chars().collect();
+    let tokens = tokenize(ScriptDialect::Postgres, text);
+    let mut out = Vec::new();
+    let mut expect_ident = true;
+    for t in tokens.iter().filter(|t| !t.kind.is_trivia()) {
+        if expect_ident {
+            match ident_text(&chars, t) {
+                Some(id) => out.push(id),
+                None => break,
+            }
+            expect_ident = false;
+        } else if t.kind == TokenKind::Punct && chars[t.range.start as usize] == '.' {
+            expect_ident = true;
         } else {
-            after.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
-        };
-        if end.is_some_and(|e| after[e..].starts_with('.')) {
-            return Some(pat.len() + 1);
+            break;
         }
     }
-    None
+    out
+}
+
+fn split_schema(mut names: Vec<String>) -> (String, String) {
+    match names.len() {
+        0 => (String::new(), String::new()),
+        1 => ("public".to_string(), names.remove(0)),
+        n => (names[n - 2].clone(), names[n - 1].clone()),
+    }
 }
 
 /// Classify one statement of a `SHOW CREATE ALL` result. Comment-only rows give `None`.
-fn classify(_database: &str, stmt: &str) -> Option<Parsed> {
-    let text = stmt.trim();
-    // Rows that are only SQL comments (the "validate foreign keys" hint) carry no statement.
-    let body: String = text
+fn classify(stmt: &str) -> Option<Parsed> {
+    let body: String = stmt
+        .trim()
         .lines()
         .filter(|l| !l.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
@@ -247,119 +474,76 @@ fn classify(_database: &str, stmt: &str) -> Option<Parsed> {
     }
     let upper: String = body
         .chars()
-        .take(48)
+        .take(60)
         .collect::<String>()
         .to_ascii_uppercase();
-    let (what, cat, rest) = if let Some(r) = strip_ci(body, &upper, "CREATE TABLE ") {
-        (What::Table, Some(Cat::Relation), r)
-    } else if let Some(r) = strip_ci(body, &upper, "CREATE MATERIALIZED VIEW ") {
-        (What::View, Some(Cat::Relation), r)
-    } else if let Some(r) = strip_ci(body, &upper, "CREATE VIEW ") {
-        (What::View, Some(Cat::Relation), r)
-    } else if let Some(r) = strip_ci(body, &upper, "CREATE SEQUENCE ") {
-        (What::Sequence, Some(Cat::Sequence), r)
-    } else if let Some(r) = strip_ci(body, &upper, "CREATE TYPE ") {
-        (What::Type, Some(Cat::Type), r)
-    } else if let Some(r) = strip_ci(body, &upper, "CREATE SCHEMA ") {
-        (What::Schema, None, r)
-    } else if let Some(r) = strip_ci(body, &upper, "CREATE FUNCTION ")
-        .or_else(|| strip_ci(body, &upper, "CREATE PROCEDURE "))
-    {
-        (What::Routine, Some(Cat::Routine), r)
-    } else if let Some(r) = strip_ci(body, &upper, "ALTER TABLE ") {
-        let fk = body.to_ascii_uppercase().contains("FOREIGN KEY")
-            || body.to_ascii_uppercase().contains("VALIDATE CONSTRAINT");
-        (
-            if fk { What::ForeignKey } else { What::Other },
-            Some(Cat::Relation),
-            r,
-        )
-    } else if let Some(r) = strip_ci(body, &upper, "COMMENT ON TABLE ") {
-        (What::Comment, Some(Cat::Relation), r)
-    } else if let Some(r) = strip_ci(body, &upper, "COMMENT ON COLUMN ") {
-        (What::Comment, Some(Cat::Relation), r)
-    } else if let Some(r) = strip_ci(body, &upper, "COMMENT ON INDEX ") {
-        (What::Comment, Some(Cat::Relation), r)
+    let strip = |prefix: &str| upper.starts_with(prefix).then(|| &body[prefix.len()..]);
+    let mut references = None;
+    let (what, rest) = if let Some(r) = strip("CREATE TABLE ") {
+        (What::Table, r)
+    } else if let Some(r) = strip("CREATE MATERIALIZED VIEW ") {
+        (What::MaterializedView, r)
+    } else if let Some(r) = strip("CREATE VIEW ") {
+        (What::View, r)
+    } else if let Some(r) = strip("CREATE SEQUENCE ") {
+        (What::Sequence, r)
+    } else if let Some(r) = strip("CREATE TYPE ") {
+        (What::Type, r)
+    } else if let Some(r) = strip("CREATE SCHEMA ") {
+        (What::Schema, r)
+    } else if let Some(r) = strip("CREATE FUNCTION ").or_else(|| strip("CREATE PROCEDURE ")) {
+        (What::Routine, r)
+    } else if let Some(r) = strip("CREATE TRIGGER ") {
+        (What::Trigger, r)
+    } else if let Some(r) = strip("ALTER TABLE ") {
+        let up = body.to_ascii_uppercase();
+        let fk = up.contains("FOREIGN KEY") || up.contains("VALIDATE CONSTRAINT");
+        if let Some(i) = up.find(" REFERENCES ") {
+            references = Some(split_schema(qualified_name(
+                &body[i + " REFERENCES ".len()..],
+            )));
+        }
+        (if fk { What::ForeignKey } else { What::Other }, r)
+    } else if let Some(r) = strip("COMMENT ON TABLE ").or_else(|| strip("COMMENT ON INDEX ")) {
+        (What::Comment, r)
+    } else if let Some(r) = strip("COMMENT ON COLUMN ") {
+        (What::Comment, r)
     } else {
-        (What::Other, None, body)
+        (What::Other, body)
     };
     let mut names = qualified_name(rest);
-    // `db.schema.name` / `schema.name` / `name`; for a column comment the column is last.
-    if body.to_ascii_uppercase().starts_with("COMMENT ON COLUMN") && names.len() > 1 {
+    if upper.starts_with("COMMENT ON COLUMN") && names.len() > 1 {
         names.pop();
     }
     let (schema, name) = match what {
-        What::Schema => (String::new(), names.last().cloned().unwrap_or_default()),
-        _ => match names.as_slice() {
-            [] => (String::new(), String::new()),
-            [n] => ("public".to_string(), n.clone()),
-            [.., s, n] => (s.clone(), n.clone()),
-        },
-    };
-    let schema = if what == What::Schema {
-        name.clone()
-    } else {
-        schema
+        What::Schema => {
+            let n = names.last().cloned().unwrap_or_default();
+            (n.clone(), n)
+        }
+        What::Trigger => {
+            // `CREATE TRIGGER name ... ON db.schema.table ...`
+            let trg = names.first().cloned().unwrap_or_default();
+            let up = body.to_ascii_uppercase();
+            let (s, t) = up
+                .find(" ON ")
+                .map(|i| split_schema(qualified_name(&body[i + 4..])))
+                .unwrap_or_default();
+            references = Some((s.clone(), trg));
+            (s, t)
+        }
+        _ => split_schema(names),
     };
     let mut sql = body.to_string();
     if !sql.ends_with(';') {
         sql.push(';');
     }
-    let _ = quote_ident;
     Some(Parsed {
         what,
-        cat,
         schema,
         name,
         sql,
+        references,
     })
-}
-
-fn strip_ci<'a>(body: &'a str, upper: &str, prefix: &str) -> Option<&'a str> {
-    upper.starts_with(prefix).then(|| &body[prefix.len()..])
-}
-
-/// Dot separated identifiers at the start of `text` (quoted ones keep their content).
-fn qualified_name(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut chars = text.trim_start().chars().peekable();
-    // `IF NOT EXISTS` is not emitted by SHOW CREATE.
-    loop {
-        let mut part = String::new();
-        if chars.peek() == Some(&'"') {
-            chars.next();
-            while let Some(c) = chars.next() {
-                if c == '"' {
-                    if chars.peek() == Some(&'"') {
-                        chars.next();
-                        part.push('"');
-                    } else {
-                        break;
-                    }
-                } else {
-                    part.push(c);
-                }
-            }
-        } else {
-            while let Some(&c) = chars.peek() {
-                if c == '.' || c.is_whitespace() || c == '(' || c == ';' {
-                    break;
-                }
-                part.push(c);
-                chars.next();
-            }
-        }
-        if part.is_empty() {
-            break;
-        }
-        out.push(part);
-        if chars.peek() == Some(&'.') {
-            chars.next();
-        } else {
-            break;
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -379,48 +563,180 @@ mod tests {
     #[test]
     fn strips_database_qualifier() {
         assert_eq!(
-            strip_database(
+            strip_qualifier(
                 "CREATE VIEW sv.v AS SELECT a FROM dbstudio.sv.t JOIN dbstudio.sv.u",
-                "dbstudio"
+                "dbstudio",
+                3
             ),
             "CREATE VIEW sv.v AS SELECT a FROM sv.t JOIN sv.u"
         );
         assert_eq!(
-            strip_database(
+            strip_qualifier(
                 "SELECT \"my db\".s.t, x.dbstudio.y, 'dbstudio.a.b'",
-                "my db"
+                "my db",
+                3
             ),
             "SELECT s.t, x.dbstudio.y, 'dbstudio.a.b'"
         );
         // A two-part name whose first part equals the database stays.
         assert_eq!(
-            strip_database("SELECT * FROM dbstudio.t", "dbstudio"),
+            strip_qualifier("SELECT * FROM dbstudio.t", "dbstudio", 3),
             "SELECT * FROM dbstudio.t"
         );
     }
 
     #[test]
+    fn lexer_handles_quotes_and_escapes() {
+        // A quote inside a quoted identifier and an escaped quote in an E-string.
+        let sql = "SELECT \"it's\" FROM d.s.t WHERE x = E'\\'' AND y = 'd.s.t'";
+        assert_eq!(
+            strip_qualifier(sql, "d", 3),
+            "SELECT \"it's\" FROM s.t WHERE x = E'\\'' AND y = 'd.s.t'"
+        );
+        // After the odd quote the tokenizer is still in sync.
+        let sql = "COMMENT ON TABLE d.s.t IS 'it''s'; SELECT * FROM d.s.u";
+        assert_eq!(
+            strip_qualifier(sql, "d", 3),
+            "COMMENT ON TABLE s.t IS 'it''s'; SELECT * FROM s.u"
+        );
+    }
+
+    #[test]
+    fn schema_qualifier_is_removed_without_touching_columns() {
+        assert_eq!(
+            strip_qualifier(
+                "CREATE TABLE sv.t (sv text, FOREIGN KEY (a) REFERENCES sv.p(id))",
+                "sv",
+                2
+            ),
+            "CREATE TABLE t (sv text, FOREIGN KEY (a) REFERENCES p(id))"
+        );
+    }
+
+    #[test]
     fn classifies_statements() {
-        let p = classify("d", "CREATE TABLE sv.child (\n id INT8\n);").unwrap();
+        let p = classify("CREATE TABLE sv.child (\n id INT8\n);").unwrap();
         assert_eq!(
             (p.what, p.schema.as_str(), p.name.as_str()),
             (What::Table, "sv", "child")
         );
         let p = classify(
-            "d",
             "ALTER TABLE sv.child ADD CONSTRAINT x FOREIGN KEY (pid) REFERENCES sv.parent(id);",
         )
         .unwrap();
         assert_eq!((p.what, p.name.as_str()), (What::ForeignKey, "child"));
-        let p = classify("d", "COMMENT ON COLUMN sv.parent.name IS 'nm';").unwrap();
+        assert_eq!(p.references, Some(("sv".into(), "parent".into())));
+        let p = classify("COMMENT ON COLUMN sv.parent.name IS 'nm';").unwrap();
         assert_eq!(
             (p.what, p.schema.as_str(), p.name.as_str()),
             (What::Comment, "sv", "parent")
         );
-        let p = classify("d", "CREATE SCHEMA sv;").unwrap();
+        let p = classify("CREATE SCHEMA sv;").unwrap();
         assert_eq!((p.what, p.schema.as_str()), (What::Schema, "sv"));
-        assert!(classify("d", "-- Validate foreign key constraints.").is_none());
-        let p = classify("d", "CREATE TABLE tt (a INT8);").unwrap();
-        assert_eq!(p.schema, "public");
+        let p = classify("CREATE MATERIALIZED VIEW sv.mv (x) AS SELECT 1;").unwrap();
+        assert_eq!(p.what, What::MaterializedView);
+        let p = classify(
+            "CREATE TRIGGER trg BEFORE INSERT ON d.sv.tg FOR EACH ROW EXECUTE FUNCTION d.sv.tf();",
+        )
+        .unwrap();
+        assert_eq!(
+            (p.what, p.schema.as_str(), p.name.as_str()),
+            (What::Trigger, "sv", "tg")
+        );
+        assert!(classify("-- Validate foreign key constraints.").is_none());
+        assert_eq!(
+            classify("CREATE TABLE tt (a INT8);").unwrap().schema,
+            "public"
+        );
+    }
+
+    #[test]
+    fn materialized_view_loses_hidden_rowid() {
+        assert_eq!(
+            drop_hidden_rowid_column(
+                "CREATE MATERIALIZED VIEW s.mv (\n\tid,\n\trowid\n) AS SELECT id FROM s.t;"
+            ),
+            "CREATE MATERIALIZED VIEW s.mv (\n\tid\n) AS SELECT id FROM s.t;"
+        );
+    }
+
+    #[test]
+    fn inline_indexes_are_dropped_with_comma_fix() {
+        let sql = "CREATE TABLE s.t (\n\tid INT8 NOT NULL,\n\tCONSTRAINT p PRIMARY KEY (id ASC),\n\tINDEX i (v ASC)\n);";
+        assert_eq!(
+            drop_inline_indexes(sql),
+            "CREATE TABLE s.t (\n\tid INT8 NOT NULL,\n\tCONSTRAINT p PRIMARY KEY (id ASC)\n);"
+        );
+    }
+
+    fn parsed(sql: &str) -> Parsed {
+        classify(sql).unwrap()
+    }
+
+    fn target_none() -> Target {
+        // Parsed through the public request path in the IT; here an empty selection is enough.
+        let req = DdlRequest {
+            scope: ObjectPath::root().child(ObjectKind::Database, "d"),
+            objects: vec![],
+            options: DdlOptions::default(),
+        };
+        Target::parse(&req).unwrap()
+    }
+
+    #[test]
+    fn drops_come_first_types_last_and_materialized_views_have_their_own() {
+        let opts = DdlOptions {
+            include_drop: true,
+            ..DdlOptions::default()
+        };
+        let items = build(
+            "d",
+            &target_none(),
+            &opts,
+            vec![
+                parsed("CREATE TYPE s.mood AS ENUM ('a');"),
+                parsed("CREATE TABLE s.t (m s.mood);"),
+                parsed("CREATE MATERIALIZED VIEW s.mv (x) AS SELECT 1;"),
+            ],
+        );
+        let sqls: Vec<&str> = items.iter().map(|i| i.sql.as_str()).collect();
+        assert_eq!(
+            sqls,
+            vec![
+                "DROP MATERIALIZED VIEW IF EXISTS \"s\".\"mv\" CASCADE;",
+                "DROP TABLE IF EXISTS \"s\".\"t\" CASCADE;",
+                "DROP TYPE IF EXISTS \"s\".\"mood\";",
+                "CREATE TYPE s.mood AS ENUM ('a');",
+                "CREATE TABLE s.t (m s.mood);",
+                "CREATE MATERIALIZED VIEW s.mv (x) AS SELECT 1;",
+            ]
+        );
+        assert!(
+            !sqls
+                .iter()
+                .any(|s| s.contains("TYPE") && s.contains("CASCADE"))
+        );
+    }
+
+    #[test]
+    fn options_drop_foreign_keys_comments_and_unqualify() {
+        let opts = DdlOptions {
+            include_foreign_keys: false,
+            include_comments: false,
+            qualify_schema: false,
+            ..DdlOptions::default()
+        };
+        let items = build(
+            "d",
+            &target_none(),
+            &opts,
+            vec![
+                parsed("CREATE TABLE s.t (id INT8);"),
+                parsed("COMMENT ON TABLE s.t IS 'x';"),
+                parsed("ALTER TABLE s.t ADD CONSTRAINT f FOREIGN KEY (id) REFERENCES s.u(id);"),
+            ],
+        );
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].sql, "CREATE TABLE t (id INT8);");
     }
 }
