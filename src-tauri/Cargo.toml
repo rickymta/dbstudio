@@ -46,6 +46,7 @@ tauri-plugin-notification = "2.8"
 tauri-plugin-autostart = "2.7"
 # Dependency only for now; registered by package H together with the tray.
 tauri-plugin-single-instance = "2.5"
+async-trait.workspace = true
 sha2.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["time", "rt", "sync"] }
@@ -78,4 +79,4 @@ workspace = true
 dbstudio-core = { workspace = true, features = ["testing"] }
 tower = { version = "0.5", features = ["util"] }
 tempfile.workspace = true
-async-trait.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
