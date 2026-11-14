@@ -26,6 +26,7 @@ mod redact;
 mod scheduler;
 mod session;
 mod sink;
+mod startup_error;
 mod state;
 mod tray;
 
@@ -40,7 +41,10 @@ const DATABASE_FILE: &str = "dbstudio.sqlite";
 /// Open the profile database and wire the keychain; called once from `setup`.
 fn build_state(app: &tauri::App) -> Result<state::AppState, Box<dyn std::error::Error>> {
     let host = Arc::new(host::TauriHost(app.handle().clone()));
-    let data_dir = app.path().app_data_dir()?;
+    let data_dir = startup_error::resolve_data_dir(
+        std::env::var(startup_error::DATA_DIR_ENV).ok().as_deref(),
+        app.path().app_data_dir()?,
+    );
     std::fs::create_dir_all(&data_dir)?;
     let db_path = data_dir.join(DATABASE_FILE);
     let store =
@@ -78,11 +82,15 @@ pub fn install_crypto_provider() {
 /// Build and run the Tauri application.
 pub fn run() {
     install_crypto_provider();
-    let app = tauri::Builder::default()
-        // Must be registered first: a second launch only brings the running window forward.
-        .plugin(tauri_plugin_single_instance::init(
+    let mut builder = tauri::Builder::default();
+    // Must be registered first: a second launch only brings the running window forward. An
+    // instance with its own `DBSTUDIO_DATA_DIR` is independent and does not take part.
+    if !startup_error::has_custom_data_dir() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(
             background::on_second_instance,
-        ))
+        ));
+    }
+    let app = builder
         .on_window_event(background::on_window_event)
         .plugin(tauri_plugin_dialog::init())
         // The opener plugin is only used from Rust; no capability grants it to the webview.
@@ -111,8 +119,20 @@ pub fn run() {
             let log_dir = app.path().app_log_dir().ok();
             logging::init(log_dir.as_deref(), cfg!(debug_assertions));
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting DBStudio");
-            let state =
-                build_state(app).inspect_err(|e| tracing::error!(error = %e, "startup failed"))?;
+            let state = match build_state(app) {
+                Ok(state) => state,
+                Err(e) => {
+                    // Never return `Err`: Tauri would panic inside the event loop (SIGABRT).
+                    tracing::error!(error = %e, "startup failed");
+                    let data_dir = std::env::var(startup_error::DATA_DIR_ENV)
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .map(std::path::PathBuf::from)
+                        .or_else(|| app.path().app_data_dir().ok());
+                    startup_error::report(app.handle(), &e.to_string(), data_dir.as_deref());
+                    return Ok(());
+                }
+            };
             #[cfg(all(
                 feature = "dev-bridge",
                 debug_assertions,
