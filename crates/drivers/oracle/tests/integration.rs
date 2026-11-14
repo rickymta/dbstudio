@@ -76,9 +76,14 @@ it!(connect_and_server_info, {
     let info = s.server_info().await.unwrap();
     assert_eq!(info.product, "Oracle Database");
     assert!(!info.version.is_empty(), "{info:?}");
-    assert_eq!(
-        info.extra.get("service").map(String::as_str),
-        Some("FREEPDB1")
+    // Service names are case-insensitive and the server reports the registered spelling
+    // (`freepdb1` for the 23ai Free PDB), which the driver passes through unchanged.
+    assert!(
+        info.extra
+            .get("service")
+            .is_some_and(|v| v.eq_ignore_ascii_case("FREEPDB1")),
+        "{:?}",
+        info.extra
     );
     assert_eq!(info.extra.get("user").map(String::as_str), Some("DBSTUDIO"));
     assert_eq!(s.script_dialect(), ScriptDialect::Oracle);
@@ -531,7 +536,7 @@ it!(script_statements_results_and_affected, {
     assert_eq!(rec.starts.len(), 7);
     assert_eq!(rec.starts[0].index, 0);
     assert_eq!(
-        rec.starts[1].range.start, 62,
+        rec.starts[1].range.start, 70,
         "statement 2 starts after the first terminator"
     );
     let outcomes: Vec<_> = rec.ends.iter().map(|e| e.outcome.clone()).collect();
@@ -948,7 +953,7 @@ it!(lobs_are_cut_at_the_limit, {
     let mut cfg = config("dbstudio");
     cfg.options.insert("max_lob_bytes".into(), "1000".into());
     let s = try_connect(&cfg, PASSWORD).await.unwrap();
-    let r = rows(&*s, "SELECT TO_CLOB(RPAD('x', 500, 'x')) AS SHORT_CLOB, TO_CLOB(RPAD('y', 20000, 'y')) || TO_CLOB(RPAD('z', 20000, 'z')) AS LONG_CLOB, UTL_RAW.CAST_TO_RAW(RPAD('b', 2000, 'b')) AS RAW_VAL, TO_BLOB(UTL_RAW.CAST_TO_RAW(RPAD('c', 5000, 'c'))) AS LONG_BLOB FROM dual").await;
+    let r = rows(&*s, "SELECT TO_CLOB(RPAD('x', 500, 'x')) AS SHORT_CLOB, TO_CLOB(RPAD('y', 20000, 'y')) || TO_CLOB(RPAD('z', 20000, 'z')) AS LONG_CLOB, UTL_RAW.CAST_TO_RAW(RPAD('b', 2000, 'b')) AS RAW_VAL, TO_BLOB(UTL_RAW.CAST_TO_RAW(RPAD('c', 2000, 'c'))) || TO_BLOB(UTL_RAW.CAST_TO_RAW(RPAD('c', 2000, 'c'))) || TO_BLOB(UTL_RAW.CAST_TO_RAW(RPAD('c', 1000, 'c'))) AS LONG_BLOB FROM dual").await;
     assert_eq!(r[0][0], Value::Text("x".repeat(500)));
     match &r[0][1] {
         Value::Ext(e) => {
@@ -1054,8 +1059,8 @@ it!(paging_is_deterministic_and_filters_work, {
     assert_eq!(count(vec![f("ID", FilterOp::Le, &["3"])], None).await, 3);
     assert_eq!(
         count(vec![f("NAME", FilterOp::Contains, &["NAME 9"])], None).await,
-        6,
-        "case-insensitive"
+        7,
+        "case-insensitive: 9 and 90..=95"
     );
     assert_eq!(
         count(vec![f("NAME", FilterOp::StartsWith, &["name 1"])], None).await,
@@ -1067,7 +1072,7 @@ it!(paging_is_deterministic_and_filters_work, {
     );
     assert_eq!(
         count(vec![f("NAME", FilterOp::NotContains, &["1"])], None).await,
-        95 - 29
+        95 - 19
     );
     // `%` and `_` are literal.
     assert_eq!(
@@ -2308,17 +2313,24 @@ COMMENT ON COLUMN IT_M_ORDER.NOTE IS 'free text';
 CREATE VIEW IT_M_V AS SELECT ID, NAME FROM IT_M_CUSTOMER;
 ";
 
-async fn model_fixture(s: &dyn Session) {
+/// The `IT_M_*` objects are shared by two tests that drop and recreate them: hold the returned
+/// guard for the whole test so they do not run at the same time.
+static MODEL_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+async fn model_fixture(s: &dyn Session) -> tokio::sync::MutexGuard<'static, ()> {
+    let guard = MODEL_LOCK.lock().await;
     drop_object(s, "VIEW", "IT_M_V").await;
     for t in ["IT_M_REF", "IT_M_PROFILE", "IT_M_ORDER", "IT_M_CUSTOMER"] {
         drop_object(s, "TABLE", t).await;
     }
     exec(s, MODEL_SCRIPT).await;
+    guard
 }
 
 it!(schema_model_has_tables_keys_and_relations, {
     let s = app().await;
-    model_fixture(&*s).await;
+    let _model = model_fixture(&*s).await;
     let scope = schema_path("DBSTUDIO");
     let model = s
         .schema_model(SchemaModelRequest {
@@ -2536,7 +2548,7 @@ it!(object_ddl_of_every_kind, {
 
 it!(generated_ddl_recreates_the_objects, {
     let s = app().await;
-    model_fixture(&*s).await;
+    let _model = model_fixture(&*s).await;
     let scope = schema_path("DBSTUDIO");
     let objects: Vec<_> = ["IT_M_CUSTOMER", "IT_M_ORDER", "IT_M_PROFILE", "IT_M_REF"]
         .iter()

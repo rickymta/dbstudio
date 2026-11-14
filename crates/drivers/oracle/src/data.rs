@@ -146,7 +146,6 @@ pub fn read_only_query(
     em: &Emitter,
     ctl: &Control,
 ) -> Result<()> {
-    let _ = conn.execute("SET TRANSACTION READ ONLY", &[]);
     let params = ExecParams {
         text: String::new(),
         max_rows: None,
@@ -156,9 +155,22 @@ pub fn read_only_query(
         max_lob,
         keep_open: false,
     };
-    let result = run_single_query(conn, sql, &params, em, ctl);
     let _ = conn.rollback();
+    let _ = conn.execute("SET TRANSACTION READ ONLY", &[]);
+    let mut result = run_single_query(conn, sql, &params, em, ctl);
+    let _ = conn.rollback();
+    if result.as_ref().is_err_and(is_snapshot_too_old) {
+        // The table was (re)defined within the resolution of the snapshot clock (ORA-01466): read
+        // the current state instead of failing.
+        result = run_single_query(conn, sql, &params, em, ctl);
+        let _ = conn.rollback();
+    }
     result
+}
+
+/// `ORA-01466`: a read-only snapshot is older than the last DDL of a table.
+fn is_snapshot_too_old(e: &Error) -> bool {
+    e.to_string().contains("ORA-01466")
 }
 
 /// `SELECT COUNT(*)` of a table with filters.
@@ -171,9 +183,14 @@ pub fn count_worker(
 ) -> Result<u64> {
     let table = qualified(schema, name)?;
     let sql = sql::count_sql(&table, filters, raw_where)?;
-    let _ = conn.execute("SET TRANSACTION READ ONLY", &[]);
-    let result = catalog::scalar(conn, &sql, &[]);
     let _ = conn.rollback();
+    let _ = conn.execute("SET TRANSACTION READ ONLY", &[]);
+    let mut result = catalog::scalar(conn, &sql, &[]);
+    let _ = conn.rollback();
+    if result.as_ref().is_err_and(is_snapshot_too_old) {
+        result = catalog::scalar(conn, &sql, &[]);
+        let _ = conn.rollback();
+    }
     result?
         .and_then(|v| v.trim().parse::<u64>().ok())
         .ok_or_else(|| Error::Other("COUNT(*) returned no number".into()))
@@ -220,7 +237,7 @@ pub fn stream_table_worker(
     run_single_query(conn, &sql, &params, em, ctl)
 }
 
-/// Insert many rows with one array DML. Runs in the current transaction; nothing is committed.
+/// Insert many rows with array DML (one per statement shape). Runs in the current transaction; nothing is committed.
 pub fn bulk_insert(
     conn: &Connection,
     req: &BulkInsertRequest,
@@ -248,95 +265,109 @@ pub fn bulk_insert(
             )));
         }
     }
-    // Placeholders keep the value kind (dates need a conversion function).
-    let first = &req.rows[0];
-    let placeholders: Vec<String> = first
-        .iter()
-        .enumerate()
-        .map(|(i, v)| match v {
-            EditValue::Default => "DEFAULT".to_string(),
-            EditValue::Text(_) => format!(":{}", i + 1),
-            EditValue::Value(v) => crate::edit::placeholder(v, i + 1),
-        })
-        .collect();
-    let insert = format!(
-        "INSERT INTO {table} ({}) VALUES ({})",
-        cols.join(", "),
-        placeholders.join(", ")
-    );
-    match req.on_conflict {
-        OnConflict::Error => run_batch(conn, &insert, req, &placeholders),
-        OnConflict::Skip => {
-            // Rows that violate a unique constraint are skipped (batch errors ORA-00001).
-            run_batch_with_errors(conn, &insert, req, &placeholders, false)
-        }
-        OnConflict::Update => {
-            if req.conflict_columns.is_empty() {
-                return Err(Error::query("on conflict update needs conflict columns"));
-            }
-            let merge = merge_sql(&table, req, &placeholders)?;
-            run_merge(conn, &merge, req, &placeholders)
+    // Rows are grouped by the shape of their statement: a cell left to DEFAULT is left out of the
+    // INSERT column list (so the column default applies) and a value kind may need a conversion
+    // function, so rows of different shapes cannot share one array DML.
+    let mut groups: Vec<(Vec<String>, Vec<&[EditValue]>)> = Vec::new();
+    for row in &req.rows {
+        let shape = row_placeholders(row);
+        match groups.iter_mut().find(|(s, _)| *s == shape) {
+            Some((_, rows)) => rows.push(row),
+            None => groups.push((shape, vec![row])),
         }
     }
+    let mut total = BulkInsertResult::default();
+    for (shape, rows) in &groups {
+        let part = match req.on_conflict {
+            OnConflict::Error | OnConflict::Skip => {
+                let insert = insert_sql(&table, &cols, shape);
+                // Skip: rows that violate a unique constraint are skipped (batch errors ORA-00001).
+                run_batch(
+                    conn,
+                    &insert,
+                    rows,
+                    matches!(req.on_conflict, OnConflict::Error),
+                )?
+            }
+            OnConflict::Update => {
+                if req.conflict_columns.is_empty() {
+                    return Err(Error::query("on conflict update needs conflict columns"));
+                }
+                let merge = merge_sql(&table, req, shape)?;
+                run_merge(conn, &merge, rows)?
+            }
+        };
+        total.inserted += part.inserted;
+        total.updated += part.updated;
+        total.skipped += part.skipped;
+    }
+    Ok(total)
 }
 
-fn row_binds(
-    req: &BulkInsertRequest,
-    placeholders: &[String],
-    row: &[EditValue],
-) -> Result<Vec<Option<Box<dyn ToSql>>>> {
-    let _ = req;
-    let mut out: Vec<Option<Box<dyn ToSql>>> = Vec::new();
-    for (i, v) in row.iter().enumerate() {
-        if placeholders[i] == "DEFAULT" {
-            continue;
+/// Placeholder of every column of `row` (`DEFAULT` for a cell left to the column default); the
+/// binds are numbered over the non-`DEFAULT` cells only.
+fn row_placeholders(row: &[EditValue]) -> Vec<String> {
+    let mut n = 0;
+    row.iter()
+        .map(|v| match v {
+            EditValue::Default => "DEFAULT".to_string(),
+            EditValue::Text(_) => {
+                n += 1;
+                format!(":{n}")
+            }
+            EditValue::Value(v) => {
+                n += 1;
+                crate::edit::placeholder(v, n)
+            }
+        })
+        .collect()
+}
+
+/// `INSERT` without the columns whose cell is `DEFAULT`, so that their default applies.
+fn insert_sql(table: &str, cols: &[String], placeholders: &[String]) -> String {
+    let (names, values): (Vec<&str>, Vec<&str>) = cols
+        .iter()
+        .zip(placeholders)
+        .filter(|(_, p)| *p != "DEFAULT")
+        .map(|(c, p)| (c.as_str(), p.as_str()))
+        .unzip();
+    if names.is_empty() {
+        return format!("INSERT INTO {table} VALUES (DEFAULT)");
+    }
+    format!(
+        "INSERT INTO {table} ({}) VALUES ({})",
+        names.join(", "),
+        values.join(", ")
+    )
+}
+
+fn row_binds(row: &[EditValue]) -> Result<Vec<Box<dyn ToSql>>> {
+    let mut out: Vec<Box<dyn ToSql>> = Vec::new();
+    for v in row {
+        match v {
+            EditValue::Default => {}
+            EditValue::Text(s) => out.push(Box::new(s.clone())),
+            EditValue::Value(v) => out.push(bind_of(v)?),
         }
-        out.push(Some(match v {
-            EditValue::Default => continue,
-            EditValue::Text(s) => Box::new(s.clone()) as Box<dyn ToSql>,
-            EditValue::Value(v) => bind_of(v)?,
-        }));
     }
     Ok(out)
-}
-
-fn bind_numbers(placeholders: &[String]) -> Vec<usize> {
-    placeholders
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| *p != "DEFAULT")
-        .map(|(i, _)| i + 1)
-        .collect()
 }
 
 fn run_batch(
     conn: &Connection,
     sql: &str,
-    req: &BulkInsertRequest,
-    placeholders: &[String],
-) -> Result<BulkInsertResult> {
-    run_batch_with_errors(conn, sql, req, placeholders, true)
-}
-
-fn run_batch_with_errors(
-    conn: &Connection,
-    sql: &str,
-    req: &BulkInsertRequest,
-    placeholders: &[String],
+    rows: &[&[EditValue]],
     fail_on_error: bool,
 ) -> Result<BulkInsertResult> {
-    let total = req.rows.len();
+    let total = rows.len();
     let mut builder = conn.batch(sql, total);
     if !fail_on_error {
         builder.with_batch_errors();
     }
     let mut batch = builder.build().map_err(map_error)?;
-    let numbers = bind_numbers(placeholders);
-    for row in &req.rows {
-        let binds = row_binds(req, placeholders, row)?;
-        let refs: Vec<&dyn ToSql> = binds.iter().filter_map(|b| b.as_deref()).collect();
-        // The positional binds of the statement are renumbered 1..n over the non-DEFAULT values.
-        let _ = &numbers;
+    for row in rows {
+        let binds = row_binds(row)?;
+        let refs: Vec<&dyn ToSql> = binds.iter().map(|b| b.as_ref()).collect();
         batch.append_row(&refs).map_err(map_error)?;
     }
     match batch.execute() {
@@ -422,20 +453,15 @@ fn merge_sql(table: &str, req: &BulkInsertRequest, placeholders: &[String]) -> R
     ))
 }
 
-fn run_merge(
-    conn: &Connection,
-    sql: &str,
-    req: &BulkInsertRequest,
-    placeholders: &[String],
-) -> Result<BulkInsertResult> {
+fn run_merge(conn: &Connection, sql: &str, rows: &[&[EditValue]]) -> Result<BulkInsertResult> {
     let mut batch = conn
-        .batch(sql, req.rows.len())
+        .batch(sql, rows.len())
         .with_row_counts()
         .build()
         .map_err(map_error)?;
-    for row in &req.rows {
-        let binds = row_binds(req, placeholders, row)?;
-        let refs: Vec<&dyn ToSql> = binds.iter().filter_map(|b| b.as_deref()).collect();
+    for row in rows {
+        let binds = row_binds(row)?;
+        let refs: Vec<&dyn ToSql> = binds.iter().map(|b| b.as_ref()).collect();
         batch.append_row(&refs).map_err(map_error)?;
     }
     batch.execute().map_err(map_error)?;
@@ -446,7 +472,7 @@ fn run_merge(
     Ok(BulkInsertResult {
         inserted: 0,
         updated: affected,
-        skipped: req.rows.len() as u64 - affected.min(req.rows.len() as u64),
+        skipped: rows.len() as u64 - affected.min(rows.len() as u64),
     })
 }
 
@@ -474,6 +500,27 @@ mod tests {
                 .contains("FROM_VECTOR")
         );
         assert!(select_expr("B", "BFILE").unwrap().1);
+    }
+
+    #[test]
+    fn default_cells_are_left_out_of_the_insert() {
+        let row = [
+            EditValue::Text("1".into()),
+            EditValue::Default,
+            EditValue::Value(dbstudio_core::Value::Date("2024-01-01".into())),
+        ];
+        let ph = row_placeholders(&row);
+        assert_eq!(ph, [":1", "DEFAULT", "TO_DATE(:2, 'YYYY-MM-DD')"]);
+        let cols: Vec<String> = ["\"A\"", "\"B\"", "\"C\""].map(String::from).to_vec();
+        assert_eq!(
+            insert_sql("\"S\".\"T\"", &cols, &ph),
+            "INSERT INTO \"S\".\"T\" (\"A\", \"C\") VALUES (:1, TO_DATE(:2, 'YYYY-MM-DD'))"
+        );
+        assert_eq!(row_binds(&row).unwrap().len(), 2);
+        assert_eq!(
+            insert_sql("T", &cols[..1], &["DEFAULT".to_string()]),
+            "INSERT INTO T VALUES (DEFAULT)"
+        );
     }
 
     #[test]

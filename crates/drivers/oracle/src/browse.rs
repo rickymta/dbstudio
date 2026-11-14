@@ -271,7 +271,7 @@ fn schema_objects(
         folder::SEQUENCES => {
             let list = rows(
                 conn,
-                "SELECT sequence_name FROM all_sequences WHERE owner = :1 \
+                "SELECT sequence_name FROM all_sequences WHERE sequence_owner = :1 \
                  AND sequence_name NOT LIKE 'ISEQ$$\\_%' ESCAPE '\\' ORDER BY sequence_name",
                 &[&schema],
             )?;
