@@ -1,8 +1,7 @@
 //! IPC commands of the SQL debugger (`debug_*`, `routine_breakpoints_*`).
 //!
-//! Step 0 (contract): every command is a stub that answers `Unsupported`; package T implements
-//! them on top of `DebugManager` (`crate::debug`). Command names, arguments and results are
-//! frozen; see `docs/design/sql-debugger.md` section 3.3.
+//! Thin layer over `DebugManager` (`crate::debug`) and the store. Command names, arguments and
+//! results are frozen; see `docs/design/sql-debugger.md` section 3.3.
 
 #![allow(clippy::too_many_arguments)]
 
@@ -15,16 +14,13 @@ use dbstudio_core::{ConfirmationGrant, Error};
 use tauri::State;
 use uuid::Uuid;
 
+use super::blocking;
 use crate::state::AppState;
 
 type Result<T> = std::result::Result<T, Error>;
 
-fn stub<T>(command: &str) -> Result<T> {
-    Err(Error::Unsupported(command.into()))
-}
-
-pub(crate) async fn debug_support_impl(_state: &AppState, _lease_id: Uuid) -> Result<DebugSupport> {
-    stub("debug_support")
+pub(crate) async fn debug_support_impl(state: &AppState, lease_id: Uuid) -> Result<DebugSupport> {
+    state.debug.support(state, lease_id).await
 }
 
 #[tauri::command]
@@ -34,10 +30,10 @@ pub async fn debug_support(state: State<'_, AppState>, lease_id: Uuid) -> Result
 }
 
 pub(crate) async fn debug_start_impl(
-    _state: &AppState,
-    _request: DebugStartRequest,
+    state: &AppState,
+    request: DebugStartRequest,
 ) -> Result<DebugState> {
-    stub("debug_start")
+    state.debug.start(state, request).await
 }
 
 #[tauri::command]
@@ -50,12 +46,12 @@ pub async fn debug_start(
 }
 
 pub(crate) async fn debug_step_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _action: DebugAction,
-    _confirm: Option<ConfirmationGrant>,
+    state: &AppState,
+    debug_id: Uuid,
+    action: DebugAction,
+    confirm: Option<ConfirmationGrant>,
 ) -> Result<DebugState> {
-    stub("debug_step")
+    state.debug.act(debug_id, action, confirm).await
 }
 
 #[tauri::command]
@@ -69,8 +65,8 @@ pub async fn debug_step(
     debug_step_impl(&state, debug_id, action, confirm).await
 }
 
-pub(crate) async fn debug_resume_impl(_state: &AppState, _debug_id: Uuid) -> Result<DebugState> {
-    stub("debug_resume")
+pub(crate) async fn debug_resume_impl(state: &AppState, debug_id: Uuid) -> Result<DebugState> {
+    state.debug.act(debug_id, DebugAction::Resume, None).await
 }
 
 #[tauri::command]
@@ -79,8 +75,8 @@ pub async fn debug_resume(state: State<'_, AppState>, debug_id: Uuid) -> Result<
     debug_resume_impl(&state, debug_id).await
 }
 
-pub(crate) async fn debug_pause_impl(_state: &AppState, _debug_id: Uuid) -> Result<DebugState> {
-    stub("debug_pause")
+pub(crate) async fn debug_pause_impl(state: &AppState, debug_id: Uuid) -> Result<DebugState> {
+    state.debug.act(debug_id, DebugAction::Pause, None).await
 }
 
 #[tauri::command]
@@ -90,13 +86,24 @@ pub async fn debug_pause(state: State<'_, AppState>, debug_id: Uuid) -> Result<D
 }
 
 pub(crate) async fn debug_run_to_cursor_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _source: SourceRef,
-    _line: u32,
-    _force: bool,
+    state: &AppState,
+    debug_id: Uuid,
+    source: SourceRef,
+    line: u32,
+    force: bool,
 ) -> Result<DebugState> {
-    stub("debug_run_to_cursor")
+    state
+        .debug
+        .act(
+            debug_id,
+            DebugAction::RunToCursor {
+                source,
+                line,
+                force,
+            },
+            None,
+        )
+        .await
 }
 
 #[tauri::command]
@@ -112,11 +119,11 @@ pub async fn debug_run_to_cursor(
 }
 
 pub(crate) async fn debug_stop_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _end: Option<DebugEndAction>,
+    state: &AppState,
+    debug_id: Uuid,
+    end: Option<DebugEndAction>,
 ) -> Result<DebugEndReport> {
-    stub("debug_stop")
+    state.debug.stop(debug_id, end).await
 }
 
 #[tauri::command]
@@ -130,12 +137,12 @@ pub async fn debug_stop(
 }
 
 pub(crate) async fn debug_restart_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _text: String,
-    _end: Option<DebugEndAction>,
+    state: &AppState,
+    debug_id: Uuid,
+    text: String,
+    end: Option<DebugEndAction>,
 ) -> Result<DebugState> {
-    stub("debug_restart")
+    state.debug.restart(state, debug_id, text, end).await
 }
 
 #[tauri::command]
@@ -150,13 +157,16 @@ pub async fn debug_restart(
 }
 
 pub(crate) async fn debug_evaluate_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _expr: String,
-    _frame: Option<u32>,
-    _echo: Option<bool>,
+    state: &AppState,
+    debug_id: Uuid,
+    expr: String,
+    frame: Option<u32>,
+    echo: Option<bool>,
 ) -> Result<EvalResult> {
-    stub("debug_evaluate")
+    state
+        .debug
+        .evaluate(debug_id, &expr, frame, echo.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]
@@ -172,12 +182,15 @@ pub async fn debug_evaluate(
 }
 
 pub(crate) async fn debug_set_breakpoints_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _source: SourceRef,
-    _breakpoints: Vec<Breakpoint>,
+    state: &AppState,
+    debug_id: Uuid,
+    source: SourceRef,
+    breakpoints: Vec<Breakpoint>,
 ) -> Result<Vec<BreakpointStatus>> {
-    stub("debug_set_breakpoints")
+    state
+        .debug
+        .set_breakpoints(debug_id, source, breakpoints)
+        .await
 }
 
 #[tauri::command]
@@ -192,11 +205,11 @@ pub async fn debug_set_breakpoints(
 }
 
 pub(crate) async fn debug_set_muted_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _muted: bool,
+    state: &AppState,
+    debug_id: Uuid,
+    muted: bool,
 ) -> Result<DebugState> {
-    stub("debug_set_muted")
+    state.debug.set_muted(debug_id, muted).await
 }
 
 #[tauri::command]
@@ -210,12 +223,15 @@ pub async fn debug_set_muted(
 }
 
 pub(crate) async fn debug_set_variable_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _reference: String,
-    _value_text: String,
+    state: &AppState,
+    debug_id: Uuid,
+    reference: String,
+    value_text: String,
 ) -> Result<DebugVariable> {
-    stub("debug_set_variable")
+    state
+        .debug
+        .set_variable(debug_id, &reference, &value_text)
+        .await
 }
 
 #[tauri::command]
@@ -230,11 +246,11 @@ pub async fn debug_set_variable(
 }
 
 pub(crate) async fn debug_variable_children_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _reference: String,
+    state: &AppState,
+    debug_id: Uuid,
+    reference: String,
 ) -> Result<Vec<DebugVariable>> {
-    stub("debug_variable_children")
+    state.debug.variable_children(debug_id, &reference).await
 }
 
 #[tauri::command]
@@ -248,11 +264,11 @@ pub async fn debug_variable_children(
 }
 
 pub(crate) async fn debug_watches_set_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _watches: Vec<WatchSpec>,
+    state: &AppState,
+    debug_id: Uuid,
+    watches: Vec<WatchSpec>,
 ) -> Result<Vec<WatchResult>> {
-    stub("debug_watches_set")
+    state.debug.set_watches(debug_id, watches).await
 }
 
 #[tauri::command]
@@ -266,11 +282,11 @@ pub async fn debug_watches_set(
 }
 
 pub(crate) async fn debug_select_frame_impl(
-    _state: &AppState,
-    _debug_id: Uuid,
-    _frame: u32,
+    state: &AppState,
+    debug_id: Uuid,
+    frame: u32,
 ) -> Result<DebugState> {
-    stub("debug_select_frame")
+    state.debug.select_frame(debug_id, frame).await
 }
 
 #[tauri::command]
@@ -284,12 +300,15 @@ pub async fn debug_select_frame(
 }
 
 pub(crate) async fn debug_routine_source_impl(
-    _state: &AppState,
-    _debug_id: Option<Uuid>,
-    _session_id: Uuid,
-    _routine: RoutineRef,
+    state: &AppState,
+    debug_id: Option<Uuid>,
+    session_id: Uuid,
+    routine: RoutineRef,
 ) -> Result<RoutineSource> {
-    stub("debug_routine_source")
+    state
+        .debug
+        .routine_source(state, debug_id, session_id, &routine)
+        .await
 }
 
 #[tauri::command]
@@ -303,8 +322,8 @@ pub async fn debug_routine_source(
     debug_routine_source_impl(&state, debug_id, session_id, routine).await
 }
 
-pub(crate) async fn debug_snapshot_impl(_state: &AppState, _debug_id: Uuid) -> Result<DebugState> {
-    stub("debug_snapshot")
+pub(crate) async fn debug_snapshot_impl(state: &AppState, debug_id: Uuid) -> Result<DebugState> {
+    state.debug.snapshot(debug_id).await
 }
 
 #[tauri::command]
@@ -314,10 +333,11 @@ pub async fn debug_snapshot(state: State<'_, AppState>, debug_id: Uuid) -> Resul
 }
 
 pub(crate) async fn routine_breakpoints_get_impl(
-    _state: &AppState,
-    _connection_id: Uuid,
+    state: &AppState,
+    connection_id: Uuid,
 ) -> Result<Vec<RoutineBreakpoint>> {
-    stub("routine_breakpoints_get")
+    let svc = state.connections.clone();
+    blocking(move || svc.store().routine_breakpoints_get(connection_id)).await
 }
 
 #[tauri::command]
@@ -330,11 +350,12 @@ pub async fn routine_breakpoints_get(
 }
 
 pub(crate) async fn routine_breakpoints_set_impl(
-    _state: &AppState,
-    _connection_id: Uuid,
-    _list: Vec<RoutineBreakpoint>,
+    state: &AppState,
+    connection_id: Uuid,
+    list: Vec<RoutineBreakpoint>,
 ) -> Result<()> {
-    stub("routine_breakpoints_set")
+    let svc = state.connections.clone();
+    blocking(move || svc.store().routine_breakpoints_set(connection_id, &list)).await
 }
 
 #[tauri::command]
@@ -345,21 +366,4 @@ pub async fn routine_breakpoints_set(
 ) -> Result<()> {
     tracing::debug!(command = "routine_breakpoints_set", "ipc call");
     routine_breakpoints_set_impl(&state, connection_id, list).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn stubs_answer_unsupported() {
-        let (state, _secrets, _host) =
-            crate::state::testing::test_state_with_host(dbstudio_core::DriverRegistry::new());
-        let err = debug_snapshot_impl(&state, Uuid::nil()).await.unwrap_err();
-        assert!(matches!(err, Error::Unsupported(m) if m == "debug_snapshot"));
-        let err = routine_breakpoints_set_impl(&state, Uuid::nil(), vec![])
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::Unsupported(_)));
-    }
 }

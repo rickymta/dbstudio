@@ -1766,4 +1766,79 @@ mod tests {
                 .contains("GET")
         );
     }
+    #[tokio::test]
+    async fn debug_routes_dispatch_and_debug_events_reach_the_stream() {
+        use crate::events::EventEmitter as _;
+        let (app, _, state) = app_with_probe();
+        // Unknown session: a typed NotFound, not a missing route.
+        let (status, body) = call(
+            &app,
+            "debug_snapshot",
+            json!({"debugId": uuid::Uuid::new_v4()}),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK);
+        assert_eq!(body["kind"], "notFound");
+        // Arguments are validated before anything runs.
+        let (status, _) = call(&app, "debug_step", json!({"debugId": "nope"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Routine breakpoints go through the store.
+        let profile = profile_json();
+        let connection_id = profile["id"].clone();
+        call(
+            &app,
+            "connection_save",
+            json!({"profile": profile, "secret": {"action": "keep"}}),
+        )
+        .await;
+        let list = json!([{"routine": {"signature": "public.f(int)"},
+            "breakpoint": {"id": "r1", "line": 2}}]);
+        let (status, _) = call(
+            &app,
+            "routine_breakpoints_set",
+            json!({"connectionId": connection_id, "list": list}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, got) = call(
+            &app,
+            "routine_breakpoints_get",
+            json!({"connectionId": connection_id}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(got[0]["routine"]["signature"], "public.f(int)");
+        assert_eq!(got[0]["breakpoint"]["id"], "r1");
+
+        // `/events` carries the debug events like any other.
+        let req = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/events")
+            .header(header::HOST, "127.0.0.1:1421")
+            .header(TOKEN_HEADER, TOKEN)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        let mut body = response.into_body().into_data_stream();
+        state
+            .events
+            .emit(crate::events::DEBUG_STATE, json!({"seq": 1}));
+        state
+            .events
+            .emit(crate::events::DEBUG_OUTPUT, json!({"seq": 2}));
+        let mut text = String::new();
+        while text.lines().count() < 2 {
+            let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), body.next())
+                .await
+                .expect("event line in time")
+                .expect("stream open")
+                .unwrap();
+            text.push_str(std::str::from_utf8(&chunk).unwrap());
+        }
+        let names: Vec<String> = text
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].to_string())
+            .collect();
+        assert_eq!(names, vec!["\"debug://state\"", "\"debug://output\""]);
+    }
 }
