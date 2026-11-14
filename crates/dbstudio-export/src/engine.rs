@@ -439,6 +439,7 @@ async fn run(
         zip: work.files > 1,
         tuning: *tuning,
         flatten_fields: spec.values.flatten_fields.clone(),
+        kind: ctx.kind,
     })?;
     let mut progress = Progress::new(&*ctx.reporter, work);
     let is_sql = matches!(spec.format, ExportFormat::Sql(_));
@@ -540,6 +541,7 @@ async fn run(
     }
     progress.phase("finish", None);
     warnings.extend(writer.warnings());
+    let object_list = writer.objects();
     let files = writer.finish()?;
     let bytes: u64 = files
         .iter()
@@ -555,6 +557,7 @@ async fn run(
         rows: rows_total,
         bytes,
         warnings: std::mem::take(warnings),
+        object_list,
     })
 }
 
@@ -713,6 +716,8 @@ fn is_sql_dialect(d: ScriptDialect) -> bool {
             | ScriptDialect::MySql { .. }
             | ScriptDialect::MsSql
             | ScriptDialect::Oracle
+            | ScriptDialect::Cql
+            | ScriptDialect::ClickHouse
     )
 }
 

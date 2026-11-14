@@ -384,6 +384,49 @@ pub struct ExportReport {
     pub bytes: u64,
     /// Non fatal problems.
     pub warnings: Vec<String>,
+    /// Objects of a SQL export with the phases written for each (partial restore). Empty for
+    /// the other formats.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub object_list: Vec<ExportedObject>,
+}
+
+/// Phase of an object in a SQL export; matches `phase=` of the `-- dbstudio:object` markers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportPhase {
+    /// Structure created before the data.
+    Pre,
+    /// Rows.
+    Data,
+    /// Indexes, constraints and other structure created after the data.
+    Post,
+}
+
+impl ExportPhase {
+    /// Value written after `phase=` in the marker lines.
+    pub fn marker(self) -> &'static str {
+        match self {
+            ExportPhase::Pre => "pre",
+            ExportPhase::Data => "data",
+            ExportPhase::Post => "post",
+        }
+    }
+}
+
+/// An object of a SQL export (one `-- dbstudio:object` block group).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedObject {
+    /// Kind of the object (`table`, `view`, `sequence`...).
+    pub kind: dbstudio_core::ObjectKind,
+    /// Schema (or keyspace / database) it belongs to, when it has one.
+    pub schema: Option<String>,
+    /// Object name.
+    pub name: String,
+    /// Phases present in the script, in file order.
+    pub phases: Vec<ExportPhase>,
+    /// Rows written (data phase).
+    pub rows: Option<u64>,
 }
 
 /// Description of the object a [`TableWriter`] is about to receive.
@@ -450,6 +493,10 @@ pub trait TableWriter: ResultSink {
     }
     /// Non fatal problems noticed while writing (cut cells...).
     fn warnings(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Objects written with their phases (SQL writer only); call before [`TableWriter::finish`].
+    fn objects(&mut self) -> Vec<ExportedObject> {
         Vec::new()
     }
 }
@@ -787,6 +834,7 @@ mod tests {
             rows: 10,
             bytes: 2048,
             warnings: vec!["truncated cell".into()],
+            object_list: vec![],
         }
     }
 

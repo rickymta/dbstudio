@@ -3,7 +3,9 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use dbstudio_core::{ColumnDetail, ColumnMeta, ObjectKind, ObjectPath, Result, ScriptDialect};
+use dbstudio_core::{
+    ColumnDetail, ColumnMeta, DbKind, ObjectKind, ObjectPath, Result, ScriptDialect,
+};
 
 use crate::{BinaryFormat, ExportContent, ExportFormat, ExportTuning, ObjectMeta, TableWriter};
 
@@ -34,6 +36,8 @@ pub(crate) struct WriterConfig {
     pub tuning: ExportTuning,
     /// Dotted paths for document sources in CSV / XLSX (empty = detect).
     pub flatten_fields: Vec<String>,
+    /// Database product (flavours of one dialect differ in what they accept).
+    pub kind: DbKind,
 }
 
 /// Open the writer of `cfg.format`; the temporary output file is created right away.
@@ -212,7 +216,11 @@ pub(crate) fn qualifier(
     {
         return Some(s.name.clone());
     }
-    if matches!(dialect, ScriptDialect::MySql { .. }) {
+    // MySQL and ClickHouse: the database is the schema; CQL: the keyspace.
+    if matches!(
+        dialect,
+        ScriptDialect::MySql { .. } | ScriptDialect::ClickHouse | ScriptDialect::Cql
+    ) {
         return path
             .segments
             .iter()
