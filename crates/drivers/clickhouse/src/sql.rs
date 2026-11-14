@@ -46,7 +46,8 @@ fn like(col: &str, negate: bool, pattern: &str) -> String {
 /// SQL condition of one filter.
 pub(crate) fn filter_condition(f: &ColumnFilter) -> Result<String> {
     let col = quote_ident(&f.column);
-    let cmp = |op: &str| -> Result<String> { Ok(format!("{col} {op} {}", quote_literal(single(f)?))) };
+    let cmp =
+        |op: &str| -> Result<String> { Ok(format!("{col} {op} {}", quote_literal(single(f)?))) };
     match f.op {
         FilterOp::Eq => cmp("="),
         FilterOp::Ne => cmp("!="),
@@ -264,8 +265,8 @@ fn numeric_text(v: &Value) -> Result<String> {
 
 fn utc_text(v: &Value, precision: u8) -> Result<String> {
     let text = value_text(v);
-    let (days, tod, nanos) = parse_datetime(&text)
-        .ok_or_else(|| bad(format!("`{text}` is not a date or timestamp")))?;
+    let (days, tod, nanos) =
+        parse_datetime(&text).ok_or_else(|| bad(format!("`{text}` is not a date or timestamp")))?;
     let p = u32::from(precision.min(9));
     let ticks = (days * 86_400 + tod) * 10i64.pow(p) + i64::from(nanos) / 10i64.pow(9 - p);
     Ok(fmt_timestamp(ticks, precision)
@@ -307,8 +308,17 @@ pub(crate) fn literal(t: &CType, v: &Value) -> Result<String> {
         return Ok("NULL".into());
     }
     Ok(match t.inner() {
-        CType::Int8 | CType::Int16 | CType::Int32 | CType::Int64 | CType::Int128 | CType::Int256
-        | CType::UInt8 | CType::UInt16 | CType::UInt32 | CType::UInt64 | CType::UInt128
+        CType::Int8
+        | CType::Int16
+        | CType::Int32
+        | CType::Int64
+        | CType::Int128
+        | CType::Int256
+        | CType::UInt8
+        | CType::UInt16
+        | CType::UInt32
+        | CType::UInt64
+        | CType::UInt128
         | CType::UInt256 => {
             let n = numeric_text(v)?;
             let n = if n.contains('.') {
@@ -343,7 +353,11 @@ pub(crate) fn literal(t: &CType, v: &Value) -> Result<String> {
         CType::Float32 | CType::Float64 | CType::BFloat16 => match v {
             Value::Float(f) if f.is_nan() => "nan".into(),
             Value::Float(f) if f.is_infinite() => {
-                if *f > 0.0 { "inf".into() } else { "-inf".into() }
+                if *f > 0.0 {
+                    "inf".into()
+                } else {
+                    "-inf".into()
+                }
             }
             Value::Text(s) if matches!(s.trim(), "nan" | "NaN") => "nan".into(),
             Value::Text(s) if matches!(s.trim(), "inf" | "Infinity") => "inf".into(),
@@ -366,7 +380,9 @@ pub(crate) fn literal(t: &CType, v: &Value) -> Result<String> {
                 format!("unhex('{hex}')")
             }
             Value::Array(_) | Value::Document(_) => {
-                return Err(bad("a structured value cannot be stored in a String column"));
+                return Err(bad(
+                    "a structured value cannot be stored in a String column",
+                ));
             }
             other => quote_literal(&value_text(other)),
         },
@@ -445,7 +461,8 @@ pub(crate) fn literal(t: &CType, v: &Value) -> Result<String> {
 
 fn date_part(v: &Value) -> Result<String> {
     let text = value_text(v);
-    let (days, _, _) = parse_datetime(&text).ok_or_else(|| bad(format!("`{text}` is not a date")))?;
+    let (days, _, _) =
+        parse_datetime(&text).ok_or_else(|| bad(format!("`{text}` is not a date")))?;
     Ok(crate::rowbinary::fmt_date(days))
 }
 
@@ -525,7 +542,10 @@ mod tests {
             raw_where: None,
             query_id: None,
         };
-        assert_eq!(count_sql("d", "t", &c).unwrap(), "SELECT count() FROM `d`.`t`");
+        assert_eq!(
+            count_sql("d", "t", &c).unwrap(),
+            "SELECT count() FROM `d`.`t`"
+        );
     }
 
     #[test]
@@ -548,13 +568,20 @@ mod tests {
         assert!(literal(&t("Int8"), &Value::Int(-129)).is_err());
         assert!(literal(&t("UInt64"), &Value::Int(-1)).is_err());
         assert!(literal(&t("UInt8"), &Value::Text("abc".into())).is_err());
-        assert_eq!(literal(&t("Nullable(String)"), &Value::Null).unwrap(), "NULL");
+        assert_eq!(
+            literal(&t("Nullable(String)"), &Value::Null).unwrap(),
+            "NULL"
+        );
         assert_eq!(
             literal(&t("String"), &Value::Bytes(vec![0, 255])).unwrap(),
             "unhex('00ff')"
         );
         assert_eq!(
-            literal(&t("DateTime64(3)"), &Value::Timestamp("2024-01-02T03:04:05.678Z".into())).unwrap(),
+            literal(
+                &t("DateTime64(3)"),
+                &Value::Timestamp("2024-01-02T03:04:05.678Z".into())
+            )
+            .unwrap(),
             "toDateTime64('2024-01-02 03:04:05.678', 3, 'UTC')"
         );
         assert_eq!(
@@ -570,10 +597,17 @@ mod tests {
             "['a', 'b']"
         );
         assert_eq!(
-            literal(&t("Map(String, UInt8)"), &Value::Document(vec![("k".into(), Value::Int(1))])).unwrap(),
+            literal(
+                &t("Map(String, UInt8)"),
+                &Value::Document(vec![("k".into(), Value::Int(1))])
+            )
+            .unwrap(),
             "map('k', 1)"
         );
-        assert_eq!(literal(&t("Bool"), &Value::Text("true".into())).unwrap(), "true");
+        assert_eq!(
+            literal(&t("Bool"), &Value::Text("true".into())).unwrap(),
+            "true"
+        );
         assert!(literal(&t("Dynamic"), &Value::Int(1)).is_err());
     }
 

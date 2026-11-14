@@ -4,8 +4,6 @@
 //! and decoded incrementally by [`Source`]; a result with a column type the decoder does not
 //! know is re-requested once as `JSONCompactEachRowWithNamesAndTypes` and converted by type.
 
-use std::sync::Arc;
-
 use bytes::Bytes;
 use clickhouse::Client;
 use clickhouse::query::BytesCursor;
@@ -30,7 +28,9 @@ pub(crate) struct Version {
 
 impl Version {
     pub(crate) fn parse(text: &str) -> Version {
-        let mut it = text.split('.').map(|p| p.trim().parse::<u32>().unwrap_or(0));
+        let mut it = text
+            .split('.')
+            .map(|p| p.trim().parse::<u32>().unwrap_or(0));
         Version {
             major: it.next().unwrap_or(0),
             minor: it.next().unwrap_or(0),
@@ -139,13 +139,14 @@ impl Core {
     async fn kill_with(&self, query_id: &str, sync: bool) -> Result<()> {
         // Query ids are UUID text; refuse anything else so the literal cannot be abused.
         if query_id.is_empty()
-            || !query_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            || !query_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
         {
             return Err(Error::Invalid("bad query id".into()));
         }
         let mode = if sync { "SYNC" } else { "ASYNC" };
-        let sql =
-            format!("KILL QUERY WHERE startsWith(query_id, '{query_id}') {mode} FORMAT Null");
+        let sql = format!("KILL QUERY WHERE startsWith(query_id, '{query_id}') {mode} FORMAT Null");
         self.admin_client(&Req::default())
             .query_raw(&sql)
             .execute()
@@ -304,7 +305,8 @@ pub(crate) fn strip_format_clause(sql: &str) -> String {
     let lower = trimmed.to_ascii_lowercase();
     if let Some(i) = lower.rfind("format") {
         let before_ok = i == 0
-            || !(lower.as_bytes()[i - 1].is_ascii_alphanumeric() || lower.as_bytes()[i - 1] == b'_');
+            || !(lower.as_bytes()[i - 1].is_ascii_alphanumeric()
+                || lower.as_bytes()[i - 1] == b'_');
         let tail = trimmed[i + 6..].trim();
         if before_ok
             && !tail.is_empty()
@@ -575,7 +577,11 @@ pub(crate) fn render_type(t: &CType) -> String {
                 .collect();
             format!(
                 "{}({})",
-                if matches!(t, CType::Enum8(_)) { "Enum8" } else { "Enum16" },
+                if matches!(t, CType::Enum8(_)) {
+                    "Enum8"
+                } else {
+                    "Enum16"
+                },
                 body.join(", ")
             )
         }
@@ -634,7 +640,9 @@ fn pad_decimal(text: &str, scale: u8) -> String {
         return text.to_string();
     }
     match text.split_once('.') {
-        Some((int, frac)) if frac.len() < scale => format!("{int}.{frac}{}", "0".repeat(scale - frac.len())),
+        Some((int, frac)) if frac.len() < scale => {
+            format!("{int}.{frac}{}", "0".repeat(scale - frac.len()))
+        }
         Some(_) => text.to_string(),
         None => format!("{text}.{}", "0".repeat(scale)),
     }
@@ -658,9 +666,11 @@ fn json_generic(j: &serde_json::Value) -> Value {
             .unwrap_or_else(|| Value::Float(n.as_f64().unwrap_or(f64::NAN))),
         serde_json::Value::String(s) => Value::Text(s.clone()),
         serde_json::Value::Array(a) => Value::Array(a.iter().map(json_generic).collect()),
-        serde_json::Value::Object(o) => {
-            Value::Document(o.iter().map(|(k, v)| (k.clone(), json_generic(v))).collect())
-        }
+        serde_json::Value::Object(o) => Value::Document(
+            o.iter()
+                .map(|(k, v)| (k.clone(), json_generic(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -671,15 +681,32 @@ fn json_cell(t: &CType, j: &serde_json::Value) -> Value {
     }
     match t {
         CType::Nullable(i) | CType::LowCardinality(i) => json_cell(i, j),
-        CType::Int8 | CType::Int16 | CType::Int32 | CType::Int64 | CType::UInt8 | CType::UInt16
+        CType::Int8
+        | CType::Int16
+        | CType::Int32
+        | CType::Int64
+        | CType::UInt8
+        | CType::UInt16
         | CType::UInt32 => match j {
-            J::Number(n) => n.as_i64().map(Value::Int).unwrap_or_else(|| json_generic(j)),
-            J::String(s) => s.parse().map(Value::Int).unwrap_or_else(|_| Value::Text(s.clone())),
+            J::Number(n) => n
+                .as_i64()
+                .map(Value::Int)
+                .unwrap_or_else(|| json_generic(j)),
+            J::String(s) => s
+                .parse()
+                .map(Value::Int)
+                .unwrap_or_else(|_| Value::Text(s.clone())),
             _ => json_generic(j),
         },
         CType::UInt64 => match j {
-            J::Number(n) => n.as_u64().map(Value::UInt).unwrap_or_else(|| json_generic(j)),
-            J::String(s) => s.parse().map(Value::UInt).unwrap_or_else(|_| Value::Text(s.clone())),
+            J::Number(n) => n
+                .as_u64()
+                .map(Value::UInt)
+                .unwrap_or_else(|| json_generic(j)),
+            J::String(s) => s
+                .parse()
+                .map(Value::UInt)
+                .unwrap_or_else(|_| Value::Text(s.clone())),
             _ => json_generic(j),
         },
         CType::Int128 | CType::Int256 | CType::UInt128 | CType::UInt256 => {
@@ -748,7 +775,9 @@ fn json_cell(t: &CType, j: &serde_json::Value) -> Value {
         },
         CType::Map(_, v) => match j {
             J::Object(o) => Value::Document(
-                o.iter().map(|(k, x)| (k.clone(), json_cell(v, x))).collect(),
+                o.iter()
+                    .map(|(k, x)| (k.clone(), json_cell(v, x)))
+                    .collect(),
             ),
             _ => json_generic(j),
         },
@@ -763,9 +792,6 @@ fn json_cell(t: &CType, j: &serde_json::Value) -> Value {
         },
     }
 }
-
-/// Shared handle used by leases.
-pub(crate) type SharedCore = Arc<Core>;
 
 #[cfg(test)]
 mod tests {
@@ -783,14 +809,23 @@ mod tests {
     #[test]
     fn format_clause_is_removed() {
         assert_eq!(strip_format_clause("SELECT 1 FORMAT JSON"), "SELECT 1");
-        assert_eq!(strip_format_clause("SELECT 1 format TabSeparated;"), "SELECT 1");
+        assert_eq!(
+            strip_format_clause("SELECT 1 format TabSeparated;"),
+            "SELECT 1"
+        );
         assert_eq!(strip_format_clause("SELECT 1"), "SELECT 1");
-        assert_eq!(strip_format_clause("SELECT format FROM t"), "SELECT format FROM t");
+        assert_eq!(
+            strip_format_clause("SELECT format FROM t"),
+            "SELECT format FROM t"
+        );
         assert_eq!(
             strip_format_clause("SELECT 'a FORMAT x'"),
             "SELECT 'a FORMAT x'"
         );
-        assert_eq!(strip_format_clause("SELECT 1 AS format"), "SELECT 1 AS format");
+        assert_eq!(
+            strip_format_clause("SELECT 1 AS format"),
+            "SELECT 1 AS format"
+        );
     }
 
     #[test]
@@ -816,7 +851,8 @@ mod tests {
     #[test]
     fn json_cells_follow_types() {
         let t = CType::parse("Array(Nullable(UInt64))").unwrap();
-        let j: serde_json::Value = serde_json::from_str("[\"18446744073709551615\", null]").unwrap();
+        let j: serde_json::Value =
+            serde_json::from_str("[\"18446744073709551615\", null]").unwrap();
         assert_eq!(
             json_cell(&t, &j),
             Value::Array(vec![Value::UInt(u64::MAX), Value::Null])

@@ -53,11 +53,7 @@ impl ClickHouseSession {
         }
     }
 
-    async fn run(
-        &self,
-        req: QueryRequest,
-        sink: &mut dyn ResultSink,
-    ) -> Result<ExecSummary> {
+    async fn run(&self, req: QueryRequest, sink: &mut dyn ResultSink) -> Result<ExecSummary> {
         let guard = self.reg.register(req.query_id);
         let call = Call {
             core: &self.core,
@@ -75,7 +71,9 @@ impl ClickHouseSession {
 impl Session for ClickHouseSession {
     async fn ping(&self) -> Result<()> {
         self.ensure_open()?;
-        self.core.exec(&Req::default(), "SELECT 1 FORMAT Null").await
+        self.core
+            .exec(&Req::default(), "SELECT 1 FORMAT Null")
+            .await
     }
 
     async fn server_info(&self) -> Result<ServerInfo> {

@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dbstudio_core::{
-    EndOutcome, Error, ExecSummary, QueryRequest, Result, ResultSink, ScriptDialect,
-    StatementEnd, Value,
+    EndOutcome, Error, ExecSummary, QueryRequest, Result, ResultSink, ScriptDialect, StatementEnd,
+    Value,
 };
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -220,7 +220,8 @@ impl Call<'_> {
 
     fn deadline(&self) -> Option<Instant> {
         // The server enforces `max_execution_time`; the client waits a little longer.
-        self.timeout.map(|t| self.started + t + Duration::from_secs(2))
+        self.timeout
+            .map(|t| self.started + t + Duration::from_secs(2))
     }
 
     /// Stop the server-side query too. A call inside an HTTP session waits for the kill (the
@@ -228,12 +229,12 @@ impl Call<'_> {
     async fn abort(&self, id: Uuid) {
         let core = self.core.clone();
         if self.session_id.is_some() {
-            let _ = tokio::time::timeout(Duration::from_secs(5), core.kill_sync(&id.to_string()))
-                .await;
+            let _ =
+                tokio::time::timeout(Duration::from_secs(5), core.kill_sync(&id.to_string())).await;
         } else {
             tokio::spawn(async move {
-                let _ = tokio::time::timeout(Duration::from_secs(5), core.kill(&id.to_string()))
-                    .await;
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(5), core.kill(&id.to_string())).await;
             });
         }
     }

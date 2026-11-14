@@ -66,7 +66,10 @@ pub async fn connect_cfg(cfg: &ConnectionConfig) -> Result<Box<dyn Session>> {
 }
 
 pub async fn connect_err(cfg: &ConnectionConfig) -> dbstudio_core::Error {
-    connect_cfg(cfg).await.err().expect("the connection must fail")
+    connect_cfg(cfg)
+        .await
+        .err()
+        .expect("the connection must fail")
 }
 
 /// A session on `port`, or `None` (test skipped) when integration tests are off or the server is
@@ -122,7 +125,10 @@ pub struct TempDb {
 
 impl TempDb {
     pub async fn create(s: &dyn Session, port: u16, tag: &str) -> TempDb {
-        let name = format!("dbstudio_it_{tag}_{}", &Uuid::new_v4().simple().to_string()[..8]);
+        let name = format!(
+            "dbstudio_it_{tag}_{}",
+            &Uuid::new_v4().simple().to_string()[..8]
+        );
         run(s, &format!("CREATE DATABASE `{name}`")).await;
         TempDb { name, port }
     }

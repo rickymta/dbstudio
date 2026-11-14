@@ -206,7 +206,10 @@ fn key_condition(info: &Info, rs: &RowChangeSet, index: usize, key: &[Value]) ->
             let col = quote_ident(c);
             Ok(match v {
                 Value::Null => format!("isNull({col})"),
-                v => format!("{col} = {}", edit_literal(info, index, c, &EditValue::Value(v.clone()))?),
+                v => format!(
+                    "{col} = {}",
+                    edit_literal(info, index, c, &EditValue::Value(v.clone()))?
+                ),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -242,7 +245,10 @@ fn render_one(
                 .collect::<Result<Vec<_>>>()?;
             Ok(Step {
                 index,
-                sql: format!("ALTER TABLE {table} UPDATE {} WHERE {cond}", assigns.join(", ")),
+                sql: format!(
+                    "ALTER TABLE {table} UPDATE {} WHERE {cond}",
+                    assigns.join(", ")
+                ),
                 guard: Some(format!("SELECT count() FROM {table} WHERE {cond}")),
                 fallback: None,
             })
@@ -308,7 +314,8 @@ fn validate(info: &Info, rs: &RowChangeSet) -> Result<()> {
     if !ed.editable {
         return Err(Error::Unsupported(format!(
             "table is not editable ({})",
-            ed.reason.map_or("unknown".to_string(), |r| format!("{r:?}"))
+            ed.reason
+                .map_or("unknown".to_string(), |r| format!("{r:?}"))
         )));
     }
     let keyed = rs
@@ -338,7 +345,9 @@ fn validate(info: &Info, rs: &RowChangeSet) -> Result<()> {
                     if info.key_like.contains(column) {
                         return Err(bad(
                             i,
-                            format!("column {column} is part of the sorting or partition key and cannot be updated"),
+                            format!(
+                                "column {column} is part of the sorting or partition key and cannot be updated"
+                            ),
                         ));
                     }
                 }
@@ -347,7 +356,10 @@ fn validate(info: &Info, rs: &RowChangeSet) -> Result<()> {
                 for c in values {
                     if info.generated.contains(&c.column) && !matches!(c.value, EditValue::Default)
                     {
-                        return Err(bad(i, format!("column {} is generated (read-only)", c.column)));
+                        return Err(bad(
+                            i,
+                            format!("column {} is generated (read-only)", c.column),
+                        ));
                     }
                 }
             }
@@ -370,7 +382,9 @@ pub(crate) async fn preview(core: &Core, changes: &ChangeSet) -> Result<Vec<Stri
 /// Statement-level failure of the lightweight `DELETE` that justifies the `ALTER` fallback.
 fn lightweight_refused(e: &Error) -> bool {
     let m = e.message();
-    m.contains("Code: 48.") || m.contains("Code: 344.") || m.to_ascii_lowercase().contains("lightweight")
+    m.contains("Code: 48.")
+        || m.contains("Code: 344.")
+        || m.to_ascii_lowercase().contains("lightweight")
 }
 
 pub(crate) async fn apply(core: &Core, changes: ChangeSet) -> Result<ApplyResult> {
@@ -544,11 +558,17 @@ mod tests {
             key: vec![Value::Int(1)],
             set: vec![cell("id", EditValue::Value(Value::Int(9)))],
         }]);
-        assert!(matches!(validate(&info, &rs), Err(Error::ChangeFailed { .. })));
+        assert!(matches!(
+            validate(&info, &rs),
+            Err(Error::ChangeFailed { .. })
+        ));
         let rs = set(vec![RowChange::Insert {
             values: vec![cell("g", EditValue::Text("x".into()))],
         }]);
-        assert!(matches!(validate(&info, &rs), Err(Error::ChangeFailed { .. })));
+        assert!(matches!(
+            validate(&info, &rs),
+            Err(Error::ChangeFailed { .. })
+        ));
         // Inserting the key is fine.
         let rs = set(vec![RowChange::Insert {
             values: vec![cell("id", EditValue::Value(Value::Int(9)))],

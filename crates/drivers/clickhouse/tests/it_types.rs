@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use dbstudio_core::{
-    BulkInsertRequest, EditValue, Lease, LeaseOptions, ObjectKind, ObjectPath, OnConflict,
+    BulkInsertRequest, EditValue, LeaseOptions, ObjectKind, ObjectPath, OnConflict,
     TableStreamRequest, Value, ValueKind,
 };
 
@@ -19,7 +19,13 @@ struct Col {
     read_only: bool,
 }
 
-fn col(name: &'static str, ddl: &'static str, insert: &'static str, expect: Value, kind: ValueKind) -> Col {
+fn col(
+    name: &'static str,
+    ddl: &'static str,
+    insert: &'static str,
+    expect: Value,
+    kind: ValueKind,
+) -> Col {
     Col {
         name,
         ddl,
@@ -40,7 +46,13 @@ fn columns() -> Vec<Col> {
         col("i8", "Int8", "-8", Value::Int(-8), K::Int),
         col("i16", "Int16", "-16", Value::Int(-16), K::Int),
         col("i32", "Int32", "-32", Value::Int(-32), K::Int),
-        col("i64", "Int64", "-9223372036854775808", Value::Int(i64::MIN), K::Int),
+        col(
+            "i64",
+            "Int64",
+            "-9223372036854775808",
+            Value::Int(i64::MIN),
+            K::Int,
+        ),
         col(
             "i128",
             "Int128",
@@ -52,13 +64,28 @@ fn columns() -> Vec<Col> {
             "i256",
             "Int256",
             "toInt256('-57896044618658097711785492504343953926634992332820282019728792003956564819968')",
-            Value::Decimal("-57896044618658097711785492504343953926634992332820282019728792003956564819968".into()),
+            Value::Decimal(
+                "-57896044618658097711785492504343953926634992332820282019728792003956564819968"
+                    .into(),
+            ),
             K::Decimal,
         ),
         col("u8", "UInt8", "255", Value::Int(255), K::Int),
         col("u16", "UInt16", "65535", Value::Int(65535), K::Int),
-        col("u32", "UInt32", "4294967295", Value::Int(4294967295), K::Int),
-        col("u64", "UInt64", "18446744073709551615", Value::UInt(u64::MAX), K::UInt),
+        col(
+            "u32",
+            "UInt32",
+            "4294967295",
+            Value::Int(4294967295),
+            K::Int,
+        ),
+        col(
+            "u64",
+            "UInt64",
+            "18446744073709551615",
+            Value::UInt(u64::MAX),
+            K::UInt,
+        ),
         col(
             "u128",
             "UInt128",
@@ -70,14 +97,29 @@ fn columns() -> Vec<Col> {
             "u256",
             "UInt256",
             "toUInt256('115792089237316195423570985008687907853269984665640564039457584007913129639935')",
-            Value::Decimal("115792089237316195423570985008687907853269984665640564039457584007913129639935".into()),
+            Value::Decimal(
+                "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+                    .into(),
+            ),
             K::Decimal,
         ),
         col("f32", "Float32", "0.1", Value::Float(0.1), K::Float),
-        col("f64", "Float64", "3.141592653589793", Value::Float(std::f64::consts::PI), K::Float),
+        col(
+            "f64",
+            "Float64",
+            "3.141592653589793",
+            Value::Float(std::f64::consts::PI),
+            K::Float,
+        ),
         col("b", "Bool", "true", Value::Bool(true), K::Bool),
         col("s", "String", "'héllo \\'q\\''", text("héllo 'q'"), K::Text),
-        col("sb", "String", "unhex('fffe00')", Value::Bytes(vec![0xff, 0xfe, 0]), K::Text),
+        col(
+            "sb",
+            "String",
+            "unhex('fffe00')",
+            Value::Bytes(vec![0xff, 0xfe, 0]),
+            K::Text,
+        ),
         col("fs", "FixedString(4)", "'ab'", text("ab"), K::Text),
         col(
             "u",
@@ -86,8 +128,20 @@ fn columns() -> Vec<Col> {
             Value::Uuid("61f0c404-5cb3-11e7-907b-a6006ad3dba0".into()),
             K::Uuid,
         ),
-        col("d", "Date", "toDate('2024-02-29')", Value::Date("2024-02-29".into()), K::Date),
-        col("d32", "Date32", "toDate32('1900-01-01')", Value::Date("1900-01-01".into()), K::Date),
+        col(
+            "d",
+            "Date",
+            "toDate('2024-02-29')",
+            Value::Date("2024-02-29".into()),
+            K::Date,
+        ),
+        col(
+            "d32",
+            "Date32",
+            "toDate32('1900-01-01')",
+            Value::Date("1900-01-01".into()),
+            K::Date,
+        ),
         col(
             "dt",
             "DateTime('UTC')",
@@ -102,8 +156,20 @@ fn columns() -> Vec<Col> {
             Value::Timestamp("2024-02-29T11:34:56.789Z".into()),
             K::Timestamp,
         ),
-        col("dec32", "Decimal(9, 2)", "toDecimal32('1234567.89', 2)", Value::Decimal("1234567.89".into()), K::Decimal),
-        col("dec64", "Decimal(18, 4)", "toDecimal64('-0.5', 4)", Value::Decimal("-0.5000".into()), K::Decimal),
+        col(
+            "dec32",
+            "Decimal(9, 2)",
+            "toDecimal32('1234567.89', 2)",
+            Value::Decimal("1234567.89".into()),
+            K::Decimal,
+        ),
+        col(
+            "dec64",
+            "Decimal(18, 4)",
+            "toDecimal64('-0.5', 4)",
+            Value::Decimal("-0.5000".into()),
+            K::Decimal,
+        ),
         col(
             "dec128",
             "Decimal(38, 10)",
@@ -119,12 +185,42 @@ fn columns() -> Vec<Col> {
             K::Decimal,
         ),
         col("e8", "Enum8('a' = 1, 'b' = 2)", "'b'", text("b"), K::Text),
-        col("e16", "Enum16('x' = 1000, 'y' = 2000)", "'y'", text("y"), K::Text),
-        col("ip4", "IPv4", "toIPv4('192.168.0.1')", text("192.168.0.1"), K::Text),
-        col("ip6", "IPv6", "toIPv6('2001:db8::1')", text("2001:db8::1"), K::Text),
+        col(
+            "e16",
+            "Enum16('x' = 1000, 'y' = 2000)",
+            "'y'",
+            text("y"),
+            K::Text,
+        ),
+        col(
+            "ip4",
+            "IPv4",
+            "toIPv4('192.168.0.1')",
+            text("192.168.0.1"),
+            K::Text,
+        ),
+        col(
+            "ip6",
+            "IPv6",
+            "toIPv6('2001:db8::1')",
+            text("2001:db8::1"),
+            K::Text,
+        ),
         col("ns", "Nullable(String)", "NULL", Value::Null, K::Text),
-        col("lc", "LowCardinality(String)", "'low'", text("low"), K::Text),
-        col("lcn", "LowCardinality(Nullable(String))", "NULL", Value::Null, K::Text),
+        col(
+            "lc",
+            "LowCardinality(String)",
+            "'low'",
+            text("low"),
+            K::Text,
+        ),
+        col(
+            "lcn",
+            "LowCardinality(Nullable(String))",
+            "NULL",
+            Value::Null,
+            K::Text,
+        ),
         col(
             "arr",
             "Array(Nullable(Int32))",
@@ -189,7 +285,13 @@ fn columns() -> Vec<Col> {
             K::Array,
         ),
     ];
-    let mut json = col("j", "JSON", "'{\"a\":1}'", Value::Json("{\"a\":1}".into()), K::Json);
+    let mut json = col(
+        "j",
+        "JSON",
+        "'{\"a\":1}'",
+        Value::Json("{\"a\":1}".into()),
+        K::Json,
+    );
     json.read_only = false;
     v.push(json);
     let mut variant = col(
@@ -201,7 +303,13 @@ fn columns() -> Vec<Col> {
     );
     variant.read_only = true;
     v.push(variant);
-    let mut dynamic = col("dy", "Dynamic", "CAST('txt' AS Dynamic)", text("txt"), K::Text);
+    let mut dynamic = col(
+        "dy",
+        "Dynamic",
+        "CAST('txt' AS Dynamic)",
+        text("txt"),
+        K::Text,
+    );
     dynamic.read_only = true;
     v.push(dynamic);
     v
@@ -212,7 +320,10 @@ async fn every_type_reads_back_exactly() {
     let Some(s) = session().await else { return };
     let db = TempDb::create(s.as_ref(), http_port(), "types").await;
     let cols = columns();
-    let ddl: Vec<String> = cols.iter().map(|c| format!("`{}` {}", c.name, c.ddl)).collect();
+    let ddl: Vec<String> = cols
+        .iter()
+        .map(|c| format!("`{}` {}", c.name, c.ddl))
+        .collect();
     run(
         s.as_ref(),
         &format!(
@@ -228,9 +339,17 @@ async fn every_type_reads_back_exactly() {
         &format!("INSERT INTO {} SELECT 1, {}", db.t("t"), exprs.join(", ")),
     )
     .await;
-    run(s.as_ref(), &format!("INSERT INTO {} (id) VALUES (2)", db.t("t"))).await;
+    run(
+        s.as_ref(),
+        &format!("INSERT INTO {} (id) VALUES (2)", db.t("t")),
+    )
+    .await;
 
-    let r = run(s.as_ref(), &format!("SELECT * FROM {} ORDER BY id", db.t("t"))).await;
+    let r = run(
+        s.as_ref(),
+        &format!("SELECT * FROM {} ORDER BY id", db.t("t")),
+    )
+    .await;
     let rs = rows_of(&r[0]);
     assert_eq!(rs.rows.len(), 2);
     for c in &cols {
@@ -264,7 +383,10 @@ async fn export_then_import_round_trips_through_rowbinary() {
     let Some(s) = session().await else { return };
     let db = TempDb::create(s.as_ref(), http_port(), "copy").await;
     let cols: Vec<Col> = columns().into_iter().filter(|c| !c.read_only).collect();
-    let ddl: Vec<String> = cols.iter().map(|c| format!("`{}` {}", c.name, c.ddl)).collect();
+    let ddl: Vec<String> = cols
+        .iter()
+        .map(|c| format!("`{}` {}", c.name, c.ddl))
+        .collect();
     for t in ["src", "dst"] {
         run(
             s.as_ref(),
@@ -282,7 +404,11 @@ async fn export_then_import_round_trips_through_rowbinary() {
         &format!("INSERT INTO {} SELECT 1, {}", db.t("src"), exprs.join(", ")),
     )
     .await;
-    run(s.as_ref(), &format!("INSERT INTO {} (id) VALUES (2)", db.t("src"))).await;
+    run(
+        s.as_ref(),
+        &format!("INSERT INTO {} (id) VALUES (2)", db.t("src")),
+    )
+    .await;
 
     let table = |name: &str| {
         ObjectPath::root()
@@ -327,8 +453,16 @@ async fn export_then_import_round_trips_through_rowbinary() {
     assert_eq!(n.inserted, 2);
     lease.close().await.unwrap();
 
-    let a = query(s.as_ref(), &format!("SELECT * FROM {} ORDER BY id", db.t("src"))).await;
-    let b = query(s.as_ref(), &format!("SELECT * FROM {} ORDER BY id", db.t("dst"))).await;
+    let a = query(
+        s.as_ref(),
+        &format!("SELECT * FROM {} ORDER BY id", db.t("src")),
+    )
+    .await;
+    let b = query(
+        s.as_ref(),
+        &format!("SELECT * FROM {} ORDER BY id", db.t("dst")),
+    )
+    .await;
     assert_eq!(a.len(), b.len());
     for (ra, rb) in a.iter().zip(&b) {
         for (i, (x, y)) in ra.iter().zip(rb).enumerate() {
@@ -388,22 +522,39 @@ async fn bulk_insert_defaults_and_errors() {
         ))
         .await
         .unwrap();
-    let rows = query(s.as_ref(), &format!("SELECT id, n, m FROM {} ORDER BY id", db.t("t"))).await;
+    let rows = query(
+        s.as_ref(),
+        &format!("SELECT id, n, m FROM {} ORDER BY id", db.t("t")),
+    )
+    .await;
     assert_eq!(rows[0], vec![Value::Int(1), text("dflt"), Value::UInt(2)]);
     assert_eq!(rows[1], vec![Value::Int(2), text("given"), Value::UInt(4)]);
     // Unsupported conflict handling, unknown and generated columns, bad values.
     for (cols, rows, mode) in [
-        (vec!["id"], vec![vec![EditValue::Text("3".into())]], OnConflict::Skip),
-        (vec!["nope"], vec![vec![EditValue::Text("3".into())]], OnConflict::Error),
-        (vec!["m"], vec![vec![EditValue::Text("3".into())]], OnConflict::Error),
-        (vec!["id"], vec![vec![EditValue::Text("abc".into())]], OnConflict::Error),
+        (
+            vec!["id"],
+            vec![vec![EditValue::Text("3".into())]],
+            OnConflict::Skip,
+        ),
+        (
+            vec!["nope"],
+            vec![vec![EditValue::Text("3".into())]],
+            OnConflict::Error,
+        ),
+        (
+            vec!["m"],
+            vec![vec![EditValue::Text("3".into())]],
+            OnConflict::Error,
+        ),
+        (
+            vec!["id"],
+            vec![vec![EditValue::Text("abc".into())]],
+            OnConflict::Error,
+        ),
         (vec!["id"], vec![vec![]], OnConflict::Error),
     ] {
         let err = lease.bulk_insert(req(&cols, rows, mode)).await.unwrap_err();
-        assert!(
-            matches!(err.kind(), "unsupported" | "invalid"),
-            "{err:?}"
-        );
+        assert!(matches!(err.kind(), "unsupported" | "invalid"), "{err:?}");
     }
     lease.close().await.unwrap();
 }

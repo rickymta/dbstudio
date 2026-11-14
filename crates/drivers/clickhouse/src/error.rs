@@ -104,9 +104,15 @@ pub(crate) fn map_client_error(e: clickhouse::error::Error) -> Error {
 
 fn looks_like_tls(msg: &str) -> bool {
     let m = msg.to_ascii_lowercase();
-    ["certificate", "handshake", "unknownissuer", "notvalidforname", "tls"]
-        .iter()
-        .any(|k| m.contains(k))
+    [
+        "certificate",
+        "handshake",
+        "unknownissuer",
+        "notvalidforname",
+        "tls",
+    ]
+    .iter()
+    .any(|k| m.contains(k))
 }
 
 #[cfg(test)]
@@ -116,12 +122,23 @@ mod tests {
     #[test]
     fn classifies_codes() {
         assert!(matches!(
-            from_server_text("Code: 516. DB::Exception: dbstudio: Authentication failed (AUTHENTICATION_FAILED)"),
+            from_server_text(
+                "Code: 516. DB::Exception: dbstudio: Authentication failed (AUTHENTICATION_FAILED)"
+            ),
             Error::Authentication(_)
         ));
-        assert!(matches!(from_server_text("Code: 497. DB::Exception: no grant"), Error::Permission(_)));
-        assert!(matches!(from_server_text("Code: 159. DB::Exception: Timeout exceeded"), Error::Timeout));
-        assert!(matches!(from_server_text("Code: 394. DB::Exception: cancelled"), Error::Cancelled));
+        assert!(matches!(
+            from_server_text("Code: 497. DB::Exception: no grant"),
+            Error::Permission(_)
+        ));
+        assert!(matches!(
+            from_server_text("Code: 159. DB::Exception: Timeout exceeded"),
+            Error::Timeout
+        ));
+        assert!(matches!(
+            from_server_text("Code: 394. DB::Exception: cancelled"),
+            Error::Cancelled
+        ));
         assert!(matches!(
             from_server_text("Code: 164. DB::Exception: Cannot execute query in readonly mode"),
             Error::ReadOnlyViolation { .. }

@@ -23,15 +23,25 @@ async fn fixture(s: &dyn dbstudio_core::Session, db: &TempDb) {
              ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (id, ts) COMMENT 'events table'",
             db.t("events")
         ),
-        format!("CREATE TABLE {} (day Date, n UInt64) ENGINE = SummingMergeTree ORDER BY day", db.t("daily")),
+        format!(
+            "CREATE TABLE {} (day Date, n UInt64) ENGINE = SummingMergeTree ORDER BY day",
+            db.t("daily")
+        ),
         format!(
             "CREATE MATERIALIZED VIEW {} TO {} AS SELECT toDate(ts) AS day, count() AS n FROM {} GROUP BY day",
             db.t("mv_daily"),
             db.t("daily"),
             db.t("events")
         ),
-        format!("CREATE VIEW {} AS SELECT id, kind FROM {}", db.t("v_events"), db.t("events")),
-        format!("CREATE TABLE {} (k UInt64, v String) ENGINE = MergeTree ORDER BY k", db.t("dict_src")),
+        format!(
+            "CREATE VIEW {} AS SELECT id, kind FROM {}",
+            db.t("v_events"),
+            db.t("events")
+        ),
+        format!(
+            "CREATE TABLE {} (k UInt64, v String) ENGINE = MergeTree ORDER BY k",
+            db.t("dict_src")
+        ),
         format!(
             "CREATE DICTIONARY {} (k UInt64, v String) PRIMARY KEY k \
              SOURCE(CLICKHOUSE(TABLE 'dict_src' DB '{}' USER 'dbstudio' PASSWORD 'dbstudio_test')) \
@@ -60,22 +70,40 @@ async fn tree_lists_databases_folders_objects_and_columns() {
     let root = s.list_children(&ObjectPath::root()).await.unwrap();
     let dbs = names(&root);
     assert!(dbs.contains(&db.name));
-    assert!(!dbs.iter().any(|d| d == "system" || d == "INFORMATION_SCHEMA" || d == "information_schema"));
+    assert!(
+        !dbs.iter()
+            .any(|d| d == "system" || d == "INFORMATION_SCHEMA" || d == "information_schema")
+    );
     assert!(root.iter().all(|n| n.kind == ObjectKind::Database));
 
     let folders = s.list_children(&db_path(&db.name)).await.unwrap();
     assert_eq!(
         names(&folders),
-        vec![folder::TABLES, folder::VIEWS, folder::MATERIALIZED_VIEWS, folder::DICTIONARIES]
+        vec![
+            folder::TABLES,
+            folder::VIEWS,
+            folder::MATERIALIZED_VIEWS,
+            folder::DICTIONARIES
+        ]
     );
     // Counts: tables events, daily, dict_src (the MV inner table is hidden; this MV has TO).
     assert_eq!(folders[0].detail.as_deref(), Some("3"));
 
-    let tables = s.list_children(&db_path(&db.name).child(ObjectKind::Folder, folder::TABLES)).await.unwrap();
+    let tables = s
+        .list_children(&db_path(&db.name).child(ObjectKind::Folder, folder::TABLES))
+        .await
+        .unwrap();
     assert_eq!(names(&tables), vec!["daily", "dict_src", "events"]);
     assert_eq!(tables[2].detail.as_deref(), Some("MergeTree"));
-    assert!(tables.iter().all(|n| n.kind == ObjectKind::Table && n.has_children));
-    let views = s.list_children(&db_path(&db.name).child(ObjectKind::Folder, folder::VIEWS)).await.unwrap();
+    assert!(
+        tables
+            .iter()
+            .all(|n| n.kind == ObjectKind::Table && n.has_children)
+    );
+    let views = s
+        .list_children(&db_path(&db.name).child(ObjectKind::Folder, folder::VIEWS))
+        .await
+        .unwrap();
     assert_eq!(names(&views), vec!["v_events"]);
     assert_eq!(views[0].kind, ObjectKind::View);
     let mvs = s
@@ -94,10 +122,16 @@ async fn tree_lists_databases_folders_objects_and_columns() {
     let tf = s.list_children(&events).await.unwrap();
     assert_eq!(names(&tf), vec![folder::COLUMNS, folder::INDEXES]);
     assert_eq!(tf[1].detail.as_deref(), Some("1"));
-    let cols = s.list_children(&events.child(ObjectKind::Folder, folder::COLUMNS)).await.unwrap();
+    let cols = s
+        .list_children(&events.child(ObjectKind::Folder, folder::COLUMNS))
+        .await
+        .unwrap();
     assert_eq!(names(&cols), vec!["id", "ts", "kind", "n", "g"]);
     assert_eq!(cols[3].detail.as_deref(), Some("Nullable(Int32)"));
-    let idx = s.list_children(&events.child(ObjectKind::Folder, folder::INDEXES)).await.unwrap();
+    let idx = s
+        .list_children(&events.child(ObjectKind::Folder, folder::INDEXES))
+        .await
+        .unwrap();
     assert_eq!(names(&idx), vec!["idx_kind"]);
     assert_eq!(idx[0].kind, ObjectKind::Index);
     // A view only has columns.
@@ -121,7 +155,8 @@ async fn tree_lists_databases_folders_objects_and_columns() {
         Err(Error::NotFound(_))
     ));
     assert!(matches!(
-        s.list_children(&db_path(&db.name).child(ObjectKind::Table, "nope")).await,
+        s.list_children(&db_path(&db.name).child(ObjectKind::Table, "nope"))
+            .await,
         Err(Error::NotFound(_))
     ));
 }
@@ -142,7 +177,14 @@ async fn details_ddl_and_search() {
     assert_eq!(kind.comment.as_deref(), Some("the kind"));
     assert!(d.columns.iter().find(|c| c.name == "n").unwrap().nullable);
     let g = d.columns.iter().find(|c| c.name == "g").unwrap();
-    assert!(g.extra.as_deref().unwrap().starts_with("MATERIALIZED id * 2"), "{:?}", g.extra);
+    assert!(
+        g.extra
+            .as_deref()
+            .unwrap()
+            .starts_with("MATERIALIZED id * 2"),
+        "{:?}",
+        g.extra
+    );
     let id = d.columns.iter().find(|c| c.name == "id").unwrap();
     assert!(id.extra.as_deref().unwrap().contains("sorting key"));
     assert_eq!(d.estimated_rows, Some(2));
@@ -158,7 +200,8 @@ async fn details_ddl_and_search() {
     assert_eq!(v.kind, ObjectKind::View);
     assert_eq!(v.columns.len(), 2);
     assert!(matches!(
-        s.table_details(&db_path(&db.name).child(ObjectKind::Table, "nope")).await,
+        s.table_details(&db_path(&db.name).child(ObjectKind::Table, "nope"))
+            .await,
         Err(Error::NotFound(_))
     ));
 
@@ -166,11 +209,22 @@ async fn details_ddl_and_search() {
     let ddl = s.object_ddl(&events).await.unwrap();
     assert!(ddl.starts_with("CREATE TABLE"), "{ddl}");
     assert!(ddl.contains("MergeTree"));
-    assert!(s.object_ddl(&db_path(&db.name)).await.unwrap().starts_with("CREATE DATABASE"));
+    assert!(
+        s.object_ddl(&db_path(&db.name))
+            .await
+            .unwrap()
+            .starts_with("CREATE DATABASE")
+    );
     let dict = db_path(&db.name).child(ObjectKind::Dictionary, "dict");
-    assert!(s.object_ddl(&dict).await.unwrap().starts_with("CREATE DICTIONARY"));
+    assert!(
+        s.object_ddl(&dict)
+            .await
+            .unwrap()
+            .starts_with("CREATE DICTIONARY")
+    );
     assert!(matches!(
-        s.object_ddl(&events.child(ObjectKind::Folder, folder::COLUMNS)).await,
+        s.object_ddl(&events.child(ObjectKind::Folder, folder::COLUMNS))
+            .await,
         Err(Error::Unsupported(_))
     ));
 
@@ -189,8 +243,14 @@ async fn details_ddl_and_search() {
         .filter(|n| n.detail.as_deref() == Some(db.name.as_str()))
         .map(|n| format!("{:?}:{}", n.kind, n.name))
         .collect();
-    assert!(hit_names.contains(&"Table:events".to_string()), "{hit_names:?}");
-    assert!(hit_names.contains(&"View:v_events".to_string()), "{hit_names:?}");
+    assert!(
+        hit_names.contains(&"Table:events".to_string()),
+        "{hit_names:?}"
+    );
+    assert!(
+        hit_names.contains(&"View:v_events".to_string()),
+        "{hit_names:?}"
+    );
     let cols = s
         .search_objects(ObjectSearchRequest {
             query: "kind".into(),
@@ -200,8 +260,14 @@ async fn details_ddl_and_search() {
         })
         .await
         .unwrap();
-    assert!(cols.iter().any(|n| n.kind == ObjectKind::Column && n.name == "kind"));
-    assert!(cols.iter().all(|n| n.path.segments.last().unwrap().kind == ObjectKind::Column));
+    assert!(
+        cols.iter()
+            .any(|n| n.kind == ObjectKind::Column && n.name == "kind")
+    );
+    assert!(
+        cols.iter()
+            .all(|n| n.path.segments.last().unwrap().kind == ObjectKind::Column)
+    );
     assert!(
         s.search_objects(ObjectSearchRequest {
             query: "%".into(),
@@ -303,7 +369,14 @@ async fn generated_ddl_runs_again_and_rebuilds_the_database() {
         1
     );
     // The recreated materialized view still feeds its target table.
-    run(s.as_ref(), &format!("INSERT INTO {} VALUES (9, '2024-05-05 00:00:00', 'z', 1)", db.t("events"))).await;
+    run(
+        s.as_ref(),
+        &format!(
+            "INSERT INTO {} VALUES (9, '2024-05-05 00:00:00', 'z', 1)",
+            db.t("events")
+        ),
+    )
+    .await;
     assert_eq!(
         scalar(s.as_ref(), &format!("SELECT sum(n) FROM {}", db.t("daily"))).await,
         Value::UInt(1)
@@ -322,17 +395,22 @@ async fn generated_ddl_runs_again_and_rebuilds_the_database() {
         .await
         .unwrap();
     assert_eq!(one.len(), 1);
-    assert!(one[0].sql.starts_with("DROP TABLE IF EXISTS"), "{}", one[0].sql);
+    assert!(
+        one[0].sql.starts_with("DROP TABLE IF EXISTS"),
+        "{}",
+        one[0].sql
+    );
     assert!(one[0].sql.contains("CREATE TABLE events"), "{}", one[0].sql);
     // No scope and no objects is refused.
-    assert!(s
-        .generate_ddl(DdlRequest {
+    assert!(
+        s.generate_ddl(DdlRequest {
             scope: ObjectPath::root(),
             objects: vec![],
             options: Default::default(),
         })
         .await
-        .is_err());
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -347,7 +425,14 @@ async fn explain_returns_a_parseable_plan_with_estimate_and_pipeline() {
         ),
     )
     .await;
-    run(s.as_ref(), &format!("INSERT INTO {} SELECT number, number % 10 FROM numbers(200000)", db.t("t"))).await;
+    run(
+        s.as_ref(),
+        &format!(
+            "INSERT INTO {} SELECT number, number % 10 FROM numbers(200000)",
+            db.t("t")
+        ),
+    )
+    .await;
     let req = |text: &str| ExplainRequest {
         query_id: Uuid::new_v4(),
         text: text.into(),
@@ -357,7 +442,10 @@ async fn explain_returns_a_parseable_plan_with_estimate_and_pipeline() {
         timeout_ms: None,
     };
     let raw = s
-        .explain(req(&format!("SELECT count() FROM {} WHERE id = 5;", db.t("t"))))
+        .explain(req(&format!(
+            "SELECT count() FROM {} WHERE id = 5;",
+            db.t("t")
+        )))
         .await
         .unwrap();
     assert_eq!(raw.format, PlanFormat::ClickHouseJson);
@@ -368,7 +456,8 @@ async fn explain_returns_a_parseable_plan_with_estimate_and_pipeline() {
     assert_eq!(est[0]["table"], "t");
     assert!(est[0]["rows"].as_u64().unwrap() > 0);
     assert!(raw.extra["pipeline"].contains("MergeTree"));
-    let tree = dbstudio_plan::parse_and_analyze(&raw, &dbstudio_plan::PlanRules::default()).unwrap();
+    let tree =
+        dbstudio_plan::parse_and_analyze(&raw, &dbstudio_plan::PlanRules::default()).unwrap();
     let read = {
         fn find(n: &dbstudio_plan::PlanNode) -> Option<&dbstudio_plan::PlanNode> {
             if n.op == "ReadFromMergeTree" {
@@ -381,7 +470,10 @@ async fn explain_returns_a_parseable_plan_with_estimate_and_pipeline() {
     assert_eq!(read.kind, dbstudio_plan::PlanNodeKind::IndexScan);
     // A scan without a usable key has no narrowing.
     let raw = s
-        .explain(req(&format!("SELECT count() FROM {} WHERE g = 3", db.t("t"))))
+        .explain(req(&format!(
+            "SELECT count() FROM {} WHERE g = 3",
+            db.t("t")
+        )))
         .await
         .unwrap();
     let tree = dbstudio_plan::parse(&raw).unwrap();
@@ -402,7 +494,9 @@ async fn explain_returns_a_parseable_plan_with_estimate_and_pipeline() {
 #[tokio::test]
 async fn fetch_and_count_use_filters_sorting_and_the_sorting_key() {
     let Some(s) = session().await else { return };
-    use dbstudio_core::{ColumnFilter, CollectingSink, FilterOp, SortKey, TableCountRequest, TableDataRequest};
+    use dbstudio_core::{
+        CollectingSink, ColumnFilter, FilterOp, SortKey, TableCountRequest, TableDataRequest,
+    };
     let db = TempDb::create(s.as_ref(), http_port(), "grid").await;
     run(
         s.as_ref(),
@@ -421,31 +515,36 @@ async fn fetch_and_count_use_filters_sorting_and_the_sorting_key() {
     )
     .await;
     let table = db_path(&db.name).child(ObjectKind::Table, "t");
-    let fetch = |filters: Vec<ColumnFilter>, raw: Option<&str>, sort: Vec<SortKey>, offset, limit| {
-        let table = table.clone();
-        let s = s.clone();
-        let raw = raw.map(str::to_string);
-        async move {
-            let mut sink = CollectingSink::new();
-            s.fetch_table(
-                TableDataRequest {
-                    query_id: Uuid::new_v4(),
-                    table,
-                    filters,
-                    raw_where: raw,
-                    sort,
-                    offset,
-                    limit,
-                    batch_size: None,
-                },
-                &mut sink,
-            )
-            .await
-            .map(|_| sink.into_results())
-        }
-    };
+    let fetch =
+        |filters: Vec<ColumnFilter>, raw: Option<&str>, sort: Vec<SortKey>, offset, limit| {
+            let table = table.clone();
+            let s = s.clone();
+            let raw = raw.map(str::to_string);
+            async move {
+                let mut sink = CollectingSink::new();
+                s.fetch_table(
+                    TableDataRequest {
+                        query_id: Uuid::new_v4(),
+                        table,
+                        filters,
+                        raw_where: raw,
+                        sort,
+                        offset,
+                        limit,
+                        batch_size: None,
+                    },
+                    &mut sink,
+                )
+                .await
+                .map(|_| sink.into_results())
+            }
+        };
     let ids = |r: &[dbstudio_core::StatementResult]| -> Vec<Value> {
-        rows_of(&r[0]).rows.iter().map(|row| row[0].clone()).collect()
+        rows_of(&r[0])
+            .rows
+            .iter()
+            .map(|row| row[0].clone())
+            .collect()
     };
     let f = |c: &str, op, v: &[&str]| ColumnFilter {
         column: c.into(),
@@ -453,20 +552,73 @@ async fn fetch_and_count_use_filters_sorting_and_the_sorting_key() {
         values: v.iter().map(|s| s.to_string()).collect(),
     };
     let r = fetch(vec![], None, vec![], 1, 2).await.unwrap();
-    assert_eq!(ids(&r), vec![Value::Int(2), Value::Int(3)], "paged in sorting key order");
-    let r = fetch(vec![], None, vec![SortKey { column: "name".into(), descending: true }], 0, 2).await.unwrap();
+    assert_eq!(
+        ids(&r),
+        vec![Value::Int(2), Value::Int(3)],
+        "paged in sorting key order"
+    );
+    let r = fetch(
+        vec![],
+        None,
+        vec![SortKey {
+            column: "name".into(),
+            descending: true,
+        }],
+        0,
+        2,
+    )
+    .await
+    .unwrap();
     assert_eq!(ids(&r), vec![Value::Int(5), Value::Int(4)]);
-    let r = fetch(vec![f("name", FilterOp::Contains, &["50%"])], None, vec![], 0, 10).await.unwrap();
+    let r = fetch(
+        vec![f("name", FilterOp::Contains, &["50%"])],
+        None,
+        vec![],
+        0,
+        10,
+    )
+    .await
+    .unwrap();
     assert_eq!(ids(&r), vec![Value::Int(3)]);
-    let r = fetch(vec![f("name", FilterOp::StartsWith, &["ALP"])], None, vec![], 0, 10).await.unwrap();
+    let r = fetch(
+        vec![f("name", FilterOp::StartsWith, &["ALP"])],
+        None,
+        vec![],
+        0,
+        10,
+    )
+    .await
+    .unwrap();
     assert_eq!(ids(&r), vec![Value::Int(1)]);
-    let r = fetch(vec![f("tag", FilterOp::IsNull, &[])], None, vec![], 0, 10).await.unwrap();
+    let r = fetch(vec![f("tag", FilterOp::IsNull, &[])], None, vec![], 0, 10)
+        .await
+        .unwrap();
     assert_eq!(ids(&r), vec![Value::Int(1), Value::Int(4)]);
-    let r = fetch(vec![f("id", FilterOp::In, &["2", "5"])], None, vec![], 0, 10).await.unwrap();
+    let r = fetch(
+        vec![f("id", FilterOp::In, &["2", "5"])],
+        None,
+        vec![],
+        0,
+        10,
+    )
+    .await
+    .unwrap();
     assert_eq!(ids(&r), vec![Value::Int(2), Value::Int(5)]);
-    let r = fetch(vec![f("id", FilterOp::Ge, &["4"])], Some("tag = 'x' -- comment"), vec![], 0, 10).await.unwrap();
+    let r = fetch(
+        vec![f("id", FilterOp::Ge, &["4"])],
+        Some("tag = 'x' -- comment"),
+        vec![],
+        0,
+        10,
+    )
+    .await
+    .unwrap();
     assert_eq!(ids(&r), vec![Value::Int(5)]);
-    assert!(fetch(vec![], Some("1 = 1; DROP TABLE t"), vec![], 0, 10).await.is_err());
+    assert!(
+        fetch(vec![], Some("1 = 1; DROP TABLE t"), vec![], 0, 10)
+            .await
+            .is_err()
+    );
     let count = |filters, raw: Option<&str>| {
         let table = table.clone();
         let s = s.clone();

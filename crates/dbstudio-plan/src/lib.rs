@@ -424,7 +424,6 @@ mod tests {
     #[test]
     fn scaffolded_formats_are_unsupported_until_their_package_lands() {
         for format in [
-            PlanFormat::ClickHouseJson,
             PlanFormat::CockroachText,
             PlanFormat::TiDbRows,
             PlanFormat::CqlTrace,

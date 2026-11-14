@@ -31,7 +31,9 @@ async fn bad_credentials_and_unknown_database() {
     if !it_enabled() || session().await.is_none() {
         return;
     }
-    let err = ClickHouseTestDriver::connect_with_password("wrong").await.unwrap_err();
+    let err = ClickHouseTestDriver::connect_with_password("wrong")
+        .await
+        .unwrap_err();
     assert!(matches!(err, Error::Authentication(_)), "{err:?}");
     let mut cfg = config(http_port());
     cfg.database = Some("no_such_db_for_it".into());
@@ -67,7 +69,9 @@ async fn statements_results_and_errors() {
     let r = run(s.as_ref(), "SELECT number FROM numbers(0)").await;
     assert!(rows_of(&r[0]).rows.is_empty());
     assert_eq!(rows_of(&r[0]).columns.len(), 1);
-    let err = execute_collect(s.as_ref(), QueryRequest::new("SELEC 1")).await.unwrap_err();
+    let err = execute_collect(s.as_ref(), QueryRequest::new("SELEC 1"))
+        .await
+        .unwrap_err();
     match err {
         Error::Query { message, .. } => assert!(message.contains("Code: 62"), "{message}"),
         other => panic!("{other:?}"),
@@ -78,9 +82,12 @@ async fn statements_results_and_errors() {
     // A trailing semicolon is fine.
     run(s.as_ref(), "SELECT 1;").await;
     // Unknown table.
-    let err = execute_collect(s.as_ref(), QueryRequest::new("SELECT * FROM no_such_table_it"))
-        .await
-        .unwrap_err();
+    let err = execute_collect(
+        s.as_ref(),
+        QueryRequest::new("SELECT * FROM no_such_table_it"),
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(err, Error::Query { .. }), "{err:?}");
 }
 
@@ -174,9 +181,7 @@ async fn huge_query_is_cancelled_within_two_seconds() {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let n = scalar(
             s.as_ref(),
-            &format!(
-                "SELECT count() FROM system.processes WHERE query_id = '{id}'"
-            ),
+            &format!("SELECT count() FROM system.processes WHERE query_id = '{id}'"),
         )
         .await;
         assert_eq!(n, Value::UInt(0), "query still running on the server");
@@ -191,7 +196,9 @@ async fn huge_query_is_cancelled_within_two_seconds() {
 #[tokio::test]
 async fn timeout_stops_a_slow_query() {
     let Some(s) = session().await else { return };
-    let mut req = QueryRequest::new("SELECT count() FROM numbers(1000000000000) WHERE sipHash64(number) % 7 = 3");
+    let mut req = QueryRequest::new(
+        "SELECT count() FROM numbers(1000000000000) WHERE sipHash64(number) % 7 = 3",
+    );
     req.timeout_ms = Some(700);
     let started = Instant::now();
     let err = execute_collect(s.as_ref(), req).await.unwrap_err();
@@ -203,7 +210,14 @@ async fn timeout_stops_a_slow_query() {
 async fn read_only_connection_is_enforced_by_the_server() {
     let Some(s) = session().await else { return };
     let db = TempDb::create(s.as_ref(), http_port(), "ro").await;
-    run(s.as_ref(), &format!("CREATE TABLE {} (id UInt8) ENGINE = MergeTree ORDER BY id", db.t("t"))).await;
+    run(
+        s.as_ref(),
+        &format!(
+            "CREATE TABLE {} (id UInt8) ENGINE = MergeTree ORDER BY id",
+            db.t("t")
+        ),
+    )
+    .await;
     let mut cfg = config(http_port());
     cfg.read_only = true;
     let ro = connect_cfg(&cfg).await.unwrap();
@@ -214,11 +228,19 @@ async fn read_only_connection_is_enforced_by_the_server() {
         format!("DROP TABLE {}", db.t("t")),
         format!("CREATE TABLE {} (x UInt8) ENGINE = Memory", db.t("u")),
     ] {
-        let err = execute_collect(ro.as_ref(), QueryRequest::new(sql.clone())).await.unwrap_err();
-        assert!(matches!(err, Error::ReadOnlyViolation { .. }), "{sql}: {err:?}");
+        let err = execute_collect(ro.as_ref(), QueryRequest::new(sql.clone()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::ReadOnlyViolation { .. }),
+            "{sql}: {err:?}"
+        );
     }
     // Nothing was written, and the capabilities say the same.
-    assert_eq!(scalar(s.as_ref(), &format!("SELECT count() FROM {}", db.t("t"))).await, Value::UInt(0));
+    assert_eq!(
+        scalar(s.as_ref(), &format!("SELECT count() FROM {}", db.t("t"))).await,
+        Value::UInt(0)
+    );
     let ed = ro
         .editability(
             &dbstudio_core::ObjectPath::root()
@@ -228,13 +250,20 @@ async fn read_only_connection_is_enforced_by_the_server() {
         .await
         .unwrap();
     assert!(!ed.editable);
-    assert_eq!(ed.reason, Some(dbstudio_core::NotEditableReason::ReadOnlyConnection));
+    assert_eq!(
+        ed.reason,
+        Some(dbstudio_core::NotEditableReason::ReadOnlyConnection)
+    );
 }
 
 #[tokio::test]
 async fn read_only_user_profile_works_with_read_only_flag() {
     let Some(s) = session().await else { return };
-    run(s.as_ref(), "CREATE USER IF NOT EXISTS dbstudio_it_ro IDENTIFIED BY 'ro_pw' SETTINGS readonly = 1").await;
+    run(
+        s.as_ref(),
+        "CREATE USER IF NOT EXISTS dbstudio_it_ro IDENTIFIED BY 'ro_pw' SETTINGS readonly = 1",
+    )
+    .await;
     run(s.as_ref(), "GRANT SELECT ON *.* TO dbstudio_it_ro").await;
     let mut cfg = config(http_port());
     cfg.username = Some("dbstudio_it_ro".into());
@@ -244,10 +273,16 @@ async fn read_only_user_profile_works_with_read_only_flag() {
     let ro = ro.connect(&cfg, Some(&Secret::new("ro_pw"))).await.unwrap();
     let r = run(ro.as_ref(), "SELECT 1").await;
     assert_eq!(rows_of(&r[0]).rows[0][0], Value::Int(1));
-    let err = execute_collect(ro.as_ref(), QueryRequest::new("CREATE DATABASE dbstudio_it_ro_x"))
-        .await
-        .unwrap_err();
-    assert!(matches!(err, Error::ReadOnlyViolation { .. } | Error::Permission(_)), "{err:?}");
+    let err = execute_collect(
+        ro.as_ref(),
+        QueryRequest::new("CREATE DATABASE dbstudio_it_ro_x"),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::ReadOnlyViolation { .. } | Error::Permission(_)),
+        "{err:?}"
+    );
     run(s.as_ref(), "DROP USER IF EXISTS dbstudio_it_ro").await;
 }
 
@@ -266,7 +301,10 @@ async fn aggregate_state_columns_fall_back_to_json() {
     assert_eq!(rs.rows[2][0], Value::UInt(2));
     assert!(matches!(rs.rows[2][1], Value::Text(_)));
     assert_eq!(rs.rows[2][2], Value::Decimal("2.00".into()));
-    assert_eq!(rs.rows[2][3], Value::Array(vec![Value::UInt(2), Value::UInt(3)]));
+    assert_eq!(
+        rs.rows[2][3],
+        Value::Array(vec![Value::UInt(2), Value::UInt(3)])
+    );
     assert_eq!(rs.rows[2][4], Value::UInt(u64::MAX));
 }
 
@@ -289,25 +327,42 @@ async fn multiple_statements_depend_on_the_splitter() {
 async fn lease_keeps_session_state_and_database() {
     let Some(s) = session().await else { return };
     let db = TempDb::create(s.as_ref(), http_port(), "lease").await;
-    run(s.as_ref(), &format!("CREATE TABLE {} (id UInt8) ENGINE = Memory", db.t("t"))).await;
+    run(
+        s.as_ref(),
+        &format!("CREATE TABLE {} (id UInt8) ENGINE = Memory", db.t("t")),
+    )
+    .await;
     let lease = s.open_lease(LeaseOptions::default()).await.unwrap();
     let go = |sql: String| {
         let lease = &lease;
         async move {
             let mut sink = CollectingSink::new();
-            lease.execute(QueryRequest::new(sql), &mut sink).await.map(|_| sink.into_results())
+            lease
+                .execute(QueryRequest::new(sql), &mut sink)
+                .await
+                .map(|_| sink.into_results())
         }
     };
     // SET and temporary tables live in the HTTP session.
     go("SET max_threads = 3".into()).await.unwrap();
-    let r = go("SELECT value FROM system.settings WHERE name = 'max_threads'".into()).await.unwrap();
+    let r = go("SELECT value FROM system.settings WHERE name = 'max_threads'".into())
+        .await
+        .unwrap();
     assert_eq!(rows_of_result(&r[0])[0][0], text("3"));
-    go("CREATE TEMPORARY TABLE tmp_it (x UInt8)".into()).await.unwrap();
-    go("INSERT INTO tmp_it VALUES (5), (6)".into()).await.unwrap();
+    go("CREATE TEMPORARY TABLE tmp_it (x UInt8)".into())
+        .await
+        .unwrap();
+    go("INSERT INTO tmp_it VALUES (5), (6)".into())
+        .await
+        .unwrap();
     let r = go("SELECT sum(x) FROM tmp_it".into()).await.unwrap();
     assert_eq!(rows_of_result(&r[0])[0][0], Value::UInt(11));
     // The plain session does not see the temporary table.
-    assert!(execute_collect(s.as_ref(), QueryRequest::new("SELECT * FROM tmp_it")).await.is_err());
+    assert!(
+        execute_collect(s.as_ref(), QueryRequest::new("SELECT * FROM tmp_it"))
+            .await
+            .is_err()
+    );
     // USE switches the database for the following statements.
     go(format!("USE `{}`", db.name)).await.unwrap();
     assert_eq!(lease.state().database.as_deref(), Some(db.name.as_str()));
@@ -323,23 +378,32 @@ async fn lease_keeps_session_state_and_database() {
         .await
         .unwrap();
     assert_eq!(lease.state().database.as_deref(), Some("system"));
-    assert!(lease
-        .set_context(LeaseContext {
-            database: Some("no_such_db_it".into()),
-            schema: None,
-        })
-        .await
-        .is_err());
+    assert!(
+        lease
+            .set_context(LeaseContext {
+                database: Some("no_such_db_it".into()),
+                schema: None,
+            })
+            .await
+            .is_err()
+    );
     // No transactions.
-    assert!(matches!(lease.begin(TxOptions::default()).await, Err(Error::Unsupported(_))));
-    assert!(matches!(lease.set_auto_commit(false).await, Err(Error::Unsupported(_))));
-    assert!(s
-        .open_lease(LeaseOptions {
+    assert!(matches!(
+        lease.begin(TxOptions::default()).await,
+        Err(Error::Unsupported(_))
+    ));
+    assert!(matches!(
+        lease.set_auto_commit(false).await,
+        Err(Error::Unsupported(_))
+    ));
+    assert!(
+        s.open_lease(LeaseOptions {
             auto_commit: false,
             ..Default::default()
         })
         .await
-        .is_err());
+        .is_err()
+    );
     lease.ping().await.unwrap();
     lease.close().await.unwrap();
 }
@@ -362,7 +426,10 @@ async fn lease_pending_result_is_fetched_in_pages() {
     let mut total = 1000;
     loop {
         let mut sink = CollectingSink::new();
-        lease.fetch_more(req.query_id, 1000, None, &mut sink).await.unwrap();
+        lease
+            .fetch_more(req.query_id, 1000, None, &mut sink)
+            .await
+            .unwrap();
         let r = sink.into_results();
         let rs = rows_of(&r[0]);
         total += rs.rows.len();
@@ -386,7 +453,9 @@ async fn lease_pending_result_is_fetched_in_pages() {
 async fn lease_cancel_stops_the_running_statement() {
     let Some(s) = session().await else { return };
     let lease = std::sync::Arc::new(s.open_lease(LeaseOptions::default()).await.unwrap());
-    let req = QueryRequest::new("SELECT count() FROM numbers(1000000000000) WHERE sipHash64(number) % 11 = 1");
+    let req = QueryRequest::new(
+        "SELECT count() FROM numbers(1000000000000) WHERE sipHash64(number) % 11 = 1",
+    );
     let id = req.query_id;
     let l2 = lease.clone();
     let canceller = tokio::spawn(async move {
@@ -401,7 +470,10 @@ async fn lease_cancel_stops_the_running_statement() {
     canceller.await.unwrap().unwrap();
     // The lease is usable afterwards.
     let mut sink = CollectingSink::new();
-    lease.execute(QueryRequest::new("SELECT 1"), &mut sink).await.unwrap();
+    lease
+        .execute(QueryRequest::new("SELECT 1"), &mut sink)
+        .await
+        .unwrap();
     lease.close().await.unwrap();
 }
 
@@ -426,7 +498,9 @@ async fn tls_connections_use_https_and_verify() {
     cfg.tls.mode = TlsMode::VerifyFull;
     cfg.tls.ca_cert_path = Some(ca.clone());
     cfg.tls.server_name = Some("clickhouse26".into());
-    connect_cfg(&cfg).await.expect("verify full with server_name override");
+    connect_cfg(&cfg)
+        .await
+        .expect("verify full with server_name override");
     // A name the certificate does not list: VerifyFull fails with a TLS error, VerifyCa passes.
     cfg.tls.server_name = Some("other.example.com".into());
     let err = connect_err(&cfg).await;
@@ -437,7 +511,12 @@ async fn tls_connections_use_https_and_verify() {
     let mut cfg = config(tls_port());
     cfg.host = "localhost".into();
     cfg.tls.mode = TlsMode::VerifyFull;
-    cfg.tls.ca_cert_path = Some(certs_dir().join("other-ca.crt").to_string_lossy().to_string());
+    cfg.tls.ca_cert_path = Some(
+        certs_dir()
+            .join("other-ca.crt")
+            .to_string_lossy()
+            .to_string(),
+    );
     assert!(matches!(connect_err(&cfg).await, Error::Tls(_)));
     // Plain HTTP on the TLS port is not an HTTP server.
     let mut cfg = config(tls_port());

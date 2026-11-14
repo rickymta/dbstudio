@@ -217,7 +217,8 @@ pub(crate) fn tls_config(tls: &TlsConfig) -> Result<rustls::ClientConfig> {
                 .map_err(|e| tls_err("client certificate", cert, e))?
                 .collect::<std::result::Result<_, _>>()
                 .map_err(|e| tls_err("client certificate", cert, e))?;
-            let key = PrivateKeyDer::from_pem_file(key).map_err(|e| tls_err("client key", key, e))?;
+            let key =
+                PrivateKeyDer::from_pem_file(key).map_err(|e| tls_err("client key", key, e))?;
             builder
                 .with_client_auth_cert(certs, key)
                 .map_err(|e| Error::Tls(format!("bad client certificate: {e}")))

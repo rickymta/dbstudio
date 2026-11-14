@@ -5,9 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use dbstudio_core::{PlanFormat, RawPlan};
-use dbstudio_plan::{
-    PlanNode, PlanNodeKind, PlanRule, PlanRules, PlanTree, parse_and_analyze,
-};
+use dbstudio_plan::{PlanNode, PlanNodeKind, PlanRule, PlanRules, PlanTree, parse_and_analyze};
 
 fn load(name: &str) -> PlanTree {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -57,7 +55,10 @@ fn primary_key_narrows_the_read() {
     let read = reads(&t)[0];
     assert_eq!(read.kind, PlanNodeKind::IndexScan);
     let o = read.object.as_ref().unwrap();
-    assert_eq!((o.schema.as_deref(), o.name.as_str(), o.index.as_deref()), (Some("plan_fx"), "events", Some("PRIMARY KEY")));
+    assert_eq!(
+        (o.schema.as_deref(), o.name.as_str(), o.index.as_deref()),
+        (Some("plan_fx"), "events", Some("PRIMARY KEY"))
+    );
     assert_eq!(read.extra["granules_initial"], "247");
     assert_eq!(read.extra["granules_selected"], "10");
     assert!(read.condition.as_deref().unwrap().contains("PRIMARY KEY"));
@@ -78,7 +79,11 @@ fn unselective_filter_is_a_full_scan_with_a_warning() {
 fn skipping_index_stage_is_reported() {
     let t = load("03_skip_index.json");
     let read = reads(&t)[0];
-    assert!(read.extra.keys().any(|k| k.starts_with("index ")), "{:?}", read.extra);
+    assert!(
+        read.extra.keys().any(|k| k.starts_with("index ")),
+        "{:?}",
+        read.extra
+    );
     assert!(read.condition.is_none() || read.kind != PlanNodeKind::Other);
 }
 
@@ -86,14 +91,20 @@ fn skipping_index_stage_is_reported() {
 fn join_has_two_reads_and_a_hash_join() {
     let t = load("04_join.json");
     let all = nodes(&t);
-    let join = all.iter().find(|n| n.kind == PlanNodeKind::HashJoin).expect("join");
+    let join = all
+        .iter()
+        .find(|n| n.kind == PlanNodeKind::HashJoin)
+        .expect("join");
     assert_eq!(join.op, "Join");
     assert!(join.condition.as_deref().unwrap().contains("user_id"));
     assert_eq!(reads(&t).len(), 2);
     assert!(all.iter().any(|n| n.kind == PlanNodeKind::Sort));
     assert!(all.iter().any(|n| n.kind == PlanNodeKind::Limit));
     // The big table is narrowed by the primary key, the small one is read whole.
-    let events = reads(&t).into_iter().find(|n| n.object.as_ref().unwrap().name == "events").unwrap();
+    let events = reads(&t)
+        .into_iter()
+        .find(|n| n.object.as_ref().unwrap().name == "events")
+        .unwrap();
     assert_eq!(events.kind, PlanNodeKind::IndexScan);
 }
 
@@ -101,7 +112,10 @@ fn join_has_two_reads_and_a_hash_join() {
 fn group_by_scans_everything() {
     let t = load("05_group_by.json");
     let all = nodes(&t);
-    let agg = all.iter().find(|n| n.kind == PlanNodeKind::HashAggregate).expect("aggregate");
+    let agg = all
+        .iter()
+        .find(|n| n.kind == PlanNodeKind::HashAggregate)
+        .expect("aggregate");
     assert!(agg.condition.as_deref().unwrap().starts_with("GROUP BY"));
     assert_eq!(rules(&t).len(), 1);
 }

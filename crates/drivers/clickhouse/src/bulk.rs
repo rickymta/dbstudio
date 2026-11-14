@@ -76,7 +76,9 @@ pub(crate) async fn bulk_insert(
         });
     }
     if req.columns.is_empty() {
-        return Err(Error::Invalid("bulk insert needs at least one column".into()));
+        return Err(Error::Invalid(
+            "bulk insert needs at least one column".into(),
+        ));
     }
     let facts = browse::column_list(core, &db, &table).await?;
     if facts.is_empty() {
@@ -89,7 +91,9 @@ pub(crate) async fn bulk_insert(
             .find(|c| &c.name == name)
             .ok_or_else(|| Error::Invalid(format!("unknown column `{name}`")))?;
         if matches!(f.default_kind.as_str(), "MATERIALIZED" | "ALIAS") {
-            return Err(Error::Invalid(format!("column `{name}` is generated (read-only)")));
+            return Err(Error::Invalid(format!(
+                "column `{name}` is generated (read-only)"
+            )));
         }
         types.push(CType::parse_lenient(&f.ty));
     }
@@ -115,7 +119,10 @@ pub(crate) async fn bulk_insert(
         let sql = sql.clone();
         async move {
             let mut insert = client.insert_formatted_with(sql);
-            insert.send(data).await.map_err(crate::error::map_client_error)?;
+            insert
+                .send(data)
+                .await
+                .map_err(crate::error::map_client_error)?;
             insert.end().await.map_err(crate::error::map_client_error)?;
             Ok::<u64, Error>(n)
         }

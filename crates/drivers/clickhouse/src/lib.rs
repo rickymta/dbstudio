@@ -27,8 +27,8 @@
 //! ClickHouse 26.3 LTS (HTTP and HTTPS) and 23.8 (oldest supported). Settings that older
 //! servers reject are only sent after probing `system.settings`.
 
-mod bulk;
 mod browse;
+mod bulk;
 mod conn;
 mod edit;
 mod error;
@@ -47,8 +47,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dbstudio_core::{
-    Capabilities, ConnectionConfig, DbKind, Driver, DriverDescriptor, DriverRegistry,
-    DriverStatus, Error, Result, Secret, ServerInfo, Session,
+    Capabilities, ConnectionConfig, DbKind, Driver, DriverDescriptor, DriverRegistry, DriverStatus,
+    Error, Result, Secret, ServerInfo, Session,
 };
 
 use conn::{Core, Req, Version, cell_text, option};
@@ -190,7 +190,10 @@ impl Driver for ClickHouseDriver {
         extra.insert("user".to_string(), cell_text(row, 2));
         extra.insert("host".to_string(), cell_text(row, 3));
         extra.insert("uptime_seconds".to_string(), cell_text(row, 4));
-        extra.insert("protocol".to_string(), if target.secure { "https" } else { "http" }.into());
+        extra.insert(
+            "protocol".to_string(),
+            if target.secure { "https" } else { "http" }.into(),
+        );
         let info = ServerInfo {
             product: "ClickHouse".into(),
             version: version_text,

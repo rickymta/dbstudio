@@ -76,12 +76,18 @@ pub(crate) async fn explain(
                     })
                 })
                 .collect();
-            extra.insert("estimate".to_string(), serde_json::Value::Array(items).to_string());
+            extra.insert(
+                "estimate".to_string(),
+                serde_json::Value::Array(items).to_string(),
+            );
         }
         if let Ok(rows) = core.rows(&noid, &format!("EXPLAIN PIPELINE {stmt}")).await {
             extra.insert(
                 "pipeline".to_string(),
-                rows.iter().map(|r| cell_text(r, 0)).collect::<Vec<_>>().join("\n"),
+                rows.iter()
+                    .map(|r| cell_text(r, 0))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             );
         }
         Ok::<_, Error>((text, extra))

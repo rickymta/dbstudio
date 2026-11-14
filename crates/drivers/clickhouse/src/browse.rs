@@ -12,7 +12,8 @@ use dbstudio_core::{
 use crate::conn::{Core, cell_bool, cell_opt, cell_text, cell_u64, quote_ident, quote_literal};
 use crate::types::kind_of_name;
 
-pub(crate) const SYSTEM_DATABASES: [&str; 3] = ["system", "INFORMATION_SCHEMA", "information_schema"];
+pub(crate) const SYSTEM_DATABASES: [&str; 3] =
+    ["system", "INFORMATION_SCHEMA", "information_schema"];
 
 fn system_list() -> String {
     SYSTEM_DATABASES
@@ -123,11 +124,23 @@ pub(crate) fn resolve(path: &ObjectPath) -> Result<Place> {
         [d, t] if d.kind == ObjectKind::Database && is_obj(t.kind) => {
             Ok(Place::Object(d.name.clone(), t.name.clone(), t.kind))
         }
-        [d, t, f] if d.kind == ObjectKind::Database && is_obj(t.kind) && f.kind == ObjectKind::Folder => {
-            Ok(Place::ObjectFolder(d.name.clone(), t.name.clone(), f.name.clone()))
+        [d, t, f]
+            if d.kind == ObjectKind::Database && is_obj(t.kind) && f.kind == ObjectKind::Folder =>
+        {
+            Ok(Place::ObjectFolder(
+                d.name.clone(),
+                t.name.clone(),
+                f.name.clone(),
+            ))
         }
-        [d, t, c] if d.kind == ObjectKind::Database && is_obj(t.kind) && c.kind == ObjectKind::Column => {
-            Ok(Place::Column(d.name.clone(), t.name.clone(), c.name.clone()))
+        [d, t, c]
+            if d.kind == ObjectKind::Database && is_obj(t.kind) && c.kind == ObjectKind::Column =>
+        {
+            Ok(Place::Column(
+                d.name.clone(),
+                t.name.clone(),
+                c.name.clone(),
+            ))
         }
         _ => Err(bad()),
     }
@@ -187,7 +200,11 @@ async fn list_databases(core: &Core, parent: &ObjectPath) -> Result<Vec<ObjectNo
                 ObjectKind::Database,
                 &name,
                 true,
-                Some(if system { "system".to_string() } else { cell_text(r, 1) }),
+                Some(if system {
+                    "system".to_string()
+                } else {
+                    cell_text(r, 1)
+                }),
             )
         })
         .collect())
@@ -421,7 +438,10 @@ async fn list_object_folder(
 
 /// Server-side search of tables, views, materialized views, dictionaries (and columns when
 /// asked for) by case-insensitive substring.
-pub(crate) async fn search_objects(core: &Core, req: &ObjectSearchRequest) -> Result<Vec<ObjectNode>> {
+pub(crate) async fn search_objects(
+    core: &Core,
+    req: &ObjectSearchRequest,
+) -> Result<Vec<ObjectNode>> {
     let query = req.query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
@@ -456,7 +476,10 @@ pub(crate) async fn search_objects(core: &Core, req: &ObjectSearchRequest) -> Re
     };
     let pattern = quote_literal(&format!(
         "%{}%",
-        query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
     ));
     let mut out: Vec<(u8, String, ObjectNode)> = Vec::new();
     let q_lc = query.to_lowercase();
@@ -503,7 +526,13 @@ pub(crate) async fn search_objects(core: &Core, req: &ObjectSearchRequest) -> Re
             out.push((
                 rank(&name),
                 name.to_lowercase(),
-                node(path, class.kind(), &name, class != Class::Dictionary, Some(db)),
+                node(
+                    path,
+                    class.kind(),
+                    &name,
+                    class != Class::Dictionary,
+                    Some(db),
+                ),
             ));
         }
     }
@@ -683,7 +712,11 @@ pub(crate) async fn table_details(core: &Core, path: &ObjectPath) -> Result<Tabl
         }
     };
     let facts = table_facts(core, &db, &t).await?;
-    let columns: Vec<ColumnDetail> = column_list(core, &db, &t).await?.iter().map(detail_of).collect();
+    let columns: Vec<ColumnDetail> = column_list(core, &db, &t)
+        .await?
+        .iter()
+        .map(detail_of)
+        .collect();
     let mut indexes = Vec::new();
     for (name, expr, method) in [
         ("PARTITION BY", &facts.partition_key, "partition"),
@@ -738,7 +771,11 @@ pub(crate) async fn table_details(core: &Core, path: &ObjectPath) -> Result<Tabl
     let class_kind = Class::of_engine(&facts.engine).kind();
     Ok(TableDetails {
         path: path.clone(),
-        kind: if kind == ObjectKind::Table { class_kind } else { kind },
+        kind: if kind == ObjectKind::Table {
+            class_kind
+        } else {
+            kind
+        },
         comment: facts.comment.clone(),
         columns,
         indexes,
@@ -758,7 +795,11 @@ pub(crate) async fn object_ddl(core: &Core, path: &ObjectPath) -> Result<String>
             } else {
                 "TABLE"
             };
-            format!("SHOW CREATE {what} {}.{}", quote_ident(&db), quote_ident(&t))
+            format!(
+                "SHOW CREATE {what} {}.{}",
+                quote_ident(&db),
+                quote_ident(&t)
+            )
         }
         _ => return Err(Error::Unsupported("object_ddl".into())),
     };
@@ -772,7 +813,9 @@ fn scope_database(scope: &ObjectPath) -> Result<Option<String>> {
     match resolve(scope)? {
         Place::Root => Ok(None),
         Place::Database(d) | Place::DbFolder(d, _) => Ok(Some(d)),
-        _ => Err(Error::Invalid("scope must be the root or a database".into())),
+        _ => Err(Error::Invalid(
+            "scope must be the root or a database".into(),
+        )),
     }
 }
 
@@ -917,7 +960,11 @@ pub(crate) async fn generate_ddl(core: &Core, req: DdlRequest) -> Result<Vec<Ddl
             )
             .await?;
         for r in &rows {
-            targets.push((db.clone(), cell_text(r, 0), Class::of_engine(&cell_text(r, 1))));
+            targets.push((
+                db.clone(),
+                cell_text(r, 0),
+                Class::of_engine(&cell_text(r, 1)),
+            ));
         }
     } else {
         for p in &req.objects {
@@ -951,7 +998,10 @@ pub(crate) async fn generate_ddl(core: &Core, req: DdlRequest) -> Result<Vec<Ddl
                 ("CREATE DATABASE ", "CREATE DATABASE IF NOT EXISTS "),
                 ("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "),
                 ("CREATE VIEW ", "CREATE VIEW IF NOT EXISTS "),
-                ("CREATE MATERIALIZED VIEW ", "CREATE MATERIALIZED VIEW IF NOT EXISTS "),
+                (
+                    "CREATE MATERIALIZED VIEW ",
+                    "CREATE MATERIALIZED VIEW IF NOT EXISTS ",
+                ),
                 ("CREATE DICTIONARY ", "CREATE DICTIONARY IF NOT EXISTS "),
             ] {
                 if sql.starts_with(from) {
@@ -980,7 +1030,10 @@ pub(crate) async fn generate_ddl(core: &Core, req: DdlRequest) -> Result<Vec<Ddl
             path: ObjectPath::root().child(ObjectKind::Database, db.clone()),
             kind: ObjectKind::Database,
             section: DdlSection::PreData,
-            sql: finish(sql, Some(format!("DROP DATABASE IF EXISTS {};", quote_ident(db)))),
+            sql: finish(
+                sql,
+                Some(format!("DROP DATABASE IF EXISTS {};", quote_ident(db))),
+            ),
             language: DdlLanguage::Sql,
             depends_on: Vec::new(),
         });
@@ -1003,11 +1056,19 @@ pub(crate) async fn generate_ddl(core: &Core, req: DdlRequest) -> Result<Vec<Ddl
             group = order_views(core, group).await?;
         }
         for (db, name, _) in group {
-            let what = if class == Class::Dictionary { "DICTIONARY" } else { "TABLE" };
+            let what = if class == Class::Dictionary {
+                "DICTIONARY"
+            } else {
+                "TABLE"
+            };
             let sql = core
                 .rows_db(
                     None,
-                    &format!("SHOW CREATE {what} {}.{}", quote_ident(db), quote_ident(name)),
+                    &format!(
+                        "SHOW CREATE {what} {}.{}",
+                        quote_ident(db),
+                        quote_ident(name)
+                    ),
                 )
                 .await?
                 .first()
@@ -1018,7 +1079,11 @@ pub(crate) async fn generate_ddl(core: &Core, req: DdlRequest) -> Result<Vec<Ddl
                 _ => "TABLE",
             };
             let drop = if o.qualify_schema {
-                format!("DROP {drop_what} IF EXISTS {}.{};", quote_ident(db), quote_ident(name))
+                format!(
+                    "DROP {drop_what} IF EXISTS {}.{};",
+                    quote_ident(db),
+                    quote_ident(name)
+                )
             } else {
                 format!("DROP {drop_what} IF EXISTS {};", quote_ident(name))
             };
@@ -1080,7 +1145,9 @@ async fn order_views<'a>(
                     let n = &group[j].1;
                     selects[i].contains(&format!("{}.{}", group[j].0, n))
                         || selects[i].contains(&format!("`{n}`"))
-                        || selects[i].split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == n)
+                        || selects[i]
+                            .split(|c: char| !c.is_alphanumeric() && c != '_')
+                            .any(|w| w == n)
                 }
             });
             if waits {
@@ -1091,7 +1158,7 @@ async fn order_views<'a>(
         }
         remaining = next;
         if remaining.len() == before {
-            placed.extend(remaining.drain(..));
+            placed.append(&mut remaining);
         }
     }
     Ok(placed.into_iter().map(|i| group[i]).collect())
@@ -1142,7 +1209,10 @@ mod tests {
     fn engines_map_to_classes() {
         assert_eq!(Class::of_engine("MergeTree"), Class::Table);
         assert_eq!(Class::of_engine("View"), Class::View);
-        assert_eq!(Class::of_engine("MaterializedView"), Class::MaterializedView);
+        assert_eq!(
+            Class::of_engine("MaterializedView"),
+            Class::MaterializedView
+        );
         assert_eq!(Class::of_engine("Dictionary"), Class::Dictionary);
         assert_eq!(Class::of_engine("Distributed"), Class::Table);
     }
@@ -1163,6 +1233,9 @@ mod tests {
         let d = detail_of(&c);
         assert!(d.nullable);
         assert_eq!(d.default, None);
-        assert_eq!(d.extra.as_deref(), Some("MATERIALIZED upper(b); sorting key"));
+        assert_eq!(
+            d.extra.as_deref(),
+            Some("MATERIALIZED upper(b); sorting key")
+        );
     }
 }

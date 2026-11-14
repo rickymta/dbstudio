@@ -63,15 +63,18 @@ fn node(js: &Js) -> PlanNode {
 fn operator(js: &Js, node_type: &str, desc: &str) -> PlanNode {
     let (kind, condition) = match node_type {
         "Expression" => {
-            let kind = if desc.contains("WHERE") || desc.contains("PREWHERE") || desc.contains("HAVING")
-            {
-                PlanNodeKind::Filter
-            } else {
-                PlanNodeKind::Other
-            };
+            let kind =
+                if desc.contains("WHERE") || desc.contains("PREWHERE") || desc.contains("HAVING") {
+                    PlanNodeKind::Filter
+                } else {
+                    PlanNodeKind::Other
+                };
             (kind, None)
         }
-        "Filter" => (PlanNodeKind::Filter, js.text("Filter Column").map(str::to_string)),
+        "Filter" => (
+            PlanNodeKind::Filter,
+            js.text("Filter Column").map(str::to_string),
+        ),
         "Aggregating" | "MergingAggregated" => {
             let keys: Vec<String> = js
                 .get("Keys")
@@ -82,7 +85,10 @@ fn operator(js: &Js, node_type: &str, desc: &str) -> PlanNode {
             } else {
                 PlanNodeKind::HashAggregate
             };
-            ((kind), (!keys.is_empty()).then(|| format!("GROUP BY {}", keys.join(", "))))
+            (
+                (kind),
+                (!keys.is_empty()).then(|| format!("GROUP BY {}", keys.join(", "))),
+            )
         }
         "Distinct" | "PreDistinct" => (PlanNodeKind::Aggregate, None),
         "Sorting" | "MergeSorting" | "PartialSorting" | "FinishSorting" | "MergingSorted" => {
@@ -105,7 +111,10 @@ fn operator(js: &Js, node_type: &str, desc: &str) -> PlanNode {
                         .collect()
                 })
                 .unwrap_or_default();
-            (PlanNodeKind::Sort, (!order.is_empty()).then(|| order.join(", ")))
+            (
+                PlanNodeKind::Sort,
+                (!order.is_empty()).then(|| order.join(", ")),
+            )
         }
         "Limit" | "Offset" | "LimitBy" => {
             let mut parts = Vec::new();
@@ -115,7 +124,10 @@ fn operator(js: &Js, node_type: &str, desc: &str) -> PlanNode {
             if let Some(o) = js.num("Offset").filter(|o| *o > 0.0) {
                 parts.push(format!("OFFSET {}", json::fmt_num(o)));
             }
-            (PlanNodeKind::Limit, (!parts.is_empty()).then(|| parts.join(" ")))
+            (
+                PlanNodeKind::Limit,
+                (!parts.is_empty()).then(|| parts.join(" ")),
+            )
         }
         "Join" | "FilledJoin" => {
             let algo = js.text("Algorithm").unwrap_or("");
@@ -132,8 +144,8 @@ fn operator(js: &Js, node_type: &str, desc: &str) -> PlanNode {
         "CreatingSets" | "CreatingSet" => (PlanNodeKind::Subquery, None),
         "Window" => (PlanNodeKind::Window, None),
         "Materializing" => (PlanNodeKind::Materialize, None),
-        "Totals" | "Rollup" | "Cube" | "ArrayJoin" | "BuildRuntimeFilter" | "Extremes"
-        | "Fill" | "Interpolate" | "Watermark" => (PlanNodeKind::Other, None),
+        "Totals" | "Rollup" | "Cube" | "ArrayJoin" | "BuildRuntimeFilter" | "Extremes" | "Fill"
+        | "Interpolate" | "Watermark" => (PlanNodeKind::Other, None),
         "Insert" | "Delete" | "Update" => (PlanNodeKind::Modify, None),
         _ => (PlanNodeKind::Other, None),
     };
@@ -142,7 +154,15 @@ fn operator(js: &Js, node_type: &str, desc: &str) -> PlanNode {
     flatten_scalars(
         &mut n,
         js,
-        &["Node Type", "Node Id", "Description", "Filter Column", "Clauses", "Limit", "Offset"],
+        &[
+            "Node Type",
+            "Node Id",
+            "Description",
+            "Filter Column",
+            "Clauses",
+            "Limit",
+            "Offset",
+        ],
         "",
     );
     if node_type == "Aggregating" || node_type == "MergingAggregated" {
@@ -174,12 +194,17 @@ fn object_of(desc: &str) -> Option<PlanObject> {
 }
 
 fn read_node(js: &Js, node_type: &str, desc: &str) -> PlanNode {
-    let stages: Vec<&Js> = js.get("Indexes").map(|i| i.items().iter().collect()).unwrap_or_default();
+    let stages: Vec<&Js> = js
+        .get("Indexes")
+        .map(|i| i.items().iter().collect())
+        .unwrap_or_default();
     let initial = stages.first().and_then(|s| s.num("Initial Granules"));
     let selected = stages.last().and_then(|s| s.num("Selected Granules"));
     // The index that narrowed the read the most (a skipping index by its name).
     let narrowing = stages.iter().rev().find(|s| {
-        s.num("Selected Granules").zip(s.num("Initial Granules")).is_some_and(|(sel, ini)| sel < ini)
+        s.num("Selected Granules")
+            .zip(s.num("Initial Granules"))
+            .is_some_and(|(sel, ini)| sel < ini)
     });
     let kind = match (initial, selected) {
         (Some(i), Some(s)) if s < i => PlanNodeKind::IndexScan,
@@ -216,12 +241,7 @@ fn read_node(js: &Js, node_type: &str, desc: &str) -> PlanNode {
         }
     }
     n.condition = join_conditions(conditions);
-    flatten_scalars(
-        &mut n,
-        js,
-        &["Node Type", "Node Id", "Description"],
-        "",
-    );
+    flatten_scalars(&mut n, js, &["Node Type", "Node Id", "Description"], "");
     for s in &stages {
         let ty = s.text("Type").unwrap_or("?");
         let label = match s.text("Name") {
@@ -236,7 +256,14 @@ fn read_node(js: &Js, node_type: &str, desc: &str) -> PlanNode {
             s.num("Initial Parts").map_or("?".into(), json::fmt_num),
         );
         if let Some(keys) = s.get("Keys").filter(|k| !k.items().is_empty()) {
-            text.push_str(&format!(", keys {}", keys.items().iter().map(Js::display).collect::<Vec<_>>().join(", ")));
+            text.push_str(&format!(
+                ", keys {}",
+                keys.items()
+                    .iter()
+                    .map(Js::display)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         if let Some(c) = s.text("Condition") {
             text.push_str(&format!(", condition {c}"));
@@ -289,7 +316,10 @@ mod tests {
         let read = &tree.root.children[0];
         assert_eq!(read.kind, PlanNodeKind::IndexScan);
         assert_eq!(read.object.as_ref().unwrap().schema.as_deref(), Some("db"));
-        assert_eq!(read.object.as_ref().unwrap().index.as_deref(), Some("PRIMARY KEY"));
+        assert_eq!(
+            read.object.as_ref().unwrap().index.as_deref(),
+            Some("PRIMARY KEY")
+        );
         assert_eq!(read.est_rows, Some(5.0 * 8192.0));
         assert!(tree.warnings.is_empty());
     }
@@ -334,7 +364,10 @@ mod tests {
         assert_eq!(all[0].condition.as_deref(), Some("LIMIT 5 OFFSET 2"));
         assert_eq!(all[1].condition.as_deref(), Some("n DESC"));
         assert_eq!(all[2].condition.as_deref(), Some("GROUP BY k"));
-        assert_eq!(all[2].extra.get("aggregates").map(String::as_str), Some("count()"));
+        assert_eq!(
+            all[2].extra.get("aggregates").map(String::as_str),
+            Some("count()")
+        );
         assert_eq!(all[3].condition.as_deref(), Some("[(a) = (b)]"));
     }
 

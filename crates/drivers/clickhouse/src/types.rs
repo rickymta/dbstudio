@@ -138,7 +138,7 @@ impl CType {
         }
     }
 
-    /// Whether `Float`/`Int` style numeric (used for sorting hints and quoting of filters).
+    #[allow(dead_code)]
     pub(crate) fn is_numeric(&self) -> bool {
         matches!(
             self.inner(),
@@ -224,7 +224,10 @@ impl Parser<'_> {
     /// Quoted string `'..'` (backslash escapes and doubled quotes) or backtick/double quoted name.
     fn quoted(&mut self) -> Result<String> {
         self.ws();
-        let q = *self.s.get(self.i).ok_or_else(|| self.err("expected a quote"))?;
+        let q = *self
+            .s
+            .get(self.i)
+            .ok_or_else(|| self.err("expected a quote"))?;
         if !matches!(q, b'\'' | b'`' | b'"') {
             return Err(self.err("expected a quote"));
         }
@@ -405,7 +408,10 @@ impl Parser<'_> {
                     let label = self.quoted()?;
                     self.expect(b'=')?;
                     let v = self.number()?;
-                    items.push((label, i16::try_from(v).map_err(|_| self.err("bad enum value"))?));
+                    items.push((
+                        label,
+                        i16::try_from(v).map_err(|_| self.err("bad enum value"))?,
+                    ));
                     if !self.eat(b',') {
                         break;
                     }
@@ -532,9 +538,15 @@ mod tests {
             CType::parse("DateTime('UTC')").unwrap(),
             CType::DateTime(Some("UTC".into()))
         );
-        assert_eq!(CType::parse("Decimal(18, 4)").unwrap(), CType::Decimal(18, 4));
+        assert_eq!(
+            CType::parse("Decimal(18, 4)").unwrap(),
+            CType::Decimal(18, 4)
+        );
         assert_eq!(CType::parse("Decimal32(2)").unwrap(), CType::Decimal(9, 2));
-        assert_eq!(CType::parse("FixedString(16)").unwrap(), CType::FixedString(16));
+        assert_eq!(
+            CType::parse("FixedString(16)").unwrap(),
+            CType::FixedString(16)
+        );
     }
 
     #[test]
@@ -554,7 +566,9 @@ mod tests {
         assert_eq!(m.value_kind(), ValueKind::Document);
         let m = CType::parse("Map(UInt8, String)").unwrap();
         assert_eq!(m.value_kind(), ValueKind::Array);
-        assert!(matches!(CType::parse("Variant(String, UInt8)").unwrap(), CType::Variant(v) if v.len() == 2));
+        assert!(
+            matches!(CType::parse("Variant(String, UInt8)").unwrap(), CType::Variant(v) if v.len() == 2)
+        );
     }
 
     #[test]
@@ -573,14 +587,21 @@ mod tests {
     #[test]
     fn geo_types_expand() {
         assert!(matches!(CType::parse("Point").unwrap(), CType::Tuple(v) if v.len() == 2));
-        assert!(matches!(CType::parse("MultiPolygon").unwrap(), CType::Array(_)));
+        assert!(matches!(
+            CType::parse("MultiPolygon").unwrap(),
+            CType::Array(_)
+        ));
     }
 
     #[test]
     fn unsupported_types_are_flagged() {
         let t = CType::parse("AggregateFunction(sum, UInt64)").unwrap();
         assert!(!t.decodable());
-        assert!(!CType::parse("Array(AggregateFunction(uniq, String))").unwrap().decodable());
+        assert!(
+            !CType::parse("Array(AggregateFunction(uniq, String))")
+                .unwrap()
+                .decodable()
+        );
         assert!(CType::parse("SimpleAggregateFunction(sum, UInt64)").unwrap() == CType::UInt64);
         assert!(CType::parse("Array(Nullable(Int8))").unwrap().decodable());
     }

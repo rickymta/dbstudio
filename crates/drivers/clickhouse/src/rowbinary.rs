@@ -36,6 +36,7 @@ impl<'a> Cur<'a> {
         self.p
     }
 
+    #[cfg(test)]
     pub(crate) fn at_end(&self) -> bool {
         self.p >= self.b.len()
     }
@@ -197,8 +198,8 @@ pub(crate) fn fmt_decimal(neg: bool, digits: &str, scale: u8) -> String {
 /// Magnitude of a 256-bit integer as four little-endian 64-bit limbs.
 fn limbs(bytes: [u8; 32]) -> [u64; 4] {
     let mut l = [0u64; 4];
-    for (i, chunk) in bytes.chunks_exact(8).enumerate() {
-        l[i] = u64::from_le_bytes(chunk.try_into().expect("8 bytes"));
+    for (i, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
+        l[i] = u64::from_le_bytes(*chunk);
     }
     l
 }
@@ -266,8 +267,22 @@ pub(crate) fn fmt_uuid(raw: [u8; 16]) -> String {
     }
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13],
-        b[14], b[15]
+        b[0],
+        b[1],
+        b[2],
+        b[3],
+        b[4],
+        b[5],
+        b[6],
+        b[7],
+        b[8],
+        b[9],
+        b[10],
+        b[11],
+        b[12],
+        b[13],
+        b[14],
+        b[15]
     )
 }
 
@@ -306,10 +321,9 @@ fn decode_value(c: &mut Cur<'_>, t: &CType) -> R<Value> {
         CType::Uuid => Value::Uuid(fmt_uuid(c.arr()?)),
         CType::Date => Value::Date(fmt_date(i64::from(u16::from_le_bytes(c.arr()?)))),
         CType::Date32 => Value::Date(fmt_date(i64::from(i32::from_le_bytes(c.arr()?)))),
-        CType::DateTime(_) => Value::Timestamp(fmt_timestamp(
-            i64::from(u32::from_le_bytes(c.arr()?)),
-            0,
-        )),
+        CType::DateTime(_) => {
+            Value::Timestamp(fmt_timestamp(i64::from(u32::from_le_bytes(c.arr()?)), 0))
+        }
         CType::DateTime64(p, _) => {
             Value::Timestamp(fmt_timestamp(i64::from_le_bytes(c.arr()?), *p))
         }
@@ -336,7 +350,9 @@ fn decode_value(c: &mut Cur<'_>, t: &CType) -> R<Value> {
             enum_label(items, v)
         }
         CType::Enum16(items) => enum_label(items, i16::from_le_bytes(c.arr()?)),
-        CType::IPv4 => Value::Text(std::net::Ipv4Addr::from(u32::from_le_bytes(c.arr()?)).to_string()),
+        CType::IPv4 => {
+            Value::Text(std::net::Ipv4Addr::from(u32::from_le_bytes(c.arr()?)).to_string())
+        }
         CType::IPv6 => Value::Text(std::net::Ipv6Addr::from(c.arr::<16>()?).to_string()),
         CType::Nullable(inner) => {
             if c.u8()? != 0 {
@@ -397,9 +413,9 @@ fn decode_value(c: &mut Cur<'_>, t: &CType) -> R<Value> {
             if d == 0xff {
                 Value::Null
             } else {
-                let t = items
-                    .get(usize::from(d))
-                    .ok_or_else(|| DecErr::Bad(format!("variant discriminator {d} out of range")))?;
+                let t = items.get(usize::from(d)).ok_or_else(|| {
+                    DecErr::Bad(format!("variant discriminator {d} out of range"))
+                })?;
                 decode_value(c, t)?
             }
         }
@@ -608,7 +624,12 @@ fn parse_int<T: std::str::FromStr>(t: &CType, v: &Value) -> Result<T> {
 }
 
 /// Little-endian two's complement bytes of a decimal integer text, `N` bytes wide.
-fn int_text_to_le<const N: usize>(t: &CType, v: &Value, text: &str, signed: bool) -> Result<[u8; N]> {
+fn int_text_to_le<const N: usize>(
+    t: &CType,
+    v: &Value,
+    text: &str,
+    signed: bool,
+) -> Result<[u8; N]> {
     let text = text.trim().trim_start_matches('+');
     let (neg, digits) = match text.strip_prefix('-') {
         Some(r) => (true, r),
@@ -750,7 +771,10 @@ fn split_offset(t: &str) -> Option<(&str, i64)> {
                     0
                 };
                 let secs = hh * 3600 + mm * 60;
-                return Some((t[..i].trim(), if t.as_bytes()[i] == b'-' { -secs } else { secs }));
+                return Some((
+                    t[..i].trim(),
+                    if t.as_bytes()[i] == b'-' { -secs } else { secs },
+                ));
             }
         }
     }
@@ -809,9 +833,11 @@ fn json_to_value(j: &serde_json::Value) -> Value {
         }
         serde_json::Value::String(s) => Value::Text(s.clone()),
         serde_json::Value::Array(a) => Value::Array(a.iter().map(json_to_value).collect()),
-        serde_json::Value::Object(o) => {
-            Value::Document(o.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect())
-        }
+        serde_json::Value::Object(o) => Value::Document(
+            o.iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -1055,7 +1081,10 @@ pub(crate) fn encode_value(out: &mut Vec<u8>, t: &CType, v: &Value) -> Result<()
                         match p {
                             Value::Array(kv) if kv.len() == 2 => {
                                 let mut it = kv.into_iter();
-                                ps.push((it.next().unwrap_or(Value::Null), it.next().unwrap_or(Value::Null)));
+                                ps.push((
+                                    it.next().unwrap_or(Value::Null),
+                                    it.next().unwrap_or(Value::Null),
+                                ));
                             }
                             _ => return Err(bad(t, v, "expected [key, value] pairs")),
                         }
@@ -1114,7 +1143,10 @@ mod tests {
         assert_eq!(days_from_civil(2024, 2, 29), 19_782);
         assert_eq!(civil_from_days(days_from_civil(1900, 3, 1)), (1900, 3, 1));
         assert_eq!(fmt_timestamp(0, 0), "1970-01-01T00:00:00Z");
-        assert_eq!(fmt_timestamp(1_700_000_000_123, 3), "2023-11-14T22:13:20.123Z");
+        assert_eq!(
+            fmt_timestamp(1_700_000_000_123, 3),
+            "2023-11-14T22:13:20.123Z"
+        );
         assert_eq!(fmt_timestamp(-1, 3), "1969-12-31T23:59:59.999Z");
     }
 
@@ -1134,33 +1166,58 @@ mod tests {
             round("Int256", Value::Decimal(max.into())),
             Value::Decimal(max.into())
         );
-        let min = format!("-{}", "57896044618658097711785492504343953926634992332820282019728792003956564819968");
-        assert_eq!(round("Int256", Value::Decimal(min.clone())), Value::Decimal(min));
+        let min = format!(
+            "-{}",
+            "57896044618658097711785492504343953926634992332820282019728792003956564819968"
+        );
+        assert_eq!(
+            round("Int256", Value::Decimal(min.clone())),
+            Value::Decimal(min)
+        );
         let umax = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
         assert_eq!(
             round("UInt256", Value::Decimal(umax.into())),
             Value::Decimal(umax.into())
         );
         assert_eq!(
-            round("Int128", Value::Decimal("-170141183460469231731687303715884105728".into())),
+            round(
+                "Int128",
+                Value::Decimal("-170141183460469231731687303715884105728".into())
+            ),
             Value::Decimal("-170141183460469231731687303715884105728".into())
         );
         assert_eq!(
-            round("UInt128", Value::Decimal("340282366920938463463374607431768211455".into())),
+            round(
+                "UInt128",
+                Value::Decimal("340282366920938463463374607431768211455".into())
+            ),
             Value::Decimal("340282366920938463463374607431768211455".into())
         );
         assert_eq!(round("Int256", Value::Int(-1)), Value::Decimal("-1".into()));
         let ty = CType::parse("Int128").unwrap();
-        assert!(encode_value(&mut Vec::new(), &ty, &Value::Decimal("170141183460469231731687303715884105728".into())).is_err());
+        assert!(
+            encode_value(
+                &mut Vec::new(),
+                &ty,
+                &Value::Decimal("170141183460469231731687303715884105728".into())
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn scalars_round_trip() {
         assert_eq!(round("Int8", Value::Int(-5)), Value::Int(-5));
-        assert_eq!(round("UInt64", Value::UInt(u64::MAX)), Value::UInt(u64::MAX));
+        assert_eq!(
+            round("UInt64", Value::UInt(u64::MAX)),
+            Value::UInt(u64::MAX)
+        );
         assert_eq!(round("Float32", Value::Float(0.1)), Value::Float(0.1));
         assert_eq!(round("Bool", Value::Bool(true)), Value::Bool(true));
-        assert_eq!(round("String", Value::Text("héllo".into())), Value::Text("héllo".into()));
+        assert_eq!(
+            round("String", Value::Text("héllo".into())),
+            Value::Text("héllo".into())
+        );
         assert_eq!(
             round("String", Value::Bytes(vec![0xff, 0xfe])),
             Value::Bytes(vec![0xff, 0xfe])
@@ -1170,10 +1227,16 @@ mod tests {
             Value::Text("ab".into())
         );
         assert_eq!(
-            round("UUID", Value::Uuid("61f0c404-5cb3-11e7-907b-a6006ad3dba0".into())),
+            round(
+                "UUID",
+                Value::Uuid("61f0c404-5cb3-11e7-907b-a6006ad3dba0".into())
+            ),
             Value::Uuid("61f0c404-5cb3-11e7-907b-a6006ad3dba0".into())
         );
-        assert_eq!(round("Date", Value::Date("2024-02-29".into())), Value::Date("2024-02-29".into()));
+        assert_eq!(
+            round("Date", Value::Date("2024-02-29".into())),
+            Value::Date("2024-02-29".into())
+        );
         assert_eq!(
             round("Date32", Value::Date("1900-01-01".into())),
             Value::Date("1900-01-01".into())
@@ -1183,7 +1246,10 @@ mod tests {
             Value::Timestamp("2024-02-29T12:34:56Z".into())
         );
         assert_eq!(
-            round("DateTime64(3,'UTC')", Value::Timestamp("2024-02-29 12:34:56.789".into())),
+            round(
+                "DateTime64(3,'UTC')",
+                Value::Timestamp("2024-02-29 12:34:56.789".into())
+            ),
             Value::Timestamp("2024-02-29T12:34:56.789Z".into())
         );
         assert_eq!(
@@ -1191,38 +1257,68 @@ mod tests {
             Value::Decimal("-12.5000".into())
         );
         assert_eq!(
-            round("Decimal(50,10)", Value::Decimal("123456789012345678901234567890.5".into())),
+            round(
+                "Decimal(50,10)",
+                Value::Decimal("123456789012345678901234567890.5".into())
+            ),
             Value::Decimal("123456789012345678901234567890.5000000000".into())
         );
         assert_eq!(
             round("Enum8('a'=1,'b'=2)", Value::Text("b".into())),
             Value::Text("b".into())
         );
-        assert_eq!(round("IPv4", Value::Text("10.0.0.1".into())), Value::Text("10.0.0.1".into()));
-        assert_eq!(round("IPv6", Value::Text("::1".into())), Value::Text("::1".into()));
+        assert_eq!(
+            round("IPv4", Value::Text("10.0.0.1".into())),
+            Value::Text("10.0.0.1".into())
+        );
+        assert_eq!(
+            round("IPv6", Value::Text("::1".into())),
+            Value::Text("::1".into())
+        );
     }
 
     #[test]
     fn compounds_round_trip() {
+        assert_eq!(round("Nullable(Int32)", Value::Null), Value::Null);
         assert_eq!(
-            round("Nullable(Int32)", Value::Null),
-            Value::Null
-        );
-        assert_eq!(
-            round("Array(Nullable(String))", Value::Array(vec![Value::Text("a".into()), Value::Null])),
+            round(
+                "Array(Nullable(String))",
+                Value::Array(vec![Value::Text("a".into()), Value::Null])
+            ),
             Value::Array(vec![Value::Text("a".into()), Value::Null])
         );
         assert_eq!(
-            round("Tuple(a UInt8, b String)", Value::Document(vec![("a".into(), Value::Int(1)), ("b".into(), Value::Text("x".into()))])),
-            Value::Document(vec![("a".into(), Value::Int(1)), ("b".into(), Value::Text("x".into()))])
+            round(
+                "Tuple(a UInt8, b String)",
+                Value::Document(vec![
+                    ("a".into(), Value::Int(1)),
+                    ("b".into(), Value::Text("x".into()))
+                ])
+            ),
+            Value::Document(vec![
+                ("a".into(), Value::Int(1)),
+                ("b".into(), Value::Text("x".into()))
+            ])
         );
         assert_eq!(
-            round("Map(String, UInt8)", Value::Document(vec![("k".into(), Value::Int(7))])),
+            round(
+                "Map(String, UInt8)",
+                Value::Document(vec![("k".into(), Value::Int(7))])
+            ),
             Value::Document(vec![("k".into(), Value::Int(7))])
         );
         assert_eq!(
-            round("Map(UInt8, String)", Value::Array(vec![Value::Array(vec![Value::Int(1), Value::Text("x".into())])])),
-            Value::Array(vec![Value::Array(vec![Value::Int(1), Value::Text("x".into())])])
+            round(
+                "Map(UInt8, String)",
+                Value::Array(vec![Value::Array(vec![
+                    Value::Int(1),
+                    Value::Text("x".into())
+                ])])
+            ),
+            Value::Array(vec![Value::Array(vec![
+                Value::Int(1),
+                Value::Text("x".into())
+            ])])
         );
         assert_eq!(
             round("Array(Int32)", Value::Text("[1,2,3]".into())),
@@ -1248,9 +1344,15 @@ mod tests {
     #[test]
     fn header_decodes() {
         // 2 columns: a UInt8, b String
-        let buf = [2, 1, b'a', 1, b'b', 5, b'U', b'I', b'n', b't', b'8', 6, b'S', b't', b'r', b'i', b'n', b'g', 1, 1, b'x'];
+        let buf = [
+            2, 1, b'a', 1, b'b', 5, b'U', b'I', b'n', b't', b'8', 6, b'S', b't', b'r', b'i', b'n',
+            b'g', 1, 1, b'x',
+        ];
         let (cols, used) = decode_header(&buf).unwrap();
-        assert_eq!(cols, vec![("a".into(), "UInt8".into()), ("b".into(), "String".into())]);
+        assert_eq!(
+            cols,
+            vec![("a".into(), "UInt8".into()), ("b".into(), "String".into())]
+        );
         assert_eq!(used, buf.len() - 3);
         assert_eq!(decode_header(&buf[..4]), Err(DecErr::NeedMore));
     }
