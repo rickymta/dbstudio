@@ -719,6 +719,6 @@ async fn tools_listing_prints_every_binary_tool() {
     let f = fixture(None);
     let (code, out) = cli(&f, &["tools"]).await;
     assert_eq!(code, EXIT_OK);
-    assert_eq!(out.lines().count(), 10);
+    assert_eq!(out.lines().count(), 12);
     assert!(out.contains("pg_dump") && out.contains("mysqldump"));
 }
