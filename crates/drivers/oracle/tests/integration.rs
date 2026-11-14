@@ -28,8 +28,17 @@ macro_rules! it {
                 return;
             }
             init_client();
+            let status = dbstudio_core::Driver::descriptor(&OracleDriver::new()).status;
+            // Without Instant Client (e.g. the plain CI runner) skip, unless `oraclefree` is
+            // strict (the oracle-it container, where the client must load).
+            if status != DriverStatus::Available
+                && !dbstudio_core::testing::it_strict_for("oraclefree")
+            {
+                eprintln!("skip: Oracle client not available ({status:?})");
+                return;
+            }
             assert_eq!(
-                dbstudio_core::Driver::descriptor(&OracleDriver::new()).status,
+                status,
                 DriverStatus::Available,
                 "the Oracle client must load in the integration environment"
             );
