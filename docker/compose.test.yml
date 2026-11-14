@@ -449,7 +449,8 @@ services:
   cockroach:
     profiles: ['newsql']
     image: cockroachdb/cockroach:v25.4.20
-    mem_limit: 768m
+    # 768m was OOM-killed by the IT (idle is ~400 MB, DDL / EXPLAIN peaks above 768 MB).
+    mem_limit: 1g
     command:
       - start-single-node
       - --certs-dir=/certs

@@ -220,8 +220,8 @@ fn qualifier_len(rest: &str, quoted: &str, database: &str) -> Option<usize> {
         let Some(after) = rest.strip_prefix(pat).and_then(|r| r.strip_prefix('.')) else {
             continue;
         };
-        let end = if after.starts_with('"') {
-            after[1..].find('"').map(|p| p + 2)
+        let end = if let Some(quoted_name) = after.strip_prefix('"') {
+            quoted_name.find('"').map(|p| p + 2)
         } else {
             after.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
         };

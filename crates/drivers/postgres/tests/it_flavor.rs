@@ -13,7 +13,7 @@ mod common;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::{ca_path, enabled, exec, rows, scalar};
+use common::{enabled, exec, rows, scalar};
 use dbstudio_core::*;
 use dbstudio_driver_postgres::{PostgresDriver, PostgresFlavorDriver};
 use dbstudio_plan::{PlanNodeKind, PlanRules, parse_and_analyze};
@@ -322,7 +322,7 @@ async fn flavor_driver_rejects_other_kind(_server: Server) {
         .connect(&config(Server::Cockroach, DbKind::Postgres), None)
         .await
         .err()
-        .expect("must fail");
+        .unwrap_or_else(|| panic!("must fail"));
     assert!(matches!(err, Error::Invalid(_)), "{err:?}");
 }
 
@@ -357,14 +357,14 @@ async fn cockroach_tls_verify_full_and_bad_password() {
         .connect(&cfg, Some(&Secret::new(common::PASSWORD)))
         .await
         .err()
-        .expect("wrong CA must fail");
+        .unwrap_or_else(|| panic!("wrong CA must fail"));
     assert!(matches!(err, Error::Tls(_)), "{err:?}");
     cfg.tls.mode = TlsMode::Prefer;
     let err = driver
         .connect(&cfg, Some(&Secret::new("wrong")))
         .await
         .err()
-        .expect("wrong password must fail");
+        .unwrap_or_else(|| panic!("wrong password must fail"));
     assert!(matches!(err, Error::Authentication(_)), "{err:?}");
 }
 
@@ -380,7 +380,7 @@ async fn cluster_option_is_validated() {
         .connect(&cfg, None)
         .await
         .err()
-        .expect("must fail before connecting");
+        .unwrap_or_else(|| panic!("must fail before connecting"));
     assert!(
         matches!(err, Error::Invalid(m) if m.contains("cluster")),
         "invalid id"
@@ -760,7 +760,7 @@ async fn editing_table_without_primary_key(server: Server) {
         }))
         .await
         .err()
-        .expect("read-only");
+        .unwrap_or_else(|| panic!("read-only"));
     assert!(matches!(err, Error::ChangeFailed { .. }), "{err:?}");
     drop_schema(&*s, &sc).await;
 }
@@ -1016,7 +1016,7 @@ async fn lease_transactions_and_context(server: Server) {
         })
         .await
         .err()
-        .expect("busy");
+        .unwrap_or_else(|| panic!("busy"));
     assert!(matches!(busy, Error::Busy(_)), "{busy:?}");
     lease.rollback().await.unwrap();
     // Idle: the switch works and `current_database()` follows it.
