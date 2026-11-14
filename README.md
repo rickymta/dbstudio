@@ -122,6 +122,15 @@ dbstudio-cli tools                                       # native tools that wer
 `src-tauri` embeds the frontend, so `cargo build -p dbstudio`, `cargo clippy --workspace` and
 `cargo test --workspace` need `dist/` to exist: run `pnpm build` first.
 
+### Data directory
+
+Debug builds from several worktrees share the app data directory
+(`~/Library/Application Support/dev.dbstudio.desktop` on macOS), so a branch with a newer
+migration breaks the others. Set `DBSTUDIO_DATA_DIR=/path/to/dir` to give a build its own
+directory (also works in release builds, e.g. portable use or tests). When startup fails (for
+example the store was written by a newer version) the app shows an error dialog and exits with
+code 1; `DBSTUDIO_STARTUP_NO_DIALOG=1` prints the message to stderr instead (tests).
+
 ## Dev bridge
 
 To exercise the UI end to end against the real backend (real databases and keychain) from a
