@@ -68,7 +68,8 @@ jobs:
 
       - name: Summarize failures
         if: failure()
-        run: bash .github/scripts/annotate-failures.sh check.log "check (${{ matrix.os }})"
+        run: |
+          "$BASH" .github/scripts/annotate-failures.sh check.log "check (${{ matrix.os }})"
 
   # Integration tests, one matrix entry per group of services so the CI machine never runs every
   # database at once (see docker/compose.test.yml: new services live in profiles and a profile is
@@ -190,14 +191,25 @@ jobs:
       # Turn failing tests into annotations (readable without downloading logs).
       - name: Summarize failing tests
         if: failure()
-        run: bash .github/scripts/annotate-failures.sh it.log integration
+        run: |
+          "$BASH" .github/scripts/annotate-failures.sh it.log integration
 
       # The Oracle driver needs Instant Client (a Linux build of it lives in the oracle-it image),
       # so its tests run in a container on the compose network instead of on the runner.
       - name: Run Oracle driver integration tests
         if: matrix.oracle
         timeout-minutes: 30
-        run: docker compose -f docker/compose.test.yml --profile tools run --rm oracle-it
+        shell: bash
+        run: |
+          set -o pipefail
+          docker compose -f docker/compose.test.yml --profile tools run --rm oracle-it 2>&1 | tee oracle.log
+
+      - name: Summarize failing Oracle tests
+        if: failure() && matrix.oracle
+        run: |
+          "$BASH" .github/scripts/annotate-failures.sh oracle.log oracle
+          # Not a cargo failure (image build, client, connection): show the tail.
+          grep -qE "^---- .* stdout ----$|^error" oracle.log || tail -n 15 oracle.log | while IFS= read -r l; do echo "::error title=oracle-it::${l//%/%25}"; done
 
       - name: Container logs (on failure)
         if: failure()
@@ -283,7 +295,8 @@ jobs:
       # Turn failing tests into annotations (readable without downloading logs).
       - name: Summarize failing tests
         if: failure()
-        run: bash .github/scripts/annotate-failures.sh it.log integration
+        run: |
+          "$BASH" .github/scripts/annotate-failures.sh it.log integration
 
       - name: Container logs (on failure)
         if: failure()
