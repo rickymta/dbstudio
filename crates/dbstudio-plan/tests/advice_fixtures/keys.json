@@ -84,6 +84,7 @@
     "rowsRemovedByRecheck",
     "selectivity",
     "selfTime",
+    "sortEliminated",
     "sortKey",
     "sortMethod",
     "sortRows",

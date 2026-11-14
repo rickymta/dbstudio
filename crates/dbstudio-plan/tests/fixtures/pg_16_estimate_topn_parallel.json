@@ -1,0 +1,55 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 4233.34,
+      "Total Cost": 4233.35,
+      "Plan Rows": 6,
+      "Plan Width": 52,
+      "Plans": [
+        {
+          "Node Type": "Gather Merge",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 4233.34,
+          "Total Cost": 4233.35,
+          "Plan Rows": 6,
+          "Plan Width": 52,
+          "Workers Planned": 2,
+          "Plans": [
+            {
+              "Node Type": "Sort",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 3233.32,
+              "Total Cost": 3233.33,
+              "Plan Rows": 3,
+              "Plan Width": 52,
+              "Sort Key": ["created_at DESC"],
+              "Plans": [
+                {
+                  "Node Type": "Seq Scan",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": true,
+                  "Async Capable": false,
+                  "Relation Name": "adv_orders",
+                  "Schema": "public",
+                  "Alias": "adv_orders",
+                  "Startup Cost": 0.00,
+                  "Total Cost": 3233.30,
+                  "Plan Rows": 3,
+                  "Plan Width": 52,
+                  "Filter": "((customer_id = 42) AND (status = 'paid'::text))"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

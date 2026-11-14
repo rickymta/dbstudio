@@ -49,12 +49,15 @@ export function useAdviceActions(planId: string): AdviceActions {
       const entry = usePlanStore.getState().entries[planId];
       if (!text || !entry) return;
       const select = !action.template;
-      // The editor the plan came from, when it is still open on the same session.
+      // The editor the plan came from, when it is still open on the same connection. The tab's
+      // own `sessionId` is not compared: a tab restored after a reload (or kept after a
+      // reconnect) has none or an old one, and a connection has one session at a time.
       const source = entry.sourceEditorId;
       if (source) {
         const tab = useTabsStore.getState().tabs.find((x) => x.id === editorTabId(source));
         if (
-          tab?.payload?.sessionId === entry.sessionId &&
+          tab?.kind === 'editor' &&
+          tab.payload.connectionId === entry.connectionId &&
           appendToEditor(source, text, { select })
         ) {
           return;

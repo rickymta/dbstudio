@@ -10,7 +10,9 @@ interface TooltipProps {
 
 /**
  * Lightweight CSS tooltip. The wrapper (not the child) receives hover, so it also works on
- * disabled buttons.
+ * disabled buttons. The bubble is `display: none` until shown (it still describes the child for
+ * assistive technology): an invisible but laid-out bubble widens the scrollable area of every
+ * ancestor, e.g. the "New query" bubble made the tab bar overflow its pane by 8px.
  */
 export function Tooltip({ content, children, side = 'top', className }: TooltipProps) {
   const id = useId();
@@ -22,8 +24,8 @@ export function Tooltip({ content, children, side = 'top', className }: TooltipP
         role="tooltip"
         className={cn(
           'pointer-events-none absolute left-1/2 z-50 -translate-x-1/2 whitespace-nowrap rounded',
-          'bg-foreground px-2 py-1 text-xs text-background opacity-0 shadow-md transition-opacity',
-          'group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100',
+          'hidden bg-foreground px-2 py-1 text-xs text-background shadow-md',
+          'group-hover/tooltip:block group-focus-within/tooltip:block',
           side === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5',
         )}
       >

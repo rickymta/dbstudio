@@ -378,6 +378,13 @@ const EXPECTED: &[Expectation] = &[
         Some(28850.0),
         &["0:misestimate:critical"],
     ),
+    (
+        "pg_16_estimate_topn_parallel.json",
+        false,
+        4,
+        Some(4233.35),
+        &[],
+    ),
 ];
 
 #[test]

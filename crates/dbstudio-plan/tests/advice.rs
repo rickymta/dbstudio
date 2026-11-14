@@ -358,3 +358,52 @@ fn mock_advice_matches_the_engine() {
         "src/lib/mock/planAdvice.json is stale; run `UPDATE_FIXTURES=1 cargo test -p dbstudio-plan --test advice` then `pnpm prettier --write src/lib/mock/planAdvice.json`"
     );
 }
+
+fn estimate_topn_case() -> (Case, RawPlan) {
+    let c = corpus()
+        .into_iter()
+        .find(|c| c.name == "pg_16_estimate_topn_parallel")
+        .unwrap();
+    let raw = raw_of(&c);
+    (c, raw)
+}
+
+#[test]
+fn estimated_plan_sees_a_selective_scan_and_closes_the_key_with_the_sort() {
+    use dbstudio_core::ObjectPath;
+    use dbstudio_plan::{MetadataState, TableKey, TableMeta};
+    let rules = PlanRules::default();
+    // Tier 1: no table size, the scan cost stands in for it; low confidence.
+    let (_, raw) = estimate_topn_case();
+    let tree = parse_and_analyze(&raw, &rules).unwrap();
+    let a = tree
+        .advice
+        .iter()
+        .find(|a| a.rule == dbstudio_plan::AdviceRule::IndexForFilter)
+        .expect("indexForFilter on the estimate");
+    assert_eq!(a.params["columns"], "customer_id, status, created_at DESC");
+    assert!(a.evidence.iter().any(|e| e.key == "sortEliminated"));
+    assert!(a.caveats.iter().any(|c| c.key == "estimatedOnly"));
+    assert_eq!(format!("{:?}", a.confidence), "Low");
+    // Tier 2: the catalog gives reltuples, the ratio is measured against it; medium.
+    let mut ctx = AdvisorContext::basic(&raw, &rules);
+    ctx.tables.insert(
+        TableKey::new(Some("public"), "adv_orders"),
+        TableMeta {
+            path: ObjectPath::root(),
+            estimated_rows: Some(200_000),
+            columns: vec![],
+            indexes: vec![],
+        },
+    );
+    ctx.metadata = MetadataState::Checked;
+    let tree = parse_and_analyze(&raw, &rules).unwrap();
+    let advice = advise(&tree, &raw.statement, &ctx);
+    let a = advice
+        .iter()
+        .find(|a| a.rule == dbstudio_plan::AdviceRule::IndexForFilter)
+        .expect("indexForFilter with metadata");
+    assert_eq!(format!("{:?}", a.confidence), "Medium");
+    assert!(a.params["examined"].starts_with("200000"));
+    assert!(!a.caveats.iter().any(|c| c.key == "metadataUnavailable"));
+}

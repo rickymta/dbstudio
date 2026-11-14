@@ -13,8 +13,8 @@ use dbstudio_core::{PlanFormat, ScriptDialect};
 use dbstudio_sql::lexer::{TokenKind, tokenize};
 
 use super::common::{
-    candidate, check_action, columns_text, ev, ev_text, num, own_names, statistics_action,
-    table_ref,
+    candidate, check_action, columns_text, ev, ev_text, num, own_names, sort_above,
+    sort_eliminated, statistics_action, table_ref,
 };
 use super::index::quote_ident;
 use super::model::{
@@ -667,7 +667,15 @@ fn index_for_filter(cx: &Cx<'_>, info: &StmtInfo, node: &PlanNode, out: &mut Vec
     {
         return;
     }
-    let Some(cand) = candidate(cx, &table, &eq, &[], range.as_ref()) else {
+    // Equality-only filter under a sort: the sort columns close the key (no Sort left).
+    let sorted = if range.is_none() && !eq.is_empty() {
+        sort_above(cx, node, &eq)
+    } else {
+        None
+    };
+    let sort_cols: Vec<(String, bool)> =
+        sorted.as_ref().map(|(_, c)| c.clone()).unwrap_or_default();
+    let Some(cand) = candidate(cx, &table, &eq, &sort_cols, range.as_ref()) else {
         return;
     };
     let warn = warning(cx, node.id, PlanRule::FullScanLargeTable);
@@ -715,6 +723,9 @@ fn index_for_filter(cx: &Cx<'_>, info: &StmtInfo, node: &PlanNode, out: &mut Vec
     if let Some(t) = node.self_time_ms {
         d.evidence
             .push(ev("selfTime", Some(node.id), t, EvidenceUnit::Ms, true));
+    }
+    if let Some((sort, cols)) = &sorted {
+        d.evidence.push(sort_eliminated(sort, cols));
     }
     if warn.is_some() {
         d.from_warnings.push(PlanRule::FullScanLargeTable);

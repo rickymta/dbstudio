@@ -162,7 +162,8 @@
   },
   "advice": {
     "title": "Gợi ý tối ưu",
-    "summary": "{{count}} điểm tối ưu · lớn nhất: {{title}}{{shareText}}",
+    "summary_one": "{{count}} điểm tối ưu · lớn nhất: {{title}}{{shareText}}",
+    "summary_other": "{{count}} điểm tối ưu · lớn nhất: {{title}}{{shareText}}",
     "summaryNone": "Không thấy điểm cần tối ưu rõ ràng",
     "share": {
       "time": " — node chiếm ~{{pct}} thời gian",
@@ -516,6 +517,7 @@
       "rowsRemovedByFilter": "Dòng bị bộ lọc loại",
       "rowsRemovedByRecheck": "Dòng bị loại khi kiểm tra lại",
       "selfTime": "Thời gian riêng",
+      "sortEliminated": "Index thay được bước sắp xếp",
       "sortKey": "Khoá sắp xếp",
       "sortMethod": "Cách sắp xếp",
       "sortRows": "Dòng được sắp xếp",

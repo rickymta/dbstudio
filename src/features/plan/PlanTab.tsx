@@ -61,6 +61,13 @@ import { cancelPlan, runPlan, usePlanStore } from './planStore';
 const INSPECTOR_AUTO_COLLAPSE_PX = 1100;
 /** Secondary stats (planning time, operator count) are dropped below this width. */
 const STATS_MIN_PX = 900;
+/**
+ * Below: Analyze / Run again are icon-only, the row count is dropped and the "rolled back" badge
+ * moves into the tooltip of the Analyzed badge.
+ */
+const COMPACT_MAX_PX = 800;
+/** Below: only the total cost stays of the stats. */
+const TINY_MAX_PX = 640;
 /** Below: secondary actions live in the ⋯ menu; up to ICON_ONLY_MAX_PX: icon-only buttons. */
 const MENU_MAX_PX = 1100;
 const ICON_ONLY_MAX_PX = 1280;
@@ -237,10 +244,20 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
     },
   ];
   const showStats = width >= STATS_MIN_PX;
+  const compact = width < COMPACT_MAX_PX;
+  const tiny = width < TINY_MAX_PX;
+  const onAnalyzeToggle = () =>
+    analyzing ? void runPlan(planId, { analyze: false }) : requestAnalyze('analyze');
+  const onRerun = () => (analyzing ? requestAnalyze('rerun') : void runPlan(planId));
   const header = (
     <div
-      className="flex h-9 shrink-0 flex-nowrap items-center gap-x-3 overflow-hidden border-b border-border px-3 text-xs"
+      className="flex h-9 shrink-0 flex-nowrap items-center gap-x-3 overflow-clip border-b border-border px-3 text-xs"
       data-testid="plan-header"
+      // `overflow: clip` never scrolls, not even to reveal a focused button; reset in case a
+      // browser scrolls the box anyway, so the statement and badges stay in view.
+      onScroll={(e) => {
+        e.currentTarget.scrollLeft = 0;
+      }}
     >
       <span className="min-w-0 flex-1 truncate font-mono" title={entry.statement}>
         {entry.statement.replace(/\s+/g, ' ')}
@@ -249,11 +266,12 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
         <Badge
           tone={entry.raw.analyzed ? 'success' : 'neutral'}
           className="shrink-0 whitespace-nowrap"
+          title={entry.raw.rolledBack && compact ? t('status.rolledBack') : undefined}
         >
           {entry.raw.analyzed ? t('status.analyzed') : t('status.estimated')}
         </Badge>
       )}
-      {entry.raw?.rolledBack && (
+      {entry.raw?.rolledBack && !compact && (
         <Badge tone="warning" className="shrink-0 whitespace-nowrap">
           {t('status.rolledBack')}
         </Badge>
@@ -275,37 +293,48 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
               value={formatDuration(tree.totals.planningTimeMs)}
             />
           )}
-          {tree.totals.executionTimeMs != null && (
+          {!tiny && tree.totals.executionTimeMs != null && (
             <Stat
               label={t('summary.execution')}
               value={formatDuration(tree.totals.executionTimeMs)}
             />
           )}
-          <Stat label={t('summary.rows')} value={formatCount(tree.totals.rows)} />
+          {!compact && <Stat label={t('summary.rows')} value={formatCount(tree.totals.rows)} />}
           {showStats && <Stat label={t('summary.nodes')} value={formatCount(tree.nodeCount)} />}
         </span>
       )}
       <span className="flex shrink-0 items-center gap-1">
         {entry.request && (
           <>
-            <Button
-              size="sm"
-              disabled={entry.status === 'loading'}
-              onClick={() =>
-                analyzing ? void runPlan(planId, { analyze: false }) : requestAnalyze('analyze')
-              }
-            >
-              <Gauge size={13} />
-              {analyzing ? t('toolbar.estimate') : t('toolbar.analyze')}
-            </Button>
-            <Button
-              size="sm"
-              disabled={entry.status === 'loading'}
-              onClick={() => (analyzing ? requestAnalyze('rerun') : void runPlan(planId))}
-            >
-              <RefreshCw size={13} />
-              {t('toolbar.rerun')}
-            </Button>
+            {compact ? (
+              <>
+                <IconButton
+                  variant="outline"
+                  label={analyzing ? t('toolbar.estimate') : t('toolbar.analyze')}
+                  icon={<Gauge size={13} />}
+                  disabled={entry.status === 'loading'}
+                  onClick={onAnalyzeToggle}
+                />
+                <IconButton
+                  variant="outline"
+                  label={t('toolbar.rerun')}
+                  icon={<RefreshCw size={13} />}
+                  disabled={entry.status === 'loading'}
+                  onClick={onRerun}
+                />
+              </>
+            ) : (
+              <>
+                <Button size="sm" disabled={entry.status === 'loading'} onClick={onAnalyzeToggle}>
+                  <Gauge size={13} />
+                  {analyzing ? t('toolbar.estimate') : t('toolbar.analyze')}
+                </Button>
+                <Button size="sm" disabled={entry.status === 'loading'} onClick={onRerun}>
+                  <RefreshCw size={13} />
+                  {t('toolbar.rerun')}
+                </Button>
+              </>
+            )}
             {entry.status === 'loading' && (
               <Button size="sm" variant="danger" onClick={() => cancelPlan(planId)}>
                 <X size={13} />

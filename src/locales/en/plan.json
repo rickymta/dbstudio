@@ -162,7 +162,8 @@
   },
   "advice": {
     "title": "Optimisation advice",
-    "summary": "{{count}} optimisation points · biggest: {{title}}{{shareText}}",
+    "summary_one": "{{count}} optimisation point · biggest: {{title}}{{shareText}}",
+    "summary_other": "{{count}} optimisation points · biggest: {{title}}{{shareText}}",
     "summaryNone": "No clear optimisation point found",
     "share": {
       "time": " — the node takes ~{{pct}} of the time",
@@ -516,6 +517,7 @@
       "rowsRemovedByFilter": "Rows removed by filter",
       "rowsRemovedByRecheck": "Rows removed by recheck",
       "selfTime": "Own time",
+      "sortEliminated": "Sort removed by the index",
       "sortKey": "Sort key",
       "sortMethod": "Sort method",
       "sortRows": "Rows sorted",

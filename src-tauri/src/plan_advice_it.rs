@@ -225,6 +225,8 @@ impl Harness {
             self.scope_db.clone(),
             None,
             true,
+            // A live session explained the plan: the catalog is the right one.
+            true,
             crate::commands::plan::AdviseLimits::default(),
         )
         .await
@@ -346,12 +348,47 @@ async fn pg16_advice_end_to_end() {
     let h2 = h.clone();
     guarded(&h, &PG_CLEANUP, move || async move {
         pg_seed(&h2).await;
+        pg_estimate_sort_index(&h2).await;
         pg_filter_and_index(&h2).await;
         pg_function_on_indexed_column(&h2).await;
         pg_sort_spill(&h2).await;
         pg_metadata(&h2).await;
     })
     .await;
+}
+
+/// Case 0: an ESTIMATE-only plan still gets `indexForFilter`, and with ORDER BY .. LIMIT the sort
+/// column closes the key so the index can also serve the order.
+async fn pg_estimate_sort_index(h: &Harness) {
+    let q = "SELECT * FROM adv_orders WHERE customer_id = 42 AND status = 'paid' \
+             ORDER BY created_at DESC LIMIT 20";
+    let (_, report) = h.plan_with(q, false).await;
+    let advice = find(&report, AdviceRule::IndexForFilter)
+        .unwrap_or_else(|| panic!("indexForFilter missing: {:?}", rules_of(&report)));
+    let sql = create_index_sql(advice);
+    eprintln!("pg estimate createIndex: {sql}");
+    assert!(
+        sql.contains("(customer_id, status, created_at DESC)"),
+        "{sql}"
+    );
+    assert!(
+        advice.evidence.iter().any(|e| e.key == "sortEliminated"),
+        "{:?}",
+        advice.evidence
+    );
+    h.run(&sql).await;
+    h.run("ANALYZE adv_orders").await;
+    let raw = h.explain(q, false).await;
+    // With only ~10 matching rows the planner may still sort them (bitmap scan + Sort), so the
+    // check is that the new index serves the query.
+    assert!(
+        raw.text
+            .contains("\"Index Name\": \"ix_adv_orders_customer_id_status_created_at\""),
+        "index not used: {}",
+        raw.text
+    );
+    h.run("DROP INDEX ix_adv_orders_customer_id_status_created_at")
+        .await;
 }
 
 /// Case 1: a filter without an index gets `indexForFilter`; running its DDL fixes the plan.
@@ -545,6 +582,7 @@ async fn my_advice_end_to_end(server: Server) {
         my_seed(&boot).await;
         let h = open(&server).await.expect("reopen on the scratch database");
         my_fill(&h).await;
+        my_sort_index(&h).await;
         my_filter_and_index(&h).await;
         my_function_on_indexed_column(&h, &server).await;
         my_implicit_conversion(&h, &server).await;
@@ -585,6 +623,18 @@ async fn my_filter_and_index(h: &Harness) {
         "advice still there: {:?}",
         rules_of(&after)
     );
+}
+
+/// ORDER BY .. LIMIT over equality filters: the sort column closes the key.
+async fn my_sort_index(h: &Harness) {
+    let q = "SELECT * FROM adv_orders WHERE customer_id = 42 AND status = 'paid' \
+             ORDER BY created_at DESC LIMIT 20";
+    let (_, report) = h.plan(q).await;
+    let advice = find(&report, AdviceRule::IndexForFilter)
+        .unwrap_or_else(|| panic!("indexForFilter missing: {:?}", rules_of(&report)));
+    let sql = create_index_sql(advice);
+    eprintln!("mysql sort createIndex: {sql}");
+    assert!(sql.contains("customer_id"), "{sql}");
 }
 
 async fn my_function_on_indexed_column(h: &Harness, _server: &Server) {

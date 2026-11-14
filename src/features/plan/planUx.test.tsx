@@ -210,6 +210,39 @@ describe('plan header (F2b)', () => {
     expect(within(header).getByText('Total cost')).toBeInTheDocument();
   });
 
+  it('fits a 720px pane: nothing in the header is wider than the frame', () => {
+    stubLayout(720);
+    mountTab(
+      seedPlan({
+        statement: "select * from adv_orders where customer_id = 42 and status = 'paid'",
+      }),
+    );
+    const header = screen.getByTestId('plan-header');
+    // The frame clips instead of scrolling, so focusing a button never moves the statement away.
+    expect(header.className).toContain('overflow-clip');
+    const statement = header.firstElementChild as HTMLElement;
+    expect(statement.className).toContain('min-w-0');
+    expect(statement.className).toContain('truncate');
+    // jsdom has no layout: size every other child from its text (6px a character, icon buttons
+    // 28px) and require that they all fit beside the statement with its minimum of 80px.
+    const PX = 6;
+    const widthOf = (el: Element): number => {
+      const buttons = [...el.querySelectorAll('button')];
+      if (el.tagName === 'BUTTON') return el.textContent ? el.textContent.length * PX + 28 : 28;
+      if (buttons.length > 0) {
+        return buttons.reduce((sum, b) => sum + widthOf(b), 0) + (buttons.length - 1) * 4;
+      }
+      return (el.textContent?.length ?? 0) * PX + 12;
+    };
+    const others = [...header.children].slice(1);
+    const gaps = others.length * 12;
+    const total = 24 + 80 + gaps + others.reduce((sum, el) => sum + widthOf(el), 0);
+    expect(total).toBeLessThanOrEqual(720);
+    // The actions stay reachable by name even as icons.
+    expect(within(header).getByRole('button', { name: 'Run again' })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: /Estimate only/ })).toBeInTheDocument();
+  });
+
   it('uses icon-only buttons between 1100 and 1280px and labelled ones above', () => {
     stubLayout(1200);
     const first = render(

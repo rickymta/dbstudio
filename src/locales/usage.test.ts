@@ -135,7 +135,10 @@ describe('translation keys used in source', () => {
           const [prefixNs] = full.split(':');
           if (!(NAMESPACES as readonly string[]).includes(prefixNs!)) continue;
           checked++;
-          if (!available.has(full)) missing.push(`${file}: ${full}`);
+          // A plural key (`count`) exists as `key_one` / `key_other`.
+          if (!available.has(full) && !available.has(`${full}_other`)) {
+            missing.push(`${file}: ${full}`);
+          }
         }
       }
     }

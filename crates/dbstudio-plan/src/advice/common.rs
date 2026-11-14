@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use dbstudio_core::{PlanFormat, ScriptDialect};
 
+use super::context::Flavor;
 use super::index::{IndexCandidate, IndexKey, MAX_KEY_COLUMNS, quote_ident};
 use super::model::{
     ActionKind, ActionScope, AdviceAction, AdviceRule, Caveat, Confidence, Evidence, EvidenceUnit,
@@ -316,6 +317,9 @@ pub(crate) fn row_stats(cx: &Cx<'_>, node: &PlanNode, table: &TableRef) -> RowSt
 }
 
 fn pct(p: f64) -> String {
+    if p > 0.0 && (p * 1000.0).round() == 0.0 {
+        return "<0.1%".into();
+    }
     format!("{}%", fmt_num((p * 1000.0).round() / 10.0))
 }
 
@@ -334,6 +338,77 @@ pub(crate) fn node_rules(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
     misestimate(cx, node, out);
 }
 
+/// Rough table size from the cost of a PostgreSQL sequential scan: each row costs about one
+/// page share plus `cpu_tuple_cost` plus the filter operators, ~0.03 on a typical table.
+fn rows_from_cost(cx: &Cx<'_>, node: &PlanNode) -> Option<f64> {
+    const COST_PER_ROW: f64 = 0.03;
+    if !matches!(cx.ctx.flavor(), Flavor::Postgres | Flavor::Yugabyte) {
+        return None;
+    }
+    node.est_cost
+        .filter(|c| *c > 0.0)
+        .map(|c| (c / COST_PER_ROW).round())
+}
+
+/// Evidence that the suggested index serves the order of `sort`, so the Sort goes away.
+pub(crate) fn sort_eliminated(sort: &PlanNode, cols: &[(String, bool)]) -> Evidence {
+    ev_text(
+        "sortEliminated",
+        Some(sort.id),
+        cols.iter()
+            .map(|(n, desc)| format!("{n}{}", if *desc { " DESC" } else { "" }))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+/// The `Sort` that orders the output of the single-table scan `node` (only parallelism or filter nodes in
+/// between), with its sort columns that are not already equality columns. `None` when there is
+/// no such sort, a sort key is computed or not of the table, or every key is an equality column.
+pub(crate) fn sort_above<'a>(
+    cx: &Cx<'a>,
+    node: &PlanNode,
+    eq: &[ColRef],
+) -> Option<(&'a PlanNode, Vec<(String, bool)>)> {
+    let mut cur = node.id;
+    let sort = loop {
+        let parent = cx.parent_of(cur)?;
+        match parent.kind {
+            PlanNodeKind::Gather | PlanNodeKind::Filter => cur = parent.id,
+            PlanNodeKind::Sort => break parent,
+            _ => return None,
+        }
+    };
+    let own = own_names(node);
+    let mut cols: Vec<(String, bool)> = Vec::new();
+    for p in sort
+        .predicates
+        .iter()
+        .filter(|p| p.role == PredicateRole::SortKey)
+    {
+        let k = parse_sort_key(cx.ctx.dialect, &p.text)?;
+        let own_col = k
+            .col
+            .qualifier
+            .as_ref()
+            .is_none_or(|q| own.iter().any(|o| o.eq_ignore_ascii_case(q)));
+        if k.computed || !own_col {
+            return None;
+        }
+        if !eq.iter().any(|e| e.key() == k.col.key())
+            && !cols
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case(&k.col.name))
+        {
+            cols.push((k.col.name.clone(), k.desc));
+        }
+    }
+    if cols.is_empty() {
+        return None;
+    }
+    Some((sort, cols))
+}
+
 fn index_for_filter(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
     if node.kind != PlanNodeKind::FullScan {
         return;
@@ -344,9 +419,19 @@ fn index_for_filter(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
     if eq.is_empty() && range.is_none() {
         return;
     }
-    let stats = row_stats(cx, node, &table);
+    let mut stats = row_stats(cx, node, &table);
     let rules = cx.ctx.rules;
-    let selectivity = match (stats.kept, stats.examined) {
+    // An estimated plan of PostgreSQL without a catalog size: the scan cost stands in for the
+    // table size (design 4.0, estimates), so a scan that keeps a handful of rows of a big table
+    // is still seen. Cost-derived figures are rough, hence never counted as a known size.
+    let mut size_from_cost = false;
+    if !stats.actual && stats.examined.is_none() {
+        if let Some(rows) = rows_from_cost(cx, node) {
+            stats.examined = Some(rows);
+            size_from_cost = true;
+        }
+    }
+    let mut selectivity = match (stats.kept, stats.examined) {
         (Some(k), Some(e)) if e > 0.0 => Some((k / e).min(1.0)),
         _ => None,
     };
@@ -361,21 +446,41 @@ fn index_for_filter(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
             return;
         }
     } else {
-        // Estimates: the output estimate must be sizeable, and a known table size must make the
-        // filter selective.
+        // Estimates: the output estimate must be sizeable, or the (known or cost-derived) table
+        // size must be large and the filter selective.
+        let big_output = stats.kept.is_some_and(|k| k >= rules.filter_min_examined);
         if let Some(sel) = selectivity {
-            if stats
+            let selective = stats
                 .examined
-                .is_some_and(|e| e < rules.filter_min_examined)
-                || sel > rules.filter_max_selectivity
-            {
+                .is_some_and(|e| e >= rules.filter_min_examined)
+                && sel <= rules.filter_max_selectivity;
+            // A cost-derived size is rough: it may only add advice, never withdraw the one a
+            // sizeable output estimate gives on its own.
+            if !selective && !(size_from_cost && big_output) {
                 return;
             }
-        } else if stats.kept.is_none_or(|k| k < rules.filter_min_examined) {
+            if size_from_cost && !selective {
+                // Only the output estimate carries this advice: drop the rough size.
+                size_from_cost = false;
+                stats.examined = None;
+                selectivity = None;
+            }
+        } else if !big_output {
             return;
         }
     }
-    let Some(cand) = candidate(cx, &table, &eq, &[], range.as_ref()) else {
+    // Equality-only filter under a sort: the sort columns close the key and the index serves
+    // the order, so the Sort disappears.
+    let sort_above = if range.is_none() && !eq.is_empty() {
+        sort_above(cx, node, &eq)
+    } else {
+        None
+    };
+    let sort_cols: Vec<(String, bool)> = sort_above
+        .as_ref()
+        .map(|(_, c)| c.clone())
+        .unwrap_or_default();
+    let Some(cand) = candidate(cx, &table, &eq, &sort_cols, range.as_ref()) else {
         return;
     };
     let mut d = Draft::new(
@@ -387,7 +492,7 @@ fn index_for_filter(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
     .node(node.id)
     .param("columns", columns_text(&cand));
     d.needs_actual = true;
-    d.needs_metadata = !stats.actual && selectivity.is_none();
+    d.needs_metadata = !stats.actual && (selectivity.is_none() || size_from_cost);
     d.examined = stats.examined.or(stats.kept);
     d.fingerprint_key = cand
         .keys
@@ -428,6 +533,9 @@ fn index_for_filter(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
     if let Some(t) = node.self_time_ms {
         d.evidence
             .push(ev("selfTime", Some(node.id), t, EvidenceUnit::Ms, true));
+    }
+    if let Some((sort, cols)) = &sort_above {
+        d.evidence.push(sort_eliminated(sort, cols));
     }
     if warning(cx, node.id, PlanRule::FullScanLargeTable).is_some() {
         d.from_warnings.push(PlanRule::FullScanLargeTable);

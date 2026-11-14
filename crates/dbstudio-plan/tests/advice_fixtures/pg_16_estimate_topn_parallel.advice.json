@@ -1,0 +1,72 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_adv_orders_customer_id_status_created_at ON public.adv_orders (customer_id, status, created_at DESC);",
+        "template": false
+      }
+    ],
+    "basis": "cost",
+    "caveats": [
+      "writeOverhead",
+      "estimatedOnly",
+      "metadataUnavailable"
+    ],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "rowsRead",
+        "nodeId": 3,
+        "text": null,
+        "unit": "rows",
+        "value": 107777.0
+      },
+      {
+        "actual": false,
+        "key": "rowsKept",
+        "nodeId": 3,
+        "text": null,
+        "unit": "rows",
+        "value": 3.0
+      },
+      {
+        "actual": false,
+        "key": "selectivity",
+        "nodeId": 3,
+        "text": null,
+        "unit": "pct",
+        "value": 0.0027835252419347355
+      },
+      {
+        "actual": false,
+        "key": "sortEliminated",
+        "nodeId": 2,
+        "text": "created_at DESC",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      3
+    ],
+    "params": {
+      "columns": "customer_id, status, created_at DESC",
+      "examined": "107777",
+      "index": "ix_adv_orders_customer_id_status_created_at",
+      "kept": "3",
+      "selectivity": "<0.1%",
+      "table": "public.adv_orders"
+    },
+    "rule": "indexForFilter",
+    "severity": "warning",
+    "share": 0.764,
+    "statementRange": null,
+    "table": "public.adv_orders"
+  }
+]

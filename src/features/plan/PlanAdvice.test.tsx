@@ -390,6 +390,47 @@ describe('actions', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it('appends to a source editor restored after a reload (no session id in its tab)', async () => {
+    openEditorTab();
+    useTabsStore.setState((st) => ({
+      tabs: st.tabs.map((x) =>
+        x.id === editorTabId('ed1') && x.kind === 'editor'
+          ? { ...x, payload: { ...x.payload, sessionId: null } }
+          : x,
+      ),
+    }));
+    const before = useTabsStore.getState().tabs.length;
+    const user = mount(seed(ADVICE, { sourceEditorId: 'ed1' }));
+    const card = await screen.findByTestId('advice-card-indexForFilter:aaaa');
+    await user.click(within(card).getAllByRole('button')[0]!);
+    await user.click(within(card).getByRole('button', { name: /Insert into editor/ }));
+    expect(useEditorStore.getState().tabs.ed1!.text).toBe(`select * from orders\n\n${INDEX_SQL}`);
+    expect(useTabsStore.getState().tabs.length).toBe(before);
+  });
+
+  it('opens a new editor with a distinct title when the source is on another connection', async () => {
+    openEditorTab();
+    useTabsStore.setState((st) => ({
+      tabs: st.tabs.map((x) =>
+        x.id === editorTabId('ed1') && x.kind === 'editor'
+          ? { ...x, payload: { ...x.payload, connectionId: 'other' } }
+          : x,
+      ),
+    }));
+    useSessionsStore.setState({ sessionsByConnection: { c1: fakeSession } });
+    const user = mount(seed(ADVICE, { sourceEditorId: 'ed1' }));
+    const card = await screen.findByTestId('advice-card-indexForFilter:aaaa');
+    await user.click(within(card).getAllByRole('button')[0]!);
+    await user.click(within(card).getByRole('button', { name: /Insert into editor/ }));
+    expect(useEditorStore.getState().tabs.ed1!.text).toBe('select * from orders');
+    const active = useTabsStore
+      .getState()
+      .tabs.find((t) => t.id === useTabsStore.getState().activeId)!;
+    const created =
+      useEditorStore.getState().tabs[(active.payload as EditorTabPayload).tabStateId]!;
+    expect(created.title).not.toBe('Query 1');
+  });
+
   it('puts the cursor after a template instead of selecting it', async () => {
     openEditorTab('');
     const template = makeAdvice({

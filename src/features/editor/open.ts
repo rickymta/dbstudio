@@ -43,10 +43,31 @@ export function contextOfPath(path: ObjectPath | undefined): {
 
 let queryNumber = 0;
 
-/** "Query 3" in the current language; numbers only grow so titles stay distinct. */
+/** Titles of the editors that are open (tabs restored after a reload included). */
+function openEditorTitles(): Set<string> {
+  const titles = new Set<string>();
+  for (const tab of useTabsStore.getState().tabs) {
+    if (tab.kind === 'editor' && typeof tab.title === 'string') titles.add(tab.title);
+  }
+  for (const data of Object.values(useEditorStore.getState().tabs)) {
+    if (data.title) titles.add(data.title);
+  }
+  return titles;
+}
+
+/**
+ * "Query 3" in the current language. Numbers only grow within a run, and a number whose title an
+ * open editor already carries (the counter restarts at a reload while restored tabs keep their
+ * titles) is skipped, so titles stay distinct.
+ */
 export function nextEditorTitle(): string {
-  queryNumber++;
-  return i18n.t('editor:tab.untitled', { n: queryNumber });
+  const used = openEditorTitles();
+  let title: string;
+  do {
+    queryNumber++;
+    title = i18n.t('editor:tab.untitled', { n: queryNumber });
+  } while (used.has(title));
+  return title;
 }
 
 /** Register a new editor: its state, close guard and tab. Returns the id of the editor state. */
