@@ -11,6 +11,12 @@ use dbstudio_core::{
     Error, Result, Secret, Session,
 };
 
+mod conn;
+mod error;
+mod http;
+mod rowbinary;
+mod types;
+
 /// Driver for ClickHouse servers.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ClickHouseDriver;
