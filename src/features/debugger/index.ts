@@ -1,5 +1,4 @@
-// SQL debugger frontend (package F). Step 0 only provides the placeholders the editor links to;
-// the real components replace the bodies of these files without touching the editor again.
+// SQL debugger frontend (package F). Entry points used by the editor and the tab registry.
 
 export { DebugBottomHost, type DebugBottomHostProps } from './DebugBottomHost';
 export { DebugButton, type DebugButtonProps } from './DebugButton';
