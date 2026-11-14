@@ -372,7 +372,11 @@ where
     let lease_db = lease.state().database;
     let confirm_text = guard::confirm_text_for(&config, lease_db.as_deref());
     let (read_only, production) = guard::policy_flags(&config);
-    let dialect = session.script_dialect();
+    // The lease splits text with its own dialect (per-connection `sql_mode`): the guard must
+    // see the same statements.
+    let dialect = lease
+        .script_dialect()
+        .unwrap_or_else(|| session.script_dialect());
     let lease_state = lease.state();
     let context = format!(
         "{}/{}",
@@ -494,7 +498,11 @@ pub(crate) async fn lease_begin_impl(
     let (session_id, lease) = state.leases.get_with_session(lease_id)?;
     // A read-only connection never gets a read-write transaction.
     let mut options = options;
-    if state.sessions.get_with_config(session_id)?.1.read_only {
+    // (Servers without read-only transactions, e.g. TiDB, rely on the statement guard: the
+    // profile's read-only flag then does not turn into a read-only transaction.)
+    let (session, config) = state.sessions.get_with_config(session_id)?;
+    let supports_ro_tx = session.capabilities().is_none_or(|c| c.read_only_session);
+    if config.read_only && supports_ro_tx {
         options.read_only = true;
     }
     let result = lease.begin(options).await;

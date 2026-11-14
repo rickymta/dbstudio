@@ -1,0 +1,30 @@
+[
+ {
+  "id": "Update_4",
+  "estRows": "N/A",
+  "task": "root",
+  "access object": "",
+  "operator info": "N/A"
+ },
+ {
+  "id": "└─IndexLookUp_11",
+  "estRows": "100.00",
+  "task": "root",
+  "access object": "",
+  "operator info": ""
+ },
+ {
+  "id": "  ├─IndexRangeScan_9(Build)",
+  "estRows": "100.00",
+  "task": "cop[tikv]",
+  "access object": "table:orders, index:idx_customer(customer_id)",
+  "operator info": "range:[3,3], keep order:false"
+ },
+ {
+  "id": "  └─TableRowIDScan_10(Probe)",
+  "estRows": "100.00",
+  "task": "cop[tikv]",
+  "access object": "table:orders",
+  "operator info": "keep order:false"
+ }
+]

@@ -241,13 +241,15 @@ fn spill_signal(
             (no_queue && rows >= rules.large_table_rows / 10.0)
                 .then(|| (Severity::Info, format!("filesort {} rows", fmt_num(rows))))
         }
-        // Spill detection for the new formats is added together with their parsers.
+        // TiDB: the `disk` column of EXPLAIN ANALYZE is the data spilled to temporary storage.
+        PlanFormat::TiDbRows => crate::tidb::spilled_bytes(ex)
+            .map(|b| (Severity::Warning, format!("disk {} bytes", fmt_num(b)))),
+        // Spill detection for the other new formats is added together with their parsers.
         PlanFormat::MySqlJson
         | PlanFormat::MySqlJsonV2
         | PlanFormat::MySqlTree
         | PlanFormat::ClickHouseJson
         | PlanFormat::CockroachText
-        | PlanFormat::TiDbRows
         | PlanFormat::CqlTrace => None,
     }
 }

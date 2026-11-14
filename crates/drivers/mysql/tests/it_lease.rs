@@ -1,5 +1,5 @@
 //! Integration tests of the MySQL / MariaDB lease (dedicated editor connection).
-//! Run with `DBSTUDIO_IT=1`; the servers tested are `mysql8` and `mariadb`.
+//! Run with `DBSTUDIO_IT=1`; the servers tested are `mysql8`, `mariadb` and (when it runs) `tidb`.
 
 mod common;
 
@@ -14,7 +14,7 @@ use dbstudio_core::{
 };
 
 fn lease_targets() -> Vec<Target> {
-    [MYSQL8, MARIADB]
+    [MYSQL8, MARIADB, TIDB]
         .into_iter()
         .filter(|t| selected(*t))
         .collect()
@@ -316,21 +316,45 @@ async fn explicit_transactions_in_auto_commit_mode() {
         assert_eq!(lease.state().transaction, TxStatus::Idle);
 
         // Options: read only, isolation; snapshot is not supported.
-        lease
-            .begin(TxOptions {
-                read_only: true,
-                isolation: Some(IsolationLevel::Serializable),
-            })
-            .await
-            .unwrap();
-        let err = lease
-            .execute(
-                QueryRequest::new("INSERT INTO t VALUES (9)"),
-                &mut CollectingSink::new(),
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(err.kind(), "query", "[{}] {err:?}", t.name);
+        if t.tidb {
+            // TiDB: no read-only transactions, only READ COMMITTED / REPEATABLE READ.
+            for opts in [
+                TxOptions {
+                    read_only: true,
+                    isolation: None,
+                },
+                TxOptions {
+                    read_only: false,
+                    isolation: Some(IsolationLevel::Serializable),
+                },
+            ] {
+                let err = lease.begin(opts).await.unwrap_err();
+                assert_eq!(err.kind(), "unsupported", "[{}] {err:?}", t.name);
+            }
+            lease
+                .begin(TxOptions {
+                    read_only: false,
+                    isolation: Some(IsolationLevel::RepeatableRead),
+                })
+                .await
+                .unwrap();
+        } else {
+            lease
+                .begin(TxOptions {
+                    read_only: true,
+                    isolation: Some(IsolationLevel::Serializable),
+                })
+                .await
+                .unwrap();
+            let err = lease
+                .execute(
+                    QueryRequest::new("INSERT INTO t VALUES (9)"),
+                    &mut CollectingSink::new(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(err.kind(), "query", "[{}] {err:?}", t.name);
+        }
         lease.rollback().await.unwrap();
         assert_eq!(
             lease
@@ -576,6 +600,10 @@ async fn read_only_connection_applies_to_leases() {
         return;
     }
     for t in lease_targets() {
+        if t.tidb {
+            println!("skip [tidb]: no read-only sessions (capability off, app-level guard)");
+            continue;
+        }
         let db = scratch_db(t, "lease_ro").await;
         let root = root_session(t).await;
         run(&*root, &format!("CREATE TABLE `{db}`.t (a int)")).await;
@@ -652,6 +680,10 @@ async fn read_only_profile_stays_read_only() {
         return;
     }
     for t in lease_targets() {
+        if t.tidb {
+            println!("skip [tidb]: no read-only sessions (capability off, app-level guard)");
+            continue;
+        }
         let db = scratch_db(t, "lease_ro2").await;
         let root = root_session(t).await;
         run(
@@ -784,20 +816,23 @@ async fn only_plain_selects_stay_open_for_fetch_more() {
         let s = user_session(t).await;
         let lease = open(&*s, &db, true).await;
         fixture_digits(&*lease).await;
-        exec(
-            &*lease,
-            "CREATE PROCEDURE p() SELECT d FROM digits ORDER BY d",
-        )
-        .await;
+        // (TiDB has no stored procedures: that half is skipped there.)
+        if !t.tidb {
+            exec(
+                &*lease,
+                "CREATE PROCEDURE p() SELECT d FROM digits ORDER BY d",
+            )
+            .await;
 
-        // CALL with more rows than max_rows: read to the end, nothing stays pending, and the
-        // procedure was not killed half way.
-        let mut req = QueryRequest::new("CALL p()");
-        req.max_rows = Some(3);
-        let mut sink = CollectingSink::new();
-        lease.execute(req, &mut sink).await.unwrap();
-        assert_eq!(lease.state().pending_result, None, "[{}]", t.name);
-        assert_eq!(first_int(&exec(&*lease, "SELECT 5").await), 5);
+            // CALL with more rows than max_rows: read to the end, nothing stays pending, and the
+            // procedure was not killed half way.
+            let mut req = QueryRequest::new("CALL p()");
+            req.max_rows = Some(3);
+            let mut sink = CollectingSink::new();
+            lease.execute(req, &mut sink).await.unwrap();
+            assert_eq!(lease.state().pending_result, None, "[{}]", t.name);
+            assert_eq!(first_int(&exec(&*lease, "SELECT 5").await), 5);
+        }
 
         // A plain SELECT does.
         let mut req = QueryRequest::new("SELECT d FROM digits ORDER BY d");

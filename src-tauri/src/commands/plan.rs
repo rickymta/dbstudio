@@ -237,9 +237,17 @@ pub(crate) async fn explain_impl(
         Some(id) => format!("lease:{id}"),
         None => format!("session:{session_id}"),
     };
+    let check_dialect = match lease_id {
+        Some(id) => state
+            .leases
+            .get(id)?
+            .script_dialect()
+            .unwrap_or_else(|| session.script_dialect()),
+        None => session.script_dialect(),
+    };
     check_explain(
         &state.confirm,
-        session.script_dialect(),
+        check_dialect,
         &config,
         &request,
         &target,
