@@ -1190,18 +1190,29 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
                     col.clone(),
                 )
             });
-            match (s.owner_dep.as_deref(), &owner_table) {
-                (Some("a"), Some((tbl, col, key, _))) if emitted_table(&rels, key) => out.post(
-                    path.clone(),
+            // Statements that need the owning table (OWNED BY, the current value of a serial
+            // or identity sequence) are filed under that table: a partial restore that
+            // leaves the table out leaves them out too, instead of failing or rewinding a
+            // sequence that is shared.
+            let owner_path = match (&owner_table, s.owner_dep.as_deref()) {
+                (Some((_, _, key, _)), Some("a" | "i")) if emitted_table(&rels, key) => {
+                    Some(object_path(database, &key.0, ObjectKind::Table, &key.1))
+                }
+                _ => None,
+            };
+            if let (Some("a"), Some((tbl, col, _, _)), Some(op)) =
+                (s.owner_dep.as_deref(), &owner_table, &owner_path)
+            {
+                out.post(
+                    op.clone(),
                     ObjectKind::Sequence,
                     format!("ALTER SEQUENCE {q} OWNED BY {tbl}.{col};"),
                     vec![],
-                ),
-                _ => {}
+                );
             }
             if !s.readable {
                 out.post(
-                    path.clone(),
+                    owner_path.clone().unwrap_or_else(|| path.clone()),
                     ObjectKind::Sequence,
                     format!(
                         "-- Warning: no SELECT privilege on sequence {q}: its current value was not captured"
@@ -1222,7 +1233,12 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
                         quote_literal(&q)
                     ),
                 };
-                out.post(path, ObjectKind::Sequence, sql, vec![]);
+                out.post(
+                    owner_path.unwrap_or(path),
+                    ObjectKind::Sequence,
+                    sql,
+                    vec![],
+                );
             }
         }
     }

@@ -272,7 +272,11 @@ pub fn notification_for(lang: Lang, job: &BackupJob, run: &BackupRun) -> Option<
         RunStatus::Failed if job.notify.on_failure => Some(crate::notify::backup_failed(
             lang,
             &job.name,
-            run.error.as_ref().map(|e| e.message.as_str()),
+            // Error texts may quote a connection string: mask secrets before the OS shows it.
+            run.error
+                .as_ref()
+                .map(|e| crate::redact::redact(&e.message))
+                .as_deref(),
         )),
         _ => None,
     }

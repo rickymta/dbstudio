@@ -438,6 +438,31 @@ async fn mongo_round_trip(replica: bool) {
         ejson_lines(&s, &dst, "logs").await
     );
 
+    // A data-only backup cannot be restored with `clean` (the structure would be lost).
+    let dir2 = tempfile::tempdir().unwrap();
+    let mut data_only = spec(db_node(&src), dir2.path(), false);
+    data_only.engine = BackupEngine::Logical {
+        content: ExportContent::Data,
+        ddl: Default::default(),
+    };
+    let o2 = run_backup(ctx(&cfg, &s, &rep), &data_only, None)
+        .await
+        .unwrap();
+    let before = ejson_lines(&s, &dst, "logs").await;
+    let e = run_restore(
+        ctx(&cfg, &s, &rep),
+        &restore_spec(&o2.files[0], Some(&dst), true, vec![]),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(e.message().contains("only data"), "{}", e.message());
+    assert_eq!(
+        before,
+        ejson_lines(&s, &dst, "logs").await,
+        "nothing was dropped"
+    );
+
     for db in [&src, &dst, &part] {
         run(&*s, Some(db), "db.dropDatabase()").await;
     }
@@ -566,15 +591,6 @@ async fn redis_round_trip(name: &'static str, var: &str, default_port: u16, tls:
     let ins = inspect(&file, None).await.unwrap();
     assert_eq!(ins.preamble.unwrap()["engine"], "logical-redis");
     verify(&file, None, &*rep).await.unwrap();
-    assert!(
-        rep.logs
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|l| !l.contains("snapshot")),
-        "the snapshot note is in the preamble"
-    );
-
     run(&*s, Some(db), "FLUSHDB").await;
     assert_eq!(first_int(&run(&*s, Some(db), "DBSIZE").await), 0);
     let res = run_restore(

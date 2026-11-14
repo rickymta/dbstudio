@@ -592,6 +592,12 @@ async fn native_restore(
     spec: &RestoreSpec,
     tmp: &Path,
 ) -> Result<RestoreOutcome> {
+    if !spec.objects.is_empty() {
+        return Err(Error::Unsupported(
+            "a backup made by a native tool is restored whole; selected objects are not available"
+                .into(),
+        ));
+    }
     let pre = &scanned.preamble;
     let format = pre["native"]["format"].as_str().unwrap_or("plain");
     let restore_tool = native::restore_tool_for(tool, format)?;
