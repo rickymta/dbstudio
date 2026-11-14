@@ -150,6 +150,8 @@ impl Shared {
     /// Build the client (resolving the TLS mode) and verify the credentials with a first
     /// connection.
     pub async fn connect(cfg: &ConnectionConfig, secret: Option<&Secret>) -> Result<Shared> {
+        // ring and aws-lc-rs are both linked; rustls needs an explicit process default.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let default_db = cfg.database.as_deref().and_then(parse_db).unwrap_or(0);
         let timeout = cfg
             .connect_timeout_ms

@@ -12,6 +12,7 @@ name = "dbstudio-cli"
 path = "src/main.rs"
 
 [dependencies]
+rustls = { workspace = true, features = ["ring"] }
 dbstudio-core.workspace = true
 dbstudio-store.workspace = true
 dbstudio-backup.workspace = true

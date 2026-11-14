@@ -54,6 +54,8 @@ impl std::fmt::Debug for Conn {
 impl Conn {
     /// Open a connection to `db`.
     pub async fn open(settings: &Settings, db: &str) -> Result<Conn> {
+        // ring and aws-lc-rs are both linked; rustls needs an explicit process default.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let config = settings.tiberius_config(db)?;
         let addr = config.get_addr();
         let attempt = async {

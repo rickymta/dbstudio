@@ -278,6 +278,8 @@ impl std::fmt::Debug for Conn {
 
 impl Conn {
     pub async fn connect(config: &ConnectionConfig, secret: Option<&Secret>) -> Result<Conn> {
+        // ring and aws-lc-rs are both linked; rustls needs an explicit process default.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let (pem_path, temp) = client_pem(config)?;
         let attempts = tls_attempts(config.tls.mode);
         let mut last_err = None;

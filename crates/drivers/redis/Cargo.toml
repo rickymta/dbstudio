@@ -14,7 +14,7 @@ async-trait.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 uuid.workspace = true
 redis.workspace = true
-rustls.workspace = true
+rustls = { workspace = true, features = ["ring"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

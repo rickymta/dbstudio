@@ -62,8 +62,17 @@ fn build_state(app: &tauri::App) -> Result<state::AppState, Box<dyn std::error::
     Ok(state)
 }
 
+/// Selects rustls' process-wide crypto provider. Both `ring` and `aws-lc-rs` end up in the
+/// dependency graph (russh pulls in aws-lc-rs), so rustls cannot pick one by itself and panics
+/// the first time a library (MongoDB, Redis, tiberius) builds a TLS config without an explicit
+/// provider. The PostgreSQL and MySQL drivers already use `ring`; make it the default everywhere.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// Build and run the Tauri application.
 pub fn run() {
+    install_crypto_provider();
     let app = tauri::Builder::default()
         // Must be registered first: a second launch only brings the running window forward.
         .plugin(tauri_plugin_single_instance::init(
@@ -236,3 +245,17 @@ mod leak_test;
 mod scaffold_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod crypto_provider_tests {
+    /// With both `ring` and `aws-lc-rs` linked, building a TLS config without an explicit
+    /// provider panics unless a process default is installed first (MongoDB/Redis/tiberius do).
+    #[test]
+    fn a_default_crypto_provider_is_installed() {
+        super::install_crypto_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        let _config = rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
+    }
+}
