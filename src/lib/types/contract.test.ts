@@ -429,6 +429,12 @@ const appSettings = shape({
   planHistoryEnabled: bool,
   planHistoryMaxPerConnection: num,
   language: oneOf('system', 'vi', 'en'),
+  debugKeymap: oneOf('jetBrains', 'vsCode'),
+  debugTxWarnSecs: num,
+  debugPausedTtlSecs: num,
+  debugWatchTimeoutMs: num,
+  debugMaxRowsPerStep: num,
+  debugInlineValues: bool,
 });
 const planHistoryEntryFields = {
   id: str,
@@ -489,6 +495,212 @@ const importPreview = shape(
 );
 
 /** Guards by group and Rust type name. */
+// -- SQL debugger (`debug` group) -----------------------------------------------------------------
+const anyObj: Guard = (v) => (isObj(v) ? null : 'expected object');
+const routineRef = shape({ signature: str }, { oid: str, path: anyObj });
+const sourceRef: Guard = tagged('kind', {
+  script: () => null,
+  routine: shape({ routine: routineRef }),
+});
+const breakpoint = shape(
+  { id: str, line: num, enabled: bool, suspend: bool },
+  { condition: str, logMessage: str, hitCount: num },
+);
+const watchSpec = shape({ id: str, expr: str });
+const debugOptions = shape({
+  txMode: oneOf('wrap', 'lease'),
+  endAction: oneOf('ask', 'rollback', 'commit', 'keep'),
+  breakOnError: bool,
+  routine: bool,
+  tsqlStepUnit: oneOf('statement', 'batch'),
+  recordHistory: bool,
+});
+const debugAction: Guard = tagged('kind', {
+  resume: () => null,
+  stepOver: () => null,
+  stepInto: () => null,
+  forceStepInto: () => null,
+  smartStepInto: shape({ signature: str }),
+  stepOut: () => null,
+  runToCursor: shape({ source: sourceRef, line: num, force: bool }),
+  jumpTo: shape({ line: num }),
+  pause: () => null,
+});
+const pauseReason: Guard = tagged('kind', {
+  entry: () => null,
+  step: () => null,
+  runToCursor: () => null,
+  pause: () => null,
+  routineEntry: () => null,
+  breakpoint: shape({ ids: arrayOf(str) }),
+  error: shape({ error: isIpcError }),
+  blocked: shape({ error: isIpcError }),
+  confirmation: shape({ request: anyObj }),
+  awaitingEnd: () => null,
+});
+const endReport = shape({ stepsRun: num, committed: bool, rolledBack: bool });
+const debugStatus: Guard = tagged('kind', {
+  starting: () => null,
+  running: shape({ step: num }),
+  paused: shape({ reason: pauseReason }),
+  evaluating: () => null,
+  terminated: shape(
+    { reason: oneOf('finished', 'stopped', 'error', 'leaseLost', 'sessionClosed', 'ttl') },
+    { report: endReport },
+  ),
+});
+const debugFrame = shape(
+  {
+    id: num,
+    kind: oneOf('script', 'block', 'routine'),
+    name: str,
+    source: sourceRef,
+    line: num,
+  },
+  { language: str, args: str },
+);
+const debugVariable = shape(
+  {
+    reference: str,
+    name: str,
+    kind: str,
+    display: str,
+    editable: bool,
+    hasChildren: bool,
+    changed: bool,
+  },
+  { value: isValue, typeName: str },
+);
+const evalValue: Guard = tagged('kind', {
+  scalar: shape({ value: isValue, typeName: str }),
+  rows: shape({
+    result: shape({ columns: arrayOf(anyObj), rows: arrayOf(arrayOf(isValue)), truncated: bool }),
+  }),
+  error: shape({ error: isIpcError }),
+  skipped: shape({ reason: str }),
+});
+const evalResult = shape({
+  value: evalValue,
+  context: oneOf('lease', 'proxy', 'routineVariable'),
+  elapsedMs: num,
+});
+const debugState = shape(
+  {
+    debugId: str,
+    leaseId: str,
+    seq: num,
+    status: debugStatus,
+    frames: arrayOf(debugFrame),
+    selectedFrame: num,
+    variables: arrayOf(debugVariable),
+    watches: arrayOf(shape({ id: str, expr: str, result: evalResult })),
+    inlineValues: arrayOf(
+      shape({
+        source: sourceRef,
+        line: num,
+        text: str,
+        kind: oneOf('result', 'variable', 'error'),
+      }),
+    ),
+    breakpoints: arrayOf(shape({ id: str, verified: bool, line: num }, { message: str })),
+    transaction: shape(
+      { status: oneOf('idle', 'active', 'failed', 'unknown'), owned: bool, warn: bool },
+      { openForMs: num, ttlLeftSecs: num },
+    ),
+    caps: shape({
+      stepInto: bool,
+      stepOut: bool,
+      pauseRunning: bool,
+      setVariable: bool,
+      routine: bool,
+      jumpTo: bool,
+    }),
+    muted: bool,
+  },
+  {
+    position: shape(
+      { source: sourceRef, line: num, step: num, stepCount: num },
+      { range: textRange },
+    ),
+    stepIntoTargets: arrayOf(routineRef),
+  },
+);
+const routineSupport: Guard = tagged('kind', {
+  available: () => null,
+  needsExtension: shape({ statement: str }),
+  needsServerConfig: shape({ hint: str }),
+  noPermission: shape({ hint: str }),
+  unsupported: shape({ reason: str }),
+});
+const debugOutput: Guard = tagged('kind', {
+  stepStart: shape({ step: num, line: num, text: str }),
+  query: shape({ step: num, event: isQueryEvent }),
+  stepEnd: shape(
+    { step: num, end: shape({ outcome: anyObj, elapsedMs: num }) },
+    { truncatedAt: num },
+  ),
+  message: shape({ text: str, source: oneOf('notice', 'print', 'dbmsOutput', 'log', 'info') }),
+  error: shape({ error: isIpcError }, { step: num }),
+  evaluated: shape({ expr: str, result: evalResult }),
+});
+const debugGuards: Record<string, Guard> = {
+  SourceRef: sourceRef,
+  RoutineRef: routineRef,
+  Breakpoint: breakpoint,
+  RoutineBreakpoint: shape({ routine: routineRef, breakpoint }, { sourceHash: str }),
+  BreakpointStatus: shape({ id: str, verified: bool, line: num }, { message: str }),
+  DebugOptions: debugOptions,
+  WatchSpec: watchSpec,
+  DebugStartRequest: shape(
+    { leaseId: str, text: str },
+    {
+      range: textRange,
+      params: arrayOf(anyObj),
+      breakpoints: arrayOf(breakpoint),
+      routineBreakpoints: arrayOf(anyObj),
+      watches: arrayOf(watchSpec),
+      options: debugOptions,
+      muted: bool,
+    },
+  ),
+  DebugAction: debugAction,
+  PauseReason: pauseReason,
+  DebugStatus: debugStatus,
+  DebugPosition: shape(
+    { source: sourceRef, line: num, step: num, stepCount: num },
+    { range: textRange },
+  ),
+  DebugFrame: debugFrame,
+  DebugVariable: debugVariable,
+  EvalValue: evalValue,
+  EvalResult: evalResult,
+  WatchResult: shape({ id: str, expr: str, result: evalResult }),
+  DebugState: debugState,
+  DebugOutput: debugOutput,
+  DebugOutputEvent: shape({ debugId: str, seq: num, output: debugOutput }),
+  DebugEndReport: endReport,
+  RoutineDebugSupport: routineSupport,
+  DebugSupport: shape({
+    script: bool,
+    routine: routineSupport,
+    transactions: bool,
+    scriptVariables: bool,
+  }),
+  RoutineSource: shape({ text: str, sourceHash: str, language: str, firstLine: num }),
+  DebugTxMode: oneOf('wrap', 'lease'),
+  DebugEndAction: oneOf('ask', 'rollback', 'commit', 'keep'),
+  TerminateReason: oneOf('finished', 'stopped', 'error', 'leaseLost', 'sessionClosed', 'ttl'),
+  FrameKind: oneOf('script', 'block', 'routine'),
+  EvalContext: oneOf('lease', 'proxy', 'routineVariable'),
+  InlineKind: oneOf('result', 'variable', 'error'),
+  MessageSource: oneOf('notice', 'print', 'dbmsOutput', 'log', 'info'),
+};
+const tabDebugState = shape({
+  breakpoints: arrayOf(breakpoint),
+  watches: arrayOf(watchSpec),
+  muted: bool,
+});
+
 const GUARDS: Record<string, Record<string, Guard>> = {
   script: { ScriptAnalysis: isScriptAnalysis, ScriptDialect: scriptDialect },
   lease: { LeaseState: isLeaseState },
@@ -536,8 +748,10 @@ const GUARDS: Record<string, Record<string, Guard>> = {
     }),
     ScriptGenerated: shape({ text: str, dialect: scriptDialect }),
   },
+  debug: debugGuards,
   history: {
     AppSettings: appSettings,
+    TabDebugState: tabDebugState,
     UiLanguage: oneOf('system', 'vi', 'en'),
     PlanHistoryEntry: planHistoryEntry,
     PlanHistoryRecord: planHistoryRecord,

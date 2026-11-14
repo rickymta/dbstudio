@@ -69,6 +69,26 @@ pub const KEEPALIVE_RANGE: (u32, u32) = (30, 3_600);
 /// Smallest and largest accepted `plan_history_max_per_connection`.
 pub const PLAN_HISTORY_MAX_RANGE: (u32, u32) = (10, 5_000);
 
+/// Smallest and largest accepted non-zero `debug_tx_warn_secs` (0 turns the warning off).
+pub const DEBUG_TX_WARN_RANGE: (u32, u32) = (10, 3_600);
+/// Smallest and largest accepted `debug_paused_ttl_secs` (there is no "off" value).
+pub const DEBUG_PAUSED_TTL_RANGE: (u32, u32) = (60, 14_400);
+/// Smallest and largest accepted `debug_watch_timeout_ms`.
+pub const DEBUG_WATCH_TIMEOUT_RANGE: (u64, u64) = (500, 60_000);
+/// Smallest and largest accepted `debug_max_rows_per_step`.
+pub const DEBUG_ROWS_RANGE: (u32, u32) = (10, 5_000);
+
+/// Keyboard layout of the SQL debugger.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DebugKeymap {
+    /// JetBrains defaults (F8 step over, F7 step into, F9 resume).
+    #[default]
+    JetBrains,
+    /// VS Code defaults (F10, F11, F5).
+    VsCode,
+}
+
 /// Language of OS notifications (the UI language is chosen by the frontend and mirrored here).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -127,6 +147,18 @@ pub struct AppSettings {
     pub plan_history_max_per_connection: u32,
     /// Language of OS notifications.
     pub language: UiLanguage,
+    /// Keymap of the SQL debugger.
+    pub debug_keymap: DebugKeymap,
+    /// Seconds a paused debug session may hold a transaction before the warning shows; 0 = off.
+    pub debug_tx_warn_secs: u32,
+    /// Seconds a paused debug session lives without any command before it is ended.
+    pub debug_paused_ttl_secs: u32,
+    /// Timeout of one watch / evaluate / probe query, milliseconds.
+    pub debug_watch_timeout_ms: u64,
+    /// Most rows per step kept in the debug console.
+    pub debug_max_rows_per_step: u32,
+    /// Show inline values at the end of editor lines while debugging.
+    pub debug_inline_values: bool,
 }
 
 impl Default for AppSettings {
@@ -150,6 +182,12 @@ impl Default for AppSettings {
             plan_history_enabled: true,
             plan_history_max_per_connection: 200,
             language: UiLanguage::System,
+            debug_keymap: DebugKeymap::JetBrains,
+            debug_tx_warn_secs: 60,
+            debug_paused_ttl_secs: 900,
+            debug_watch_timeout_ms: 5_000,
+            debug_max_rows_per_step: 200,
+            debug_inline_values: true,
         }
     }
 }
@@ -200,6 +238,12 @@ impl AppSettings {
                 d.plan_misestimate_factor,
             ),
             close_to_tray: field(value, "closeToTray", d.close_to_tray),
+            debug_keymap: field(value, "debugKeymap", d.debug_keymap),
+            debug_tx_warn_secs: field(value, "debugTxWarnSecs", d.debug_tx_warn_secs),
+            debug_paused_ttl_secs: field(value, "debugPausedTtlSecs", d.debug_paused_ttl_secs),
+            debug_watch_timeout_ms: field(value, "debugWatchTimeoutMs", d.debug_watch_timeout_ms),
+            debug_max_rows_per_step: field(value, "debugMaxRowsPerStep", d.debug_max_rows_per_step),
+            debug_inline_values: field(value, "debugInlineValues", d.debug_inline_values),
         };
         s.normalized()
     }
@@ -244,6 +288,20 @@ impl AppSettings {
         self.plan_history_max_per_connection = self
             .plan_history_max_per_connection
             .clamp(PLAN_HISTORY_MAX_RANGE.0, PLAN_HISTORY_MAX_RANGE.1);
+        if self.debug_tx_warn_secs != 0 {
+            self.debug_tx_warn_secs = self
+                .debug_tx_warn_secs
+                .clamp(DEBUG_TX_WARN_RANGE.0, DEBUG_TX_WARN_RANGE.1);
+        }
+        self.debug_paused_ttl_secs = self
+            .debug_paused_ttl_secs
+            .clamp(DEBUG_PAUSED_TTL_RANGE.0, DEBUG_PAUSED_TTL_RANGE.1);
+        self.debug_watch_timeout_ms = self
+            .debug_watch_timeout_ms
+            .clamp(DEBUG_WATCH_TIMEOUT_RANGE.0, DEBUG_WATCH_TIMEOUT_RANGE.1);
+        self.debug_max_rows_per_step = self
+            .debug_max_rows_per_step
+            .clamp(DEBUG_ROWS_RANGE.0, DEBUG_ROWS_RANGE.1);
         self
     }
 
@@ -289,6 +347,28 @@ impl AppSettings {
             "planHistoryMaxPerConnection",
             self.plan_history_max_per_connection,
             PLAN_HISTORY_MAX_RANGE,
+        )?;
+        if self.debug_tx_warn_secs != 0 {
+            range(
+                "debugTxWarnSecs",
+                self.debug_tx_warn_secs,
+                DEBUG_TX_WARN_RANGE,
+            )?;
+        }
+        range(
+            "debugPausedTtlSecs",
+            self.debug_paused_ttl_secs,
+            DEBUG_PAUSED_TTL_RANGE,
+        )?;
+        range(
+            "debugWatchTimeoutMs",
+            self.debug_watch_timeout_ms,
+            DEBUG_WATCH_TIMEOUT_RANGE,
+        )?;
+        range(
+            "debugMaxRowsPerStep",
+            self.debug_max_rows_per_step,
+            DEBUG_ROWS_RANGE,
         )?;
         if self.editor_font_family.chars().count() > FONT_FAMILY_MAX_CHARS {
             return Err(Error::Invalid(format!(
@@ -383,7 +463,10 @@ mod tests {
                 "maxLobBytes": 16_777_216, "planMisestimateFactor": 10, "closeToTray": "auto",
                 "editorFontFamily": "", "editorFontSize": 13, "autoReconnect": true,
                 "keepaliveSecs": 240, "planHistoryEnabled": true,
-                "planHistoryMaxPerConnection": 200, "language": "system"
+                "planHistoryMaxPerConnection": 200, "language": "system",
+                "debugKeymap": "jetBrains", "debugTxWarnSecs": 60, "debugPausedTtlSecs": 900,
+                "debugWatchTimeoutMs": 5000, "debugMaxRowsPerStep": 200,
+                "debugInlineValues": true
             })
         );
         let old: AppSettings = serde_json::from_value(json!({"logLevel": "debug"})).unwrap();

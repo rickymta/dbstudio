@@ -48,11 +48,15 @@ use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 use crate::commands::{
-    app, background, backup, browse, changes, connections, editor, erd, export, files, history,
-    jobs, keyvalue, plan, sessions, ssh, uri,
+    app, background, backup, browse, changes, connections, debug, editor, erd, export, files,
+    history, jobs, keyvalue, plan, sessions, ssh, uri,
 };
 use crate::host::FileFilter;
 use crate::state::AppState;
+use dbstudio_core::debug::{
+    Breakpoint, DebugAction, DebugEndAction, DebugStartRequest, RoutineBreakpoint, RoutineRef,
+    SourceRef, WatchSpec,
+};
 
 const TOKEN_HEADER: &str = "x-dbstudio-bridge-token";
 const ALLOWED_ORIGINS: [&str; 2] = ["http://localhost:1420", "http://127.0.0.1:1420"];
@@ -629,6 +633,118 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
         "plan_history_clear" => {
             args!(connection_id: Option<Uuid> = "connectionId");
             call!(plan::history_clear_impl(state, connection_id))
+        }
+        _ => dispatch_debug(state, command, a).await,
+    }
+}
+
+/// SQL debugger commands (package T owns this block).
+async fn dispatch_debug(state: &AppState, command: &str, a: &Value) -> Option<Result<Value>> {
+    macro_rules! call {
+        ($e:expr) => {
+            Some(async { out($e.await) }.await)
+        };
+    }
+    macro_rules! args {
+        ($($name:ident : $ty:ty = $key:literal),*) => {
+            $(let $name: $ty = match arg(a, $key) { Ok(v) => v, Err(e) => return Some(Err(e)) };)*
+        };
+    }
+    match command {
+        "debug_support" => {
+            args!(lease_id: Uuid = "leaseId");
+            call!(debug::debug_support_impl(state, lease_id))
+        }
+        "debug_start" => {
+            args!(request: DebugStartRequest = "request");
+            call!(debug::debug_start_impl(state, request))
+        }
+        "debug_step" => {
+            args!(debug_id: Uuid = "debugId", action: DebugAction = "action", confirm: Option<ConfirmationGrant> = "confirm");
+            call!(debug::debug_step_impl(state, debug_id, action, confirm))
+        }
+        "debug_resume" => {
+            args!(debug_id: Uuid = "debugId");
+            call!(debug::debug_resume_impl(state, debug_id))
+        }
+        "debug_pause" => {
+            args!(debug_id: Uuid = "debugId");
+            call!(debug::debug_pause_impl(state, debug_id))
+        }
+        "debug_run_to_cursor" => {
+            args!(debug_id: Uuid = "debugId", source: SourceRef = "source", line: u32 = "line", force: bool = "force");
+            call!(debug::debug_run_to_cursor_impl(
+                state, debug_id, source, line, force
+            ))
+        }
+        "debug_stop" => {
+            args!(debug_id: Uuid = "debugId", end: Option<DebugEndAction> = "end");
+            call!(debug::debug_stop_impl(state, debug_id, end))
+        }
+        "debug_restart" => {
+            args!(debug_id: Uuid = "debugId", text: String = "text", end: Option<DebugEndAction> = "end");
+            call!(debug::debug_restart_impl(state, debug_id, text, end))
+        }
+        "debug_evaluate" => {
+            args!(debug_id: Uuid = "debugId", expr: String = "expr", frame: Option<u32> = "frame", echo: Option<bool> = "echo");
+            call!(debug::debug_evaluate_impl(
+                state, debug_id, expr, frame, echo
+            ))
+        }
+        "debug_set_breakpoints" => {
+            args!(debug_id: Uuid = "debugId", source: SourceRef = "source", breakpoints: Vec<Breakpoint> = "breakpoints");
+            call!(debug::debug_set_breakpoints_impl(
+                state,
+                debug_id,
+                source,
+                breakpoints
+            ))
+        }
+        "debug_set_muted" => {
+            args!(debug_id: Uuid = "debugId", muted: bool = "muted");
+            call!(debug::debug_set_muted_impl(state, debug_id, muted))
+        }
+        "debug_set_variable" => {
+            args!(debug_id: Uuid = "debugId", reference: String = "reference", value_text: String = "valueText");
+            call!(debug::debug_set_variable_impl(
+                state, debug_id, reference, value_text
+            ))
+        }
+        "debug_variable_children" => {
+            args!(debug_id: Uuid = "debugId", reference: String = "reference");
+            call!(debug::debug_variable_children_impl(
+                state, debug_id, reference
+            ))
+        }
+        "debug_watches_set" => {
+            args!(debug_id: Uuid = "debugId", watches: Vec<WatchSpec> = "watches");
+            call!(debug::debug_watches_set_impl(state, debug_id, watches))
+        }
+        "debug_select_frame" => {
+            args!(debug_id: Uuid = "debugId", frame: u32 = "frame");
+            call!(debug::debug_select_frame_impl(state, debug_id, frame))
+        }
+        "debug_routine_source" => {
+            args!(debug_id: Option<Uuid> = "debugId", session_id: Uuid = "sessionId", routine: RoutineRef = "routine");
+            call!(debug::debug_routine_source_impl(
+                state, debug_id, session_id, routine
+            ))
+        }
+        "debug_snapshot" => {
+            args!(debug_id: Uuid = "debugId");
+            call!(debug::debug_snapshot_impl(state, debug_id))
+        }
+        "routine_breakpoints_get" => {
+            args!(connection_id: Uuid = "connectionId");
+            call!(debug::routine_breakpoints_get_impl(state, connection_id))
+        }
+        "routine_breakpoints_set" => {
+            args!(connection_id: Uuid = "connectionId", list: Vec<RoutineBreakpoint> = "list");
+            call!(debug::routine_breakpoints_set_impl(
+                state,
+                connection_id,
+                list
+            ))
         }
         _ => None,
     }
@@ -1648,5 +1764,80 @@ mod tests {
                 .unwrap()
                 .contains("GET")
         );
+    }
+    #[tokio::test]
+    async fn debug_routes_dispatch_and_debug_events_reach_the_stream() {
+        use crate::events::EventEmitter as _;
+        let (app, _, state) = app_with_probe();
+        // Unknown session: a typed NotFound, not a missing route.
+        let (status, body) = call(
+            &app,
+            "debug_snapshot",
+            json!({"debugId": uuid::Uuid::new_v4()}),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK);
+        assert_eq!(body["kind"], "notFound");
+        // Arguments are validated before anything runs.
+        let (status, _) = call(&app, "debug_step", json!({"debugId": "nope"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Routine breakpoints go through the store.
+        let profile = profile_json();
+        let connection_id = profile["id"].clone();
+        call(
+            &app,
+            "connection_save",
+            json!({"profile": profile, "secret": {"action": "keep"}}),
+        )
+        .await;
+        let list = json!([{"routine": {"signature": "public.f(int)"},
+            "breakpoint": {"id": "r1", "line": 2}}]);
+        let (status, _) = call(
+            &app,
+            "routine_breakpoints_set",
+            json!({"connectionId": connection_id, "list": list}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, got) = call(
+            &app,
+            "routine_breakpoints_get",
+            json!({"connectionId": connection_id}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(got[0]["routine"]["signature"], "public.f(int)");
+        assert_eq!(got[0]["breakpoint"]["id"], "r1");
+
+        // `/events` carries the debug events like any other.
+        let req = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/events")
+            .header(header::HOST, "127.0.0.1:1421")
+            .header(TOKEN_HEADER, TOKEN)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        let mut body = response.into_body().into_data_stream();
+        state
+            .events
+            .emit(crate::events::DEBUG_STATE, json!({"seq": 1}));
+        state
+            .events
+            .emit(crate::events::DEBUG_OUTPUT, json!({"seq": 2}));
+        let mut text = String::new();
+        while text.lines().count() < 2 {
+            let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), body.next())
+                .await
+                .expect("event line in time")
+                .expect("stream open")
+                .unwrap();
+            text.push_str(std::str::from_utf8(&chunk).unwrap());
+        }
+        let names: Vec<String> = text
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].to_string())
+            .collect();
+        assert_eq!(names, vec!["\"debug://state\"", "\"debug://output\""]);
     }
 }

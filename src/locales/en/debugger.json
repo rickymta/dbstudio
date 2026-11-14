@@ -1,0 +1,250 @@
+{
+  "button": {
+    "debug": "Debug",
+    "group": "Debug",
+    "options": "Debug options"
+  },
+  "command": {
+    "debug": "Debug",
+    "resume": "Resume",
+    "pause": "Pause",
+    "stop": "Stop",
+    "rerun": "Rerun",
+    "stepOver": "Step Over",
+    "stepInto": "Step Into",
+    "smartStepInto": "Smart Step Into",
+    "forceStepInto": "Force Step Into",
+    "stepOut": "Step Out",
+    "runToCursor": "Run to Cursor",
+    "forceRunToCursor": "Force Run to Cursor",
+    "evaluate": "Evaluate Expression",
+    "showExecutionPoint": "Show Execution Point",
+    "toggleBreakpoint": "Toggle Line Breakpoint",
+    "viewBreakpoints": "View Breakpoints",
+    "muteBreakpoints": "Mute Breakpoints"
+  },
+  "toolbar": {
+    "session": "Debug session",
+    "steps": "Stepping",
+    "settings": "Debugger settings"
+  },
+  "options": {
+    "txMode": "Transaction",
+    "txWrap": "Wrap in a transaction (debugger owns it)",
+    "txLease": "Use the tab's transaction mode",
+    "endAction": "When the session ends",
+    "endAsk": "Ask (Commit or Rollback)",
+    "endRollback": "Always roll back",
+    "endCommit": "Always commit",
+    "endKeep": "Keep the transaction open",
+    "stopOnEntry": "Stop on the first statement",
+    "breakOnError": "Pause on error",
+    "inlineValues": "Show values inline",
+    "keymap": "Keymap",
+    "keymapJetBrains": "JetBrains",
+    "keymapVsCode": "VS Code",
+    "routineStatus": "Routine debugging status...",
+    "routineProbe": "Routine debugging status (open to check)"
+  },
+  "window": {
+    "label": "Debug tool window",
+    "debugger": "Debugger",
+    "console": "Console",
+    "txOwned": "Debug transaction",
+    "ttl": "Session ends in {{time}}",
+    "close": "Close",
+    "stopAndClose": "Stop and close"
+  },
+  "host": {
+    "tabs": "Bottom panels",
+    "results": "Results",
+    "debug": "Debug",
+    "live": "Session running",
+    "readOnly": "Debugging - stop to edit"
+  },
+  "status": {
+    "starting": "Starting...",
+    "running": "Running (statement {{step}})",
+    "evaluating": "Evaluating...",
+    "paused": "Paused",
+    "at": "at line {{line}} (statement {{step}}/{{total}})",
+    "pause": {
+      "entry": "at the start",
+      "step": "after a step",
+      "runToCursor": "at the cursor",
+      "pause": "pause requested",
+      "routineEntry": "entered a routine",
+      "breakpoint": "breakpoint",
+      "error": "error: {{message}}",
+      "blocked": "blocked: {{message}}",
+      "confirmation": "waiting for confirmation",
+      "awaitingEnd": "end of script"
+    },
+    "terminated": {
+      "finished": "Finished",
+      "stopped": "Stopped",
+      "error": "Ended with an error",
+      "leaseLost": "Connection lost",
+      "sessionClosed": "Session closed",
+      "ttl": "Ended: paused too long"
+    }
+  },
+  "banner": {
+    "txWarn": "The transaction has been open for {{time}} while paused - it may be holding locks.",
+    "rollbackStop": "Roll back and stop",
+    "continue": "Continue",
+    "confirmation": "A statement needs your confirmation before it runs.",
+    "confirm": "Confirm...",
+    "blocked": "Blocked: {{message}}",
+    "awaitingEnd": "End of script: choose what happens to the transaction.",
+    "chooseEnd": "Commit or roll back...",
+    "report": "Ended after {{steps}} statements ({{outcome}}).",
+    "committed": "committed",
+    "rolledBack": "rolled back",
+    "noTx": "no transaction"
+  },
+  "frames": {
+    "title": "Frames",
+    "empty": "No frames.",
+    "notSteppable": "(cannot step into)"
+  },
+  "variables": {
+    "title": "Variables",
+    "prompt": "Evaluate expression (Enter) or add watch (Shift+Enter)",
+    "empty": "No variables.",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "setValue": "New value of {{name}}",
+    "menu": {
+      "setValue": "Set Value",
+      "copyValue": "Copy Value",
+      "copyName": "Copy Name",
+      "addWatch": "Add to Watches",
+      "inspect": "Inspect"
+    }
+  },
+  "watches": {
+    "title": "Watches",
+    "add": "Add watch",
+    "remove": "Remove watch",
+    "edit": "Edit watch",
+    "new": "New watch expression",
+    "empty": "No watches. Press + to add one.",
+    "pending": "...",
+    "skipped": "skipped: {{reason}}"
+  },
+  "console": {
+    "title": "Console",
+    "filter": "Show",
+    "filters": {
+      "results": "Results",
+      "messages": "Messages",
+      "errors": "Errors",
+      "log": "Log"
+    },
+    "clear": "Clear console",
+    "empty": "Nothing yet.",
+    "prompt": "Evaluate an expression in the paused context",
+    "promptEnded": "The session has ended",
+    "rows": "{{n}} rows",
+    "affected": "{{n}} rows affected",
+    "done": "done",
+    "truncatedAt": "Cut at {{n}} rows",
+    "source": {
+      "notice": "NOTICE",
+      "print": "PRINT",
+      "dbmsOutput": "DBMS_OUTPUT",
+      "log": "log",
+      "info": "debugger"
+    }
+  },
+  "grid": {
+    "label": "Result",
+    "rows": "{{n}} rows",
+    "truncated": "truncated",
+    "expand": "Expand ({{n}} more)",
+    "collapse": "Collapse",
+    "copy": "Copy",
+    "copied": "Copied as TSV",
+    "copyFailed": "Could not copy",
+    "empty": "No rows"
+  },
+  "breakpoint": {
+    "enabled": "Enabled",
+    "suspend": "Suspend",
+    "condition": "Condition",
+    "conditionHint": "SQL expression, e.g. id = 5",
+    "logMessage": "Log message",
+    "logHint": "Text with {expr} placeholders",
+    "hitCount": "Stop on the N-th hit",
+    "remove": "Remove",
+    "more": "More...",
+    "line": "Line {{line}}",
+    "popoverTitle": "Breakpoint at line {{line}}"
+  },
+  "breakpoints": {
+    "title": "Breakpoints",
+    "empty": "No breakpoints. Click the gutter of the editor to add one.",
+    "select": "Select a breakpoint.",
+    "groupScript": "Script",
+    "groupRoutine": "Routine {{name}}",
+    "toggle": "Enable breakpoint at line {{line}}",
+    "removeAll": "Remove all",
+    "mute": "Mute breakpoints",
+    "unmute": "Unmute breakpoints"
+  },
+  "gutter": {
+    "breakpoint": "Breakpoint line {{line}}",
+    "kind": {
+      "on": "enabled",
+      "cond": "conditional",
+      "off": "disabled",
+      "log": "log only",
+      "unverified": "not verified"
+    }
+  },
+  "evaluate": {
+    "title": "Evaluate Expression",
+    "expression": "Expression",
+    "placeholder": "Expression to evaluate (Ctrl/Cmd+Enter)",
+    "evaluate": "Evaluate",
+    "addWatch": "Add to Watches",
+    "history": "History"
+  },
+  "end": {
+    "title": "End the debug transaction",
+    "description": "The debugger opened a transaction. Commit keeps the changes; Rollback undoes them.",
+    "commit": "Commit",
+    "rollback": "Rollback",
+    "keep": "Keep open for the tab"
+  },
+  "smart": {
+    "title": "Smart Step Into",
+    "description": "Choose the routine to step into."
+  },
+  "support": {
+    "title": "Routine debugging",
+    "unknown": "Not checked yet.",
+    "available": "Stepping into routines is available.",
+    "needsExtension": "The debugger extension exists on the server but is not created in this database. Run:",
+    "needsServerConfig": "The server must preload the debugger library (restart needed).",
+    "noPermission": "Your user lacks the permission to debug routines.",
+    "unsupported": "Routine debugging is not supported here.",
+    "insert": "Insert statement into editor"
+  },
+  "inspect": {
+    "title": "Value of {{name}}"
+  },
+  "source": {
+    "label": "Source of {{signature}}",
+    "backToScript": "Back to script"
+  },
+  "toast": {
+    "closedRollback": "Debug session ended with the tab; its transaction was rolled back.",
+    "noSession": "No open connection to debug on."
+  },
+  "actions": {
+    "close": "Close",
+    "cancel": "Cancel"
+  }
+}

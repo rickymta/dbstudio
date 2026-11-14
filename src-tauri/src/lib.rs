@@ -12,6 +12,7 @@ mod background;
 #[cfg_attr(feature = "custom-protocol", allow(dead_code))]
 mod bridge;
 mod commands;
+mod debug;
 mod events;
 mod grants;
 mod guard;
@@ -230,6 +231,26 @@ pub fn run() {
             commands::plan::plan_history_get,
             commands::plan::plan_history_delete,
             commands::plan::plan_history_clear,
+            // SQL debugger (contract stubs; implemented by package T)
+            commands::debug::debug_support,
+            commands::debug::debug_start,
+            commands::debug::debug_step,
+            commands::debug::debug_resume,
+            commands::debug::debug_pause,
+            commands::debug::debug_run_to_cursor,
+            commands::debug::debug_stop,
+            commands::debug::debug_restart,
+            commands::debug::debug_evaluate,
+            commands::debug::debug_set_breakpoints,
+            commands::debug::debug_set_muted,
+            commands::debug::debug_set_variable,
+            commands::debug::debug_variable_children,
+            commands::debug::debug_watches_set,
+            commands::debug::debug_select_frame,
+            commands::debug::debug_routine_source,
+            commands::debug::debug_snapshot,
+            commands::debug::routine_breakpoints_get,
+            commands::debug::routine_breakpoints_set,
         ])
         .build(tauri::generate_context!())
         .expect("error while building DBStudio");

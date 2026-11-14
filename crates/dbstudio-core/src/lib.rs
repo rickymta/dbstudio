@@ -31,6 +31,7 @@
 mod browse;
 mod capabilities;
 mod config;
+pub mod debug;
 mod driver;
 mod edit;
 mod error;

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { BackupTab } from '@/features/backup/BackupTab';
 import { DdlTab } from '@/features/data/DdlTab';
+import { LazyDebugSourceTab } from '@/features/debugger/LazyDebugSourceTab';
 import { EditorTab } from '@/features/editor/EditorTab';
 import { ErdTab } from '@/features/erd/ErdTab';
 import { KeyTab } from '@/features/keyvalue/KeyTab';
@@ -20,6 +21,7 @@ const registry: Renderers = {
   plan: (tab) => <PlanTab {...tab.payload} />,
   erd: (tab) => <ErdTab {...tab.payload} />,
   key: (tab) => <KeyTab {...tab.payload} />,
+  debugSource: (tab) => <LazyDebugSourceTab {...tab.payload} />,
   backup: () => <BackupTab />,
 };
 

@@ -4,6 +4,7 @@
 // 64-bit integers outside `Value` (elapsedMs, rows, ids...) are plain `number`s: they stay far
 // below 2^53 in practice. Only `Value::Int`/`UInt` can carry a decimal string.
 
+import type { DebugKeymap } from './debug';
 import type { ConfirmationRequest, ScriptDialect, TextRange } from './script';
 import type { SshConfig } from './ssh';
 
@@ -74,6 +75,8 @@ export interface Capabilities {
   tableSort: boolean;
   /** `table_count` is exact and cheap enough for the grid (false: CQL full scan). */
   exactCount: boolean;
+  /** The driver can host a routine debugger; `debug_support` says whether the server does. */
+  routineDebug: boolean;
 }
 
 /** Every capability off; spread it and turn on what a driver supports. */
@@ -110,6 +113,7 @@ export const NO_CAPABILITIES: Capabilities = {
   sshTunnel: false,
   tableSort: false,
   exactCount: false,
+  routineDebug: false,
 };
 
 export type UnavailableReason = 'nativeClientMissing' | 'nativeClientTooOld';
@@ -603,6 +607,18 @@ export interface AppSettings {
   planHistoryMaxPerConnection: number;
   /** Language of OS notifications. */
   language: UiLanguage;
+  /** Keymap of the SQL debugger. */
+  debugKeymap: DebugKeymap;
+  /** Seconds a paused debug session may hold a transaction before the warning; 0 = off, else 10..=3600. */
+  debugTxWarnSecs: number;
+  /** Seconds a paused session lives without commands, 60..=14400. */
+  debugPausedTtlSecs: number;
+  /** Timeout of one watch / evaluate query, 500..=60000. */
+  debugWatchTimeoutMs: number;
+  /** Rows per step kept in the debug console, 10..=5000. */
+  debugMaxRowsPerStep: number;
+  /** Inline values at the end of editor lines while debugging. */
+  debugInlineValues: boolean;
 }
 
 export type CloseBehavior = 'auto' | 'always' | 'never';
@@ -627,4 +643,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   planHistoryEnabled: true,
   planHistoryMaxPerConnection: 200,
   language: 'system',
+  debugKeymap: 'jetBrains',
+  debugTxWarnSecs: 60,
+  debugPausedTtlSecs: 900,
+  debugWatchTimeoutMs: 5000,
+  debugMaxRowsPerStep: 200,
+  debugInlineValues: true,
 };

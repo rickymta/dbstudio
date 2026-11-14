@@ -1,13 +1,14 @@
 //! JSON contract fixtures for the store types (`contract/fixtures/history.json`), shared with
 //! the TypeScript contract test. Regenerate with `UPDATE_FIXTURES=1 cargo test -p dbstudio-store`.
 
+use dbstudio_core::debug::{Breakpoint, WatchSpec};
 use dbstudio_core::testing::write_or_check;
 use dbstudio_core::{DbKind, ObjectKind, ObjectPath};
 use dbstudio_core::{PlanFormat, RawPlan};
 use dbstudio_store::{
     AppSettings, CloseBehavior, EditorTabState, ErdLayout, ErdLayoutSummary, ExportPreset,
     HistoryEntry, HistoryQuery, PlanHistoryEntry, PlanHistoryRecord, SavedFolder,
-    SavedQueriesSnapshot, SavedQuery, UiLanguage,
+    SavedQueriesSnapshot, SavedQuery, TabDebugState, UiLanguage,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -97,6 +98,22 @@ fn store_contract_fixtures() {
             cursor: 8,
             auto_commit: true,
             dirty: true,
+            debug: Some(TabDebugState {
+                breakpoints: vec![Breakpoint {
+                    id: "b1".into(),
+                    line: 1,
+                    enabled: true,
+                    suspend: true,
+                    condition: None,
+                    log_message: None,
+                    hit_count: None,
+                }],
+                watches: vec![WatchSpec {
+                    id: "w1".into(),
+                    expr: "1 + 1".into(),
+                }],
+                muted: false,
+            }),
         }),
         "ErdLayout": j(&ErdLayout {
             id: id(5),
