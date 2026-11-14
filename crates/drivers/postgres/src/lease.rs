@@ -181,7 +181,15 @@ impl PgBackend {
             return Ok(());
         }
         let schema = self.query_schema().await.filter(|_| self.search_path_set);
-        let conn = self.shared.open_dedicated(db).await?;
+        // A failure to open the new connection leaves the current one intact: report it as a
+        // query error so that the lease is not marked broken.
+        let conn = self.shared.open_dedicated(db).await.map_err(|e| match e {
+            Error::Connection(message) => Error::Query {
+                message,
+                position: None,
+            },
+            other => other,
+        })?;
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = conn.cancel.clone();
         // Dropping the previous connection closes it.
         self.conn = Some(conn);
