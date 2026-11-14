@@ -28,3 +28,10 @@ awk '
   echo "::error title=$title::$msg"
 done
 grep -E "^test .* FAILED$" "$log" | head -40 || true
+# No test output and no compiler error (a test binary that could not start, e.g. a missing DLL on
+# Windows): show the end of the log instead.
+if ! grep -qE "^---- .* stdout ----$|could not compile" "$log"; then
+  tail -n 12 "$log" | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e 's/\r$//' | while IFS= read -r l; do
+    echo "::error title=$title (log tail)::${l//%/%25}"
+  done
+fi
