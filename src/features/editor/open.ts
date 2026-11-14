@@ -118,8 +118,46 @@ export function openEditor(session: SessionInfo, options: OpenEditorOptions = {}
 }
 
 /**
+ * `body` with a statement terminator added after its last statement when it has none: the
+ * trailing whitespace and comments (`--`, `//` for Mongo, block comments) are skipped, and the
+ * `;` goes right after the last token, before those comments. Strings and quoted identifiers are
+ * respected. Redis commands end at the newline, so they are never changed; neither is an empty
+ * or comment-only body, nor one that ends inside an unterminated string or comment.
+ */
+export function terminateStatements(body: string, mode: EditorMode): string {
+  if (mode === 'redis') return body;
+  const lineComment = mode === 'mongo' ? '//' : '--';
+  let last = -1; // index of the last significant character
+  let i = 0;
+  const n = body.length;
+  while (i < n) {
+    const c = body.charAt(i);
+    if (body.startsWith(lineComment, i)) {
+      const nl = body.indexOf('\n', i);
+      i = nl < 0 ? n : nl + 1;
+    } else if (body.startsWith('/*', i)) {
+      const end = body.indexOf('*/', i + 2);
+      if (end < 0) return body;
+      i = end + 2;
+    } else if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1;
+      while (j < n && body.charAt(j) !== c) j += body.charAt(j) === '\\' && mode === 'mongo' ? 2 : 1;
+      if (j >= n) return body;
+      last = j;
+      i = j + 1;
+    } else {
+      if (!/\s/.test(c)) last = i;
+      i++;
+    }
+  }
+  if (last < 0 || body.charAt(last) === ';') return body;
+  return body.slice(0, last + 1) + ';' + body.slice(last + 1);
+}
+
+/**
  * Append `text` at the end of an open editor, one blank line after the existing text, and show
- * the tab. Nothing is run. The new text is selected unless `select` is false (templates: the
+ * the tab (a missing statement terminator at the end of the existing text is added first, so the
+ * new statement is not merged into the last one). Nothing is run. The new text is selected unless `select` is false (templates: the
  * cursor goes to the end so a stray Enter or Run does not take the whole statement).
  * Returns false when the editor is gone.
  */
@@ -131,7 +169,11 @@ export function appendToEditor(
   const store = useEditorStore.getState();
   const data = store.tabs[tabStateId];
   if (!data) return false;
-  const body = data.text;
+  const tab = useTabsStore
+    .getState()
+    .tabs.find((t) => t.kind === 'editor' && t.payload.tabStateId === tabStateId);
+  const mode = tab?.kind === 'editor' ? tab.payload.mode : 'sql';
+  const body = terminateStatements(data.text, mode);
   const gap =
     body.length === 0 ? '' : body.endsWith('\n\n') ? '' : body.endsWith('\n') ? '\n' : '\n\n';
   const from = body.length + gap.length;

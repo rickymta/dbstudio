@@ -384,7 +384,7 @@ describe('actions', () => {
     await user.click(within(card).getAllByRole('button')[0]!);
     await user.click(within(card).getByRole('button', { name: /Insert into editor/ }));
     const data = useEditorStore.getState().tabs.ed1!;
-    expect(data.text).toBe(`select * from orders\n\n${INDEX_SQL}`);
+    expect(data.text).toBe(`select * from orders;\n\n${INDEX_SQL}`);
     expect(data.selection).toEqual({ from: 22, to: 22 + INDEX_SQL.length });
     expect(useTabsStore.getState().activeId).toBe(editorTabId('ed1'));
     expect(run).not.toHaveBeenCalled();
@@ -404,7 +404,7 @@ describe('actions', () => {
     const card = await screen.findByTestId('advice-card-indexForFilter:aaaa');
     await user.click(within(card).getAllByRole('button')[0]!);
     await user.click(within(card).getByRole('button', { name: /Insert into editor/ }));
-    expect(useEditorStore.getState().tabs.ed1!.text).toBe(`select * from orders\n\n${INDEX_SQL}`);
+    expect(useEditorStore.getState().tabs.ed1!.text).toBe(`select * from orders;\n\n${INDEX_SQL}`);
     expect(useTabsStore.getState().tabs.length).toBe(before);
   });
 
