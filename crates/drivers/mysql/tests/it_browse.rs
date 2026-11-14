@@ -45,8 +45,7 @@ async fn tree_levels() {
         assert_eq!(root[info].detail.as_deref(), Some("system"));
         assert!(root[fx].detail.is_none());
         assert!(
-            root.iter()
-                .all(|n| n.kind == K::Database && n.has_children),
+            root.iter().all(|n| n.kind == K::Database && n.has_children),
             "[{tag}] {:?}",
             names(&root)
         );

@@ -878,7 +878,19 @@ fn lost() -> Error {
     Error::Connection("the connection is closed".into())
 }
 
-fn isolation_sql(level: IsolationLevel) -> Result<&'static str> {
+fn isolation_sql(level: IsolationLevel, tidb: bool) -> Result<&'static str> {
+    // TiDB only knows READ COMMITTED and REPEATABLE READ (it rejects the others unless
+    // `tidb_skip_isolation_level_check` is on, which would silently run another level).
+    if tidb
+        && matches!(
+            level,
+            IsolationLevel::ReadUncommitted | IsolationLevel::Serializable
+        )
+    {
+        return Err(Error::Unsupported(
+            "read uncommitted / serializable isolation on TiDB".into(),
+        ));
+    }
     Ok(match level {
         IsolationLevel::ReadUncommitted => "READ UNCOMMITTED",
         IsolationLevel::ReadCommitted => "READ COMMITTED",
@@ -1413,8 +1425,16 @@ impl LeaseBackend for MyBackend {
         self.drop_pending().await;
         match op {
             TxControl::Begin => {
+                // TiDB cannot start read-only transactions (noop implementation): refuse rather
+                // than silently run a read-write one.
+                if self.is_tidb && opts.read_only {
+                    return Err(Error::Unsupported("read_only_transaction".into()));
+                }
                 if let Some(level) = opts.isolation {
-                    let sql = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_sql(level)?);
+                    let sql = format!(
+                        "SET TRANSACTION ISOLATION LEVEL {}",
+                        isolation_sql(level, self.is_tidb)?
+                    );
                     self.simple(&sql).await?;
                 }
                 // A read-only profile never gets a read-write transaction.

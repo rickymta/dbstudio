@@ -853,11 +853,17 @@ pub async fn object_ddl(
     }
     match last.kind {
         ObjectKind::Sequence if segs.len() == 2 => {
+            // MariaDB names the column `Create Table`, TiDB `Create Sequence`.
+            let column = if is_tidb {
+                "Create Sequence"
+            } else {
+                "Create Table"
+            };
             show_create(
                 conn,
                 "SEQUENCE",
                 quote_table(&need_db()?, &last.name),
-                "Create Table",
+                column,
             )
             .await
         }
