@@ -10,10 +10,11 @@ use dbstudio_core::{
 };
 use uuid::Uuid;
 
-use crate::cli::render_command;
+use crate::cli::{quote_arg, render_command};
 use crate::conn::Shared;
 use crate::convert::value_bytes;
 use crate::error::map_err;
+use crate::put::{PutPlan, preview_put, put_key};
 use crate::tree::db_of;
 
 type Args = Vec<Vec<u8>>;
@@ -28,7 +29,18 @@ struct Plan {
     must_one: Vec<(usize, &'static str)>,
     /// Index of the command whose integer reply is the affected count (default: 1).
     affected_from: Option<usize>,
+    /// `LINDEX key index` must equal `value` (checked under WATCH) before `MULTI`.
+    list_check: Option<ListCheck>,
 }
+
+struct ListCheck {
+    key: Vec<u8>,
+    index: i64,
+    value: Vec<u8>,
+}
+
+/// Message of a failed optimistic check on a list item.
+const LIST_CHANGED: &str = "list item changed";
 
 struct Expect {
     key: Vec<u8>,
@@ -59,6 +71,7 @@ fn plan(change: &KeyChange) -> Result<Plan> {
         expects: Vec::new(),
         must_one: Vec::new(),
         affected_from: None,
+        list_check: None,
     };
     let watch = |p: &mut Plan, k: &[u8]| p.watch.push(k.to_vec());
     match change {
@@ -115,10 +128,20 @@ fn plan(change: &KeyChange) -> Result<Plan> {
             p.affected_from = Some(0);
         }
         KeyChange::ListSet {
-            key, index, value, ..
+            key,
+            index,
+            value,
+            expected,
         } => {
             let k = key_bytes(key)?;
             watch(&mut p, &k);
+            if let Some(e) = expected {
+                p.list_check = Some(ListCheck {
+                    key: k.clone(),
+                    index: *index,
+                    value: value_bytes(e)?,
+                });
+            }
             p.expects.push(Expect {
                 key: k.clone(),
                 types: &["list"],
@@ -145,9 +168,20 @@ fn plan(change: &KeyChange) -> Result<Plan> {
             }
             p.commands.push(c);
         }
-        KeyChange::ListRemoveAt { key, index, .. } => {
+        KeyChange::ListRemoveAt {
+            key,
+            index,
+            expected,
+        } => {
             let k = key_bytes(key)?;
             watch(&mut p, &k);
+            if let Some(e) = expected {
+                p.list_check = Some(ListCheck {
+                    key: k.clone(),
+                    index: *index,
+                    value: value_bytes(e)?,
+                });
+            }
             p.expects.push(Expect {
                 key: k.clone(),
                 types: &["list"],
@@ -290,7 +324,7 @@ fn plan(change: &KeyChange) -> Result<Plan> {
             p.commands.push(c);
             p.affected_from = Some(0);
         }
-        // Scaffold of the backlog contract v2: package K implements `Put` (temp key + RENAME).
+        // `Put` has its own build-then-RENAME path (`put_key`), never a WATCH/MULTI plan.
         KeyChange::Put { .. } => return Err(Error::Unsupported("key_put".into())),
         // `KeyChange` is exhaustive today; a new variant must get a plan before it compiles.
         #[allow(unreachable_patterns)]
@@ -331,12 +365,30 @@ impl Shared {
         set.changes
             .iter()
             .map(|c| {
+                if let KeyChange::Put {
+                    key,
+                    data,
+                    ttl_ms,
+                    mode,
+                } = c
+                {
+                    return preview_put(key, data, *ttl_ms, *mode);
+                }
                 let p = plan(c)?;
                 let lines: Vec<String> = p.commands.iter().map(|a| render_command(a)).collect();
-                Ok(if lines.len() > 1 {
+                let body = if lines.len() > 1 {
                     format!("MULTI\n{}\nEXEC", lines.join("\n"))
                 } else {
                     lines.join("\n")
+                };
+                Ok(match &p.list_check {
+                    Some(c) => format!(
+                        "WATCH {}\n-- abort unless {} = {}\n{body}",
+                        quote_arg(&c.key),
+                        render_command(&cmd(&[b"LINDEX", &c.key, c.index.to_string().as_bytes()])),
+                        quote_arg(&c.value)
+                    ),
+                    None => body,
                 })
             })
             .collect()
@@ -356,13 +408,28 @@ impl Shared {
         // Validate everything first so a malformed change fails before anything is applied.
         let mut plans = Vec::with_capacity(changes.len());
         for (i, c) in changes.iter().enumerate() {
-            plans.push(plan(c).map_err(|e| failed(i, e.message(), 0))?);
+            plans.push(match c {
+                KeyChange::Put {
+                    key,
+                    data,
+                    ttl_ms,
+                    mode,
+                } => Step::Put(
+                    PutPlan::new(key, data, *ttl_ms, *mode)
+                        .map_err(|e| failed(i, e.message(), 0))?,
+                ),
+                other => Step::Plan(plan(other).map_err(|e| failed(i, e.message(), 0))?),
+            });
         }
         let db = db_of(&database, self.default_db)?;
         let mut conn = self.dedicated(db).await?;
         let mut affected = Vec::with_capacity(plans.len());
-        for (i, p) in plans.iter().enumerate() {
-            match apply_one(&mut conn, p).await {
+        for (i, step) in plans.iter().enumerate() {
+            let outcome = match step {
+                Step::Plan(p) => apply_one(&mut conn, p).await,
+                Step::Put(p) => put_key(&mut conn, p).await,
+            };
+            match outcome {
                 Ok(n) => affected.push(n),
                 Err(message) => return Err(failed(i, message, i)),
             }
@@ -373,6 +440,11 @@ impl Shared {
             atomic: false,
         })
     }
+}
+
+enum Step {
+    Plan(Plan),
+    Put(PutPlan),
 }
 
 async fn apply_one(
@@ -386,6 +458,19 @@ async fn apply_one(
             w.arg(k.as_slice());
         }
         w.query_async::<()>(conn).await.map_err(q)?;
+    }
+    // Optimistic check of the list item the user saw; WATCH makes a later change abort EXEC.
+    if let Some(c) = &p.list_check {
+        let current: Option<Vec<u8>> = redis::cmd("LINDEX")
+            .arg(c.key.as_slice())
+            .arg(c.index)
+            .query_async(conn)
+            .await
+            .map_err(q)?;
+        if current.as_deref() != Some(c.value.as_slice()) {
+            let _ = redis::cmd("UNWATCH").query_async::<()>(conn).await;
+            return Err(LIST_CHANGED.to_string());
+        }
     }
     // Type checks happen under WATCH: a concurrent change invalidates EXEC.
     for e in &p.expects {
@@ -428,6 +513,7 @@ async fn apply_one(
     }
     let exec: redis::Value = redis::cmd("EXEC").query_async(conn).await.map_err(q)?;
     let replies = match exec {
+        redis::Value::Nil if p.list_check.is_some() => return Err(LIST_CHANGED.to_string()),
         redis::Value::Nil => {
             return Err(
                 "the key changed while the edit was being applied (WATCH aborted it); reload and retry".into(),
