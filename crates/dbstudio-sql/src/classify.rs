@@ -31,13 +31,12 @@ pub fn analyze(d: ScriptDialect, text: &str) -> ScriptAnalysis {
         ScriptDialect::Postgres
         | ScriptDialect::MySql { .. }
         | ScriptDialect::MsSql
-        | ScriptDialect::Oracle => analyze_sql(d, &chars),
+        | ScriptDialect::Oracle
+        | ScriptDialect::Cql
+        | ScriptDialect::ClickHouse => analyze_sql(d, &chars),
         ScriptDialect::MongoShell => analyze_mongo(text, &chars),
         ScriptDialect::RedisCli => analyze_redis(&chars),
-        // CQL and ClickHouse behave like `Opaque` until package S adds their lexers.
-        ScriptDialect::Opaque | ScriptDialect::Cql | ScriptDialect::ClickHouse => {
-            analyze_opaque(&chars)
-        }
+        ScriptDialect::Opaque => analyze_opaque(&chars),
     };
     ScriptAnalysis {
         dialect: d,
@@ -76,7 +75,10 @@ pub fn statement_databases(
             }
             _ => vec![None; n],
         },
-        ScriptDialect::MySql { .. } | ScriptDialect::MsSql => {
+        ScriptDialect::MySql { .. }
+        | ScriptDialect::MsSql
+        | ScriptDialect::Cql
+        | ScriptDialect::ClickHouse => {
             let chars: Vec<char> = text.chars().collect();
             let mut cur: Option<String> = None;
             analysis
@@ -1077,6 +1079,16 @@ fn explain(
                 }
             }
         }
+        // ClickHouse `EXPLAIN [AST|SYNTAX|PLAN|PIPELINE|ESTIMATE] <query>` never runs the query.
+        ScriptDialect::ClickHouse | ScriptDialect::Cql => {
+            return (
+                C::Explain {
+                    analyze: false,
+                    writes: false,
+                },
+                None,
+            );
+        }
         ScriptDialect::Oracle => {
             // EXPLAIN PLAN [SET STATEMENT_ID = 'x'] FOR <stmt>
             return (
@@ -1153,6 +1165,17 @@ const VOLATILE_FUNCTIONS: &[&str] = &[
 /// changes session state is not a plain read.
 fn select_class(d: ScriptDialect, sig: &[Sig], f: usize) -> StatementClass {
     use StatementClass as C;
+    if matches!(d, ScriptDialect::Cql) {
+        return C::Read;
+    }
+    if matches!(d, ScriptDialect::ClickHouse) {
+        // `INTO OUTFILE` writes a file on the client; everything else is a read.
+        return if depth0_word_pos(sig, f, &["INTO"]).is_some() {
+            C::Write
+        } else {
+            C::Read
+        };
+    }
     if let Some(k) = depth0_word_pos(sig, f, &["INTO"]) {
         match d {
             ScriptDialect::Postgres | ScriptDialect::MsSql => return C::Ddl,
@@ -1209,6 +1232,7 @@ fn set_lifts(sig: &[Sig]) -> bool {
         "TX_READ_ONLY",
         "SQL_MODE",
         "SUPER_READ_ONLY",
+        "READONLY",
         "STANDARD_CONFORMING_STRINGS",
         "BACKSLASH_QUOTE",
         "ESCAPE_STRING_WARNING",
@@ -1246,7 +1270,32 @@ fn classify_sig(
     let mssql = matches!(d, ScriptDialect::MsSql);
     let oracle = matches!(d, ScriptDialect::Oracle);
     let pg = matches!(d, ScriptDialect::Postgres);
+    if matches!(d, ScriptDialect::Cql) {
+        if let Some(r) = classify_cql(d, chars, sig, f) {
+            return r;
+        }
+    }
+    if matches!(d, ScriptDialect::ClickHouse) {
+        if let Some(r) = classify_clickhouse(sig, f) {
+            return r;
+        }
+    }
     match first {
+        // TiDB non-transactional DML: `BATCH ON id LIMIT 1000 DELETE FROM t WHERE ...`.
+        "BATCH" if is_mysql(d) && matches!(second, "ON" | "LIMIT") => {
+            (C::Write, dml_without_where(sig, f + 1))
+        }
+        // TiDB `ADMIN SHOW DDL JOBS`, `ADMIN CANCEL DDL JOBS`; CockroachDB / TiDB
+        // `CANCEL QUERY|JOB|SESSION|IMPORT JOB`, CockroachDB `PAUSE|RESUME JOB`.
+        "ADMIN" if is_mysql(d) => (C::Admin, None),
+        "CANCEL" if pg || is_mysql(d) => (C::Admin, None),
+        "PAUSE" | "RESUME" if pg && matches!(second, "JOB" | "JOBS" | "SCHEDULE" | "SCHEDULES") => {
+            (C::Admin, None)
+        }
+        // CockroachDB `SHOW RANGES` / `SHOW RANGE FROM ...` expose cluster internals.
+        "SHOW" if pg && matches!(second, "RANGES" | "RANGE") => (C::Admin, None),
+        "SET" if pg && second == "CLUSTER" => (C::Admin, None),
+        "SET" if is_mysql(d) && second == "CONFIG" => (C::Admin, None),
         "SELECT" => (select_class(d, sig, f), None),
         "VALUES" => (select_class(d, sig, f), None),
         "TABLE" if pg => (C::Read, None),
@@ -1471,6 +1520,68 @@ fn classify_sig(
     }
 }
 
+/// CQL statements that the generic SQL rules do not classify right.
+fn classify_cql(
+    d: ScriptDialect,
+    chars: &[char],
+    sig: &[Sig],
+    f: usize,
+) -> Option<(StatementClass, Option<DestructiveReason>)> {
+    use StatementClass as C;
+    let second = w(sig, f + 1);
+    match w(sig, f) {
+        // BEGIN [UNLOGGED | COUNTER] BATCH ... APPLY BATCH writes; any other BEGIN is not CQL.
+        "BEGIN" => {
+            let batch = (f + 1..f + 3).any(|k| w(sig, k) == "BATCH");
+            Some(if batch {
+                (C::Write, None)
+            } else {
+                (C::Procedural, keyword_scan(d, chars, sig, 0))
+            })
+        }
+        "LIST" => Some((C::Read, None)),
+        "CONSISTENCY" | "TRACING" | "PAGING" => Some((C::Session, None)),
+        "SERIAL" if second == "CONSISTENCY" => Some((C::Session, None)),
+        _ => None,
+    }
+}
+
+/// ClickHouse statements that the generic SQL rules do not classify right.
+fn classify_clickhouse(
+    sig: &[Sig],
+    f: usize,
+) -> Option<(StatementClass, Option<DestructiveReason>)> {
+    use StatementClass as C;
+    match w(sig, f) {
+        "EXISTS" | "WATCH" => Some((C::Read, None)),
+        "DETACH" => Some((C::Ddl, Some(DestructiveReason::Drop))),
+        "ATTACH" | "OPTIMIZE" | "EXCHANGE" | "UNDROP" => Some((C::Ddl, None)),
+        "SYSTEM" => Some((C::Admin, None)),
+        "ALTER" if w(sig, after_modifiers(sig, f + 1)) == "TABLE" => {
+            // Mutations `ALTER TABLE t UPDATE ... WHERE` / `DELETE WHERE` change data. A `DELETE`
+            // after `TTL` is only the TTL action.
+            let ttl = sig
+                .iter()
+                .position(|s| s.kind == TokenKind::Word && s.up == "TTL");
+            let m = depth0_word_pos(sig, f + 1, &["UPDATE", "DELETE"])
+                .filter(|k| ttl.is_none_or(|t| *k < t));
+            let drops = sig.iter().enumerate().skip(f + 1).any(|(k, s)| {
+                s.kind == TokenKind::Word
+                    && matches!(s.up.as_str(), "DROP" | "DETACH")
+                    && !matches!(w(sig, k + 1), "DEFAULT" | "MATERIALIZED" | "ALIAS")
+            });
+            if drops {
+                return Some((
+                    if m.is_some() { C::Write } else { C::Ddl },
+                    Some(DestructiveReason::AlterDrop),
+                ));
+            }
+            m.map(|k| (C::Write, dml_without_where(sig, k)))
+        }
+        _ => None,
+    }
+}
+
 fn classify_ddl(
     d: ScriptDialect,
     sig: &[Sig],
@@ -1487,7 +1598,11 @@ fn classify_ddl(
         "COMMENT" => return (C::Ddl, None),
         _ => {}
     }
-    let admin_obj = matches!(obj, "USER" | "ROLE" | "LOGIN" | "PROFILE" | "TABLESPACE")
+    let ch_admin = matches!(d, ScriptDialect::ClickHouse)
+        && (matches!(obj, "QUOTA" | "POLICY" | "SETTINGS")
+            || (obj == "ROW" && w(sig, obj_i + 1) == "POLICY"));
+    let admin_obj = (matches!(obj, "USER" | "ROLE" | "LOGIN" | "PROFILE" | "TABLESPACE")
+        || ch_admin)
         && !matches!(first, "TRUNCATE" | "RENAME");
     let class = if admin_obj { C::Admin } else { C::Ddl };
     let destructive = match first {
@@ -1519,7 +1634,6 @@ fn classify_ddl(
         }
         _ => None,
     };
-    let _ = d;
     (class, destructive)
 }
 
