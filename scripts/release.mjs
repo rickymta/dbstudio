@@ -64,7 +64,23 @@ function writeVersions(next) {
   const { start, end } = cargoSection(ct);
   const sec = ct.slice(start, end).replace(/^(version\s*=\s*")[^"]*(")/m, `$1${next}$2`);
   out[FILES.cargo] = ct.slice(0, start) + sec + ct.slice(end);
+  // Dependency nội bộ khai báo `version = "x" , path = ...` cũng phải theo version mới,
+  // nếu không cargo không chọn được phiên bản.
+  for (const f of pathDepManifests()) {
+    const t = readFileSync(f, 'utf8');
+    const re = /^(dbstudio-[\w-]+\s*=\s*\{[^}\n]*\bversion\s*=\s*")[^"]*("[^}\n]*\bpath\s*=)/gm;
+    const re2 = /^(dbstudio-[\w-]+\s*=\s*\{[^}\n]*\bpath\s*=[^}\n]*\bversion\s*=\s*")[^"]*(")/gm;
+    const u = t.replace(re, `$1${next}$2`).replace(re2, `$1${next}$2`);
+    if (u !== t) out[f] = u;
+  }
   return out;
+}
+
+function pathDepManifests() {
+  return run('git', ['ls-files', '*Cargo.toml'])
+    .out.split('\n')
+    .filter((f) => f && f !== 'Cargo.toml' && !f.startsWith('vendor/'))
+    .map((f) => join(ROOT, f));
 }
 
 function checkVersions(expected) {
@@ -214,7 +230,7 @@ if (flags.dryRun) {
 for (const [f, text] of Object.entries(files)) writeFileSync(f, text);
 writeFileSync(CHANGELOG, changelogNew);
 
-const toAdd = ['src-tauri/tauri.conf.json', 'package.json', 'Cargo.toml', 'CHANGELOG.md'];
+const toAdd = [...Object.keys(files).map((f) => f.replace(ROOT + '/', '')), 'CHANGELOG.md'];
 const lock = run('cargo', ['update', '-w', '--offline'], { allowFail: true });
 if (lock.ok) toAdd.push('Cargo.lock');
 else {
