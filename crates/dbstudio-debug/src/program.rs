@@ -1,7 +1,7 @@
 //! The step program: the script split into steps with the dialect of the lease (package D).
 
 use dbstudio_core::debug::TsqlStepUnit;
-use dbstudio_core::{Error, Result, ScriptDialect, StatementClass, StatementInfo, TextRange};
+use dbstudio_core::{Result, ScriptDialect, StatementClass, StatementInfo, TextRange};
 use dbstudio_sql::lexer::{TokenKind, tokenize};
 
 use crate::tsql_shim;
@@ -278,9 +278,6 @@ impl DebugProgram {
         }
         for (i, s) in steps.iter_mut().enumerate() {
             s.index = i as u32;
-        }
-        if steps.is_empty() && !text.trim().is_empty() && range.is_none() {
-            return Err(Error::Invalid("script has no statement".into()));
         }
         Ok(DebugProgram {
             dialect,
