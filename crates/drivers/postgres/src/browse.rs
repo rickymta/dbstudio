@@ -16,6 +16,7 @@ use tokio_postgres::Client;
 
 use crate::conn::Shared;
 use crate::error::map_error;
+use crate::flavor::Flavor;
 
 fn node(
     parent: &ObjectPath,
@@ -105,7 +106,7 @@ pub async fn list_children(shared: &Shared, parent: &ObjectPath) -> Result<Vec<O
             (kind @ (K::Table | K::View | K::MaterializedView), name),
         ] => {
             let conn = connect(shared, db).await?;
-            relation_folders(&conn, parent, schema, name, *kind).await
+            relation_folders(&conn, parent, schema, name, *kind, shared.flavor()).await
         }
         [
             (K::Database, db),
@@ -116,7 +117,7 @@ pub async fn list_children(shared: &Shared, parent: &ObjectPath) -> Result<Vec<O
             (K::Folder, key),
         ] => {
             let conn = connect(shared, db).await?;
-            relation_items(&conn, parent, schema, name, key).await
+            relation_items(&conn, parent, schema, name, key, shared.flavor()).await
         }
         // Leaves.
         [
@@ -190,8 +191,8 @@ async fn roles(shared: &Shared, parent: &ObjectPath) -> Result<Vec<ObjectNode>> 
     let conn = connect(shared, &shared.login_db).await?;
     let rows = conn
         .query(
-            "SELECT rolname::text, rolsuper, rolcanlogin, starts_with(rolname, 'pg_') \
-             FROM pg_roles ORDER BY starts_with(rolname, 'pg_'), rolname",
+            "SELECT rolname::text, rolsuper, rolcanlogin, (left(rolname::text, 3) = 'pg_') \
+             FROM pg_roles ORDER BY (left(rolname::text, 3) = 'pg_'), rolname",
             &[],
         )
         .await
@@ -226,10 +227,10 @@ async fn schemas(client: &Client, parent: &ObjectPath) -> Result<Vec<ObjectNode>
     let rows = client
         .query(
             "SELECT nspname::text, \
-                    (nspname = 'pg_catalog' OR nspname = 'information_schema' \
-                     OR starts_with(nspname, 'pg_toast')) AS is_system \
+                    (nspname IN ('pg_catalog', 'information_schema', 'crdb_internal', 'pg_extension') \
+                     OR (left(nspname::text, 8) = 'pg_toast')) AS is_system \
              FROM pg_namespace \
-             WHERE NOT starts_with(nspname, 'pg_temp_') AND NOT starts_with(nspname, 'pg_toast_temp_') \
+             WHERE NOT (left(nspname::text, 8) = 'pg_temp_') AND NOT (left(nspname::text, 14) = 'pg_toast_temp_') \
              ORDER BY is_system, nspname",
             &[],
         )
@@ -314,7 +315,7 @@ async fn schema_objects(
         folder::TABLES => {
             let rows = client
                 .query(
-                    "SELECT c.relname::text, c.relkind::text, c.relispartition \
+                    "SELECT c.relname::text, c.relkind::text, COALESCE(c.relispartition, false) \
                      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
                      WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f') \
                      ORDER BY c.relname",
@@ -351,7 +352,7 @@ async fn schema_objects(
             };
             let rows = client
                 .query(
-                    "SELECT c.relname::text, c.relispopulated \
+                    "SELECT c.relname::text, COALESCE(c.relispopulated, true) \
                      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
                      WHERE n.nspname = $1 AND c.relkind = $2::text::\"char\" \
                      ORDER BY c.relname",
@@ -423,15 +424,17 @@ async fn relation_folders(
     schema: &str,
     name: &str,
     kind: ObjectKind,
+    flavor: Flavor,
 ) -> Result<Vec<ObjectNode>> {
+    let hidden = crate::details::visible_filter(flavor, "a");
     let row = client
         .query_opt(
-            "SELECT (SELECT count(*) FROM pg_attribute a \
-                     WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped), \
+            &format!("SELECT (SELECT count(*) FROM pg_attribute a \
+                     WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped{hidden}), \
                     (SELECT count(*) FROM pg_index i WHERE i.indrelid = c.oid), \
                     (SELECT count(*) FROM pg_trigger t WHERE t.tgrelid = c.oid AND NOT t.tgisinternal) \
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'f', 'v', 'm')",
+             WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'f', 'v', 'm')"),
             &[&schema, &name],
         )
         .await
@@ -452,13 +455,16 @@ async fn relation_folders(
             row.get::<_, i64>(1) > 0,
             None,
         ));
-        out.push(node(
-            parent,
-            ObjectKind::Folder,
-            folder::TRIGGERS.into(),
-            row.get::<_, i64>(2) > 0,
-            None,
-        ));
+        // CockroachDB only has triggers from 24.3.
+        if flavor.capabilities().triggers {
+            out.push(node(
+                parent,
+                ObjectKind::Folder,
+                folder::TRIGGERS.into(),
+                row.get::<_, i64>(2) > 0,
+                None,
+            ));
+        }
     }
     Ok(out)
 }
@@ -498,17 +504,19 @@ async fn relation_items(
     schema: &str,
     name: &str,
     key: &str,
+    flavor: Flavor,
 ) -> Result<Vec<ObjectNode>> {
     match key {
         folder::COLUMNS => {
+            let hidden = crate::details::visible_filter(flavor, "a");
             let rows = client
                 .query(
-                    "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod) \
+                    &format!("SELECT a.attname::text, format_type(a.atttypid, a.atttypmod) \
                      FROM pg_attribute a \
                      JOIN pg_class c ON c.oid = a.attrelid \
                      JOIN pg_namespace n ON n.oid = c.relnamespace \
-                     WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped \
-                     ORDER BY a.attnum",
+                     WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped{hidden} \
+                     ORDER BY a.attnum"),
                     &[&schema, &name],
                 )
                 .await

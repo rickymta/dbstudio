@@ -89,7 +89,7 @@ WITH rels AS ( \
   SELECT c.oid, n.nspname, c.relname, c.relkind, c.reltuples, c.relispartition \
   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
   WHERE c.relkind::text = ANY($1::text[]) \
-    AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'crdb_internal', 'pg_extension') \
     AND n.nspname !~ '^pg_(toast|temp)' \
     AND ($2::text IS NULL OR n.nspname = $2::text) \
     AND (cardinality($3::text[]) = 0 \
@@ -141,7 +141,7 @@ pub(crate) async fn schema_model(
         .batch_execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .await
         .map_err(map_error)?;
-    let result = build(client, &database, &scope, &req).await;
+    let result = build(client, &database, &scope, &req, session.shared.flavor()).await;
     if client.batch_execute("ROLLBACK").await.is_ok() {
         conn.mark_reusable();
     }
@@ -156,7 +156,9 @@ async fn build(
     database: &str,
     scope: &Scope,
     req: &SchemaModelRequest,
+    flavor: crate::flavor::Flavor,
 ) -> Result<SchemaModel> {
+    let hidden = crate::details::visible_filter(flavor, "a");
     let mut kinds: Vec<String> = ["r", "p", "f"].map(String::from).to_vec();
     if req.include_views {
         kinds.push("v".into());
@@ -185,7 +187,7 @@ async fn build(
     // 1. relations
     let sql1 = format!(
         "{RELS_CTE}{} ) \
-         SELECT r.nspname::text, r.relname::text, r.relkind::text, r.reltuples::int8, \
+         SELECT r.nspname::text, r.relname::text, r.relkind::text, COALESCE(r.reltuples::int8, -1), \
                 CASE WHEN $5::bool THEN obj_description(r.oid, 'pg_class') END \
          FROM rels r ORDER BY r.nspname, r.relname",
         MAX_TABLES + 1
@@ -241,7 +243,7 @@ async fn build(
                 a.attidentity::text, a.attgenerated::text, \
                 CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END \
          FROM rels r \
-         JOIN pg_attribute a ON a.attrelid = r.oid AND a.attnum > 0 AND NOT a.attisdropped \
+         JOIN pg_attribute a ON a.attrelid = r.oid AND a.attnum > 0 AND NOT a.attisdropped{hidden} \
          JOIN pg_type t ON t.oid = a.atttypid \
          LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
          ORDER BY r.nspname, r.relname, a.attnum"
@@ -317,6 +319,7 @@ async fn build(
         let Some(&i) = by_key.get(&key) else { continue };
         let cols: Vec<String> = r.get(4);
         if r.get::<_, String>(3) == "p" {
+            // A hidden key (CockroachDB `rowid`) is not part of the model.
             tables[i].model.primary_key = cols;
         } else {
             fks.push(RawFk {
@@ -403,8 +406,10 @@ async fn build(
     };
     for acc in tables {
         let mut m = acc.model;
-        let pk: BTreeSet<&String> = m.primary_key.iter().collect();
         let uniq: BTreeSet<&String> = m.unique_keys.iter().flatten().collect();
+        let visible: BTreeSet<String> = m.columns.iter().map(|c| c.name.clone()).collect();
+        m.primary_key.retain(|c| visible.contains(c));
+        let pk: BTreeSet<&String> = m.primary_key.iter().collect();
         let pk_names: Vec<String> = m.primary_key.clone();
         for c in &mut m.columns {
             c.primary_key = pk_names.contains(&c.name);

@@ -9,6 +9,7 @@ use tokio_postgres::types::Type;
 
 use crate::browse::object_path;
 use crate::error::map_error;
+use crate::flavor::Flavor;
 use crate::sql::non_folder_segments;
 
 /// A table-like object located by a path.
@@ -92,18 +93,53 @@ pub async fn key_columns(client: &Client, schema: &str, name: &str) -> Result<Ve
     Ok(rows.iter().map(|r| r.get(0)).collect())
 }
 
+/// SQL condition that skips hidden columns (CockroachDB `rowid`), `alias` is the pg_attribute
+/// alias. Empty on flavours without hidden columns.
+pub fn visible_filter(flavor: Flavor, alias: &str) -> String {
+    if flavor.is_cockroach() {
+        format!(" AND NOT COALESCE({alias}.attishidden, false)")
+    } else {
+        String::new()
+    }
+}
+
+/// Whether column `column` of the table is hidden (CockroachDB `NOT VISIBLE`).
+pub async fn is_hidden_column(client: &Client, schema: &str, name: &str, column: &str) -> bool {
+    client
+        .query_opt(
+            "SELECT COALESCE(a.attishidden, false) FROM pg_attribute a \
+             JOIN pg_class c ON c.oid = a.attrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relname = $2 AND a.attname = $3",
+            &[&schema, &name, &column],
+        )
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|r| r.get::<_, bool>(0))
+}
+
 pub async fn table_details(
     client: &Client,
     path: &ObjectPath,
     database: &str,
+    flavor: Flavor,
 ) -> Result<TableDetails> {
     let rel = resolve_relation(path)?;
+    // CockroachDB has no `pg_total_relation_size`.
+    let size_expr = if flavor.is_cockroach() {
+        "NULL::int8"
+    } else {
+        "CASE WHEN c.relkind IN ('r', 'p', 'm') THEN pg_total_relation_size(c.oid) END"
+    };
     let header = client
         .query_opt(
-            "SELECT c.oid, c.relkind::text, obj_description(c.oid, 'pg_class'), c.reltuples::int8, \
-                    CASE WHEN c.relkind IN ('r', 'p', 'm') THEN pg_total_relation_size(c.oid) END \
-             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'f', 'v', 'm')",
+            &format!(
+                "SELECT c.oid, c.relkind::text, obj_description(c.oid, 'pg_class'), \
+                        COALESCE(c.reltuples::int8, -1), {size_expr} \
+                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'f', 'v', 'm')"
+            ),
             &[&rel.schema, &rel.name],
         )
         .await
@@ -115,9 +151,11 @@ pub async fn table_details(
     let reltuples: i64 = header.get(3);
     let size: Option<i64> = header.get(4);
 
+    let hidden = visible_filter(flavor, "a");
     let column_rows = client
         .query(
-            "SELECT a.attname::text, a.attnum::int4, format_type(a.atttypid, a.atttypmod), \
+            &format!(
+                "SELECT a.attname::text, a.attnum::int4, format_type(a.atttypid, a.atttypmod), \
                     a.attnotnull, pg_get_expr(d.adbin, d.adrelid), \
                     col_description(a.attrelid, a.attnum), a.attidentity::text, \
                     a.attgenerated::text, \
@@ -127,8 +165,9 @@ pub async fn table_details(
              FROM pg_attribute a \
              JOIN pg_type t ON t.oid = a.atttypid \
              LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-             WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped \
-             ORDER BY a.attnum",
+             WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped{hidden} \
+             ORDER BY a.attnum"
+            ),
             &[&oid],
         )
         .await
