@@ -84,7 +84,7 @@ async fn nvarchar_binary_and_xml_columns_are_cut_too() {
     let r = run(
         &*s,
         "SELECT REPLICATE(CAST(N'é€' AS nvarchar(max)), 2000000) AS t, \
-                REPLICATE(CAST(0x41 AS varbinary(max)), 3000000) AS b, \
+                CAST(REPLICATE(CAST('A' AS varchar(max)), 3000000) AS varbinary(max)) AS b, \
                 CAST(REPLICATE(CAST('<a>' AS varchar(max)), 1) + 'x</a>' AS xml) AS x, \
                 CAST(N'short' AS nvarchar(max)) AS s",
     )
