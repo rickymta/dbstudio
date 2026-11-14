@@ -75,7 +75,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee -a check.log
       # Also lint with every optional feature switched on (dev-bridge and friends).
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings 2>&1 | tee -a check.log
-      - run: cargo test --workspace 2>&1 | tee -a check.log
+      # --no-fail-fast: see every failing crate in one run, not only the first.
+      - run: cargo test --workspace --no-fail-fast 2>&1 | tee -a check.log
       # Keep the debug-only dev bridge feature compiling and tested.
       - run: cargo clippy -p dbstudio --features dev-bridge --all-targets -- -D warnings 2>&1 | tee -a check.log
       - run: cargo test -p dbstudio --features dev-bridge 2>&1 | tee -a check.log

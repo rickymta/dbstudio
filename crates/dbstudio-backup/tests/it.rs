@@ -565,7 +565,47 @@ async fn model_of(s: &dyn Session, db: &str) -> String {
         })
         .await
         .unwrap();
-    serde_json::to_string(&m).unwrap().replace(db, "<DB>")
+    // Structure only: `estimatedRows` is planner statistics (reltuples), refreshed whenever
+    // autovacuum / autoanalyze gets to a table, so source and restored copy differ by timing.
+    let mut v = serde_json::to_value(&m).unwrap();
+    fn strip_stats(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                map.remove("estimatedRows");
+                map.values_mut().for_each(strip_stats);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(strip_stats),
+            _ => {}
+        }
+    }
+    strip_stats(&mut v);
+    serde_json::to_string(&v).unwrap().replace(db, "<DB>")
+}
+
+/// `assert_eq!` on two models with a readable message: the first table that differs.
+fn assert_same_model(a: &str, b: &str, what: &str) {
+    if a == b {
+        return;
+    }
+    let (va, vb): (serde_json::Value, serde_json::Value) = (
+        serde_json::from_str(a).unwrap(),
+        serde_json::from_str(b).unwrap(),
+    );
+    let tables = |v: &serde_json::Value| v["tables"].as_array().cloned().unwrap_or_default();
+    let (ta, tb) = (tables(&va), tables(&vb));
+    for (x, y) in ta.iter().zip(tb.iter()) {
+        if x != y {
+            panic!(
+                "{what}: models differ at table {}\nsource:   {x}\nrestored: {y}",
+                x["name"]
+            );
+        }
+    }
+    panic!(
+        "{what}: models differ outside the tables ({} vs {} tables)\nsource:   {a}\nrestored: {b}",
+        ta.len(),
+        tb.len()
+    );
 }
 
 struct Round {
@@ -637,10 +677,10 @@ async fn postgres_full_round_trip_pg16_and_pg12() {
         drop(r.dir);
 
         // Same structure on both sides.
-        assert_eq!(
-            model_of(&*s, &src).await,
-            model_of(&*s, &dst).await,
-            "port {port}"
+        assert_same_model(
+            &model_of(&*s, &src).await,
+            &model_of(&*s, &dst).await,
+            &format!("port {port}"),
         );
         // Same rows in every table (partitioned parent and partitions included).
         for t in [

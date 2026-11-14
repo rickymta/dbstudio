@@ -118,7 +118,9 @@ mod tests {
     async fn unreachable_server_is_a_connection_error() {
         let mut cfg = ConnectionConfig::new(DbKind::Cassandra, "t", "127.0.0.1");
         cfg.port = 1;
-        cfg.connect_timeout_ms = Some(800);
+        // Windows takes ~2 s to refuse a closed loopback port: the timeout must outlast that
+        // so the error stays `connection`, not `timeout`.
+        cfg.connect_timeout_ms = Some(10_000);
         let err = CassandraDriver::new()
             .connect(&cfg, None)
             .await

@@ -94,7 +94,9 @@ mod tests {
         let mut cfg = ConnectionConfig::new(DbKind::Redis, "test", "127.0.0.1");
         cfg.port = 1;
         cfg.tls.mode = dbstudio_core::TlsMode::Disable;
-        cfg.connect_timeout_ms = Some(500);
+        // Windows takes ~2 s to refuse a closed loopback port: the timeout must outlast that
+        // so the error stays `connection`, not `timeout`.
+        cfg.connect_timeout_ms = Some(10_000);
         let err = RedisDriver::new().connect(&cfg, None).await.err().unwrap();
         assert_eq!(err.kind(), "connection");
     }
