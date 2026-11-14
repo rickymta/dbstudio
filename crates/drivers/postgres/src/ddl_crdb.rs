@@ -135,7 +135,9 @@ impl Parsed {
         } else {
             object_path(database, &self.schema, kind, &self.name)
         };
-        let mut sql = self.sql;
+        // Views and routines name tables as `database.schema.name`; the DDL must replay into
+        // another database too (cross-database references are off by default).
+        let mut sql = strip_database(&self.sql, database);
         let drop = match self.what {
             What::Table => Some(format!(
                 "DROP TABLE IF EXISTS {} CASCADE;\n",
@@ -182,6 +184,52 @@ impl Parsed {
             depends_on: Vec::new(),
         }
     }
+}
+
+/// Remove the `database.` qualifier of three-part names (outside string literals), plain or
+/// quoted.
+fn strip_database(sql: &str, database: &str) -> String {
+    let quoted = format!("\"{}\"", database.replace('"', "\"\""));
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut out = String::with_capacity(sql.len());
+    let mut in_str = false;
+    let mut prev: Option<char> = None;
+    let mut i = 0;
+    while i < sql.len() {
+        let ch = sql[i..].chars().next().expect("in range");
+        if ch == '\'' {
+            in_str = !in_str;
+        }
+        if !in_str && prev.is_none_or(|p| !(is_ident(p) || p == '.' || p == '"')) {
+            if let Some(skip) = qualifier_len(&sql[i..], &quoted, database) {
+                i += skip;
+                prev = Some('.');
+                continue;
+            }
+        }
+        out.push(ch);
+        i += ch.len_utf8();
+        prev = Some(ch);
+    }
+    out
+}
+
+/// Length of a leading `database.` when it starts a three-part name `database.schema.name`.
+fn qualifier_len(rest: &str, quoted: &str, database: &str) -> Option<usize> {
+    for pat in [quoted, database] {
+        let Some(after) = rest.strip_prefix(pat).and_then(|r| r.strip_prefix('.')) else {
+            continue;
+        };
+        let end = if after.starts_with('"') {
+            after[1..].find('"').map(|p| p + 2)
+        } else {
+            after.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+        };
+        if end.is_some_and(|e| after[e..].starts_with('.')) {
+            return Some(pat.len() + 1);
+        }
+    }
+    None
 }
 
 /// Classify one statement of a `SHOW CREATE ALL` result. Comment-only rows give `None`.
@@ -326,6 +374,29 @@ mod tests {
             vec!["my db", "a\"b", "t"]
         );
         assert_eq!(qualified_name("t;"), vec!["t"]);
+    }
+
+    #[test]
+    fn strips_database_qualifier() {
+        assert_eq!(
+            strip_database(
+                "CREATE VIEW sv.v AS SELECT a FROM dbstudio.sv.t JOIN dbstudio.sv.u",
+                "dbstudio"
+            ),
+            "CREATE VIEW sv.v AS SELECT a FROM sv.t JOIN sv.u"
+        );
+        assert_eq!(
+            strip_database(
+                "SELECT \"my db\".s.t, x.dbstudio.y, 'dbstudio.a.b'",
+                "my db"
+            ),
+            "SELECT s.t, x.dbstudio.y, 'dbstudio.a.b'"
+        );
+        // A two-part name whose first part equals the database stays.
+        assert_eq!(
+            strip_database("SELECT * FROM dbstudio.t", "dbstudio"),
+            "SELECT * FROM dbstudio.t"
+        );
     }
 
     #[test]

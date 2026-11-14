@@ -305,9 +305,14 @@ impl Shared {
             return Err(Error::Connection("invalid session id".into()));
         }
         let mut conn = self.acquire_catalog(&self.login_db).await?;
+        // A cursor (`DECLARE ... FOR SELECT`) runs its query on an internal session that shares
+        // the client address and has the application name prefixed with `$$ `: cancel both.
         let sql = format!(
             "CANCEL QUERIES SELECT query_id FROM [SHOW CLUSTER STATEMENTS] \
-             WHERE session_id = '{session_id}'"
+             WHERE session_id = '{session_id}' \
+                OR (left(application_name, 3) = '$$ ' AND client_address = \
+                    (SELECT client_address FROM [SHOW CLUSTER STATEMENTS] \
+                     WHERE session_id = '{session_id}' LIMIT 1))"
         );
         let r = conn.client.batch_execute(&sql).await.map_err(map_error);
         if r.is_ok() {
