@@ -5,9 +5,7 @@
 //! The table lives in `dbstudio_backup::notify` so the command line prints the same texts;
 //! this module only reads the setting.
 
-pub use dbstudio_backup::notify::{
-    Lang, RunFacts, backup_failed, backup_succeeded, quit_busy, resolve_language,
-};
+pub use dbstudio_backup::notify::{Lang, RunFacts, backup_failed, backup_succeeded, quit_busy};
 use dbstudio_store::Store;
 
 /// Language of notifications now: the stored setting (defaults when it cannot be read).

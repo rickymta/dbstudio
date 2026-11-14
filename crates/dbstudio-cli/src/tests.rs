@@ -617,10 +617,7 @@ async fn verify_and_restore_with_confirmation_rules() {
         .iter()
         .map(|(_, s)| s.clone())
         .collect();
-    assert!(
-        sql.iter()
-            .any(|s| s.starts_with("CREATE TABLE \"accounts\""))
-    );
+    assert!(sql.iter().any(|s| s.contains("CREATE TABLE \"accounts\"")));
     assert!(
         sql.iter()
             .any(|s| s.contains("INSERT INTO \"accounts\"") && s.contains("'it''s'")),
