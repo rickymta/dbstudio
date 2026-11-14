@@ -74,6 +74,16 @@ pub(crate) struct Rules {
     at_words: bool,
     /// Redis and Mongo shells have no SQL quoting.
     shell: bool,
+    /// CQL (Cassandra / ScyllaDB).
+    cql: bool,
+    /// ClickHouse.
+    ch: bool,
+    /// `` `x` `` is a quoted identifier (MySQL, ClickHouse).
+    backtick: bool,
+    /// Backslash escapes inside `".."` / `` `..` `` identifiers (ClickHouse).
+    ident_backslash: bool,
+    /// `$tag$ .. $tag$` heredoc strings (PostgreSQL, ClickHouse).
+    dollar: bool,
 }
 
 impl Rules {
@@ -91,17 +101,27 @@ impl Rules {
             dash_comment: true,
             at_words: false,
             shell: false,
+            cql: false,
+            ch: false,
+            backtick: false,
+            ident_backslash: false,
+            dollar: false,
         };
         match d {
             ScriptDialect::Postgres => {
                 r.pg = true;
+                r.dollar = true;
                 r.nested_comments = true;
             }
             ScriptDialect::MySql {
-                backslash_escapes, ..
+                backslash_escapes,
+                ansi_quotes,
+                ..
             } => {
                 r.mysql = true;
-                r.dq_string = true;
+                r.backtick = true;
+                // ANSI_QUOTES: `"x"` is an identifier.
+                r.dq_string = !ansi_quotes;
                 r.backslash = backslash_escapes;
                 r.hash_comment = true;
                 r.at_words = true;
@@ -125,8 +145,23 @@ impl Rules {
                 r.backslash = true;
                 r.dash_comment = false;
             }
-            // CQL and ClickHouse behave like `Opaque` until package S adds their lexers.
-            ScriptDialect::Opaque | ScriptDialect::Cql | ScriptDialect::ClickHouse => {}
+            // CQL: `'..'` doubles the quote, `$$..$$` strings, `"x"` identifiers, comments `--`,
+            // `//` and `/* */` (not nested).
+            ScriptDialect::Cql => {
+                r.cql = true;
+                r.slash_comment = true;
+            }
+            // ClickHouse: backslash escapes in strings and identifiers, `` `x` `` and `"x"`
+            // identifiers, comments `--`, `#` and `/* */`, `$tag$` heredocs.
+            ScriptDialect::ClickHouse => {
+                r.ch = true;
+                r.backtick = true;
+                r.backslash = true;
+                r.ident_backslash = true;
+                r.hash_comment = true;
+                r.dollar = true;
+            }
+            ScriptDialect::Opaque => {}
         }
         r
     }
@@ -335,9 +370,24 @@ impl<'a> Lexer<'a> {
                 let m = match self.at(i + 2) {
                     Some('!') => Some(i + 3),
                     Some('M') if self.at(i + 3) == Some('!') => Some(i + 4),
+                    // TiDB `/*T! ... */`, `/*T!50100 ... */`, `/*T![feature] ... */`
+                    Some('T') if self.at(i + 3) == Some('!') => Some(i + 4),
                     _ => None,
                 };
                 if let Some(mut j) = m {
+                    if self.at(i + 2) == Some('T') && self.at(j) == Some('[') {
+                        // Feature name of a TiDB comment; a missing `]` leaves `[` as code.
+                        let mut k = j + 1;
+                        while self
+                            .at(k)
+                            .is_some_and(|d| d.is_ascii_alphanumeric() || d == '_')
+                        {
+                            k += 1;
+                        }
+                        if self.at(k) == Some(']') {
+                            j = k + 1;
+                        }
+                    }
                     while self.at(j).is_some_and(|d| d.is_ascii_digit()) {
                         j += 1;
                     }
@@ -367,7 +417,7 @@ impl<'a> Lexer<'a> {
                     },
                 );
             }
-            let (end, ok) = self.quoted(i, '"', false);
+            let (end, ok) = self.quoted(i, '"', r.ident_backslash);
             return (
                 TokenKind::QuotedIdent,
                 end,
@@ -378,8 +428,8 @@ impl<'a> Lexer<'a> {
                 },
             );
         }
-        if c == '`' && r.mysql {
-            let (end, ok) = self.quoted(i, '`', false);
+        if c == '`' && r.backtick {
+            let (end, ok) = self.quoted(i, '`', r.ident_backslash);
             return (
                 TokenKind::QuotedIdent,
                 end,
@@ -408,8 +458,23 @@ impl<'a> Lexer<'a> {
                 Some("unterminated quoted identifier"),
             );
         }
-        if c == '$' && r.pg {
+        if c == '$' && r.dollar {
             return self.dollar(i);
+        }
+        if c == '$' && r.cql && nx == Some('$') {
+            // CQL `$$ .. $$` string (no escapes).
+            let mut k = i + 2;
+            while k + 1 < n {
+                if self.chars[k] == '$' && self.chars[k + 1] == '$' {
+                    return (TokenKind::String, k + 2, None);
+                }
+                k += 1;
+            }
+            return (
+                TokenKind::String,
+                n,
+                Some("unterminated dollar-quoted string"),
+            );
         }
         if c.is_ascii_digit() || (c == '.' && nx.is_some_and(|x| x.is_ascii_digit())) {
             return (TokenKind::Number, self.number(i), None);
