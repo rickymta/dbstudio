@@ -900,6 +900,29 @@ impl JsonSource {
     }
 }
 
+/// Whole records (the text of each element) of a JSON array / NDJSON file, for imports that
+/// keep the record intact instead of splitting it into columns.
+pub(crate) struct JsonRecords {
+    layout: JsonLayout,
+    reader: JsonReader,
+    line: u64,
+}
+
+impl JsonRecords {
+    pub fn open(path: &Path, layout: JsonLayout) -> Result<JsonRecords> {
+        Ok(JsonRecords {
+            layout,
+            reader: JsonSource::reader(path, layout)?,
+            line: 0,
+        })
+    }
+
+    /// `(line, text)` of the next record; `None` at the end.
+    pub fn next(&mut self) -> Result<Option<(u64, String)>> {
+        JsonSource::read_text(&mut self.reader, self.layout, &mut self.line)
+    }
+}
+
 impl RowSource for JsonSource {
     fn columns(&self) -> &[String] {
         &self.columns

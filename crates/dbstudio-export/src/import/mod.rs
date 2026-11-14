@@ -20,7 +20,7 @@ use crate::{
 mod insert;
 mod preview;
 mod script;
-mod source;
+pub(crate) mod source;
 
 use insert::{MAX_STATEMENT_ROWS, Savepoint, Target, insert_statement, savepoint};
 use source::RowSource;
@@ -35,6 +35,9 @@ pub async fn run_import(ctx: ExportContext, spec: ImportSpec) -> Result<ImportRe
     let cancel = ctx.reporter.cancel_token().clone();
     if cancel.is_cancelled() {
         return Err(Error::Cancelled);
+    }
+    if matches!(spec.target, ImportTarget::Keys { .. }) {
+        return crate::keys::import_keys(&ctx, &spec, &cancel).await;
     }
     match &spec.format {
         ImportFormat::Sql { continue_on_error } => {
@@ -731,8 +734,12 @@ async fn run_rows(
                 "a table import needs an existing or a new table as target".into(),
             ));
         }
-        // Scaffold of the backlog contract v2: package X implements the Redis key import.
-        ImportTarget::Keys { .. } => return Err(Error::Unsupported("import_keys".into())),
+        // Redis keys are imported by `crate::keys` (see `run_import`).
+        ImportTarget::Keys { .. } => {
+            return Err(Error::Invalid(
+                "a table import needs an existing or a new table as target".into(),
+            ));
+        }
     };
 
     let mapping = resolve_mapping(&spec.mapping, src.columns(), &table_columns)?;
