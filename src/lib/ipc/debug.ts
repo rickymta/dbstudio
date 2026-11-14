@@ -38,7 +38,7 @@ export const debugApi = {
     /** Answer to a `confirmation` pause (one-time token). */
     confirm?: ConfirmationGrant | null,
   ): Promise<DebugState> =>
-    call('debug_step', () => mock.debugStep(debugId, action), {
+    call('debug_step', () => mock.debugStep(debugId, action, confirm ?? null), {
       debugId,
       action,
       confirm: confirm ?? null,
