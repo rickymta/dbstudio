@@ -28,12 +28,37 @@ mod writers;
 pub use engine::{run_export, run_export_tuned};
 pub use fsio::cleanup_orphans;
 
+/// Orphan temporary files older than this are removed.
+const ORPHAN_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+/// Delay before the startup cleanup touches the disk, so it never competes with startup.
+const STARTUP_CLEANUP_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Remove orphan temporary export files left in the recently used export directories
-/// (`export.recentDirs` setting) by a crash. Called once, in the background, after startup.
-///
-/// Contract scaffold of the backlog contract v2: package X implements it (it does nothing now).
+/// (`export.recentDirs` setting) by a crash. Called once after startup: the list is read right
+/// away, the directories are visited on a background thread 10 seconds later (only files named
+/// `.<name>.dbstudio-tmp-<id>` older than an hour are removed). Directories that no longer exist
+/// leave the list the next time an export records its directory.
 pub fn startup_cleanup(store: &dbstudio_store::Store) {
-    let _ = store;
+    let Ok(dirs) = store.export_recent_dirs() else {
+        return;
+    };
+    if dirs.is_empty() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("export-orphan-cleanup".into())
+        .spawn(move || {
+            std::thread::sleep(STARTUP_CLEANUP_DELAY);
+            cleanup_dirs(&dirs, ORPHAN_MIN_AGE);
+        });
+    drop(spawned);
+}
+
+/// Run [`cleanup_orphans`] over `dirs`; returns the number of files removed.
+fn cleanup_dirs(dirs: &[String], older_than: std::time::Duration) -> usize {
+    dirs.iter()
+        .map(|d| cleanup_orphans(std::path::Path::new(d), older_than))
+        .sum()
 }
 pub use import::{preview_import, run_import};
 
@@ -912,6 +937,34 @@ mod tests {
             dialect: ScriptDialect::Postgres,
             reporter: Arc::new(Reporter(CancelToken::default())),
         }
+    }
+
+    #[test]
+    fn cleanup_visits_every_recent_dir_and_spares_other_files() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        for d in [&a, &b] {
+            std::fs::write(d.path().join(".out.csv.dbstudio-tmp-1"), "x").unwrap();
+            std::fs::write(d.path().join("keep.csv"), "x").unwrap();
+            std::fs::write(d.path().join(".hidden"), "x").unwrap();
+        }
+        let dirs: Vec<String> = [a.path(), b.path(), &a.path().join("missing")]
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        // Fresh files are spared with the real age limit.
+        assert_eq!(cleanup_dirs(&dirs, ORPHAN_MIN_AGE), 0);
+        assert_eq!(cleanup_dirs(&dirs, std::time::Duration::ZERO), 2);
+        for d in [&a, &b] {
+            assert!(d.path().join("keep.csv").exists());
+            assert!(d.path().join(".hidden").exists());
+            assert!(!d.path().join(".out.csv.dbstudio-tmp-1").exists());
+        }
+    }
+
+    #[test]
+    fn startup_cleanup_without_directories_does_nothing() {
+        let store = dbstudio_store::Store::open_in_memory().unwrap();
+        startup_cleanup(&store);
     }
 
     #[test]

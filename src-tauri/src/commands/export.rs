@@ -130,6 +130,11 @@ pub(crate) async fn start_impl(state: &AppState, mut spec: ExportSpec) -> Result
     if let Some(dir) = dest.parent() {
         // Leftovers of an export that was killed (an hour old at least: it may be running).
         dbstudio_export::cleanup_orphans(dir, std::time::Duration::from_secs(3600));
+        // Remembered so the startup cleanup also visits this directory (`export.recentDirs`).
+        let _ = state
+            .connections
+            .store()
+            .export_recent_dirs_record(&dir.to_string_lossy());
     }
 
     let job = open_job_session(state, spec.connection_id).await?;

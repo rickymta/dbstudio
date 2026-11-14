@@ -13,6 +13,8 @@ mod sql;
 mod xlsx;
 
 pub(crate) use csv::CsvWriter;
+#[cfg(test)]
+pub(crate) use csv::push_field as push_field_for_test;
 pub(crate) use json::JsonWriter;
 pub(crate) use sql::{SqlWriter, sql_literal};
 pub(crate) use xlsx::XlsxWriter;
