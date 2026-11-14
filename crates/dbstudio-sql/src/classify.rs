@@ -1642,8 +1642,9 @@ fn clickhouse_alter(sig: &[Sig], f: usize) -> Option<(StatementClass, Option<Des
     }
     // Commands, split at commas of depth 0.
     let mut cmds: Vec<&[Sig]> = Vec::new();
-    let (mut depth, mut start) = (0i32, i.min(sig.len()));
-    for k in start..sig.len() {
+    let first = i.min(sig.len());
+    let (mut depth, mut start) = (0i32, first);
+    for k in first..sig.len() {
         match (sig[k].kind, sig[k].up.as_str()) {
             (TokenKind::Punct, "(") => depth += 1,
             (TokenKind::Punct, ")") => depth -= 1,
