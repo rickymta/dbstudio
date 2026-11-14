@@ -1,0 +1,17 @@
+distribution: local
+vectorized: true
+
+• filter
+│ columns: (id, grp, name, amount)
+│ estimated row count: 1
+│ filter: name = 'n5'
+│
+└── • scan
+      columns: (id, grp, name, amount)
+      estimated row count: 6,000 (100% of the table; stats collected 13 seconds ago)
+      table: big@big_pkey
+      spans: FULL SCAN
+
+index recommendations: 1
+1. type: index creation
+   SQL command: CREATE INDEX ON dbstudio.sv.big (name) STORING (grp, amount);

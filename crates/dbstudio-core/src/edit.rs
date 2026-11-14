@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ObjectPath, Value};
+use crate::{KeyData, ObjectPath, Value};
 
 /// Whether (and how) a table's rows can be edited.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +18,22 @@ pub struct Editability {
     pub reason: Option<NotEditableReason>,
     /// `apply_changes` is all-or-nothing (false: Mongo standalone, Redis).
     pub atomic: bool,
+    /// Caveats the UI must show before applying (empty for classic SQL tables).
+    #[serde(default)]
+    pub notes: Vec<EditNote>,
+}
+
+/// A caveat of editing a table, shown by the UI before changes are applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EditNote {
+    /// INSERT overwrites a row with the same key (CQL without LWT).
+    UpsertSemantics,
+    /// Writes are conditional (CQL LWT `IF EXISTS`/`IF NOT EXISTS`): slower, conflict-safe.
+    ConditionalWrites,
+    /// UPDATE/DELETE run as mutations (ClickHouse `ALTER TABLE ... UPDATE/DELETE`): heavy,
+    /// rewrite data parts.
+    AsyncMutation,
 }
 
 /// Why a result or table is not editable.
@@ -128,6 +144,9 @@ pub enum DocumentChange {
         id: Value,
         /// New document.
         document: DocInput,
+        /// Field values read by the UI; a mismatch => `ChangeFailed` (concurrent edit).
+        #[serde(default)]
+        expected: Vec<FieldOriginal>,
     },
     /// `$set` / `$unset` by path.
     Update {
@@ -138,12 +157,28 @@ pub enum DocumentChange {
         /// Paths to unset.
         #[serde(default)]
         unset: Vec<Vec<String>>,
+        /// Field values read by the UI; a mismatch => `ChangeFailed` (concurrent edit).
+        #[serde(default)]
+        expected: Vec<FieldOriginal>,
     },
     /// Delete.
     Delete {
         /// `_id` value.
         id: Value,
+        /// Field values read by the UI; a mismatch => `ChangeFailed` (concurrent edit).
+        #[serde(default)]
+        expected: Vec<FieldOriginal>,
     },
+}
+
+/// Value of a document field when the UI read the document; `None` = the field was absent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldOriginal {
+    /// Field path.
+    pub path: Vec<String>,
+    /// Value when read; `None` = absent.
+    pub value: Option<Value>,
 }
 
 /// A document typed by the user or built by the UI.
@@ -220,6 +255,9 @@ pub enum KeyChange {
         index: i64,
         /// Value.
         value: Value,
+        /// Value read by the UI; a mismatch => `ChangeFailed` (WATCH + LINDEX + MULTI).
+        #[serde(default)]
+        expected: Option<Value>,
     },
     /// `LPUSH`/`RPUSH`.
     ListPush {
@@ -236,6 +274,9 @@ pub enum KeyChange {
         key: String,
         /// Index.
         index: i64,
+        /// Value read by the UI; a mismatch => `ChangeFailed`.
+        #[serde(default)]
+        expected: Option<Value>,
     },
     /// `SADD`.
     SetAdd {
@@ -302,6 +343,32 @@ pub enum KeyChange {
         /// Keys.
         keys: Vec<String>,
     },
+    /// Write a whole key (import/restore). Built in a temporary key then `RENAME`d so a reader
+    /// never sees a half-written value; big values are written in chunks.
+    #[serde(rename_all = "camelCase")]
+    Put {
+        /// Key.
+        key: String,
+        /// The full value.
+        data: KeyData,
+        /// Expiry in milliseconds from now; `None` = persistent.
+        #[serde(default)]
+        ttl_ms: Option<u64>,
+        /// What to do when the key exists.
+        #[serde(default)]
+        mode: PutMode,
+    },
+}
+
+/// What [`KeyChange::Put`] does when the key already exists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PutMode {
+    /// Overwrite an existing key.
+    #[default]
+    Replace,
+    /// Keep an existing key; `ApplyResult.affected[i] = 0` (skipped, not an error).
+    IfAbsent,
 }
 
 /// Outcome of `apply_changes`.
@@ -399,14 +466,19 @@ mod tests {
                         value: Value::Text("Hue".into()),
                     }],
                     unset: vec![vec!["old".into()]],
+                    expected: vec![],
                 },
                 DocumentChange::Replace {
                     id: Value::Int(1),
                     document: DocInput::Value {
                         value: Value::Document(vec![("a".into(), Value::Int(1))]),
                     },
+                    expected: vec![],
                 },
-                DocumentChange::Delete { id: Value::Int(1) },
+                DocumentChange::Delete {
+                    id: Value::Int(1),
+                    expected: vec![],
+                },
             ],
         });
         let json = rt(&cs);
@@ -470,10 +542,12 @@ mod tests {
                     key: "l".into(),
                     index: -1,
                     value: Value::Null,
+                    expected: None,
                 },
                 KeyChange::ListRemoveAt {
                     key: "l".into(),
                     index: 0,
+                    expected: None,
                 },
                 KeyChange::SetAdd {
                     key: "s".into(),
@@ -523,6 +597,7 @@ mod tests {
             read_only_columns: vec!["rv".into()],
             reason: Some(NotEditableReason::NoUniqueKey),
             atomic: true,
+            notes: vec![],
         };
         let json = rt(&e);
         assert_eq!(json["readOnlyColumns"], json!(["rv"]));
@@ -542,5 +617,86 @@ mod tests {
             }),
             json!({"applied": 2, "affected": [1, 1], "atomic": false})
         );
+    }
+
+    #[test]
+    fn expected_values_and_put_shapes() {
+        // `expected` is optional on input for every conflict-checked change.
+        let k: KeyChange = serde_json::from_value(
+            json!({"op": "listSet", "key": "l", "index": 0, "value": {"t": "null"}}),
+        )
+        .unwrap();
+        assert!(matches!(k, KeyChange::ListSet { expected: None, .. }));
+        let k = KeyChange::ListRemoveAt {
+            key: "l".into(),
+            index: 1,
+            expected: Some(Value::Text("x".into())),
+        };
+        assert_eq!(rt(&k)["expected"], json!({"t": "text", "v": "x"}));
+        let d: DocumentChange =
+            serde_json::from_value(json!({"op": "delete", "id": {"t": "int", "v": 1}})).unwrap();
+        assert!(matches!(d, DocumentChange::Delete { expected, .. } if expected.is_empty()));
+        let d = DocumentChange::Update {
+            id: Value::Int(1),
+            set: vec![],
+            unset: vec![],
+            expected: vec![
+                FieldOriginal {
+                    path: vec!["a".into(), "b".into()],
+                    value: Some(Value::Int(1)),
+                },
+                FieldOriginal {
+                    path: vec!["c".into()],
+                    value: None,
+                },
+            ],
+        };
+        let json = rt(&d);
+        assert_eq!(json["expected"][0]["path"], json!(["a", "b"]));
+        assert!(json["expected"][1]["value"].is_null());
+        // Put: camelCase fields, defaults for ttlMs and mode.
+        let put = KeyChange::Put {
+            key: "k".into(),
+            data: KeyData::List {
+                items: vec![Value::Text("a".into())],
+            },
+            ttl_ms: Some(10),
+            mode: PutMode::IfAbsent,
+        };
+        let json = rt(&put);
+        assert_eq!(json["op"], "put");
+        assert_eq!(json["ttlMs"], 10);
+        assert_eq!(json["mode"], "ifAbsent");
+        assert_eq!(json["data"]["type"], "list");
+        let put: KeyChange = serde_json::from_value(
+            json!({"op": "put", "key": "k", "data": {"type": "json", "text": "{}"}}),
+        )
+        .unwrap();
+        assert!(matches!(
+            put,
+            KeyChange::Put {
+                ttl_ms: None,
+                mode: PutMode::Replace,
+                ..
+            }
+        ));
+        assert_eq!(PutMode::default(), PutMode::Replace);
+    }
+
+    #[test]
+    fn edit_notes_serialize_camel_case() {
+        for (n, s) in [
+            (EditNote::UpsertSemantics, "upsertSemantics"),
+            (EditNote::ConditionalWrites, "conditionalWrites"),
+            (EditNote::AsyncMutation, "asyncMutation"),
+        ] {
+            assert_eq!(serde_json::to_value(n).unwrap(), s);
+        }
+        // `notes` may be omitted by older producers.
+        let e: Editability = serde_json::from_value(json!({
+            "editable": true, "keyColumns": [], "readOnlyColumns": [], "reason": null, "atomic": true
+        }))
+        .unwrap();
+        assert!(e.notes.is_empty());
     }
 }

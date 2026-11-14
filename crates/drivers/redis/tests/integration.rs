@@ -463,6 +463,7 @@ async fn all_six_types_read_and_edit(s: Server, db: i64) {
                 key: key("list"),
                 index: 1,
                 value: text("Y"),
+                expected: None,
             },
             KeyChange::ListPush {
                 key: key("list"),
@@ -472,6 +473,7 @@ async fn all_six_types_read_and_edit(s: Server, db: i64) {
             KeyChange::ListRemoveAt {
                 key: key("list"),
                 index: 3,
+                expected: None,
             },
             KeyChange::SetAdd {
                 key: key("set"),

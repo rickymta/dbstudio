@@ -27,6 +27,9 @@ use crate::sql::{non_folder_segments, qualified, quote_ident, quote_literal};
 /// Ordered DDL of the objects in a scope.
 pub(crate) async fn generate(session: &PostgresSession, req: DdlRequest) -> Result<Vec<DdlItem>> {
     let target = Target::parse(&req)?;
+    if session.shared.flavor().is_cockroach() {
+        return crate::ddl_crdb::generate(session, &req, &target).await;
+    }
     let database = target
         .database
         .clone()
@@ -55,8 +58,8 @@ pub(crate) async fn generate(session: &PostgresSession, req: DdlRequest) -> Resu
 // ---------------------------------------------------------------------------------------------
 
 /// Object categories a selection can name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Cat {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Cat {
     Relation,
     Sequence,
     Routine,
@@ -64,17 +67,17 @@ enum Cat {
 }
 
 #[derive(Debug)]
-struct Target {
-    database: Option<String>,
-    schema: Option<String>,
+pub(crate) struct Target {
+    pub(crate) database: Option<String>,
+    pub(crate) schema: Option<String>,
     /// `Some` when the request names objects; everything else is left out (except dependencies).
-    selection: Option<BTreeSet<(Cat, String, String)>>,
+    pub(crate) selection: Option<BTreeSet<(Cat, String, String)>>,
     /// The scope itself is one object (FKs to other tables are kept).
     single: bool,
 }
 
 impl Target {
-    fn parse(req: &DdlRequest) -> Result<Target> {
+    pub(crate) fn parse(req: &DdlRequest) -> Result<Target> {
         use ObjectKind as K;
         let segs = non_folder_segments(&req.scope);
         let mut selection: BTreeSet<(Cat, String, String)> = BTreeSet::new();
@@ -135,7 +138,7 @@ impl Target {
         })
     }
 
-    fn wants(&self, cat: Cat, schema: &str, name: &str) -> bool {
+    pub(crate) fn wants(&self, cat: Cat, schema: &str, name: &str) -> bool {
         match &self.selection {
             None => true,
             Some(s) => s.contains(&(cat, schema.to_string(), name.to_string())),
@@ -526,6 +529,31 @@ impl Catalog {
                 comment: r.get(15),
                 readable: r.get(16),
             });
+        }
+
+        // YugabyteDB answers NULL from `pg_sequence_last_value`: read the sequence itself.
+        for s in cat
+            .seqs
+            .iter_mut()
+            .filter(|s| s.readable && s.last_value.is_none())
+        {
+            let row = client
+                .query_opt(
+                    &format!(
+                        "SELECT last_value, is_called FROM {}.{}",
+                        quote_ident(&s.schema),
+                        quote_ident(&s.name)
+                    ),
+                    &[],
+                )
+                .await
+                .ok()
+                .flatten();
+            if let Some(row) = row {
+                if row.try_get::<_, bool>(1).unwrap_or(false) {
+                    s.last_value = row.try_get::<_, i64>(0).ok();
+                }
+            }
         }
 
         let sql = format!(
@@ -1187,18 +1215,29 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
                     col.clone(),
                 )
             });
-            match (s.owner_dep.as_deref(), &owner_table) {
-                (Some("a"), Some((tbl, col, key, _))) if emitted_table(&rels, key) => out.post(
-                    path.clone(),
+            // Statements that need the owning table (OWNED BY, the current value of a serial
+            // or identity sequence) are filed under that table: a partial restore that
+            // leaves the table out leaves them out too, instead of failing or rewinding a
+            // sequence that is shared.
+            let owner_path = match (&owner_table, s.owner_dep.as_deref()) {
+                (Some((_, _, key, _)), Some("a" | "i")) if emitted_table(&rels, key) => {
+                    Some(object_path(database, &key.0, ObjectKind::Table, &key.1))
+                }
+                _ => None,
+            };
+            if let (Some("a"), Some((tbl, col, _, _)), Some(op)) =
+                (s.owner_dep.as_deref(), &owner_table, &owner_path)
+            {
+                out.post(
+                    op.clone(),
                     ObjectKind::Sequence,
                     format!("ALTER SEQUENCE {q} OWNED BY {tbl}.{col};"),
                     vec![],
-                ),
-                _ => {}
+                );
             }
             if !s.readable {
                 out.post(
-                    path.clone(),
+                    owner_path.clone().unwrap_or_else(|| path.clone()),
                     ObjectKind::Sequence,
                     format!(
                         "-- Warning: no SELECT privilege on sequence {q}: its current value was not captured"
@@ -1219,7 +1258,12 @@ fn render(database: &str, target: &Target, opts: &DdlOptions, cat: Catalog) -> V
                         quote_literal(&q)
                     ),
                 };
-                out.post(path, ObjectKind::Sequence, sql, vec![]);
+                out.post(
+                    owner_path.unwrap_or(path),
+                    ObjectKind::Sequence,
+                    sql,
+                    vec![],
+                );
             }
         }
     }

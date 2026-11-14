@@ -30,15 +30,25 @@ async fn tree_levels() {
         let tag = t.name;
 
         // Root: user databases first, system ones last and marked.
-        let root = kids(&*s, &ObjectPath::root()).await;
-        let pos = |n: &str| root.iter().position(|x| x.name == n);
+        let mut root = kids(&*s, &ObjectPath::root()).await;
+        if t.tidb {
+            // TiDB lets this login read `mysql.user` when it connects through the published
+            // port, so the `roles` folder is offered; the tree test looks at databases only.
+            root.retain(|n| n.kind == K::Database);
+        }
+        // (TiDB spells its system databases in upper case.)
+        let pos = |n: &str| root.iter().position(|x| x.name.eq_ignore_ascii_case(n));
         let fx = pos(FIXTURE_DB)
             .unwrap_or_else(|| panic!("[{tag}] fixture db missing: {:?}", names(&root)));
         let info = pos("information_schema").unwrap();
         assert!(fx < info, "[{tag}] user db before system dbs");
         assert_eq!(root[info].detail.as_deref(), Some("system"));
         assert!(root[fx].detail.is_none());
-        assert!(root.iter().all(|n| n.kind == K::Database && n.has_children));
+        assert!(
+            root.iter().all(|n| n.kind == K::Database && n.has_children),
+            "[{tag}] {:?}",
+            names(&root)
+        );
         let first_system = root.iter().position(|n| n.detail.is_some()).unwrap();
         assert!(
             root[first_system..].iter().all(|n| n.detail.is_some()),
@@ -49,12 +59,17 @@ async fn tree_levels() {
         let folders = kids(&*s, &db()).await;
         let mut fnames = names(&folders);
         fnames.sort();
-        let mut expected = vec![
-            folder::FUNCTIONS,
-            folder::PROCEDURES,
-            folder::TABLES,
-            folder::VIEWS,
-        ];
+        // TiDB has no stored routines: those folders are hidden.
+        let mut expected = if t.tidb {
+            vec![folder::TABLES, folder::VIEWS]
+        } else {
+            vec![
+                folder::FUNCTIONS,
+                folder::PROCEDURES,
+                folder::TABLES,
+                folder::VIEWS,
+            ]
+        };
         expected.sort();
         assert_eq!(fnames, expected, "[{tag}]");
         assert!(
@@ -90,30 +105,36 @@ async fn tree_levels() {
         let views = kids(&*s, &db().child(K::Folder, folder::VIEWS)).await;
         assert_eq!(names(&views), ["v_child"]);
         assert_eq!(views[0].kind, K::View);
-        let funcs = kids(&*s, &db().child(K::Folder, folder::FUNCTIONS)).await;
-        assert_eq!(names(&funcs), ["fn_add"]);
-        assert_eq!(funcs[0].kind, K::Function);
-        assert_eq!(
-            funcs[0].path,
-            db().child(K::Folder, folder::FUNCTIONS)
-                .child(K::Function, "fn_add")
-        );
-        assert_eq!(
-            views[0].path,
-            db().child(K::Folder, folder::VIEWS)
-                .child(K::View, "v_child")
-        );
-        assert!(funcs[0].detail.as_deref().unwrap_or("").contains("int"));
-        let procs = kids(&*s, &db().child(K::Folder, folder::PROCEDURES)).await;
-        assert_eq!(names(&procs), ["pr_noop"]);
-        assert_eq!(procs[0].kind, K::Procedure);
+        if !t.tidb {
+            let funcs = kids(&*s, &db().child(K::Folder, folder::FUNCTIONS)).await;
+            assert_eq!(names(&funcs), ["fn_add"]);
+            assert_eq!(funcs[0].kind, K::Function);
+            assert_eq!(
+                funcs[0].path,
+                db().child(K::Folder, folder::FUNCTIONS)
+                    .child(K::Function, "fn_add")
+            );
+            assert_eq!(
+                views[0].path,
+                db().child(K::Folder, folder::VIEWS)
+                    .child(K::View, "v_child")
+            );
+            assert!(funcs[0].detail.as_deref().unwrap_or("").contains("int"));
+            let procs = kids(&*s, &db().child(K::Folder, folder::PROCEDURES)).await;
+            assert_eq!(names(&procs), ["pr_noop"]);
+            assert_eq!(procs[0].kind, K::Procedure);
+        }
 
         // Table folders and children.
         let child = db()
             .child(K::Folder, folder::TABLES)
             .child(K::Table, "child");
         let tf = kids(&*s, &child).await;
-        assert_eq!(names(&tf), ["columns", "indexes", "triggers"], "[{tag}]");
+        if t.tidb {
+            assert_eq!(names(&tf), ["columns", "indexes"], "[{tag}]");
+        } else {
+            assert_eq!(names(&tf), ["columns", "indexes", "triggers"], "[{tag}]");
+        }
         assert!(tf.iter().all(|f| f.has_children));
         let cols = kids(&*s, &child.child(K::Folder, folder::COLUMNS)).await;
         assert_eq!(names(&cols), ["id", "parent_id", "note", "gen_len"]);
@@ -130,10 +151,12 @@ async fn tree_levels() {
         assert_eq!(inames, ["PRIMARY", "idx_note", "uq_child"]);
         assert!(idx.iter().all(|i| i.kind == K::Index));
         assert_eq!(idx[0].name, "PRIMARY", "primary key first");
-        let trg = kids(&*s, &child.child(K::Folder, folder::TRIGGERS)).await;
-        assert_eq!(names(&trg), ["trg_child_bi"]);
-        assert_eq!(trg[0].kind, K::Trigger);
-        assert_eq!(trg[0].detail.as_deref(), Some("BEFORE INSERT"));
+        if !t.tidb {
+            let trg = kids(&*s, &child.child(K::Folder, folder::TRIGGERS)).await;
+            assert_eq!(names(&trg), ["trg_child_bi"]);
+            assert_eq!(trg[0].kind, K::Trigger);
+            assert_eq!(trg[0].detail.as_deref(), Some("BEFORE INSERT"));
+        }
 
         // Column detail is the full type.
         let at = db().child(K::Table, "all_types");
@@ -162,8 +185,10 @@ async fn tree_levels() {
 
         // A table without triggers reports an empty trigger folder.
         let tf = kids(&*s, &db().child(K::Table, "people")).await;
-        let trig = tf.iter().find(|f| f.name == "triggers").unwrap();
-        assert!(!trig.has_children);
+        if !t.tidb {
+            let trig = tf.iter().find(|f| f.name == "triggers").unwrap();
+            assert!(!trig.has_children);
+        }
 
         // Weird names: mixed case, spaces and backticks.
         let weird = db().child(K::Table, "We`ird Tbl");
@@ -216,22 +241,24 @@ async fn ddl_for_every_kind() {
         );
         let d = ddl(db().child(K::View, "v_child")).await.unwrap();
         assert!(d.contains("VIEW") && d.contains("v_child"), "[{tag}] {d}");
-        let d = ddl(db().child(K::Function, "fn_add")).await.unwrap();
-        assert!(
-            d.contains("FUNCTION") && d.contains("fn_add"),
-            "[{tag}] {d}"
-        );
-        let d = ddl(db().child(K::Procedure, "pr_noop")).await.unwrap();
-        assert!(
-            d.contains("PROCEDURE") && d.contains("pr_noop"),
-            "[{tag}] {d}"
-        );
         let child = db().child(K::Table, "child");
-        let d = ddl(child.child(K::Trigger, "trg_child_bi")).await.unwrap();
-        assert!(
-            d.contains("TRIGGER") && d.contains("trg_child_bi"),
-            "[{tag}] {d}"
-        );
+        if !t.tidb {
+            let d = ddl(db().child(K::Function, "fn_add")).await.unwrap();
+            assert!(
+                d.contains("FUNCTION") && d.contains("fn_add"),
+                "[{tag}] {d}"
+            );
+            let d = ddl(db().child(K::Procedure, "pr_noop")).await.unwrap();
+            assert!(
+                d.contains("PROCEDURE") && d.contains("pr_noop"),
+                "[{tag}] {d}"
+            );
+            let d = ddl(child.child(K::Trigger, "trg_child_bi")).await.unwrap();
+            assert!(
+                d.contains("TRIGGER") && d.contains("trg_child_bi"),
+                "[{tag}] {d}"
+            );
+        }
         assert_eq!(
             ddl(child.child(K::Index, "PRIMARY")).await.unwrap(),
             format!("ALTER TABLE `{FIXTURE_DB}`.`child` ADD PRIMARY KEY (`id`);")
@@ -345,7 +372,10 @@ async fn details_of_tables_and_views() {
         );
         assert_eq!(fk.on_delete.as_deref(), Some("CASCADE"));
         assert_eq!(fk.on_update.as_deref(), Some("RESTRICT"));
-        assert!(d.size_bytes.unwrap() > 0);
+        // TiDB reports table sizes only from statistics, which a fresh fixture lacks.
+        if !t.tidb {
+            assert!(d.size_bytes.unwrap() > 0);
+        }
         assert!(d.estimated_rows.is_some());
 
         // Defaults and comments.
@@ -433,6 +463,10 @@ async fn roles_folder_depends_on_privileges() {
         assert!(!r.has_children);
         assert!(roles.iter().any(|n| n.name == "'dbstudio'@'%'"));
         // Without privilege the folder is silently absent.
+        if t.tidb {
+            // See `tree_levels`: TiDB does not hide `mysql.user` from this login.
+            continue;
+        }
         let s = user_session(t).await;
         let top = kids(&*s, &ObjectPath::root()).await;
         assert!(!top.iter().any(|n| n.name == folder::ROLES), "[{tag}]");
@@ -472,13 +506,16 @@ async fn server_side_object_search() {
             ),
         )
         .await;
-        for sql in [
-            format!(
-                "CREATE DEFINER='dbstudio'@'%' FUNCTION `{db1}`.user_fn() RETURNS INT DETERMINISTIC RETURN 1"
-            ),
-            format!("CREATE DEFINER='dbstudio'@'%' PROCEDURE `{db1}`.user_proc() SELECT 1"),
-        ] {
-            run(&*root, &sql).await;
+        // TiDB has no stored routines.
+        if !t.tidb {
+            for sql in [
+                format!(
+                    "CREATE DEFINER='dbstudio'@'%' FUNCTION `{db1}`.user_fn() RETURNS INT DETERMINISTIC RETURN 1"
+                ),
+                format!("CREATE DEFINER='dbstudio'@'%' PROCEDURE `{db1}`.user_proc() SELECT 1"),
+            ] {
+                run(&*root, &sql).await;
+            }
         }
         root.close().await.unwrap();
         let s = user_session(t).await;
@@ -493,15 +530,19 @@ async fn server_side_object_search() {
         let r = search("user", in_db1.clone()).await;
         assert_eq!(
             names(&r),
-            [
-                "user",
-                "user_fn",
-                "user_proc",
-                "user_view",
-                "users",
-                "super_user",
-                "xuserx"
-            ],
+            if t.tidb {
+                vec!["user", "user_view", "users", "super_user", "xuserx"]
+            } else {
+                vec![
+                    "user",
+                    "user_fn",
+                    "user_proc",
+                    "user_view",
+                    "users",
+                    "super_user",
+                    "xuserx",
+                ]
+            },
             "[{tag}]"
         );
         // Case-insensitive, and the scope may be written with a folder segment.
@@ -517,7 +558,7 @@ async fn server_side_object_search() {
             all.iter()
                 .filter(|n| n.detail.as_deref() == Some(db1.as_str()))
                 .count()
-                >= 7
+                >= if t.tidb { 5 } else { 7 }
         );
         for n in &all {
             let d = n.detail.as_deref().unwrap();
@@ -532,7 +573,11 @@ async fn server_side_object_search() {
         // %, _, \ and ' are ordinary characters.
         assert_eq!(
             names(&search("_", in_db1.clone()).await),
-            ["a_b", "super_user", "user_fn", "user_proc", "user_view"]
+            if t.tidb {
+                vec!["a_b", "super_user", "user_view"]
+            } else {
+                vec!["a_b", "super_user", "user_fn", "user_proc", "user_view"]
+            }
         );
         assert_eq!(names(&search("%", in_db1.clone()).await), ["100%"]);
         assert_eq!(names(&search("'", in_db1.clone()).await), ["it's"]);
@@ -554,7 +599,11 @@ async fn server_side_object_search() {
         req.kinds = vec![K::Function, K::Procedure];
         assert_eq!(
             names(&s.search_objects(req.clone()).await.unwrap()),
-            ["user_fn", "user_proc"]
+            if t.tidb {
+                vec![]
+            } else {
+                vec!["user_fn", "user_proc"]
+            }
         );
         req.kinds = vec![K::MaterializedView, K::Sequence];
         assert!(s.search_objects(req.clone()).await.unwrap().is_empty());
@@ -562,7 +611,11 @@ async fn server_side_object_search() {
         req.limit = 3;
         assert_eq!(
             names(&s.search_objects(req.clone()).await.unwrap()),
-            ["user", "user_fn", "user_proc"]
+            if t.tidb {
+                vec!["user", "user_view", "users"]
+            } else {
+                vec!["user", "user_fn", "user_proc"]
+            }
         );
         req.limit = 0;
         assert_eq!(
@@ -571,7 +624,10 @@ async fn server_side_object_search() {
             "limit clamps to 1"
         );
         req.limit = 1_000_000;
-        assert_eq!(s.search_objects(req).await.unwrap().len(), 7);
+        assert_eq!(
+            s.search_objects(req).await.unwrap().len(),
+            if t.tidb { 5 } else { 7 }
+        );
         let mut req = search_req("e", ObjectPath::root().child(K::Database, FIXTURE_DB));
         req.limit = 1000;
         assert!(s.search_objects(req).await.unwrap().len() >= 5);

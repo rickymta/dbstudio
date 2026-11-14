@@ -16,6 +16,7 @@ pub mod params;
 pub mod redact;
 pub mod redis_cli;
 pub mod split;
+pub mod template;
 pub mod vocabulary;
 
 pub use classify::{analyze, statement_databases};
@@ -23,4 +24,5 @@ pub use dialect::{Dialect, mysql_dialect_from_sql_mode};
 pub use guard::{Policy, Verdict, check, confirm_text_for};
 pub use params::{BoundScript, OffsetMap, bind, find_params};
 pub use split::{StreamSplitter, split};
+pub use template::ScriptTemplate;
 pub use vocabulary::{CommandHint, Vocabulary, vocabulary};

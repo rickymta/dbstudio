@@ -10,14 +10,8 @@ use proptest::prelude::*;
 
 const DIALECTS: [ScriptDialect; 9] = [
     ScriptDialect::Postgres,
-    ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    },
-    ScriptDialect::MySql {
-        mariadb: true,
-        backslash_escapes: false,
-    },
+    ScriptDialect::mysql(false, true),
+    ScriptDialect::mysql(true, false),
     ScriptDialect::MsSql,
     ScriptDialect::Oracle,
     ScriptDialect::MongoShell,

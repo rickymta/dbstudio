@@ -7,13 +7,16 @@ use crate::model::{ConnectionGroup, ConnectionProfile};
 /// Longest accepted name, host, database, user or group name (in characters).
 pub const MAX_FIELD_CHARS: usize = 255;
 
+/// Longest accepted custom environment label (characters).
+pub const MAX_ENVIRONMENT_LABEL_CHARS: usize = 32;
+
 /// `options` keys an imported profile may keep. Everything else (notably `init_command` or
 /// arbitrary server settings) is dropped on import because a shared file must not be able to run
 /// statements or change server parameters on every connect.
 pub const IMPORT_OPTION_ALLOWLIST: &[&str] = &["application_name", "pool_max"];
 
 fn invalid(msg: impl std::fmt::Display) -> Error {
-    Error::Storage(format!("invalid data: {msg}"))
+    Error::Invalid(msg.to_string())
 }
 
 /// Check length and reject control characters.
@@ -37,6 +40,16 @@ pub fn is_valid_color(color: &str) -> bool {
     matches!(hex.len(), 3 | 6) && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Trim the custom environment label; an empty one means "no label".
+pub(crate) fn normalize_profile(profile: &mut ConnectionProfile) {
+    profile.config.environment_label = profile
+        .config
+        .environment_label
+        .take()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty());
+}
+
 /// Reject profiles that cannot be connected to or carry unsafe presentation values.
 pub(crate) fn validate_profile(profile: &ConnectionProfile) -> Result<()> {
     let c = &profile.config;
@@ -56,6 +69,16 @@ pub(crate) fn validate_profile(profile: &ConnectionProfile) -> Result<()> {
     }
     if let Some(v) = &c.username {
         check_text("username", v)?;
+    }
+    if let Some(label) = &c.environment_label {
+        if label.trim().chars().count() > MAX_ENVIRONMENT_LABEL_CHARS {
+            return Err(invalid(format!(
+                "environment label is longer than {MAX_ENVIRONMENT_LABEL_CHARS} characters"
+            )));
+        }
+        if label.chars().any(char::is_control) {
+            return Err(invalid("environment label contains control characters"));
+        }
     }
     if let Some(color) = &profile.color
         && !is_valid_color(color)

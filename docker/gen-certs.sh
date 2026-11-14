@@ -9,6 +9,10 @@
 #                        EKU serverAuth,clientAuth (re-issued when it lacks clientAuth)
 #   mongo-client.pem     client cert + key combined (Mongo X.509-style tests, CN=dbstudio-client)
 #   redis.crt/.key       redis7 server cert + key (ca.crt is the CA)
+#   scylla.crt/.key      scylla (SAN localhost, 127.0.0.1, scylla)
+#   clickhouse.crt/.key  clickhouse26 HTTPS (SAN localhost, 127.0.0.1, clickhouse26)
+#   cockroach/           --certs-dir of the cockroach service: ca.crt, node.crt/key (CN=node),
+#                        client.root.crt/key (CN=root)
 set -eu
 dir="$(cd "$(dirname "$0")" && pwd)/certs"
 mkdir -p "$dir"
@@ -85,6 +89,42 @@ extendedKeyUsage=clientAuth'
   rm -f mongo-cli.crt mongo-cli.key
   echo "generated mongo-client.pem"
 fi
+
+# Backlog + phase 9 services. Server certificates for the CQL / HTTP databases (host + compose
+# service names as SAN), issued only when missing.
+extra_srv_ext() {
+  printf '%s\n' "subjectAltName=DNS:localhost,IP:127.0.0.1,DNS:$1" \
+    "basicConstraints=CA:FALSE" "keyUsage=digitalSignature,keyEncipherment" \
+    "extendedKeyUsage=${2:-serverAuth}"
+}
+if [ ! -f scylla.crt ] || [ ! -f scylla.key ]; then
+  issue scylla localhost "$(extra_srv_ext scylla)"
+  echo "generated scylla.crt"
+fi
+if [ ! -f clickhouse.crt ] || [ ! -f clickhouse.key ]; then
+  issue clickhouse localhost "$(extra_srv_ext clickhouse26)"
+  echo "generated clickhouse.crt"
+fi
+
+# CockroachDB certs directory (mounted as --certs-dir): ca.crt, node.crt/key (CN=node, SAN
+# localhost, cockroach, 127.0.0.1) and the client certificate of the root user. Same CA as above.
+mkdir -p cockroach
+if [ ! -f cockroach/node.crt ] || [ ! -f cockroach/node.key ] || [ ! -f cockroach/ca.crt ]; then
+  cp ca.crt cockroach/ca.crt
+  issue cockroach-node node "$(extra_srv_ext cockroach serverAuth,clientAuth)"
+  mv cockroach-node.crt cockroach/node.crt
+  mv cockroach-node.key cockroach/node.key
+  echo "generated cockroach/node.crt"
+fi
+if [ ! -f cockroach/client.root.crt ] || [ ! -f cockroach/client.root.key ]; then
+  issue cockroach-root root 'basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=clientAuth'
+  mv cockroach-root.crt cockroach/client.root.crt
+  mv cockroach-root.key cockroach/client.root.key
+  echo "generated cockroach/client.root.crt"
+fi
+chmod 644 cockroach/*
 
 # Containers run as uid 999 (postgres/mongodb/redis): the test keys must be world-readable.
 chmod 644 *.key *.pem *.crt

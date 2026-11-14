@@ -182,6 +182,14 @@ pub trait Lease: Send + Sync {
     /// Cheap cached snapshot, never blocks.
     fn state(&self) -> LeaseState;
 
+    /// Lexer dialect of THIS connection when it can differ from the session's (MySQL
+    /// `sql_mode`: `ANSI_QUOTES`, `NO_BACKSLASH_ESCAPES` are per connection). The guard and
+    /// the explain checks of a lease must split text exactly like the lease will, so they use
+    /// this and fall back to [`crate::Session::script_dialect`] on `None` (the default).
+    fn script_dialect(&self) -> Option<crate::ScriptDialect> {
+        None
+    }
+
     /// Check that the connection is alive.
     async fn ping(&self) -> Result<()>;
 

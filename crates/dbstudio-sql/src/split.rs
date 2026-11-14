@@ -512,6 +512,12 @@ fn scan_sql(
     let is_mssql = matches!(d, ScriptDialect::MsSql);
     let is_oracle = matches!(d, ScriptDialect::Oracle);
     let is_pg = matches!(d, ScriptDialect::Postgres);
+    let is_cql = matches!(d, ScriptDialect::Cql);
+    // `;` ends a statement (PostgreSQL, CQL, ClickHouse).
+    let semi = is_pg || is_cql || matches!(d, ScriptDialect::ClickHouse);
+    // CQL `BEGIN [UNLOGGED|COUNTER] BATCH ... APPLY BATCH` is one statement.
+    let mut in_batch = false;
+    let mut prev_word = String::new();
     let mut out = Vec::new();
     let mut consumed = 0usize;
     let mut cur = Cur::default();
@@ -590,6 +596,18 @@ fn scan_sql(
                 if chars[i..end].contains(&'\n') {
                     line_start = true;
                 }
+                // cqlsh commands (`CONSISTENCY ALL`, `USE ks`, `DESCRIBE TABLES`...) end at the end
+                // of the line, no `;` needed.
+                if is_cql
+                    && cur.has_code
+                    && !in_batch
+                    && cql_line_command(&cur.lead)
+                    && chars[i..end].iter().any(|c| *c == '\n' || *c == '\r')
+                {
+                    cur.take(1, &mut out);
+                    prev_word.clear();
+                    consumed = end;
+                }
             }
             TokenKind::LineComment | TokenKind::BlockComment => {
                 cur.touch(i, end);
@@ -597,12 +615,14 @@ fn scan_sql(
             }
             _ => {
                 line_start = false;
-                if is_pg
+                if semi
                     && kind == TokenKind::Punct
                     && chars[i] == ';'
-                    && !open_atomic_body(&cur.words)
+                    && !(is_pg && open_atomic_body(&cur.words))
+                    && !in_batch
                 {
                     cur.take(1, &mut out);
+                    prev_word.clear();
                     i = end;
                     consumed = i;
                     continue;
@@ -641,6 +661,16 @@ fn scan_sql(
                 cur.touch(i, end);
                 if kind == TokenKind::Word {
                     let w: String = chars[i..end].iter().collect::<String>().to_uppercase();
+                    if is_cql && w == "BATCH" {
+                        if cur.lead.first().map(String::as_str) == Some("BEGIN")
+                            && matches!(prev_word.as_str(), "BEGIN" | "UNLOGGED" | "COUNTER")
+                        {
+                            in_batch = true;
+                        } else if prev_word == "APPLY" {
+                            in_batch = false;
+                        }
+                    }
+                    prev_word.clone_from(&w);
                     if cur.lead.len() < 10 {
                         cur.lead.push(w);
                     }
@@ -666,6 +696,31 @@ fn scan_sql(
         consumed = n;
     }
     (out, consumed)
+}
+
+/// First words of a cqlsh shell command, which ends at the end of its line.
+const CQL_LINE_COMMANDS: &[&str] = &[
+    "CONSISTENCY",
+    "SERIAL",
+    "TRACING",
+    "PAGING",
+    "USE",
+    "DESCRIBE",
+    "DESC",
+    "COPY",
+    "SOURCE",
+    "EXPAND",
+    "CAPTURE",
+    "CLEAR",
+    "CLS",
+    "LOGIN",
+    "SHOW",
+    "UNICODE",
+];
+
+fn cql_line_command(lead: &[String]) -> bool {
+    lead.first()
+        .is_some_and(|w| CQL_LINE_COMMANDS.contains(&w.as_str()))
 }
 
 enum Check {
@@ -707,10 +762,7 @@ mod tests {
     use super::*;
 
     const PG: ScriptDialect = ScriptDialect::Postgres;
-    const MY: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
+    const MY: ScriptDialect = ScriptDialect::mysql(false, true);
     const MS: ScriptDialect = ScriptDialect::MsSql;
     const ORA: ScriptDialect = ScriptDialect::Oracle;
 

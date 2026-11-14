@@ -284,7 +284,7 @@ impl TableWriter for XlsxWriter {
 
     fn finish(mut self: Box<Self>) -> Result<Vec<PathBuf>> {
         if self.schema.is_empty() {
-            return Err(Error::Other("nothing to export".into()));
+            return Err(Error::Invalid("nothing to export".into()));
         }
         if self.content != ExportContent::Data || self.opts.data_dictionary {
             self.write_dictionary()?;

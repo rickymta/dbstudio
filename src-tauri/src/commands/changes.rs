@@ -95,6 +95,7 @@ mod tests {
             read_only_columns: vec![],
             reason,
             atomic: true,
+            notes: vec![],
         }
     }
 

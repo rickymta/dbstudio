@@ -1,0 +1,35 @@
+[
+ {
+  "id": "Sort_4",
+  "estRows": "100000.00",
+  "actRows": "100000",
+  "task": "root",
+  "access object": "",
+  "execution info": "time:113.3ms, loops:99, RU:113.22",
+  "operator info": "tidbfx.orders.amount, tidbfx.orders.created:desc",
+  "memory": "2.73 MB",
+  "disk": "6.17 MB"
+ },
+ {
+  "id": "└─TableReader_8",
+  "estRows": "100000.00",
+  "actRows": "100000",
+  "task": "root",
+  "access object": "",
+  "execution info": "time:36.7ms, loops:99, cop_task: {num: 10, max: 11.8ms, min: 109.1µs, avg: 3.23ms, p95: 11.8ms, tot_proc: 27ms, copr_cache_hit_ratio: 0.00, build_task_duration: 9.42µs, max_distsql_concurrency: 1}, rpc_info:{Cop:{num_rpc:10, total_time:32.1ms}}",
+  "operator info": "data:TableFullScan_7",
+  "memory": "4.17 MB",
+  "disk": "N/A"
+ },
+ {
+  "id": "  └─TableFullScan_7",
+  "estRows": "100000.00",
+  "actRows": "100000",
+  "task": "cop[tikv]",
+  "access object": "table:orders",
+  "execution info": "tikv_task:{proc max:11.1ms, min:96.8µs, avg: 3.06ms, p80:9.19ms, p95:11.1ms, iters:0, tasks:10}, time_detail: {total_process_time: 27ms}",
+  "operator info": "keep order:false",
+  "memory": "N/A",
+  "disk": "N/A"
+ }
+]

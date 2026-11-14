@@ -39,6 +39,7 @@ enum Cat {
     Function,
     Procedure,
     Trigger,
+    Sequence,
 }
 
 #[derive(Debug)]
@@ -82,6 +83,7 @@ impl Target {
                     ObjectKind::Function => Cat::Function,
                     ObjectKind::Procedure => Cat::Procedure,
                     ObjectKind::Trigger => Cat::Trigger,
+                    ObjectKind::Sequence => Cat::Sequence,
                     _ => continue,
                 };
                 selection.insert((cat, o.name.clone()));
@@ -112,6 +114,7 @@ fn is_object(k: ObjectKind) -> bool {
             | ObjectKind::Function
             | ObjectKind::Procedure
             | ObjectKind::Trigger
+            | ObjectKind::Sequence
     )
 }
 
@@ -560,6 +563,51 @@ async fn build(
             create,
             vec![],
         ));
+    }
+
+    // Sequences (MariaDB, TiDB) come first: a table default may call `NEXTVAL`.
+    if opts.include_sequences {
+        let rows = catalog_rows(
+            conn,
+            "SELECT TABLE_NAME FROM information_schema.TABLES \
+             WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'SEQUENCE' ORDER BY TABLE_NAME",
+            (db,),
+        )
+        .await?;
+        for r in &rows {
+            let name = crate::session::cell(r, 0).unwrap_or_default();
+            if !target.wants(Cat::Sequence, &name) {
+                continue;
+            }
+            // MariaDB names the column `Create Table`, TiDB `Create Sequence`.
+            let raw = match show_create(conn, "SEQUENCE", db, &name, "Create Sequence").await {
+                Ok(t) => t,
+                Err(_) => show_create(conn, "SEQUENCE", db, &name, "Create Table").await?,
+            };
+            let path = db_path
+                .child(ObjectKind::Folder, folder::SEQUENCES)
+                .child(ObjectKind::Sequence, name.as_str());
+            if opts.include_drop {
+                pre.push(item(
+                    path.clone(),
+                    ObjectKind::Sequence,
+                    DdlSection::PreData,
+                    format!("DROP SEQUENCE IF EXISTS {};", q(&name)),
+                    vec![],
+                ));
+            }
+            let mut sql = raw;
+            if qualify {
+                sql = qualify_head(&sql, "SEQUENCE", &name, db);
+            }
+            pre.push(item(
+                path,
+                ObjectKind::Sequence,
+                DdlSection::PreData,
+                with_semicolon(&sql),
+                vec![],
+            ));
+        }
     }
 
     // Tables.

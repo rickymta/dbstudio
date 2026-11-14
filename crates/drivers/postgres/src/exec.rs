@@ -45,7 +45,7 @@ impl Running {
     pub async fn send_cancel(
         &self,
         shared: &crate::conn::Shared,
-        token: &tokio_postgres::CancelToken,
+        token: &crate::conn::CancelHandle,
     ) -> Result<()> {
         let finished = self.gate.lock().await;
         if *finished {
@@ -337,7 +337,7 @@ async fn run_statement(
         )
         .await
         {
-            Err(CursorError::DeclareRejected) => {}
+            Err(CursorError::DeclareRejected | CursorError::TransactionGone) => {}
             Err(CursorError::Other(e)) => return Err(e),
             Ok(()) => return Ok(()),
         }
@@ -390,6 +390,9 @@ async fn run_statement(
 enum CursorError {
     /// `DECLARE CURSOR` refused the statement before anything was sent to the sink.
     DeclareRejected,
+    /// The script's transaction no longer exists on the server (CockroachDB commits it before
+    /// a DDL statement, `autocommit_before_ddl`); nothing was sent to the sink.
+    TransactionGone,
     Other(Error),
 }
 
@@ -406,6 +409,39 @@ impl From<Error> for CursorError {
 /// `max_rows` leaves the cursor (and its transaction) open in `pending`.
 #[allow(clippy::too_many_arguments)]
 async fn stream_cursor(
+    conn: &mut Conn,
+    select: &str,
+    shape: &Shape,
+    batch: usize,
+    max_rows: Option<u64>,
+    read_only: bool,
+    sink: &mut dyn ResultSink,
+    running: &Running,
+    started: Instant,
+    keep_open: bool,
+    pending: &mut Option<PendingCursor>,
+) -> std::result::Result<(), CursorError> {
+    match stream_cursor_once(
+        conn, select, shape, batch, max_rows, read_only, sink, running, started, keep_open, pending,
+    )
+    .await
+    {
+        // The server forgot the transaction the connection believed in: run the statement in
+        // its own transaction instead.
+        Err(CursorError::TransactionGone) => {
+            conn.in_txn = false;
+            stream_cursor_once(
+                conn, select, shape, batch, max_rows, read_only, sink, running, started, keep_open,
+                pending,
+            )
+            .await
+        }
+        other => other,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stream_cursor_once(
     conn: &mut Conn,
     select: &str,
     shape: &Shape,
@@ -442,7 +478,10 @@ async fn stream_cursor(
         let rejected = e
             .as_db_error()
             .is_some_and(|d| d.code().code() == "0A000" || d.code().code() == "42601");
-        return Err(if rejected && own_txn {
+        let gone = !own_txn && e.as_db_error().is_some_and(|d| d.code().code() == "25P01");
+        return Err(if gone {
+            CursorError::TransactionGone
+        } else if rejected && own_txn {
             CursorError::DeclareRejected
         } else {
             CursorError::Other(map_statement_error(e, 0, cancelled()))
@@ -654,7 +693,7 @@ pub async fn run_table_select(
     {
         Ok(()) => Ok(()),
         Err(CursorError::Other(e)) => Err(e),
-        Err(CursorError::DeclareRejected) => Err(Error::query(
+        Err(CursorError::DeclareRejected | CursorError::TransactionGone) => Err(Error::query(
             "the table query cannot be streamed with a cursor".to_string(),
         )),
     }

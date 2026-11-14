@@ -54,13 +54,13 @@ fn canonical(path: &Path) -> Result<PathBuf> {
     }
     let name = path
         .file_name()
-        .ok_or_else(|| Error::Other(format!("invalid path: {}", path.display())))?;
+        .ok_or_else(|| Error::Invalid(format!("invalid path: {}", path.display())))?;
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
     let parent = std::fs::canonicalize(parent)
-        .map_err(|e| Error::Other(format!("invalid path {}: {e}", path.display())))?;
+        .map_err(|e| Error::Invalid(format!("invalid path {}: {e}", path.display())))?;
     Ok(parent.join(name))
 }
 

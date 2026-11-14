@@ -5,12 +5,24 @@ import type { QueryRequest } from './core';
 
 export type ScriptDialect =
   | { name: 'postgres' }
-  | { name: 'mySql'; mariadb: boolean; backslashEscapes: boolean }
+  | { name: 'mySql'; mariadb: boolean; backslashEscapes: boolean; ansiQuotes?: boolean }
   | { name: 'msSql' }
   | { name: 'oracle' }
   | { name: 'mongoShell' }
   | { name: 'redisCli' }
+  | { name: 'cql' }
+  | { name: 'clickHouse' }
   | { name: 'opaque' };
+
+/** Template of `script_generate`. */
+export type ScriptTemplate = 'select' | 'insert' | 'update' | 'delete';
+
+/** Result of `script_generate`. */
+export interface ScriptGenerated {
+  text: string;
+  /** Dialect the text is written in. */
+  dialect: ScriptDialect;
+}
 
 export type ScriptDialectName = ScriptDialect['name'];
 
@@ -49,7 +61,11 @@ export type DestructiveReason =
   | 'deleteManyAll'
   | 'updateManyAll'
   | 'restore'
-  | 'importReplace';
+  | 'importReplace'
+  /** An ordinary data-modifying statement listed for confirmation (e.g. EXPLAIN ANALYZE of a write). */
+  | 'write'
+  /** A destructive keyword found while scanning a statement the classifier did not understand. */
+  | 'keywordScan';
 
 export interface StatementInfo {
   index: number;

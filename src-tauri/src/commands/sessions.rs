@@ -21,10 +21,49 @@ pub(crate) async fn open_impl(
     let (profile, secret) =
         blocking(move || svc.session_credentials(connection_id, password)).await?;
     let ssh = super::ssh::ssh_env(state, &profile.config).await?;
+    // Only a password the user typed is kept in memory for reconnects; a stored one is read
+    // from the keychain again each time.
+    let typed = !(profile.save_password && profile.has_password);
+    let info = state
+        .sessions
+        .open_remembering(&profile.config, secret.as_ref(), ssh.as_ref(), typed)
+        .await?;
+    // Let the import preview recall the session's dialect (MariaDB, ANSI_QUOTES) after it closes.
+    if let Some(dialect) = state.sessions.last_dialect(connection_id) {
+        super::export::remember_dialect(connection_id, dialect);
+    }
+    Ok(info)
+}
+
+/// Reconnect a lost session, keeping its `session_id`. `secret` is the password when it is
+/// neither stored in the keychain nor still held in memory; a typed one wins. The profile is
+/// read again, so edits to host, port or TLS apply. Idle auto-commit leases are reopened,
+/// leases with a transaction in flight wait for `lease_reopen` (`session://state` lists them).
+pub(crate) async fn reconnect_impl(
+    state: &AppState,
+    session_id: Uuid,
+    secret: Option<Secret>,
+) -> Result<SessionInfo> {
+    use crate::session::{Credentials, Reconnect, StateCredentials};
+    let (_, config) = state.sessions.get_with_config(session_id)?;
+    let remembered = state.sessions.remembered_secret(session_id);
+    let resolved = StateCredentials(state.clone())
+        .resolve(&config, remembered)
+        .await?;
+    let remember = secret.is_some();
     state
         .sessions
-        .open_with_ssh(&profile.config, secret.as_ref(), ssh.as_ref())
+        .reconnect_manual(
+            session_id,
+            Reconnect {
+                config: resolved.config,
+                secret: secret.or(resolved.secret),
+                ssh: resolved.ssh,
+                remember,
+            },
+        )
         .await
+        .map(|done| done.info)
 }
 
 pub(crate) async fn close_impl(state: &AppState, session_id: Uuid) -> Result<()> {
@@ -73,6 +112,17 @@ pub async fn session_open(
 ) -> Result<SessionInfo> {
     tracing::debug!(command = "session_open", connection = %connection_id, "ipc call");
     open_impl(&state, connection_id, password).await
+}
+
+/// Reconnect a lost session; the session id is kept.
+#[tauri::command]
+pub async fn session_reconnect(
+    state: State<'_, AppState>,
+    session_id: Uuid,
+    secret: Option<Secret>,
+) -> Result<SessionInfo> {
+    tracing::debug!(command = "session_reconnect", session = %session_id, "ipc call");
+    reconnect_impl(&state, session_id, secret).await
 }
 
 /// Close a session.

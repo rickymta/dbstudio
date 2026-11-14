@@ -136,6 +136,7 @@ const ERROR_KINDS_ALL: IpcErrorKind[] = [
   'storage',
   'io',
   'other',
+  'invalid',
   'readOnly',
   'confirmationRequired',
   'busy',
@@ -156,11 +157,13 @@ export const isIpcError: Guard = (v) => {
 const textRange = shape({ start: num, end: num });
 const scriptDialect: Guard = tagged('name', {
   postgres: () => null,
-  mySql: shape({ mariadb: bool, backslashEscapes: bool }),
+  mySql: shape({ mariadb: bool, backslashEscapes: bool }, { ansiQuotes: bool }),
   msSql: () => null,
   oracle: () => null,
   mongoShell: () => null,
   redisCli: () => null,
+  cql: () => null,
+  clickHouse: () => null,
   opaque: () => null,
 });
 const statementClass: Guard = tagged('kind', {
@@ -227,6 +230,22 @@ export const isQueryEvent: Guard = tagged('type', {
   }),
 });
 
+const pair =
+  (a: Guard, b: Guard): Guard =>
+  (v) => {
+    if (!Array.isArray(v) || v.length !== 2) return 'expected [a, b] pair';
+    return a(v[0]) ?? b(v[1]);
+  };
+export const isKeyData: Guard = tagged('type', {
+  string: shape({ value: isValue }),
+  hash: shape({ fields: arrayOf(pair(isValue, isValue)) }),
+  list: shape({ items: arrayOf(isValue) }),
+  set: shape({ members: arrayOf(isValue) }),
+  zSet: shape({ members: arrayOf(pair(isValue, str)) }),
+  stream: shape({ entries: arrayOf(shape({ id: str, fields: arrayOf(pair(isValue, isValue)) })) }),
+  json: shape({ text: str }),
+});
+
 const objectPath = shape({ segments: arrayOf(shape({ kind: str, name: str })) });
 const docInput: Guard = tagged('kind', {
   value: shape({ value: isValue }),
@@ -238,6 +257,8 @@ const editValue: Guard = tagged('kind', {
   default: () => null,
 });
 const cellEdit = shape({ column: str, value: editValue });
+/** `value: null` = the field was absent when the document was read. */
+const fieldOriginal = shape({ path: arrayOf(str), value: (v) => (v === null ? null : isValue(v)) });
 export const isChangeSet: Guard = tagged('model', {
   rows: shape({
     table: objectPath,
@@ -255,9 +276,12 @@ export const isChangeSet: Guard = tagged('model', {
     changes: arrayOf(
       tagged('op', {
         insert: shape({ document: docInput }),
-        replace: shape({ id: isValue, document: docInput }),
-        update: shape({ id: isValue, set: arrayOf(shape({ path: arrayOf(str), value: isValue })) }),
-        delete: shape({ id: isValue }),
+        replace: shape({ id: isValue, document: docInput }, { expected: arrayOf(fieldOriginal) }),
+        update: shape(
+          { id: isValue, set: arrayOf(shape({ path: arrayOf(str), value: isValue })) },
+          { expected: arrayOf(fieldOriginal) },
+        ),
+        delete: shape({ id: isValue }, { expected: arrayOf(fieldOriginal) }),
       }),
     ),
   }),
@@ -268,9 +292,9 @@ export const isChangeSet: Guard = tagged('model', {
         setString: shape({ key: str, value: isValue }),
         hashSet: shape({ key: str }),
         hashDelete: shape({ key: str }),
-        listSet: shape({ key: str, index: num, value: isValue }),
+        listSet: shape({ key: str, index: num, value: isValue }, { expected: isValue }),
         listPush: shape({ key: str, values: arrayOf(isValue), head: bool }),
-        listRemoveAt: shape({ key: str, index: num }),
+        listRemoveAt: shape({ key: str, index: num }, { expected: isValue }),
         setAdd: shape({ key: str }),
         setRemove: shape({ key: str }),
         zAdd: shape({ key: str }),
@@ -280,6 +304,10 @@ export const isChangeSet: Guard = tagged('model', {
         expire: shape({ key: str }),
         rename: shape({ key: str, newKey: str }),
         delete: shape({ keys: arrayOf(str) }),
+        put: shape(
+          { key: str, data: isKeyData },
+          { ttlMs: num, mode: oneOf('replace', 'ifAbsent') },
+        ),
       }),
     ),
   }),
@@ -340,11 +368,188 @@ const sshConfig = shape(
   { keepaliveSecs: num, connectTimeoutMs: num },
 );
 
+const PLAN_FORMATS = [
+  'postgresJson',
+  'mySqlJson',
+  'mySqlJsonV2',
+  'mySqlTree',
+  'mariaDbJson',
+  'msSqlShowplanXml',
+  'oraclePlanRows',
+  'mongoExplain',
+  'clickHouseJson',
+  'cockroachText',
+  'tiDbRows',
+  'cqlTrace',
+];
+const SESSION_HEALTH = ['connected', 'lost', 'reconnecting', 'reconnected', 'gaveUp'];
+const NATIVE_TOOLS = [
+  'pgDump',
+  'pgRestore',
+  'psql',
+  'mySqlDump',
+  'mySqlClient',
+  'mongoDump',
+  'mongoRestore',
+  'expdp',
+  'impdp',
+  'redisCli',
+  'msSqlServerBackup',
+  'clickHouseServerBackup',
+  'cockroachServerBackup',
+  'ysqlDump',
+  'ysqlsh',
+];
+const diagnosticCheck = shape({ id: str, ok: bool }, { value: str, detail: str });
+const editability = shape(
+  {
+    editable: bool,
+    keyColumns: arrayOf(str),
+    readOnlyColumns: arrayOf(str),
+    atomic: bool,
+  },
+  { reason: str, notes: arrayOf(oneOf('upsertSemantics', 'conditionalWrites', 'asyncMutation')) },
+);
+const appSettings = shape({
+  logLevel: str,
+  gridMaxRows: num,
+  gridMaxCells: num,
+  timestampDisplay: str,
+  editorMaxRows: num,
+  queryTimeoutMs: num,
+  historyEnabled: bool,
+  historyMaxPerConnection: num,
+  maxLobBytes: num,
+  planMisestimateFactor: num,
+  closeToTray: str,
+  editorFontFamily: str,
+  editorFontSize: num,
+  autoReconnect: bool,
+  keepaliveSecs: num,
+  planHistoryEnabled: bool,
+  planHistoryMaxPerConnection: num,
+  language: oneOf('system', 'vi', 'en'),
+});
+const planHistoryEntryFields = {
+  id: str,
+  createdAt: str,
+  statement: str,
+  analyze: bool,
+  format: oneOf(...PLAN_FORMATS),
+  warnings: num,
+};
+const planHistoryEntryOptional = {
+  connectionId: str,
+  database: str,
+  totalCost: num,
+  totalMs: num,
+};
+const planHistoryEntry = shape(planHistoryEntryFields, planHistoryEntryOptional);
+const planHistoryRecord = shape(
+  { ...planHistoryEntryFields, rawPlan: shape({ format: oneOf(...PLAN_FORMATS), text: str }) },
+  planHistoryEntryOptional,
+);
+const backupInspection = shape(
+  { header: (v) => (isObj(v) ? null : 'expected object'), encrypted: bool },
+  {
+    native: str,
+    objects: arrayOf(
+      shape(
+        {
+          kind: str,
+          name: str,
+          phases: arrayOf(oneOf('pre', 'data', 'post')),
+        },
+        { schema: str, rows: num },
+      ),
+    ),
+  },
+);
+const importFormat: Guard = tagged('kind', {
+  csv: shape({ delimiter: str, quote: str, header: bool, encoding: str }, { nullText: str }),
+  xlsx: shape({ sheet: str, header: bool }),
+  json: shape({ layout: oneOf('array', 'ndjson') }),
+  sql: shape({ continueOnError: bool }),
+});
+const importTarget: Guard = tagged('kind', {
+  existing: shape({ table: objectPath }),
+  new: shape({ parent: objectPath, name: str, columns: arrayOf(shape({ name: str })) }),
+  script: () => null,
+  keys: shape({ database: objectPath }, { mode: oneOf('replace', 'ifAbsent') }),
+});
+const importSpec = shape({
+  connectionId: str,
+  file: str,
+  format: importFormat,
+  target: importTarget,
+});
+const importPreview = shape(
+  { columns: arrayOf(str), rows: arrayOf(arrayOf(isValue)), sheets: arrayOf(str) },
+  { dialectGuessed: bool },
+);
+
 /** Guards by group and Rust type name. */
 const GUARDS: Record<string, Record<string, Guard>> = {
   script: { ScriptAnalysis: isScriptAnalysis, ScriptDialect: scriptDialect },
   lease: { LeaseState: isLeaseState },
-  edit: { ChangeSet: isChangeSet },
+  edit: {
+    ChangeSet: isChangeSet,
+    Editability: editability,
+    EditNote: oneOf('upsertSemantics', 'conditionalWrites', 'asyncMutation'),
+    PutMode: oneOf('replace', 'ifAbsent'),
+    FieldOriginal: fieldOriginal,
+  },
+  keyvalue: {
+    KeyData: isKeyData,
+    KeyRecord: shape({ key: str, data: isKeyData }, { expireAtMs: num }),
+    KeyScanRequest: shape(
+      { database: objectPath, count: num },
+      { pattern: str, cursor: str, typeFilter: str },
+    ),
+    KeyScanPage: shape({ keys: arrayOf(str) }, { nextCursor: str }),
+  },
+  plan: {
+    PlanFormat: oneOf(...PLAN_FORMATS),
+  },
+  model: { DdlLanguage: oneOf('sql', 'mongoShell', 'cql') },
+  app: {
+    SessionStateEvent: shape(
+      {
+        sessionId: str,
+        connectionId: str,
+        state: oneOf(...SESSION_HEALTH),
+        attempt: num,
+        leasesBroken: arrayOf(str),
+        leasesReopened: arrayOf(str),
+      },
+      { error: isIpcError },
+    ),
+    SessionHealth: oneOf(...SESSION_HEALTH),
+    DiagnosticCheck: diagnosticCheck,
+    DriverDiagnostics: shape(
+      { status: isDriverStatus, message: str, checks: arrayOf(diagnosticCheck) },
+      { helpUrl: str },
+    ),
+    LeaseReopened: shape({
+      lease: shape({ leaseId: str, sessionId: str, state: isLeaseState }),
+      transactionLost: bool,
+    }),
+    ScriptGenerated: shape({ text: str, dialect: scriptDialect }),
+  },
+  history: {
+    AppSettings: appSettings,
+    UiLanguage: oneOf('system', 'vi', 'en'),
+    PlanHistoryEntry: planHistoryEntry,
+    PlanHistoryRecord: planHistoryRecord,
+  },
+  backup: {
+    NativeTool: oneOf(...NATIVE_TOOLS),
+    BackupInspection: backupInspection,
+  },
+  export: {
+    ImportPreview: importPreview,
+    ImportSpec: importSpec,
+  },
   job: { JobEvent: isJobEvent, JobInfo: jobInfo },
   ssh: { SshConfig: sshConfig },
   capabilities: { Capabilities: isCapabilities },
@@ -358,7 +563,8 @@ const WHOLE_GROUP: Record<string, Guard> = { value: isValue, error: isIpcError }
 export function checkFixtureGroup(group: string, samples: Obj): string[] {
   const problems: string[] = [];
   for (const [name, sample] of Object.entries(samples)) {
-    const guard = WHOLE_GROUP[group] ?? GUARDS[group]?.[name];
+    // `Name#variant` samples are extra samples of the type `Name`.
+    const guard = WHOLE_GROUP[group] ?? GUARDS[group]?.[name.split('#')[0]!];
     const problem = guard?.(sample);
     if (problem) problems.push(`${group}.${name}: ${problem}`);
   }

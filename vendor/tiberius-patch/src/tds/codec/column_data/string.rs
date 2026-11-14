@@ -13,7 +13,24 @@ where
 {
     use VarLenType::*;
 
-    let data = super::plp::decode(src, len).await?;
+    // DBStudio patch: honour the per-request PLP byte limit.
+    let limit = src.context().plp_limit();
+    let (mut data, truncated) = super::plp::decode_limited(src, len, limit).await?;
+    if let Some(total) = truncated {
+        src.context_mut().note_plp_truncated(total);
+        // The cut may split a character: keep whole UTF-16 code units; code pages trim below.
+        if let Some(buf) = data.as_mut() {
+            if !matches!(ty, BigChar | BigVarChar) {
+                buf.truncate(buf.len() & !1);
+                if buf.len() >= 2 {
+                    let last = u16::from_le_bytes([buf[buf.len() - 2], buf[buf.len() - 1]]);
+                    if (0xD800..0xDC00).contains(&last) {
+                        buf.truncate(buf.len() - 2);
+                    }
+                }
+            }
+        }
+    }
 
     match (data, ty) {
         // Codepages other than UTF
@@ -23,10 +40,27 @@ where
                 .ok_or_else(|| Error::Protocol("string column missing collation".into()))?;
             let encoder = collation.encoding()?;
 
-            let s = encoder
-                .decode_without_bom_handling_and_without_replacement(buf.as_ref())
-                .ok_or_else(|| Error::Encoding("invalid sequence".into()))?
-                .to_string();
+            let s = if truncated.is_some() {
+                // DBStudio patch: a cut may end inside a multi-byte character; drop the dangling
+                // tail bytes (at most 3) and decode the rest strictly.
+                let mut keep = buf.len();
+                loop {
+                    if let Some(s) = encoder
+                        .decode_without_bom_handling_and_without_replacement(&buf[..keep])
+                    {
+                        break s.to_string();
+                    }
+                    if keep == 0 || buf.len() - keep >= 3 {
+                        return Err(Error::Encoding("invalid sequence".into()));
+                    }
+                    keep -= 1;
+                }
+            } else {
+                encoder
+                    .decode_without_bom_handling_and_without_replacement(buf.as_ref())
+                    .ok_or_else(|| Error::Encoding("invalid sequence".into()))?
+                    .to_string()
+            };
 
             Ok(Some(s.into()))
         }
@@ -130,5 +164,44 @@ mod tests {
             }
             other => panic!("expected a protocol error, got {other:?}"),
         }
+    }
+
+    // DBStudio patch: a limit that lands between the halves of a surrogate pair drops the
+    // dangling high surrogate instead of failing the row.
+    #[tokio::test]
+    async fn limited_nvarchar_drops_a_dangling_high_surrogate() {
+        let mut buf = BytesMut::new();
+        buf.put_u64_le(0xffff_ffff_ffff_fffe);
+        let units: [u16; 3] = [0x41, 0xD83D, 0xDE00]; // "A" + U+1F600
+        buf.put_u32_le(6);
+        for u in units {
+            buf.put_u16_le(u);
+        }
+        buf.put_u32_le(0);
+        let mut reader = buf.into_sql_read_bytes();
+        reader.context_mut().set_plp_limit(Some(4)); // "A" + the high surrogate
+        let v = decode(&mut reader, VarLenType::NVarchar, 0xffff_ffff, None)
+            .await
+            .unwrap();
+        assert_eq!(v.as_deref(), Some("A"));
+        assert_eq!(reader.context_mut().take_plp_truncated(), Some(6));
+    }
+
+    // An odd limit never leaves half a UTF-16 unit.
+    #[tokio::test]
+    async fn limited_nvarchar_with_odd_limit_keeps_whole_units() {
+        let mut buf = BytesMut::new();
+        buf.put_u64_le(0xffff_ffff_ffff_fffe);
+        buf.put_u32_le(6);
+        for u in [0x41u16, 0x42, 0x43] {
+            buf.put_u16_le(u);
+        }
+        buf.put_u32_le(0);
+        let mut reader = buf.into_sql_read_bytes();
+        reader.context_mut().set_plp_limit(Some(3));
+        let v = decode(&mut reader, VarLenType::NVarchar, 0xffff_ffff, None)
+            .await
+            .unwrap();
+        assert_eq!(v.as_deref(), Some("A"));
     }
 }

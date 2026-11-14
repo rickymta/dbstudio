@@ -28,13 +28,15 @@ pub(crate) async fn editability(
         read_only_columns: vec![],
         reason: Some(reason),
         atomic: true,
+        notes: vec![],
     };
     let rel = details::resolve_relation(path)?;
     if rel.kind != ObjectKind::Table {
         return Ok(not_editable(NotEditableReason::NotATable));
     }
     let mut conn = session.shared.acquire_catalog(&rel.database).await?;
-    let d = details::table_details(&conn.client, path, &rel.database).await;
+    let d =
+        details::table_details(&conn.client, path, &rel.database, session.shared.flavor()).await;
     let keys = match &d {
         Ok(_) => details::key_columns(&conn.client, &rel.schema, &rel.name).await,
         Err(_) => Ok(vec![]),
@@ -43,6 +45,10 @@ pub(crate) async fn editability(
         conn.finish().await;
     }
     let (d, key_columns) = (d?, keys?);
+    // A table without primary key is keyed on CockroachDB's hidden `rowid`: it cannot be edited.
+    let hidden_rowid = session.shared.flavor().is_cockroach()
+        && key_columns == ["rowid"]
+        && !d.columns.iter().any(|c| c.name == "rowid");
     let read_only_columns = d
         .columns
         .iter()
@@ -53,6 +59,7 @@ pub(crate) async fn editability(
             })
         })
         .map(|c| c.name.clone())
+        .chain(hidden_rowid.then(|| "rowid".to_string()))
         .collect();
     let editable = !key_columns.is_empty();
     Ok(Editability {
@@ -61,6 +68,7 @@ pub(crate) async fn editability(
         read_only_columns,
         reason: (!editable).then_some(NotEditableReason::NoUniqueKey),
         atomic: true,
+        notes: vec![],
     })
 }
 
@@ -80,7 +88,7 @@ fn validate(ed: &Editability, rs: &RowChangeSet, strict_table: bool) -> Result<(
             )));
         }
         if keyed && rs.key_columns != ed.key_columns {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "key columns {:?} do not match the table's key {:?}",
                 rs.key_columns, ed.key_columns
             )));

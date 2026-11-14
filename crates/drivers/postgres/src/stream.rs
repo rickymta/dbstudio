@@ -40,7 +40,7 @@ pub(crate) async fn table_select_on(
 ) -> Result<String> {
     let target = details::resolve_relation(&req.table)?;
     if target.database != database {
-        return Err(Error::Other(format!(
+        return Err(Error::Invalid(format!(
             "table of database {} cannot be read on a connection to {database}",
             target.database
         )));

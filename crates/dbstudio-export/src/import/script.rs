@@ -64,7 +64,7 @@ pub(crate) async fn run(
     cancel: &CancelToken,
 ) -> Result<ImportReport> {
     let ImportTarget::Script { database } = &spec.target else {
-        return Err(Error::Other(
+        return Err(Error::Invalid(
             "a SQL script is imported with the script target".into(),
         ));
     };

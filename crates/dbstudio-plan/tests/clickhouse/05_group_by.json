@@ -1,0 +1,404 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Expression",
+      "Node Id": "Expression_8",
+      "Description": "Project names",
+      "Expression": {
+        "Inputs": [
+          {
+            "Name": "toStartOfDay(__table1.ts)",
+            "Type": "DateTime"
+          },
+          {
+            "Name": "__table1.kind",
+            "Type": "LowCardinality(String)"
+          },
+          {
+            "Name": "uniq(__table1.user_id)",
+            "Type": "UInt64"
+          }
+        ],
+        "Actions": [
+          {
+            "Node Type": "INPUT",
+            "Result Type": "DateTime",
+            "Result Name": "toStartOfDay(__table1.ts)",
+            "Arguments": [
+              0
+            ],
+            "Removed Arguments": [],
+            "Result": 0
+          },
+          {
+            "Node Type": "INPUT",
+            "Result Type": "LowCardinality(String)",
+            "Result Name": "__table1.kind",
+            "Arguments": [
+              1
+            ],
+            "Removed Arguments": [],
+            "Result": 1
+          },
+          {
+            "Node Type": "INPUT",
+            "Result Type": "UInt64",
+            "Result Name": "uniq(__table1.user_id)",
+            "Arguments": [
+              2
+            ],
+            "Removed Arguments": [],
+            "Result": 2
+          },
+          {
+            "Node Type": "ALIAS",
+            "Result Type": "DateTime",
+            "Result Name": "d",
+            "Arguments": [
+              0
+            ],
+            "Removed Arguments": [
+              0
+            ],
+            "Result": 3
+          },
+          {
+            "Node Type": "ALIAS",
+            "Result Type": "LowCardinality(String)",
+            "Result Name": "kind",
+            "Arguments": [
+              1
+            ],
+            "Removed Arguments": [
+              1
+            ],
+            "Result": 0
+          },
+          {
+            "Node Type": "ALIAS",
+            "Result Type": "UInt64",
+            "Result Name": "uniq(user_id)",
+            "Arguments": [
+              2
+            ],
+            "Removed Arguments": [
+              2
+            ],
+            "Result": 1
+          }
+        ],
+        "Outputs": [
+          {
+            "Name": "d",
+            "Type": "DateTime"
+          },
+          {
+            "Name": "kind",
+            "Type": "LowCardinality(String)"
+          },
+          {
+            "Name": "uniq(user_id)",
+            "Type": "UInt64"
+          }
+        ],
+        "Positions": [
+          3,
+          0,
+          1
+        ]
+      },
+      "Plans": [
+        {
+          "Node Type": "Limit",
+          "Node Id": "Limit_7",
+          "Description": "preliminary LIMIT",
+          "Limit": 100,
+          "Offset": 0,
+          "With Ties": false,
+          "Reads All Data": false,
+          "Plans": [
+            {
+              "Node Type": "Sorting",
+              "Node Id": "Sorting_6",
+              "Description": "Sorting for ORDER BY",
+              "Sort Description": [
+                {
+                  "Column": "toStartOfDay(__table1.ts)",
+                  "Ascending": true,
+                  "With Fill": false
+                }
+              ],
+              "Limit": 100,
+              "Plans": [
+                {
+                  "Node Type": "Expression",
+                  "Node Id": "Expression_10",
+                  "Description": "(Before ORDER BY + Projection)",
+                  "Expression": {
+                    "Inputs": [
+                      {
+                        "Name": "uniq(__table1.user_id)",
+                        "Type": "UInt64"
+                      },
+                      {
+                        "Name": "toStartOfDay(__table1.ts)",
+                        "Type": "DateTime"
+                      },
+                      {
+                        "Name": "__table1.kind",
+                        "Type": "LowCardinality(String)"
+                      }
+                    ],
+                    "Actions": [
+                      {
+                        "Node Type": "INPUT",
+                        "Result Type": "UInt64",
+                        "Result Name": "uniq(__table1.user_id)",
+                        "Arguments": [
+                          0
+                        ],
+                        "Removed Arguments": [
+                          0
+                        ],
+                        "Result": 0
+                      },
+                      {
+                        "Node Type": "INPUT",
+                        "Result Type": "DateTime",
+                        "Result Name": "toStartOfDay(__table1.ts)",
+                        "Arguments": [
+                          1
+                        ],
+                        "Removed Arguments": [
+                          1
+                        ],
+                        "Result": 1
+                      },
+                      {
+                        "Node Type": "INPUT",
+                        "Result Type": "LowCardinality(String)",
+                        "Result Name": "__table1.kind",
+                        "Arguments": [
+                          2
+                        ],
+                        "Removed Arguments": [
+                          2
+                        ],
+                        "Result": 2
+                      }
+                    ],
+                    "Outputs": [
+                      {
+                        "Name": "toStartOfDay(__table1.ts)",
+                        "Type": "DateTime"
+                      },
+                      {
+                        "Name": "__table1.kind",
+                        "Type": "LowCardinality(String)"
+                      },
+                      {
+                        "Name": "uniq(__table1.user_id)",
+                        "Type": "UInt64"
+                      }
+                    ],
+                    "Positions": [
+                      1,
+                      2,
+                      0
+                    ]
+                  },
+                  "Plans": [
+                    {
+                      "Node Type": "Aggregating",
+                      "Node Id": "Aggregating_3",
+                      "Keys": [
+                        "toStartOfDay(__table1.ts)",
+                        "__table1.kind"
+                      ],
+                      "Aggregates": [
+                        {
+                          "Name": "uniq(__table1.user_id)",
+                          "Function": {
+                            "Name": "uniq",
+                            "Argument Types": [
+                              "UInt32"
+                            ],
+                            "Result Type": "UInt64"
+                          },
+                          "Arguments": [
+                            "__table1.user_id"
+                          ]
+                        }
+                      ],
+                      "Skip merging": false,
+                      "Plans": [
+                        {
+                          "Node Type": "Expression",
+                          "Node Id": "Expression_9",
+                          "Description": "(Before GROUP BY + Change column names to column identifiers)",
+                          "Expression": {
+                            "Inputs": [
+                              {
+                                "Name": "ts",
+                                "Type": "DateTime"
+                              },
+                              {
+                                "Name": "kind",
+                                "Type": "LowCardinality(String)"
+                              },
+                              {
+                                "Name": "user_id",
+                                "Type": "UInt32"
+                              }
+                            ],
+                            "Actions": [
+                              {
+                                "Node Type": "INPUT",
+                                "Result Type": "DateTime",
+                                "Result Name": "ts",
+                                "Arguments": [
+                                  0
+                                ],
+                                "Removed Arguments": [],
+                                "Result": 0
+                              },
+                              {
+                                "Node Type": "INPUT",
+                                "Result Type": "LowCardinality(String)",
+                                "Result Name": "kind",
+                                "Arguments": [
+                                  1
+                                ],
+                                "Removed Arguments": [],
+                                "Result": 1
+                              },
+                              {
+                                "Node Type": "INPUT",
+                                "Result Type": "UInt32",
+                                "Result Name": "user_id",
+                                "Arguments": [
+                                  2
+                                ],
+                                "Removed Arguments": [],
+                                "Result": 2
+                              },
+                              {
+                                "Node Type": "ALIAS",
+                                "Result Type": "DateTime",
+                                "Result Name": "__table1.ts",
+                                "Arguments": [
+                                  0
+                                ],
+                                "Removed Arguments": [
+                                  0
+                                ],
+                                "Result": 3
+                              },
+                              {
+                                "Node Type": "ALIAS",
+                                "Result Type": "LowCardinality(String)",
+                                "Result Name": "__table1.kind",
+                                "Arguments": [
+                                  1
+                                ],
+                                "Removed Arguments": [
+                                  1
+                                ],
+                                "Result": 0
+                              },
+                              {
+                                "Node Type": "ALIAS",
+                                "Result Type": "UInt32",
+                                "Result Name": "__table1.user_id",
+                                "Arguments": [
+                                  2
+                                ],
+                                "Removed Arguments": [
+                                  2
+                                ],
+                                "Result": 1
+                              },
+                              {
+                                "Node Type": "FUNCTION",
+                                "Result Type": "DateTime",
+                                "Result Name": "toStartOfDay(__table1.ts)",
+                                "Function": "toStartOfDay",
+                                "Compiled": false,
+                                "Arguments": [
+                                  3
+                                ],
+                                "Removed Arguments": [
+                                  3
+                                ],
+                                "Result": 2
+                              }
+                            ],
+                            "Outputs": [
+                              {
+                                "Name": "toStartOfDay(__table1.ts)",
+                                "Type": "DateTime"
+                              },
+                              {
+                                "Name": "__table1.kind",
+                                "Type": "LowCardinality(String)"
+                              },
+                              {
+                                "Name": "__table1.user_id",
+                                "Type": "UInt32"
+                              }
+                            ],
+                            "Positions": [
+                              2,
+                              0,
+                              1
+                            ]
+                          },
+                          "Plans": [
+                            {
+                              "Node Type": "ReadFromMergeTree",
+                              "Node Id": "ReadFromMergeTree_0",
+                              "Description": "plan_fx.events",
+                              "Read Type": "Default",
+                              "Parts": 10,
+                              "Granules": 247,
+                              "Indexes": [
+                                {
+                                  "Type": "MinMax",
+                                  "Condition": "true",
+                                  "Initial Parts": 10,
+                                  "Selected Parts": 10,
+                                  "Initial Granules": 247,
+                                  "Selected Granules": 247
+                                },
+                                {
+                                  "Type": "Partition",
+                                  "Condition": "true",
+                                  "Initial Parts": 10,
+                                  "Selected Parts": 10,
+                                  "Initial Granules": 247,
+                                  "Selected Granules": 247
+                                },
+                                {
+                                  "Type": "PrimaryKey",
+                                  "Condition": "true",
+                                  "Initial Parts": 10,
+                                  "Selected Parts": 10,
+                                  "Initial Granules": 247,
+                                  "Selected Granules": 247
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

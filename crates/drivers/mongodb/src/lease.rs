@@ -10,14 +10,14 @@ use bson::{Bson, Document, doc};
 use dbstudio_core::{
     BulkInsertRequest, BulkInsertResult, EditValue, EndOutcome, Error, ExecSummary, ExplainRequest,
     Lease, LeaseCloseReport, LeaseContext, LeaseOptions, LeaseState, OnConflict, QueryRequest,
-    RawPlan, Result, ResultSink, StatementEnd, TableStreamRequest, TxOptions, TxStatus,
+    RawPlan, Result, ResultSink, StatementEnd, TableStreamRequest, TxOptions, TxStatus, Value,
 };
 use dbstudio_sql::mongo_shell;
 use mongodb::{Client, ClientSession};
 use uuid::Uuid;
 
-use crate::conn::{Cmd, Conn, map_error, num};
-use crate::convert::{parse_ejson_value, value_to_bson};
+use crate::conn::{Cmd, Conn, check_write_errors, map_error, num};
+use crate::convert::{parse_ejson_doc, parse_ejson_value, value_to_bson};
 use crate::exec::{Pending, doc_column, kill_cursor, pending_from_reply, pump, run_script};
 use crate::query::{build_filter, build_sort, resolve};
 use crate::session::{
@@ -387,8 +387,15 @@ impl Lease for MongoLease {
         self.ensure_txn(inner).await?;
         let (db, coll) = resolve(&req.table).ok_or_else(|| Error::NotFound("database".into()))?;
         let (coll, _) = coll.ok_or_else(|| Error::NotFound("collection".into()))?;
+        // `columns == ["$document"]`: every row is one whole document (JSON/NDJSON import,
+        // backup restore): `Value::Document`, or EJSON text (relaxed or canonical).
+        let whole = req.columns.len() == 1 && req.columns[0] == "$document";
         let mut docs = Vec::with_capacity(req.rows.len());
-        for row in &req.rows {
+        for (n, row) in req.rows.iter().enumerate() {
+            if whole {
+                docs.push(whole_document(row, n)?);
+                continue;
+            }
             let mut d = Document::new();
             for (col, v) in req.columns.iter().zip(row) {
                 match v {
@@ -415,14 +422,22 @@ impl Lease for MongoLease {
         let mut result = BulkInsertResult::default();
         match req.on_conflict {
             OnConflict::Error => {
-                for chunk in docs.chunks(1000) {
+                for (c, chunk) in docs.chunks(1000).enumerate() {
                     let r = cmd
-                        .run(
+                        .run_unchecked(
                             &db,
                             doc! {"insert": &coll, "documents": chunk.to_vec(), "ordered": true},
                         )
                         .await?;
                     result.inserted += num(&r, "n").max(0) as u64;
+                    if let Ok(errs) = r.get_array("writeErrors") {
+                        if let Some(Bson::Document(e)) = errs.first() {
+                            let row = c * 1000 + num(e, "index").max(0) as usize + 1;
+                            let msg = e.get_str("errmsg").unwrap_or("write error");
+                            return Err(bad(format!("row {row}: {msg} (code {})", num(e, "code"))));
+                        }
+                    }
+                    check_write_errors(&r)?;
                 }
             }
             OnConflict::Skip => {
@@ -452,6 +467,23 @@ impl Lease for MongoLease {
                 } else {
                     req.conflict_columns.clone()
                 };
+                if let Some(k) = keys.iter().find(|k| k.contains('.') || k.starts_with('$')) {
+                    return Err(bad(format!(
+                        "conflict column `{k}` is not supported (nested or operator names)"
+                    )));
+                }
+                if whole {
+                    // A replacement document cannot start with an operator ($...) field.
+                    if let Some(i) = docs
+                        .iter()
+                        .position(|d| d.keys().next().is_some_and(|k| k.starts_with('$')))
+                    {
+                        return Err(bad(format!(
+                            "row {}: a document cannot start with an operator ($...) field",
+                            i + 1
+                        )));
+                    }
+                }
                 for chunk in docs.chunks(500) {
                     let updates: Vec<Bson> = chunk
                         .iter()
@@ -462,15 +494,29 @@ impl Lease for MongoLease {
                                     q.insert(k.clone(), v.clone());
                                 }
                             }
-                            let mut set = d.clone();
-                            if keys.iter().any(|k| k == "_id") {
-                                set.remove("_id");
+                            // An empty filter would overwrite an arbitrary document.
+                            if q.len() != keys.len() {
+                                return Err(bad(format!(
+                                    "a document lacks a value for the conflict key ({})",
+                                    keys.join(", ")
+                                )));
                             }
-                            Bson::Document(
-                                doc! {"q": q, "u": {"$set": set}, "upsert": true, "multi": false},
-                            )
+                            // Whole documents replace (`replaceOne` + upsert); column rows
+                            // only set the given fields.
+                            let u = if whole {
+                                Bson::Document(d.clone())
+                            } else {
+                                let mut set = d.clone();
+                                if keys.iter().any(|k| k == "_id") {
+                                    set.remove("_id");
+                                }
+                                Bson::Document(doc! {"$set": set})
+                            };
+                            Ok(Bson::Document(
+                                doc! {"q": q, "u": u, "upsert": true, "multi": false},
+                            ))
                         })
-                        .collect();
+                        .collect::<Result<_>>()?;
                     let r = cmd
                         .run(
                             &db,
@@ -520,4 +566,28 @@ impl Lease for MongoLease {
             forced,
         })
     }
+}
+
+/// The document of a `$document` row: a `Document` value, or EJSON text.
+fn whole_document(row: &[EditValue], n: usize) -> Result<Document> {
+    let [cell] = row else {
+        return Err(bad(format!("row {}: expected one `$document` cell", n + 1)));
+    };
+    let value = match cell {
+        EditValue::Value(v) => v,
+        _ => {
+            return Err(bad(format!(
+                "row {}: `$document` needs a document value",
+                n + 1
+            )));
+        }
+    };
+    match value {
+        Value::Json(t) | Value::Text(t) => parse_ejson_doc(t),
+        other => match value_to_bson(other)? {
+            Bson::Document(d) => Ok(d),
+            _ => Err(bad(format!("row {}: not a document", n + 1))),
+        },
+    }
+    .map_err(|e| bad(format!("row {}: {}", n + 1, e.message())))
 }

@@ -96,15 +96,22 @@ fn known_dirs() -> Vec<PathBuf> {
     out
 }
 
-fn probe(path: &Path, tool: NativeTool) -> (Option<String>, Option<String>) {
+/// `--version` of a tool; with `timeout` a tool that does not answer in time is killed.
+fn probe_with_timeout(
+    path: &Path,
+    tool: NativeTool,
+    timeout: Option<Duration>,
+) -> (Option<String>, Option<String>) {
     if matches!(tool, NativeTool::Expdp | NativeTool::Impdp) {
         // Data Pump has no `--version`.
         return (None, None);
     }
-    let out = std::process::Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .output();
+    let mut command = std::process::Command::new(path);
+    command.arg("--version").stdin(Stdio::null());
+    let out = match timeout {
+        None => command.output(),
+        Some(limit) => run_with_deadline(command, limit),
+    };
     match out {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
@@ -114,6 +121,66 @@ fn probe(path: &Path, tool: NativeTool) -> (Option<String>, Option<String>) {
         Ok(o) => (None, Some(format!("`--version` failed with {}", o.status))),
         Err(e) => (None, Some(format!("cannot run {}: {e}", path.display()))),
     }
+}
+
+/// Run `command` capturing its output; kill it when it has not finished within `limit`.
+fn run_with_deadline(
+    mut command: std::process::Command,
+    limit: Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read as _;
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(out) = stdout.as_mut() {
+            let _ = out.take(64 * 1024).read_to_end(&mut buf);
+        }
+        buf
+    });
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the tool did not answer in time",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = reader.join().unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    })
+}
+
+/// Probe only `tools` (same search order as [`detect_tools`]); every `--version` runs with
+/// `timeout` and is killed when it hangs. Used by the diagnostics page.
+pub fn detect_selected(
+    tools: &[NativeTool],
+    overrides: &BTreeMap<NativeTool, String>,
+    timeout: Duration,
+) -> Vec<NativeToolInfo> {
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    detect_impl(
+        overrides,
+        &path_dirs,
+        &known_dirs(),
+        Some(tools),
+        Some(timeout),
+    )
 }
 
 /// Probe the native tools (configured path, then `PATH`, then well-known directories).
@@ -130,8 +197,19 @@ pub fn detect_in(
     path_dirs: &[PathBuf],
     known: &[PathBuf],
 ) -> Vec<NativeToolInfo> {
+    detect_impl(overrides, path_dirs, known, None, None)
+}
+
+fn detect_impl(
+    overrides: &BTreeMap<NativeTool, String>,
+    path_dirs: &[PathBuf],
+    known: &[PathBuf],
+    only: Option<&[NativeTool]>,
+    timeout: Option<Duration>,
+) -> Vec<NativeToolInfo> {
     NativeTool::ALL
         .into_iter()
+        .filter(|tool| only.is_none_or(|list| list.contains(tool)))
         .filter_map(|tool| {
             let binary = tool.binary()?;
             let mut found: Option<(PathBuf, ToolSource)> = None;
@@ -158,7 +236,7 @@ pub fn detect_in(
             }
             Some(match found {
                 Some((path, source)) => {
-                    let (version, probe_problem) = probe(&path, tool);
+                    let (version, probe_problem) = probe_with_timeout(&path, tool, timeout);
                     NativeToolInfo {
                         tool,
                         path: Some(path.to_string_lossy().into_owned()),
@@ -381,7 +459,9 @@ fn tool_timeout(options: &BTreeMap<String, String>) -> Option<Duration> {
 /// MySQL tools take the database as a bare argument: a name that looks like an option is refused.
 fn plain_db_name(database: &str) -> Result<()> {
     if database.starts_with('-') || database.contains('\0') {
-        return Err(Error::Other(format!("invalid database name {database:?}")));
+        return Err(Error::Invalid(format!(
+            "invalid database name {database:?}"
+        )));
     }
     Ok(())
 }
@@ -393,7 +473,7 @@ fn truthy(options: &BTreeMap<String, String>, key: &str) -> bool {
 /// Reject option keys and values outside the allow-list.
 pub fn validate_options(tool: NativeTool, options: &BTreeMap<String, String>) -> Result<()> {
     let (allowed, choices): (&[&str], &[(&str, &[&str])]) = match tool {
-        NativeTool::PgDump => (
+        NativeTool::PgDump | NativeTool::YsqlDump => (
             &[
                 "schemaOnly",
                 "dataOnly",
@@ -425,12 +505,12 @@ pub fn validate_options(tool: NativeTool, options: &BTreeMap<String, String>) ->
             if v.parse::<u64>().is_ok() {
                 continue;
             }
-            return Err(Error::Other(
+            return Err(Error::Invalid(
                 "option timeoutSecs must be a number of seconds".into(),
             ));
         }
         if !allowed.contains(&k.as_str()) {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "option {k:?} is not allowed for {tool:?}"
             )));
         }
@@ -599,10 +679,43 @@ pub fn build_dump(
                 format: if plain { "plain" } else { "custom" },
             })
         }
-        (NativeTool::MySqlDump, DbKind::MySql) => {
+        (NativeTool::YsqlDump, DbKind::YugabyteDb) => {
+            // `ysql_dump` is `pg_dump` of the YugabyteDB PostgreSQL fork: plain scripts only
+            // (there is no `ysql_restore`; `ysqlsh` replays them).
+            let mut args = pg_conn_args(config, tunnel, database);
+            args.push("--format=plain".into());
+            for (key, flag) in [
+                ("schemaOnly", "--schema-only"),
+                ("dataOnly", "--data-only"),
+                ("noOwner", "--no-owner"),
+                ("noPrivileges", "--no-privileges"),
+            ] {
+                if truthy(options, key) {
+                    args.push(flag.into());
+                }
+            }
+            Ok(DumpCommand {
+                run: ToolRun {
+                    program,
+                    args,
+                    env: pg_env(config, secret),
+                    stdin: None,
+                    stdout: Some(out.to_path_buf()),
+                    timeout: tool_timeout(options),
+                },
+                guards: vec![],
+                extension: "sql",
+                format: "plain",
+            })
+        }
+        (NativeTool::MySqlDump, DbKind::MySql | DbKind::TiDb) => {
             let defaults = TempSecretFile::create(tmp, &mysql_defaults_content(secret))?;
             let mut args = mysql_conn_args(defaults.path(), config, tunnel);
-            if options.get("singleTransaction").is_none_or(|v| v == "true") {
+            if config.kind == DbKind::TiDb {
+                // TiDB has no savepoints (`--single-transaction` fails at the first table) and
+                // no table read locks: dump without either.
+                args.push("--skip-lock-tables".into());
+            } else if options.get("singleTransaction").is_none_or(|v| v == "true") {
                 args.push("--single-transaction".into());
             }
             for (key, flag) in [
@@ -789,7 +902,27 @@ pub fn build_restore(
                 format: "plain",
             })
         }
-        (NativeTool::MySqlClient, DbKind::MySql, "plain") => {
+        (NativeTool::Ysqlsh, DbKind::YugabyteDb, "plain") => {
+            let mut args = pg_conn_args(config, tunnel, database);
+            args.extend(["-X", "-q"].map(OsString::from));
+            if !continue_on_error {
+                args.extend(["-v", "ON_ERROR_STOP=1"].map(OsString::from));
+            }
+            Ok(DumpCommand {
+                run: ToolRun {
+                    program,
+                    args,
+                    env: pg_env(config, secret),
+                    stdin: Some(input.to_path_buf()),
+                    stdout: None,
+                    timeout: None,
+                },
+                guards: vec![],
+                extension: "",
+                format: "plain",
+            })
+        }
+        (NativeTool::MySqlClient, DbKind::MySql | DbKind::TiDb, "plain") => {
             let defaults = TempSecretFile::create(tmp, &mysql_defaults_content(secret))?;
             let mut args = mysql_conn_args(defaults.path(), config, tunnel);
             if continue_on_error {
@@ -888,7 +1021,7 @@ pub fn scan_restore_script(tool: NativeTool, path: &Path) -> Result<()> {
         let t = line.trim_start();
         let lower = t.to_ascii_lowercase();
         let bad = match tool {
-            NativeTool::Psql => psql_meta_is_dangerous(&lower),
+            NativeTool::Psql | NativeTool::Ysqlsh => psql_meta_is_dangerous(&lower),
             NativeTool::MySqlClient => {
                 lower.starts_with("system ")
                     || lower.starts_with("\\!")
@@ -901,7 +1034,7 @@ pub fn scan_restore_script(tool: NativeTool, path: &Path) -> Result<()> {
             _ => false,
         };
         if bad {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "the script contains a client command that runs programs or reads files (line {n}); \
                  it was not run"
             )));
@@ -936,6 +1069,10 @@ pub fn native_unsupported(
     options: &BTreeMap<String, String>,
 ) -> Vec<&'static str> {
     match tool {
+        NativeTool::YsqlDump => vec![
+            "roles and tablespaces (cluster-wide objects)",
+            "other databases of the server",
+        ],
         NativeTool::PgDump => vec![
             "roles and tablespaces (cluster-wide objects)",
             "other databases of the server",
@@ -962,6 +1099,7 @@ pub fn restore_tool_for(tool: NativeTool, format: &str) -> Result<NativeTool> {
         (NativeTool::PgDump, "custom") => Ok(NativeTool::PgRestore),
         (NativeTool::PgDump, "plain") => Ok(NativeTool::Psql),
         (NativeTool::MySqlDump, _) => Ok(NativeTool::MySqlClient),
+        (NativeTool::YsqlDump, _) => Ok(NativeTool::Ysqlsh),
         (NativeTool::MongoDump, _) => Ok(NativeTool::MongoRestore),
         (NativeTool::RedisCli, _) => Err(Error::Unsupported(
             "an RDB backup is restored by placing it in the Redis server's data directory".into(),
@@ -1314,7 +1452,7 @@ mod tests {
     #[test]
     fn no_tool_anywhere_is_a_visible_problem() {
         let infos = detect_in(&BTreeMap::new(), &[], &[]);
-        assert_eq!(infos.len(), 10);
+        assert_eq!(infos.len(), 12);
         for i in &infos {
             assert!(i.path.is_none());
             assert!(i.problem.as_deref().unwrap().contains("not found"), "{i:?}");
@@ -1366,6 +1504,68 @@ mod tests {
             infos
                 .iter()
                 .all(|i| i.tool != NativeTool::MsSqlServerBackup)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_selected_probes_only_the_asked_tools_and_kills_a_hanging_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let overrides = BTreeMap::from([
+            (
+                NativeTool::PgDump,
+                script("pg_dump", "echo 'pg_dump (PostgreSQL) 16.4'"),
+            ),
+            // Would hang on a terminal read if stdin were inherited, and never ends.
+            (NativeTool::Psql, script("psql", "read x; sleep 30")),
+            (
+                NativeTool::MySqlDump,
+                script("mysqldump", "touch ran-mysqldump"),
+            ),
+        ]);
+        let started = std::time::Instant::now();
+        let got = detect_selected(
+            &[NativeTool::PgDump, NativeTool::Psql],
+            &overrides,
+            Duration::from_secs(3),
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        let tools: Vec<_> = got.iter().map(|i| i.tool).collect();
+        assert_eq!(
+            tools,
+            [NativeTool::PgDump, NativeTool::Psql],
+            "only the asked tools"
+        );
+        assert_eq!(
+            got[0].version.as_deref(),
+            Some("pg_dump (PostgreSQL) 16.4"),
+            "{:?}",
+            got[0]
+        );
+        assert!(got[0].problem.is_none());
+        assert!(
+            got[1]
+                .problem
+                .as_deref()
+                .unwrap()
+                .contains("not answer in time"),
+            "{:?}",
+            got[1]
+        );
+        assert!(
+            !dir.path().join("ran-mysqldump").exists(),
+            "an unasked tool is never run"
         );
     }
 }

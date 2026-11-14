@@ -132,6 +132,10 @@ pub enum Command {
         /// Keep going after a failed statement.
         #[arg(long)]
         continue_on_error: bool,
+        /// Restore only this object (table, collection; `schema.name` or `name`); repeat for
+        /// several. Needs a backup made with markers (format 3); default: everything.
+        #[arg(long = "object", value_name = "NAME")]
+        objects: Vec<String>,
         /// Do not ask for confirmation.
         #[arg(long)]
         yes: bool,
@@ -206,6 +210,10 @@ fn build_registry() -> DriverRegistry {
     dbstudio_driver_mongodb::register(&mut registry);
     #[cfg(feature = "redis")]
     dbstudio_driver_redis::register(&mut registry);
+    #[cfg(feature = "cassandra")]
+    dbstudio_driver_cassandra::register(&mut registry);
+    #[cfg(feature = "clickhouse")]
+    dbstudio_driver_clickhouse::register(&mut registry);
     registry
 }
 
@@ -215,7 +223,7 @@ fn open_deps(cli: &Cli) -> Result<CliDeps, Error> {
         .clone()
         .or_else(default_data_dir)
         .ok_or_else(|| {
-            Error::Other("cannot determine the data directory; use --data-dir".into())
+            Error::Invalid("cannot determine the data directory; use --data-dir".into())
         })?;
     let db = dir.join(DATABASE_FILE);
     if !db.exists() {
@@ -484,6 +492,7 @@ pub async fn execute_async(cli: &Cli, deps: &CliDeps, out: &mut dyn Write) -> u8
             create_database,
             clean,
             continue_on_error,
+            objects,
             yes,
             confirm_text,
             passphrase_env,
@@ -494,7 +503,7 @@ pub async fn execute_async(cli: &Cli, deps: &CliDeps, out: &mut dyn Write) -> u8
                 target_database: database.clone(),
                 create_database: *create_database,
                 clean: *clean,
-                objects: vec![],
+                objects: objects.clone(),
                 continue_on_error: *continue_on_error,
             };
             let profile = match env.service.get_profile(*connection) {

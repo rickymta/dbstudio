@@ -6,6 +6,8 @@ import type {
   DbKind,
   ExplainRequest,
   PlanFormat,
+  PlanHistoryEntry,
+  PlanHistoryRecord,
   PlanResult,
   PlanRules,
   PlanTree,
@@ -23,8 +25,8 @@ import oracleActual from '../../../crates/dbstudio-plan/tests/fixtures/oracle_04
 import pgActual from '../../../crates/dbstudio-plan/tests/fixtures/pg_02_hashjoin_agg_analyze.json?raw';
 import pgEstimated from '../../../crates/dbstudio-plan/tests/fixtures/pg_08_cte_subplan.json?raw';
 import trees from './planTrees.json';
-import { mockSessionKind } from './sessions';
-import { ipcError, sleep, unsupported } from './util';
+import { mockSessionConnectionId, mockSessionKind } from './sessions';
+import { ipcError, newId, sleep, unsupported } from './util';
 
 interface Sample {
   file: string;
@@ -93,6 +95,20 @@ function allSamples(): Sample[] {
 /** Last plan saved through the mock "Save" dialog, returned by the mock "Open" dialog. */
 let savedPlan: RawPlan | null = null;
 
+/** In-memory plan history (newest last); every mock `planExplain` records one entry. */
+let planHistory: PlanHistoryRecord[] = [];
+
+export function resetMockPlanHistory(): void {
+  planHistory = [];
+  savedPlan = null;
+}
+
+function entryOf(record: PlanHistoryRecord): PlanHistoryEntry {
+  const { rawPlan, ...entry } = record;
+  void rawPlan;
+  return entry;
+}
+
 export const planMock = {
   async planExplain(
     sessionId: Uuid,
@@ -118,6 +134,19 @@ export const planMock = {
       serverVersion: 'mock',
       capturedAt: new Date().toISOString(),
     };
+    planHistory.push({
+      id: newId(),
+      connectionId: mockSessionConnectionId(sessionId) ?? null,
+      createdAt: raw.capturedAt,
+      database: request.database ?? null,
+      statement: request.text,
+      analyze: request.analyze ?? false,
+      format: raw.format,
+      totalCost: null,
+      totalMs: null,
+      warnings: 0,
+      rawPlan: structuredClone(raw),
+    });
     return { raw, tree: treeOf(sample.file), parseError: null };
   },
   async planParse(raw: RawPlan, rules: PlanRules | null): Promise<PlanTree> {
@@ -133,5 +162,39 @@ export const planMock = {
   },
   async planFileOpen(): Promise<RawPlan | null> {
     return savedPlan ? structuredClone(savedPlan) : null;
+  },
+  /** Newest first; `before` is the `createdAt` of the last entry of the previous page. */
+  async planHistoryList(
+    connectionId: Uuid | null,
+    limit: number,
+    before: string | null,
+  ): Promise<PlanHistoryEntry[]> {
+    await sleep(5, 20);
+    return planHistory
+      .filter((r) => connectionId === null || r.connectionId === connectionId)
+      .filter((r) => before === null || r.createdAt < before)
+      .slice()
+      .reverse()
+      .slice(0, limit)
+      .map(entryOf);
+  },
+  async planHistoryGet(id: Uuid): Promise<PlanHistoryRecord> {
+    await sleep(5, 20);
+    const record = planHistory.find((r) => r.id === id);
+    if (!record) throw ipcError('notFound', `plan history ${id}`);
+    return structuredClone(record);
+  },
+  async planHistoryDelete(id: Uuid): Promise<void> {
+    await sleep(5, 20);
+    planHistory = planHistory.filter((r) => r.id !== id);
+  },
+  /** Resolves to the number of deleted entries. */
+  async planHistoryClear(connectionId: Uuid | null): Promise<number> {
+    await sleep(5, 20);
+    const before = planHistory.length;
+    planHistory = planHistory.filter(
+      (r) => connectionId !== null && r.connectionId !== connectionId,
+    );
+    return before - planHistory.length;
   },
 };

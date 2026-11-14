@@ -1,6 +1,10 @@
 // Data editing: editability and change sets (dbstudio-core `edit.rs`).
 
+import type { KeyData } from './keyvalue';
 import type { ObjectPath, Value } from './core';
+
+/** Caveats the UI shows before changes are applied. */
+export type EditNote = 'upsertSemantics' | 'conditionalWrites' | 'asyncMutation';
 
 export type NotEditableReason = 'noUniqueKey' | 'notATable' | 'readOnlyConnection' | 'unsupported';
 
@@ -12,6 +16,8 @@ export interface Editability {
   reason: NotEditableReason | null;
   /** `apply_changes` is all-or-nothing (false for Mongo standalone and Redis). */
   atomic: boolean;
+  /** Caveats to show before applying (empty for classic SQL tables). */
+  notes?: EditNote[];
 }
 
 export type EditValue =
@@ -40,11 +46,21 @@ export interface FieldEdit {
   value: Value;
 }
 
+/** Value of a field when the UI read the document; `null` = the field was absent. */
+export interface FieldOriginal {
+  path: string[];
+  value: Value | null;
+}
+
+/** `expected` makes the write fail when another client changed those fields meanwhile. */
 export type DocumentChange =
   | { op: 'insert'; document: DocInput }
-  | { op: 'replace'; id: Value; document: DocInput }
-  | { op: 'update'; id: Value; set: FieldEdit[]; unset?: string[][] }
-  | { op: 'delete'; id: Value };
+  | { op: 'replace'; id: Value; document: DocInput; expected?: FieldOriginal[] }
+  | { op: 'update'; id: Value; set: FieldEdit[]; unset?: string[][]; expected?: FieldOriginal[] }
+  | { op: 'delete'; id: Value; expected?: FieldOriginal[] };
+
+/** What `put` does when the key exists. */
+export type PutMode = 'replace' | 'ifAbsent';
 
 export interface DocumentChangeSet {
   collection: ObjectPath;
@@ -56,9 +72,10 @@ export type KeyChange =
   | { op: 'setString'; key: string; value: Value; ttlMs?: number | null }
   | { op: 'hashSet'; key: string; entries: [Value, Value][] }
   | { op: 'hashDelete'; key: string; fields: Value[] }
-  | { op: 'listSet'; key: string; index: number; value: Value }
+  /** `expected`: value read by the UI; a mismatch fails the change (WATCH + LINDEX). */
+  | { op: 'listSet'; key: string; index: number; value: Value; expected?: Value | null }
   | { op: 'listPush'; key: string; values: Value[]; head: boolean }
-  | { op: 'listRemoveAt'; key: string; index: number }
+  | { op: 'listRemoveAt'; key: string; index: number; expected?: Value | null }
   | { op: 'setAdd'; key: string; members: Value[] }
   | { op: 'setRemove'; key: string; members: Value[] }
   /** `members` are `[member, score text]`. */
@@ -69,7 +86,9 @@ export type KeyChange =
   /** `ttlMs: null` = PERSIST. */
   | { op: 'expire'; key: string; ttlMs: number | null }
   | { op: 'rename'; key: string; newKey: string }
-  | { op: 'delete'; keys: string[] };
+  | { op: 'delete'; keys: string[] }
+  /** Write a whole key (import / restore): temp key then RENAME. */
+  | { op: 'put'; key: string; data: KeyData; ttlMs?: number | null; mode?: PutMode };
 
 export interface KeyChangeSet {
   database: ObjectPath;

@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use dbstudio_core::{
     ApplyResult, ChangeSet, ChildrenPage, ChildrenPageRequest, ConnectionConfig, Editability,
-    Error, ExecSummary, KeyReadRequest, KeyValuePage, Lease, LeaseOptions, ObjectNode, ObjectPath,
-    QueryRequest, Result, ResultSink, ScriptDialect, Secret, ServerInfo, Session,
+    Error, ExecSummary, KeyReadRequest, KeyScanPage, KeyScanRequest, KeyValuePage, Lease,
+    LeaseOptions, ObjectNode, ObjectPath, QueryRequest, Result, ResultSink, ScriptDialect, Secret,
+    ServerInfo, Session,
 };
 use uuid::Uuid;
 
@@ -205,6 +206,10 @@ impl Session for RedisSession {
 
     async fn read_key(&self, req: KeyReadRequest) -> Result<KeyValuePage> {
         self.shared.read_key(req).await
+    }
+
+    async fn scan_keys(&self, req: KeyScanRequest) -> Result<KeyScanPage> {
+        self.shared.scan_keys(req).await
     }
 
     async fn close(&self) -> Result<()> {

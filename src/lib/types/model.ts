@@ -75,7 +75,7 @@ export interface DdlRequest {
 }
 
 export type DdlSection = 'preData' | 'postData';
-export type DdlLanguage = 'sql' | 'mongoShell';
+export type DdlLanguage = 'sql' | 'mongoShell' | 'cql';
 
 export interface DdlItem {
   path: ObjectPath;

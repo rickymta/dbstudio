@@ -72,7 +72,7 @@ fn like_clause(col: &str, negate: bool, pattern: &str, nb: bool) -> String {
 
 fn single(f: &ColumnFilter) -> Result<&str> {
     f.values.first().map(String::as_str).ok_or_else(|| {
-        Error::Other(format!(
+        Error::Invalid(format!(
             "filter on column `{}` requires a value",
             f.column.replace('`', "")
         ))
@@ -314,7 +314,7 @@ pub fn table_target(path: &ObjectPath) -> Result<(String, String)> {
         {
             Ok((db.name.clone(), t.name.clone()))
         }
-        _ => Err(Error::Other(
+        _ => Err(Error::Invalid(
             "path does not identify a table or view (expected database/table)".into(),
         )),
     }

@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::{NameSet, SchemaEntry, WriterConfig};
 use crate::fsio::{Output, safe_name};
-use crate::values::{JsonStyle, write_json_row};
+use crate::values::{JsonStyle, write_json, write_json_row};
 use crate::{BinaryFormat, ExportContent, JsonLayout, JsonOptions, ObjectMeta, TableWriter};
 
 const FLUSH_AT: usize = 256 * 1024;
@@ -26,6 +26,9 @@ pub(crate) struct JsonWriter {
     first_row: bool,
     names_cols: Vec<String>,
     keep: Vec<usize>,
+    /// The object is a document source (one `$document` column): every record is the
+    /// document itself rather than `{"$document": ...}`.
+    doc_mode: bool,
 }
 
 impl JsonWriter {
@@ -42,6 +45,7 @@ impl JsonWriter {
             first_row: true,
             names_cols: Vec::new(),
             keep: Vec::new(),
+            doc_mode: false,
         })
     }
 
@@ -55,6 +59,21 @@ impl JsonWriter {
 
     fn ndjson(&self) -> bool {
         self.opts.layout == JsonLayout::Ndjson
+    }
+
+    /// The document of a `$document` row, restricted to the configured top-level fields.
+    fn document_of(&self, row: &[Value]) -> Value {
+        match row.first() {
+            Some(Value::Document(fields)) if !self.opts.fields.is_empty() => Value::Document(
+                fields
+                    .iter()
+                    .filter(|(k, _)| self.opts.fields.contains(k))
+                    .cloned()
+                    .collect(),
+            ),
+            Some(v) => v.clone(),
+            None => Value::Null,
+        }
     }
 
     fn schema_document(&self) -> serde_json::Value {
@@ -115,7 +134,26 @@ impl ResultSink for JsonWriter {
             },
         };
         for row in &rows {
-            if ndjson {
+            if self.doc_mode {
+                if !ndjson {
+                    self.buf
+                        .push_str(if self.first_row { "\n  " } else { ",\n  " });
+                    self.first_row = false;
+                }
+                let doc = self.document_of(row);
+                let level = usize::from(!ndjson);
+                write_json(
+                    &mut self.buf,
+                    &doc,
+                    style.binary,
+                    style.ext,
+                    style.indent,
+                    level,
+                );
+                if ndjson {
+                    self.buf.push('\n');
+                }
+            } else if ndjson {
                 write_json_row(&mut self.buf, &self.names_cols, &self.keep, row, style, 0);
                 self.buf.push('\n');
             } else {
@@ -152,6 +190,7 @@ impl TableWriter for JsonWriter {
         self.in_entry = true;
         self.first_row = true;
         self.names_cols = super::dedupe_names(meta.columns.iter().map(|c| c.name.as_str()));
+        self.doc_mode = self.names_cols == ["$document"];
         self.keep = (0..self.names_cols.len())
             .filter(|&i| {
                 self.opts.fields.is_empty() || self.opts.fields.contains(&self.names_cols[i])
@@ -181,7 +220,7 @@ impl TableWriter for JsonWriter {
 
     fn finish(mut self: Box<Self>) -> Result<Vec<PathBuf>> {
         if self.schema.is_empty() {
-            return Err(Error::Other("nothing to export".into()));
+            return Err(Error::Invalid("nothing to export".into()));
         }
         if self.content != ExportContent::Data {
             self.out.start_entry("schema.json")?;

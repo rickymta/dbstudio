@@ -303,13 +303,13 @@ impl ConnectionService {
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("json"));
         if !is_json {
-            return Err(Error::Storage(
+            return Err(Error::Invalid(
                 "export file must have a .json extension".into(),
             ));
         }
         let file_name = path
             .file_name()
-            .ok_or_else(|| Error::Storage("export path has no file name".into()))?;
+            .ok_or_else(|| Error::Invalid("export path has no file name".into()))?;
         let (json, count) = self.export_json(ids)?;
         let mut tmp_name = std::ffi::OsString::from(".");
         tmp_name.push(file_name);
@@ -331,7 +331,7 @@ impl ConnectionService {
     /// Like [`ConnectionService::import_json`], also reporting what was sanitized. Only
     /// allow-listed `options` keys survive, invalid colors are reset and limits are enforced.
     pub fn import_json_report(&self, json: &str) -> Result<(ConnectionsSnapshot, ImportReport)> {
-        let bad = |m: String| Error::Storage(format!("invalid connections file: {m}"));
+        let bad = |m: String| Error::Invalid(format!("invalid connections file: {m}"));
         if json.len() as u64 > MAX_IMPORT_BYTES {
             return Err(bad(format!(
                 "file is larger than {} MB",
@@ -442,10 +442,10 @@ impl ConnectionService {
         let file = std::fs::File::open(path.as_ref())?;
         let meta = file.metadata()?;
         if !meta.is_file() {
-            return Err(Error::Storage("import path is not a regular file".into()));
+            return Err(Error::Invalid("import path is not a regular file".into()));
         }
         if meta.len() > MAX_IMPORT_BYTES {
-            return Err(Error::Storage(format!(
+            return Err(Error::Invalid(format!(
                 "import file is larger than {} MB",
                 MAX_IMPORT_BYTES >> 20
             )));
@@ -453,7 +453,7 @@ impl ConnectionService {
         let mut bytes = Vec::new();
         file.take(MAX_IMPORT_BYTES + 1).read_to_end(&mut bytes)?;
         let text = String::from_utf8(bytes)
-            .map_err(|_| Error::Storage("import file is not valid UTF-8 text".into()))?;
+            .map_err(|_| Error::Invalid("import file is not valid UTF-8 text".into()))?;
         self.import_json_report(&text)
     }
 }
@@ -818,8 +818,8 @@ mod tests {
     fn import_rejects_bad_files() {
         let (svc, _) = service();
         let err = |json: &str| match svc.import_json(json) {
-            Err(Error::Storage(m)) => m,
-            other => panic!("expected storage error, got {other:?}"),
+            Err(Error::Invalid(m)) => m,
+            other => panic!("expected invalid-input error, got {other:?}"),
         };
         assert!(err("not json").contains("not valid JSON"));
         assert!(err("{}").contains("format"));
@@ -958,7 +958,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(matches!(
             svc.import_from_file(dir.path()),
-            Err(Error::Storage(_)) | Err(Error::Io(_))
+            Err(Error::Invalid(_)) | Err(Error::Io(_))
         ));
         let big = dir.path().join("big.json");
         let f = std::fs::File::create(&big).unwrap();
@@ -977,7 +977,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for bad in ["out.txt", "out", "out.json.exe", "out.jsonx"] {
             let err = svc.export_to_file(dir.path().join(bad), None).unwrap_err();
-            assert!(matches!(err, Error::Storage(_)), "{bad}");
+            assert!(matches!(err, Error::Invalid(_)), "{bad}");
         }
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
         svc.export_to_file(dir.path().join("OUT.JSON"), None)

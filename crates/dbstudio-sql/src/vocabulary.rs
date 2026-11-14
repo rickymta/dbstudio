@@ -49,6 +49,16 @@ const MSSQL_FUNCTIONS: &str = "getdate getutcdate sysdatetime dateadd datediff d
 
 const ORACLE_FUNCTIONS: &str = "sysdate systimestamp current_date add_months months_between last_day next_day trunc to_char to_date to_number to_timestamp nvl nvl2 decode listagg regexp_like regexp_substr regexp_replace instr substr lpad rpad rownum sys_guid user userenv dbms_random.value json_value json_table greatest least";
 
+const CQL_BASE_KEYWORDS: &str = "SELECT FROM WHERE GROUP BY ORDER LIMIT DISTINCT AS INSERT INTO VALUES UPDATE SET DELETE CREATE ALTER DROP TRUNCATE TABLE INDEX PRIMARY KEY AND OR IN IS NOT NULL LIKE ASC DESC BEGIN GRANT REVOKE ADD RENAME TO ON TRUE FALSE WITH IF EXISTS";
+
+const CQL_KEYWORDS: &str = "KEYSPACE KEYSPACES TABLES TYPE TYPES MATERIALIZED VIEW USE CONSISTENCY SERIAL TRACING PAGING LIST ROLES ROLE USER USERS PERMISSIONS PERMISSION AUTHORIZE LOGIN SUPERUSER PASSWORD OPTIONS IF EXISTS BATCH UNLOGGED COUNTER APPLY USING TTL TIMESTAMP ALLOW FILTERING PER PARTITION CLUSTERING PRIMARY STATIC FROZEN WITH REPLICATION CLASS SIMPLESTRATEGY NETWORKTOPOLOGYSTRATEGY DURABLE_WRITES COMPACT STORAGE COMPACTION CACHING GC_GRACE_SECONDS BLOOM_FILTER_FP_CHANCE DEFAULT_TIME_TO_LIVE COMMENT TOKEN WRITETIME JSON DISTINCT CONTAINS ENTRIES FUNCTION FUNCTIONS AGGREGATE AGGREGATES CALLED RETURNS NULL INPUT LANGUAGE SFUNC STYPE FINALFUNC INITCOND CUSTOM DESCRIBE CLUSTER SCHEMA FULL INTERNALS ONLY INDEXES TRIGGER MASKED";
+
+const CQL_FUNCTIONS: &str = "now uuid toTimestamp toDate toUnixTimestamp unixTimestampOf dateOf minTimeuuid maxTimeuuid currentTimestamp currentDate currentTime currentTimeUUID token ttl writetime count sum avg min max cast blobAsText textAsBlob blobAsBigint bigintAsBlob blobAsInt intAsBlob blobAsUuid uuidAsBlob blobAsTimestamp timestampAsBlob blobAsBoolean booleanAsBlob blobAsDouble doubleAsBlob blobAsFloat floatAsBlob blobAsInet inetAsBlob blobAsVarint varintAsBlob blobAsDecimal decimalAsBlob blobAsDate dateAsBlob blobAsTime timeAsBlob blobAsSmallint smallintAsBlob blobAsTinyint tinyintAsBlob similarity_cosine similarity_euclidean similarity_dot_product";
+
+const CH_KEYWORDS: &str = "FORMAT SETTINGS FINAL SAMPLE PREWHERE ARRAY JOIN GLOBAL ANY ASOF SEMI ANTI LIMIT BY WITH TOTALS ROLLUP CUBE QUALIFY INTERVAL TTL ENGINE MERGETREE REPLACINGMERGETREE SUMMINGMERGETREE AGGREGATINGMERGETREE COLLAPSINGMERGETREE REPLICATEDMERGETREE DISTRIBUTED MEMORY LOG TINYLOG ORDER PARTITION PRIMARY SAMPLE CODEC TTL MATERIALIZED ALIAS EPHEMERAL LIVE WINDOW DICTIONARY DICTIONARIES DATABASES TABLES PROCESSLIST ATTACH DETACH PERMANENTLY EXCHANGE RENAME OPTIMIZE DEDUPLICATE SYSTEM FLUSH LOGS RELOAD SYNC REPLICA KILL QUERY MUTATION SYNC ASYNC TEST ON CLUSTER USE SET ROLE USER GRANT REVOKE IDENTIFIED BY HOST QUOTA POLICY PROFILE BACKUP RESTORE EXPLAIN AST SYNTAX PLAN PIPELINE ESTIMATE EXISTS DESCRIBE UNDROP MODIFY COLUMN COMMENT CLEAR INDEX PROJECTION FREEZE UNFREEZE FETCH MOVE TO VOLUME DISK UPDATE DELETE IN IF NOT NULL NULLS FIRST LAST COLLATE WATCH EVENTS INSERT INFILE OUTFILE COMPRESSION LEVEL";
+
+const CH_FUNCTIONS: &str = "now today yesterday toDate toDateTime toDateTime64 toStartOfDay toStartOfHour toStartOfMonth toStartOfWeek toYYYYMM toYear toMonth toDayOfWeek formatDateTime parseDateTimeBestEffort dateDiff dateAdd dateSub toUnixTimestamp fromUnixTimestamp toString toInt32 toInt64 toUInt32 toUInt64 toFloat64 toDecimal64 toUUID generateUUIDv4 cityHash64 sipHash64 xxHash64 murmurHash3_64 MD5 SHA256 hex unhex base64Encode base64Decode count uniq uniqExact uniqCombined quantile quantiles median avg sum min max any anyLast argMin argMax groupArray groupUniqArray groupArrayMovingAvg topK sumIf countIf avgIf minIf maxIf sumMap arrayJoin arrayMap arrayFilter arrayExists arrayAll arrayReduce arraySum arraySort arrayReverse arrayDistinct arrayConcat arrayElement length empty notEmpty has hasAll hasAny indexOf range mapKeys mapValues tupleElement JSONExtract JSONExtractString JSONExtractInt JSONExtractFloat JSONExtractRaw JSONHas JSONLength lower upper lowerUTF8 upperUTF8 substring substringUTF8 concat splitByChar splitByString replaceOne replaceAll replaceRegexpAll extract match like position trim trimLeft trimRight format if multiIf coalesce ifNull nullIf assumeNotNull isNull isNotNull toTypeName currentDatabase hostName version uptime rand rand64 randomString numbers runningDifference neighbor rowNumberInBlock row_number rank dense_rank lagInFrame leadInFrame first_value last_value";
+
 fn words(s: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     s.split_whitespace()
@@ -379,6 +389,17 @@ pub fn vocabulary(d: ScriptDialect) -> Vocabulary {
                 })
                 .collect(),
         },
+        // CQL has no JOIN / GROUP BY ... keep only the keywords that make sense for it.
+        ScriptDialect::Cql => Vocabulary {
+            keywords: merged(&[CQL_BASE_KEYWORDS, CQL_KEYWORDS]),
+            functions: words(CQL_FUNCTIONS),
+            commands: Vec::new(),
+        },
+        ScriptDialect::ClickHouse => Vocabulary {
+            keywords: merged(&[BASE_KEYWORDS, CH_KEYWORDS]),
+            functions: merged(&[BASE_FUNCTIONS, CH_FUNCTIONS]),
+            commands: Vec::new(),
+        },
         ScriptDialect::Opaque => Vocabulary::default(),
     }
 }
@@ -410,10 +431,7 @@ mod tests {
     fn sql_vocabularies_have_keywords_and_functions() {
         for d in [
             ScriptDialect::Postgres,
-            ScriptDialect::MySql {
-                mariadb: false,
-                backslash_escapes: true,
-            },
+            ScriptDialect::mysql(false, true),
             ScriptDialect::MsSql,
             ScriptDialect::Oracle,
         ] {

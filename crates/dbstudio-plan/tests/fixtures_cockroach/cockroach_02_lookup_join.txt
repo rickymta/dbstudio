@@ -1,0 +1,16 @@
+distribution: local
+vectorized: true
+
+• lookup join (inner)
+│ columns: (oid, bid, qty, id, grp, name, amount)
+│ estimated row count: 19
+│ table: big@big_pkey
+│ equality: (bid) = (id)
+│ equality cols are key
+│ parallel
+│
+└── • scan
+      columns: (oid, bid, qty)
+      estimated row count: 19 (0.95% of the table; stats collected 14 seconds ago)
+      table: ords@ords_pkey
+      spans: -/20

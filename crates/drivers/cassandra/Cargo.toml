@@ -1,0 +1,33 @@
+[package]
+name = "dbstudio-driver-cassandra"
+description = "Cassandra / ScyllaDB driver for DBStudio."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+dbstudio-core.workspace = true
+dbstudio-sql.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+uuid.workspace = true
+scylla.workspace = true
+rustls = { workspace = true, features = ["ring"] }
+rustls-native-certs.workspace = true
+futures = "0.3"
+tokio-util = { workspace = true }
+tracing.workspace = true
+time.workspace = true
+base64.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+dbstudio-core = { workspace = true, features = ["testing"] }
+dbstudio-plan.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

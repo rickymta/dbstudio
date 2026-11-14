@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use dbstudio_core::{ConnectionConfig, Error, Result, Secret};
+use dbstudio_core::{ConnectionConfig, DbKind, Error, Result, Secret};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_postgres::config::SslMode;
 use tokio_postgres::error::DbError;
@@ -14,6 +14,7 @@ use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::{AsyncMessage, CancelToken, Client, NoTls, Socket};
 
 use crate::error::{is_tls_error, map_connect_error, map_error};
+use crate::flavor::Flavor;
 use crate::tls::{self, TlsSetup};
 
 /// Maximum simultaneous connections per database.
@@ -26,10 +27,19 @@ const DEFAULT_SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// What it takes to cancel the statement running on one connection: the protocol cancel key,
+/// plus the server session id for CockroachDB (which ignores protocol cancel requests, so the
+/// statement is cancelled by `CANCEL QUERIES` from another connection).
+#[derive(Clone)]
+pub struct CancelHandle {
+    token: CancelToken,
+    session_id: Option<Arc<str>>,
+}
+
 /// One physical connection plus the channel on which its server notices arrive.
 pub struct Conn {
     pub client: Client,
-    pub cancel: CancelToken,
+    pub cancel: CancelHandle,
     notices: mpsc::UnboundedReceiver<DbError>,
     /// The user's script opened a transaction block that is still open (best effort tracking).
     pub in_txn: bool,
@@ -131,6 +141,10 @@ pub struct Shared {
     pools: Mutex<HashMap<String, Arc<Pool>>>,
     closed: Arc<AtomicBool>,
     server_timezone: OnceLock<String>,
+    /// Kind chosen in the profile (decides defaults only; the flavour comes from the server).
+    kind: DbKind,
+    /// Flavour detected from `version()` on the first connection.
+    flavor: OnceLock<Flavor>,
     /// The connection profile is read-only.
     pub read_only: bool,
 }
@@ -142,7 +156,12 @@ impl Shared {
         let mut base = tokio_postgres::Config::new();
         base.host(&config.host);
         base.port(config.port);
-        base.user(config.username.as_deref().unwrap_or("postgres"));
+        base.user(
+            config
+                .username
+                .as_deref()
+                .unwrap_or(default_user(config.kind)),
+        );
         if let Some(secret) = secret {
             base.password(secret.expose());
         }
@@ -162,12 +181,27 @@ impl Shared {
             if key == "application_name" || key == "search_timeout_ms" {
                 continue;
             }
+            if key == "cockroach.cluster" {
+                // CockroachDB Cloud routes the connection by cluster routing id.
+                let id = value.trim();
+                if id.is_empty()
+                    || !id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return Err(Error::Invalid(
+                        "options.cockroach.cluster: invalid cluster routing id".into(),
+                    ));
+                }
+                startup.push_str(&format!("--cluster={id} "));
+                continue;
+            }
             if key.is_empty()
                 || !key
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
             {
-                return Err(Error::Other(format!(
+                return Err(Error::Invalid(format!(
                     "invalid connection option name: {key:?}"
                 )));
             }
@@ -188,7 +222,7 @@ impl Shared {
                 .database
                 .clone()
                 .filter(|d| !d.is_empty())
-                .unwrap_or_else(|| "postgres".to_string()),
+                .unwrap_or_else(|| default_database(config.kind).to_string()),
             connect_timeout,
             acquire_timeout: config
                 .connect_timeout_ms
@@ -203,6 +237,8 @@ impl Shared {
             pools: Mutex::new(HashMap::new()),
             closed: Arc::new(AtomicBool::new(false)),
             server_timezone: OnceLock::new(),
+            kind: config.kind,
+            flavor: OnceLock::new(),
             read_only: config.read_only,
         })
     }
@@ -210,6 +246,26 @@ impl Shared {
     /// Time zone the server used before the driver switched the session to UTC.
     pub fn server_timezone(&self) -> Option<&str> {
         self.server_timezone.get().map(String::as_str)
+    }
+
+    /// Flavour of the server (the one chosen in the profile until the first connection told
+    /// otherwise).
+    pub fn flavor(&self) -> Flavor {
+        self.flavor.get().copied().unwrap_or(match self.kind {
+            DbKind::CockroachDb => Flavor::Cockroach { major: 0, minor: 0 },
+            DbKind::YugabyteDb => Flavor::Yugabyte,
+            _ => Flavor::Postgres,
+        })
+    }
+
+    /// Kind chosen in the profile.
+    pub fn profile_kind(&self) -> DbKind {
+        self.kind
+    }
+
+    /// Server-side limit for catalog searches, widened for slow-catalog flavours.
+    pub fn search_timeout(&self) -> Duration {
+        self.search_timeout * self.flavor().timeout_factor()
     }
 
     pub fn is_closed(&self) -> bool {
@@ -230,13 +286,45 @@ impl Shared {
         }
     }
 
-    /// Ask the server to cancel the statement running on the connection of `token`.
-    pub async fn cancel_token(&self, token: &CancelToken) -> Result<()> {
+    /// Ask the server to cancel the statement running on the connection of `handle`.
+    pub async fn cancel_token(&self, handle: &CancelHandle) -> Result<()> {
+        if let Some(session_id) = handle.session_id.as_deref() {
+            return self.cancel_by_session(session_id).await;
+        }
         let result = match &self.tls.connector {
-            Some(maker) => token.cancel_query(maker.clone()).await,
-            None => token.cancel_query(NoTls).await,
+            Some(maker) => handle.token.cancel_query(maker.clone()).await,
+            None => handle.token.cancel_query(NoTls).await,
         };
         result.map_err(|e| Error::Connection(format!("cancel request failed: {e}")))
+    }
+
+    /// CockroachDB: cancel the statements of a session from a pooled catalog connection.
+    async fn cancel_by_session(&self, session_id: &str) -> Result<()> {
+        // `session_id` comes from `SHOW session_id` (hex digits); never interpolate anything else.
+        if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(Error::Connection("invalid session id".into()));
+        }
+        // A dedicated connection with a short timeout: the cancel must neither wait for a
+        // pool slot (all of them may be busy running the very statement to cancel) nor hold
+        // the request's gate for long.
+        let work = async {
+            let conn = self.open_dedicated(&self.login_db).await?;
+            // A cursor (`DECLARE ... FOR SELECT`) runs its query on an internal session that
+            // shares the client address and has the application name prefixed with `$$ `:
+            // cancel both. The address comes from the sessions list, so it is found while the
+            // main session is idle between two FETCHes too.
+            let sql = format!(
+                "CANCEL QUERIES SELECT query_id FROM [SHOW CLUSTER STATEMENTS] \
+                 WHERE user_name = current_user AND (session_id = '{session_id}' \
+                    OR (left(application_name, 3) = '$$ ' AND client_address = \
+                        (SELECT client_address FROM [SHOW CLUSTER SESSIONS] \
+                         WHERE session_id = '{session_id}' LIMIT 1)))"
+            );
+            conn.client.batch_execute(&sql).await.map_err(map_error)
+        };
+        tokio::time::timeout(Duration::from_secs(5), work)
+            .await
+            .map_err(|_| Error::Timeout)?
     }
 
     fn pool_for(&self, db: &str) -> Arc<Pool> {
@@ -334,7 +422,17 @@ impl Shared {
         let conn = tokio::time::timeout(self.connect_timeout, attempt)
             .await
             .map_err(|_| Error::Timeout)??;
+        let mut conn = conn;
         self.init_session(&conn).await?;
+        if self.flavor().is_cockroach() {
+            // Protocol cancel requests do not work on CockroachDB: remember the session id.
+            let row = conn
+                .client
+                .query_one("SHOW session_id", &[])
+                .await
+                .map_err(map_error)?;
+            conn.cancel.session_id = Some(Arc::from(row.get::<_, String>(0)));
+        }
         Ok(conn)
     }
 
@@ -347,6 +445,14 @@ impl Shared {
                 .map_err(map_error)?;
             let _ = self.server_timezone.set(row.get::<_, String>(0));
         }
+        if self.flavor.get().is_none() {
+            let row = conn
+                .client
+                .query_one("SELECT version()", &[])
+                .await
+                .map_err(map_error)?;
+            let _ = self.flavor.set(Flavor::detect(&row.get::<_, String>(0)));
+        }
         conn.client
             .batch_execute(
                 "SET TIME ZONE 'UTC'; SET extra_float_digits = 3; SET DateStyle = 'ISO, MDY'; \
@@ -354,6 +460,22 @@ impl Shared {
             )
             .await
             .map_err(map_error)
+    }
+}
+
+fn default_user(kind: DbKind) -> &'static str {
+    match kind {
+        DbKind::CockroachDb => "root",
+        DbKind::YugabyteDb => "yugabyte",
+        _ => "postgres",
+    }
+}
+
+fn default_database(kind: DbKind) -> &'static str {
+    match kind {
+        DbKind::CockroachDb => "defaultdb",
+        DbKind::YugabyteDb => "yugabyte",
+        _ => "postgres",
     }
 }
 
@@ -380,7 +502,10 @@ where
             }
         }
     });
-    let cancel = client.cancel_token();
+    let cancel = CancelHandle {
+        token: client.cancel_token(),
+        session_id: None,
+    };
     Ok(Conn {
         client,
         cancel,

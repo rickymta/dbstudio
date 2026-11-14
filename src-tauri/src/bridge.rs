@@ -181,7 +181,7 @@ pub fn router(state: AppState, token: String, port: u16) -> Router {
 
 fn arg<T: DeserializeOwned>(args: &Value, key: &str) -> Result<T> {
     serde_json::from_value(args.get(key).cloned().unwrap_or(Value::Null))
-        .map_err(|e| Error::Other(format!("invalid argument `{key}`: {e}")))
+        .map_err(|e| Error::Invalid(format!("invalid argument `{key}`: {e}")))
 }
 
 fn out<T: Serialize>(result: Result<T>) -> Result<Value> {
@@ -594,6 +594,42 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
                 state, id, database, pattern, confirm
             ))
         }
+        "session_reconnect" => {
+            args!(id: Uuid = "sessionId", secret: Option<Secret> = "secret");
+            call!(sessions::reconnect_impl(state, id, secret))
+        }
+        "lease_reopen" => {
+            args!(id: Uuid = "leaseId");
+            call!(editor::lease_reopen_impl(state, id))
+        }
+        "script_generate" => {
+            args!(
+                id: Uuid = "sessionId",
+                path: ObjectPath = "path",
+                template: dbstudio_sql::ScriptTemplate = "template"
+            );
+            call!(editor::script_generate_impl(state, id, path, template))
+        }
+        "plan_history_list" => {
+            args!(
+                connection_id: Option<Uuid> = "connectionId",
+                limit: u32 = "limit",
+                before: Option<String> = "before"
+            );
+            call!(plan::history_list_impl(state, connection_id, limit, before))
+        }
+        "plan_history_get" => {
+            args!(id: Uuid = "id");
+            call!(plan::history_get_impl(state, id))
+        }
+        "plan_history_delete" => {
+            args!(id: Uuid = "id");
+            call!(plan::history_delete_impl(state, id))
+        }
+        "plan_history_clear" => {
+            args!(connection_id: Option<Uuid> = "connectionId");
+            call!(plan::history_clear_impl(state, connection_id))
+        }
         _ => None,
     }
 }
@@ -793,13 +829,13 @@ async fn ipc(State(ctx): State<Ctx>, Path(command): Path<String>, body: Bytes) -
             Ok(_) => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    &Error::Other("request body must be a JSON object".into()),
+                    &Error::Invalid("request body must be a JSON object".into()),
                 );
             }
             Err(e) => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    &Error::Other(format!("invalid JSON body: {e}")),
+                    &Error::Invalid(format!("invalid JSON body: {e}")),
                 );
             }
         }

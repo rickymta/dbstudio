@@ -6,7 +6,7 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-rust-version = "1.85"
+rust-version = "1.94"
 authors = ["DBStudio contributors"]
 repository = "https://github.com/dbstudio/dbstudio"
 
@@ -56,12 +56,20 @@ russh = "0.65"
 tokio-util = "0.7"
 tiberius = { version = "0.13", default-features = false, features = ["tds80", "rustls", "winauth", "tokio-util", "time"] }
 oracle = "0.6.3"
-mongodb = { version = "3.10", default-features = false, features = ["compat-3-3-0", "bson-3", "rustls-tls", "dns-resolver"] }
+mongodb = { version = "3.10", default-features = false, features = ["compat-3-3-0", "bson-3", "rustls-tls", "dns-resolver", "socks5-proxy"] }
 bson = "3.1"
 redis = { version = "1.8", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "tls-rustls-insecure", "streams", "acl"] }
 rustls = "0.23"
 rustls-native-certs = "0.8"
 proptest = "1"
+
+# Backlog + phase 9 (declared centrally by the contract v2 scaffold; crates opt in with `.workspace = true`).
+scylla = { version = "1.10.0", default-features = false, features = ["rustls-023"] }
+clickhouse = { version = "0.15.3", default-features = false, features = ["lz4", "rustls-tls-ring", "rustls-tls-native-roots"] }
+hyper-util = "0.1.21"
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["ring"] }
+sys-locale = "0.3.2"
+fast-socks5 = "1.0.0"
 
 # Minimal fork of tiberius 0.13.0 (see vendor/tiberius-patch/DBSTUDIO-PATCH.md): INFO/DONE items,
 # cooperative attention (cancel) and exact money decoding.
@@ -74,6 +82,10 @@ missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+# `rust-version = "1.94"` turns on let-chain suggestions (~100 mechanical edits across files that
+# parallel packages own). Allowed until package Z cleans them up in one pass.
+collapsible_if = "allow"
+manual_is_multiple_of = "allow"
 
 [profile.release]
 lto = "thin"

@@ -1,0 +1,127 @@
+{
+  "command": "QUERY",
+  "coordinator": "172.28.0.7",
+  "durationUs": 558,
+  "events": [
+    {
+      "activity": "Parsing a statement",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 1,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Processing a statement for authenticated user: dbstudio",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 52,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Executing read query (reversed false)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 61,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "read_data: querying locally",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 78,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Start querying singular range (-inf, {-4980559482591167594, end}]",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 83,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "[reader concurrency semaphore sl:default] admitted immediately",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 85,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "[reader concurrency semaphore sl:default] executing read",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 88,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Scanning cache for range (-inf, {-4980559482591167594, end}] and slice [(-inf, +inf)]",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 96,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Page stats: 0 partition(s) (0 live, 0 dead), 0 static row(s) (0 live, 0 dead), 0 clustering row(s) (0 live, 0 dead), 0 range tombstone(s) and 0 cell(s) (0 live, 0 dead)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 108,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Querying is done",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 112,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "read_data: querying locally",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 120,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Start querying singular range ({-4980559482591167594, end},+inf)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 121,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "[reader concurrency semaphore sl:default] admitted immediately",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 121,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "[reader concurrency semaphore sl:default] executing read",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 122,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Scanning cache for range ({-4980559482591167594, end},+inf) and slice [(-inf, +inf)]",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 123,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Page stats: 5 partition(s) (5 live, 0 dead), 0 static row(s) (0 live, 0 dead), 400 clustering row(s) (400 live, 0 dead), 0 range tombstone(s) and 400 cell(s) (400 live, 0 dead)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 331,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Querying is done",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 332,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Done processing - preparing a result",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 553,
+      "thread": "shard 0/sl:default"
+    }
+  ],
+  "parameters": {
+    "consistency_level": "LOCAL_ONE",
+    "page_size": "1000",
+    "query": "SELECT * FROM nums WHERE v = 'x5' ALLOW FILTERING",
+    "serial_consistency_level": "SERIAL",
+    "table": "it_scylla_explain.nums",
+    "user_timestamp": "-9223372036854775808"
+  },
+  "request": "Execute CQL3 query",
+  "rows": 1,
+  "sessionId": "bf5daa40-dfd9-11f1-92fc-9f6336da3617",
+  "startedAt": "2026-11-14T03:16:13.668Z"
+}

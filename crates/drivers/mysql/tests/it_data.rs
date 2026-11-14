@@ -110,9 +110,12 @@ async fn value_decoding_is_lossless() {
         assert_eq!(cell(0, "c_enum"), Value::Text("b".into()));
         assert_eq!(cell(0, "c_set"), Value::Text("x,z".into()));
         assert_eq!(cell(0, "c_bit"), Value::UInt(0b1010_1010_1010));
-        match cell(0, "c_geom") {
-            Value::Bytes(b) => assert_eq!(b.len(), 25, "SRID + WKB point"),
-            other => panic!("[{tag}] geometry decoded as {other:?}"),
+        // TiDB has no spatial types (the fixture leaves the column out).
+        if !t.tidb {
+            match cell(0, "c_geom") {
+                Value::Bytes(b) => assert_eq!(b.len(), 25, "SRID + WKB point"),
+                other => panic!("[{tag}] geometry decoded as {other:?}"),
+            }
         }
         // Zero datetime does not break the row.
         assert_eq!(
@@ -673,7 +676,7 @@ async fn cancel_kills_the_statement() {
             batches < 150,
             "[{tag}] stopped early after {batches} batches"
         );
-        assert!(took < Duration::from_secs(4), "[{tag}] {took:?}");
+        assert!(took < slack(t, Duration::from_secs(4)), "[{tag}] {took:?}");
         s.ping().await.unwrap();
         assert_eq!(query(&*s, "SELECT 5").await.rows[0][0], Value::Int(5));
     }
@@ -809,7 +812,11 @@ async fn execute_scripts() {
         // Empty result set keeps its columns.
         let rs = query(&*s, "SELECT 1 AS a, 'x' AS b FROM DUAL WHERE 1 = 0").await;
         assert!(rs.rows.is_empty() && rs.columns.len() == 2 && !rs.truncated);
-        // Calling a procedure returns its result set followed by a status result.
+        // Calling a procedure returns its result set followed by a status result (TiDB has no
+        // stored procedures).
+        if t.tidb {
+            continue;
+        }
         ensure_fixture(t).await;
         let mut q = QueryRequest::new("CALL pr_noop()");
         q.database = Some(FIXTURE_DB.into());
@@ -1095,7 +1102,12 @@ async fn count_table_can_be_cancelled() {
         s.cancel(id).await.unwrap();
         let r = task.await.unwrap();
         assert!(matches!(r, Err(Error::Cancelled)), "[{}] {r:?}", t.name);
-        assert!(c0.elapsed() < Duration::from_secs(3));
+        assert!(
+            c0.elapsed() < slack(t, Duration::from_secs(3)),
+            "[{}] {:?}",
+            t.name,
+            c0.elapsed()
+        );
         s.ping().await.unwrap();
     }
 }

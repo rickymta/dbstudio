@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dbstudio_core::{
-    ApplyResult, ChangeSet, DdlItem, DdlRequest, Editability, ExplainRequest, Lease, LeaseOptions,
-    RawPlan, SchemaModel, SchemaModelRequest, ScriptDialect,
+    ApplyResult, Capabilities, ChangeSet, DbKind, DdlItem, DdlRequest, Editability, ExplainRequest,
+    Lease, LeaseOptions, RawPlan, SchemaModel, SchemaModelRequest, ScriptDialect,
 };
 use dbstudio_core::{
     ColumnMeta, EndOutcome, Error, ExecSummary, ObjectNode, ObjectPath, ObjectSearchRequest,
@@ -38,7 +38,7 @@ use uuid::Uuid;
 use crate::error::{map_connect_error, map_query_error};
 use crate::sql::{check_raw_where, count_sql, quote_ident, select_sql, table_target};
 use crate::value::{ColInfo, decode_cell};
-use crate::{browse, detect_mariadb, normalize_version};
+use crate::{browse, detect_mariadb, detect_tidb, normalize_version, read_tx_sql};
 
 const DEFAULT_BATCH: usize = 1000;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -126,6 +126,11 @@ pub(crate) struct Inner {
     acquire_timeout: Duration,
     secret: Option<String>,
     pub(crate) is_mariadb: bool,
+    /// The server is TiDB (detected from `VERSION()`): no read-only transactions, `EXPLAIN FORMAT='row'`.
+    pub(crate) is_tidb: bool,
+    /// The server's `sql_mode` had `ANSI_QUOTES` / `ANSI` at connect time. Leases keep their own
+    /// dialect (`Lease::script_dialect`), because `sql_mode` is per connection.
+    pub(crate) ansi_quotes: Arc<AtomicBool>,
     /// `NO_BACKSLASH_ESCAPES` was off in the server's global `sql_mode` at connect time.
     pub(crate) backslash_escapes: bool,
     /// Default database of the configuration (restored after a per-request override).
@@ -179,7 +184,9 @@ impl Inner {
         acquire_timeout: Duration,
         secret: Option<String>,
         is_mariadb: bool,
+        is_tidb: bool,
         backslash_escapes: bool,
+        ansi_quotes: bool,
         default_db: Option<String>,
         search_timeout_ms: u64,
         debug_search_sleep_ms: Option<u64>,
@@ -192,6 +199,8 @@ impl Inner {
             acquire_timeout,
             secret,
             is_mariadb,
+            is_tidb,
+            ansi_quotes: Arc::new(AtomicBool::new(ansi_quotes)),
             backslash_escapes,
             default_db,
             dirty_db: Mutex::new(HashSet::new()),
@@ -679,10 +688,12 @@ impl MySqlSession {
             .map_err(map_query_error)?;
         let row = row.ok_or_else(|| Error::Other("server returned no version".into()))?;
         let raw = cell(&row, 0).unwrap_or_default();
-        let product = if detect_mariadb(&raw) {
-            "MariaDB"
+        let (product, flavor) = if detect_mariadb(&raw) {
+            ("MariaDB", "mariadb")
+        } else if detect_tidb(&raw) {
+            ("TiDB", "tidb")
         } else {
-            "MySQL"
+            ("MySQL", "mysql")
         };
         let mut extra = BTreeMap::new();
         for (key, i) in [
@@ -700,6 +711,17 @@ impl MySqlSession {
             }
         }
         extra.insert("full_version".into(), raw.clone());
+        extra.insert("flavor".into(), flavor.into());
+        if flavor == "tidb" {
+            // TiDB has no server-side read-only session or transaction (noop implementation):
+            // a read-only profile is enforced by DBStudio's statement guard only. The UI shows
+            // a badge from this key.
+            extra.insert("readOnlyEnforcement".into(), "application".into());
+            extra.insert(
+                "readOnlyNote".into(),
+                "TiDB cannot enforce read-only on the server; DBStudio's statement guard blocks writes".into(),
+            );
+        }
         let cipher: Option<Row> = conn
             .query_first("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
             .await
@@ -735,7 +757,14 @@ impl Session for MySqlSession {
         ScriptDialect::MySql {
             mariadb: self.inner.is_mariadb,
             backslash_escapes: self.inner.backslash_escapes,
+            ansi_quotes: self.inner.ansi_quotes.load(Ordering::Relaxed),
         }
+    }
+
+    fn capabilities(&self) -> Option<Capabilities> {
+        self.inner
+            .is_tidb
+            .then(|| Capabilities::planned_for(DbKind::TiDb))
     }
 
     async fn open_lease(&self, opts: LeaseOptions) -> Result<Box<dyn Lease>> {
@@ -828,14 +857,15 @@ impl Session for MySqlSession {
 
     async fn list_children(&self, parent: &ObjectPath) -> Result<Vec<ObjectNode>> {
         let mut conn = self.inner.acquire().await?;
-        let r = browse::list_children(&mut conn, parent, self.inner.is_mariadb).await;
+        let r = browse::list_children(&mut conn, parent, self.inner.is_mariadb, self.inner.is_tidb)
+            .await;
         self.inner.release(conn, is_conn_error(&r)).await;
         r
     }
 
     async fn object_ddl(&self, path: &ObjectPath) -> Result<String> {
         let mut conn = self.inner.acquire().await?;
-        let r = browse::object_ddl(&mut conn, path).await;
+        let r = browse::object_ddl(&mut conn, path, self.inner.is_tidb).await;
         self.inner.release(conn, is_conn_error(&r)).await;
         r
     }
@@ -910,7 +940,7 @@ impl Session for MySqlSession {
             if let Err(e) = prepare_single(&mut conn, &sql).await {
                 return (Err(e), false);
             }
-            if let Err(e) = conn.query_drop("START TRANSACTION READ ONLY").await {
+            if let Err(e) = conn.query_drop(read_tx_sql(self.inner.is_tidb)).await {
                 return (Err(map_query_error(e)), false);
             }
             stream_query(
@@ -948,7 +978,7 @@ impl Session for MySqlSession {
             }
             let sql = count_sql(&db, &table, &req, nb)?;
             prepare_single(&mut conn, &sql).await?;
-            conn.query_drop("START TRANSACTION READ ONLY")
+            conn.query_drop(read_tx_sql(self.inner.is_tidb))
                 .await
                 .map_err(map_query_error)?;
             let row: Option<Row> = conn.query_first(sql).await.map_err(map_query_error)?;

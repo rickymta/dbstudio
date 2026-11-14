@@ -26,6 +26,8 @@
     "token": "0123456789abcdef0123456789abcdef"
   },
   "DestructiveReason": "deleteWithoutWhere",
+  "DestructiveReason#keywordScan": "keywordScan",
+  "DestructiveReason#write": "write",
   "DestructiveStatement": {
     "index": 0,
     "range": {
@@ -97,6 +99,7 @@
   },
   "ScriptAnalysis": {
     "dialect": {
+      "ansiQuotes": false,
       "backslashEscapes": true,
       "mariadb": false,
       "name": "mySql"
@@ -171,8 +174,21 @@
     ]
   },
   "ScriptDialect": {
+    "ansiQuotes": false,
     "backslashEscapes": true,
     "mariadb": false,
+    "name": "mySql"
+  },
+  "ScriptDialect#clickHouse": {
+    "name": "clickHouse"
+  },
+  "ScriptDialect#cql": {
+    "name": "cql"
+  },
+  "ScriptDialect#mySqlAnsi": {
+    "ansiQuotes": true,
+    "backslashEscapes": false,
+    "mariadb": true,
     "name": "mySql"
   },
   "ScriptProblem": {

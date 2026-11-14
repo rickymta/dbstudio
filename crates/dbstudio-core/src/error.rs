@@ -9,6 +9,15 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// Classified error returned by drivers and sessions.
 ///
 /// Serializes as `{ "kind": "...", "message": "...", ... }` for the frontend.
+///
+/// Usage rules:
+/// - [`Error::Invalid`]: the problem is the **caller's input** (IPC argument, out-of-range setting,
+///   empty/too long name, corrupt cursor or binary key, folder cycle, malformed import file).
+/// - [`Error::Permission`]: the server or an app policy **denied a privilege** (NOPERM, ORA-1031,
+///   path grants, blocked Redis command). Never for bad input.
+/// - [`Error::Other`]: only when the failure genuinely cannot be classified.
+/// - `Storage("invalid data: ...")` in the store is only for **corrupt stored data**; validation of
+///   store input uses `Invalid`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Network or protocol problem while connecting or talking to the server.
@@ -49,6 +58,10 @@ pub enum Error {
     /// Anything that does not fit another category.
     #[error("{0}")]
     Other(String),
+    /// Input rejected before reaching the server: malformed argument, out-of-range setting,
+    /// bad name, unsupported combination of options chosen by the caller.
+    #[error("invalid input: {0}")]
+    Invalid(String),
     /// Statement rejected because the connection is read-only (CONN-10).
     #[error("read-only connection: {message}")]
     ReadOnlyViolation {
@@ -113,6 +126,7 @@ impl Error {
             Error::Storage(_) => "storage",
             Error::Io(_) => "io",
             Error::Other(_) => "other",
+            Error::Invalid(_) => "invalid",
             Error::ReadOnlyViolation { .. } => "readOnly",
             Error::ConfirmationRequired(_) => "confirmationRequired",
             Error::Busy(_) => "busy",
@@ -135,6 +149,7 @@ impl Error {
             | Error::NotFound(m)
             | Error::Storage(m)
             | Error::Other(m)
+            | Error::Invalid(m)
             | Error::Busy(m)
             | Error::Permission(m)
             | Error::DriverUnavailable(m)
@@ -274,6 +289,14 @@ mod tests {
                 position: None
             }),
             json!({"kind": "readOnly", "message": "x"})
+        );
+        assert_eq!(
+            j(Error::Invalid("bad name".into())),
+            json!({"kind": "invalid", "message": "bad name"})
+        );
+        assert_eq!(
+            Error::Invalid("bad name".into()).to_string(),
+            "invalid input: bad name"
         );
         assert_eq!(
             j(Error::Busy("running".into())),

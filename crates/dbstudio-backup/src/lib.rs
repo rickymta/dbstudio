@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use dbstudio_core::{
-    ConnectionConfig, DdlOptions, JobError, JobReporter, ObjectPath, Secret, Session,
+    ConnectionConfig, DdlOptions, JobError, JobReporter, ObjectKind, ObjectPath, Secret, Session,
 };
 use dbstudio_export::{ExportContent, RowError};
 use serde::{Deserialize, Serialize};
@@ -20,11 +20,14 @@ pub mod container;
 pub mod crypto;
 pub mod logical;
 pub mod native;
+mod nosql;
+pub mod notify;
+mod partial;
 pub mod runner;
 pub mod scheduler;
 
 pub use chrono;
-pub use native::detect_tools;
+pub use native::{detect_selected, detect_tools};
 pub use scheduler::{
     Clock, Scheduler, SystemClock, next_after, parse_cron, parse_tz, preview_from,
 };
@@ -114,11 +117,19 @@ pub enum NativeTool {
     RedisCli,
     /// T-SQL `BACKUP DATABASE` (no binary).
     MsSqlServerBackup,
+    /// ClickHouse `BACKUP ... TO Disk(...)` run by the server (no binary).
+    ClickHouseServerBackup,
+    /// CockroachDB `BACKUP ... INTO 'nodelocal://...'` run by the cluster (no binary).
+    CockroachServerBackup,
+    /// YugabyteDB `ysql_dump`.
+    YsqlDump,
+    /// YugabyteDB `ysqlsh`.
+    Ysqlsh,
 }
 
 impl NativeTool {
     /// Every tool.
-    pub const ALL: [NativeTool; 11] = [
+    pub const ALL: [NativeTool; 15] = [
         NativeTool::PgDump,
         NativeTool::PgRestore,
         NativeTool::Psql,
@@ -130,6 +141,10 @@ impl NativeTool {
         NativeTool::Impdp,
         NativeTool::RedisCli,
         NativeTool::MsSqlServerBackup,
+        NativeTool::ClickHouseServerBackup,
+        NativeTool::CockroachServerBackup,
+        NativeTool::YsqlDump,
+        NativeTool::Ysqlsh,
     ];
 
     /// Executable name, `None` for the T-SQL engine.
@@ -145,7 +160,11 @@ impl NativeTool {
             NativeTool::Expdp => "expdp",
             NativeTool::Impdp => "impdp",
             NativeTool::RedisCli => "redis-cli",
-            NativeTool::MsSqlServerBackup => return None,
+            NativeTool::YsqlDump => "ysql_dump",
+            NativeTool::Ysqlsh => "ysqlsh",
+            NativeTool::MsSqlServerBackup
+            | NativeTool::ClickHouseServerBackup
+            | NativeTool::CockroachServerBackup => return None,
         })
     }
 }
@@ -416,6 +435,38 @@ pub struct BackupInspection {
     pub encrypted: bool,
     /// Set for files made by a native tool.
     pub native: Option<NativeTool>,
+    /// Objects of a logical backup (`formatVersion >= 3`); empty for older files and native
+    /// backups.
+    #[serde(default)]
+    pub objects: Vec<BackupObject>,
+}
+
+/// Which part of an object a logical backup block holds (`-- dbstudio:object ... phase=...`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupPhase {
+    /// Structure created before the data.
+    Pre,
+    /// Rows.
+    Data,
+    /// Indexes, constraints and other structure created after the data.
+    Post,
+}
+
+/// One object listed in the preamble of a logical backup (partial restore).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupObject {
+    /// Kind of the object.
+    pub kind: ObjectKind,
+    /// Schema (or keyspace / database) the object belongs to.
+    pub schema: Option<String>,
+    /// Object name.
+    pub name: String,
+    /// Phases present in the file.
+    pub phases: Vec<BackupPhase>,
+    /// Rows written, for data phases.
+    pub rows: Option<u64>,
 }
 
 /// Where a tool was found.

@@ -587,7 +587,7 @@ pub fn restore_names_its_target(spec: &RestoreSpec) -> bool {
 
 /// Error for a guarded restore without an explicit target database.
 pub fn explicit_target_required() -> Error {
-    Error::Other(
+    Error::Invalid(
         "a restore into a production connection, or one that cleans the target, needs the \
          target database to be named explicitly"
             .into(),
@@ -600,7 +600,14 @@ pub fn restore_confirmation_text(config: &ConnectionConfig, spec: &RestoreSpec) 
     if !restore_is_guarded(config, spec) {
         return None;
     }
-    spec.target_database.clone().filter(|d| !d.is_empty())
+    let db = spec.target_database.clone().filter(|d| !d.is_empty())?;
+    // Redis databases are numbers: the text to type is `db<N>` so it cannot be mistaken for a
+    // count.
+    Some(if config.kind == dbstudio_core::DbKind::Redis {
+        format!("db{db}")
+    } else {
+        db
+    })
 }
 
 // ---------------------------------------------------------------------------------------------

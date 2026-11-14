@@ -245,6 +245,27 @@ fn redact_sql(d: ScriptDialect, text: &str) -> String {
                     spans.push((t[j].start, t[j].end));
                 }
             }
+            // ClickHouse table functions / engines with a password as 5th argument:
+            // mysql('host', 'db', 'table', 'user', 'password').
+            "MYSQL" | "POSTGRESQL" | "REMOTE" | "REMOTESECURE" | "MONGODB"
+                if matches!(d, ScriptDialect::ClickHouse)
+                    && t.get(i + 1).is_some_and(|n| n.up == "(") =>
+            {
+                // Only the call's own arguments (up to the matching parenthesis).
+                let mut depth = 0i32;
+                let close = t[i + 1..]
+                    .iter()
+                    .position(|n| {
+                        match n.up.as_str() {
+                            "(" => depth += 1,
+                            ")" => depth -= 1,
+                            _ => {}
+                        }
+                        depth == 0
+                    })
+                    .map_or(t.len(), |k| i + 1 + k);
+                positional_strings(&t[..close], i + 1, &[4], &mut spans);
+            }
             "SP_ADDLOGIN" if matches!(d, ScriptDialect::MsSql) => {
                 positional_strings(&t, i, &[1], &mut spans);
             }
@@ -508,10 +529,7 @@ mod tests {
     use super::*;
 
     const PG: ScriptDialect = ScriptDialect::Postgres;
-    const MY: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
+    const MY: ScriptDialect = ScriptDialect::mysql(false, true);
 
     #[test]
     fn identity_without_secrets() {

@@ -141,7 +141,7 @@ pub(crate) fn insert_sql(table: &str, req: &BulkInsertRequest, key: &[String]) -
         OnConflict::Skip => s.push_str("\nON CONFLICT DO NOTHING"),
         OnConflict::Update => {
             if conflict.is_empty() {
-                return Err(Error::Other(
+                return Err(Error::Invalid(
                     "updating on conflict needs a primary key or conflict columns".into(),
                 ));
             }
@@ -188,17 +188,20 @@ pub(crate) async fn primary_key(
 }
 
 /// Insert rows on `client` (inside whatever transaction it is in; nothing is committed here).
-/// Plain inserts go through `COPY ... FROM STDIN`, the other conflict modes through `INSERT`.
+/// Plain inserts go through `COPY ... FROM STDIN` (when `use_copy`), the other conflict modes
+/// through `INSERT`. CockroachDB answers COPY only in the simple protocol, which this client does
+/// not use for it: `use_copy` is off there.
 pub(crate) async fn bulk_on_client(
     client: &tokio_postgres::Client,
     req: &BulkInsertRequest,
+    use_copy: bool,
 ) -> Result<BulkInsertResult> {
     let target = details::resolve_relation(&req.table)?;
     let table = sql::qualified(&target.schema, &target.name);
     if req.rows.is_empty() {
         return Ok(BulkInsertResult::default());
     }
-    if req.on_conflict == OnConflict::Error {
+    if use_copy && req.on_conflict == OnConflict::Error {
         if let Some(text) = copy_text(&req.rows) {
             let cols = req
                 .columns
@@ -267,7 +270,8 @@ pub(crate) async fn bulk_insert(
 ) -> Result<BulkInsertResult> {
     let target = details::resolve_relation(&req.table)?;
     let conn = session.shared.acquire(&target.database).await?;
-    bulk_on_client(&conn.client, &req).await
+    let use_copy = !session.shared.flavor().is_cockroach();
+    bulk_on_client(&conn.client, &req, use_copy).await
 }
 
 #[cfg(test)]

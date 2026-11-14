@@ -1,0 +1,23 @@
+[
+ {
+  "id": "TableReader_7",
+  "estRows": "1.00",
+  "task": "root",
+  "access object": "",
+  "operator info": "data:Selection_6"
+ },
+ {
+  "id": "└─Selection_6",
+  "estRows": "1.00",
+  "task": "cop[tikv]",
+  "access object": "",
+  "operator info": "eq(tidbfx.customers.name, \"c5\")"
+ },
+ {
+  "id": "  └─TableFullScan_5",
+  "estRows": "1000.00",
+  "task": "cop[tikv]",
+  "access object": "table:customers",
+  "operator info": "keep order:false"
+ }
+]

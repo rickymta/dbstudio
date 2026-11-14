@@ -22,6 +22,8 @@ dbstudio-driver-mysql = { path = "../drivers/mysql", optional = true }
 dbstudio-driver-mssql = { path = "../drivers/mssql", optional = true }
 dbstudio-driver-oracle = { path = "../drivers/oracle", optional = true }
 dbstudio-driver-mongodb = { path = "../drivers/mongodb", optional = true }
+dbstudio-driver-cassandra = { version = "0.1.0", path = "../drivers/cassandra", optional = true }
+dbstudio-driver-clickhouse = { version = "0.1.0", path = "../drivers/clickhouse", optional = true }
 dbstudio-driver-redis = { path = "../drivers/redis", optional = true }
 chrono.workspace = true
 clap.workspace = true
@@ -29,13 +31,16 @@ uuid.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "signal", "time", "fs"] }
 
 [features]
-default = ["postgres", "mysql", "mssql", "oracle", "mongodb", "redis"]
+default = ["postgres", "mysql", "mssql", "oracle", "mongodb", "redis", "cassandra", "clickhouse"]
 postgres = ["dep:dbstudio-driver-postgres"]
 mysql = ["dep:dbstudio-driver-mysql"]
 mssql = ["dep:dbstudio-driver-mssql"]
 oracle = ["dep:dbstudio-driver-oracle"]
 mongodb = ["dep:dbstudio-driver-mongodb"]
 redis = ["dep:dbstudio-driver-redis"]
+# `clickhouse` is not in `default` yet (package H).
+cassandra = ["dep:dbstudio-driver-cassandra"]
+clickhouse = ["dep:dbstudio-driver-clickhouse"]
 
 [dev-dependencies]
 tempfile.workspace = true

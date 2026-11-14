@@ -232,6 +232,8 @@ export function previewKeyChange(c: KeyChange): string {
       return `RENAME ${qk(c.key)} ${qk(c.newKey)}`;
     case 'delete':
       return `DEL ${c.keys.map(qk).join(' ')}`;
+    case 'put':
+      return `-- PUT ${qk(c.key)} (${c.data.type}${c.mode === 'ifAbsent' ? ', if absent' : ''})`;
   }
 }
 
@@ -388,6 +390,11 @@ function applyOne(db: Map<string, MockRedisKey>, c: KeyChange): number {
       for (const k of c.keys) if (db.delete(k)) n++;
       return n;
     }
+    case 'put':
+      // Whole-key writes (import / restore) are only implemented by the real backend.
+      throw ipcError('unsupported', 'key_put is not available in the browser mock', {
+        capability: 'key_put',
+      });
   }
 }
 

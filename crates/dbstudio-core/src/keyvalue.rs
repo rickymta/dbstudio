@@ -23,7 +23,7 @@ pub fn decode_key_name(name: &str) -> Result<Vec<u8>> {
     match name.strip_prefix(BINARY_KEY_PREFIX) {
         Some(encoded) => STANDARD
             .decode(encoded)
-            .map_err(|e| Error::Other(format!("invalid binary key name: {e}"))),
+            .map_err(|e| Error::Invalid(format!("invalid binary key name: {e}"))),
         None => Ok(name.as_bytes().to_vec()),
     }
 }
@@ -135,6 +135,89 @@ pub struct StreamEntry {
     pub fields: Vec<(Value, Value)>,
 }
 
+/// Request for one page of raw key names ([`crate::Session::scan_keys`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyScanRequest {
+    /// `[Database "0"]`.
+    pub database: ObjectPath,
+    /// `SCAN MATCH` pattern.
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Cursor of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// `COUNT` hint (clamped to `1..=10_000`).
+    pub count: u32,
+    /// `SCAN TYPE` filter (Redis >= 6).
+    #[serde(default)]
+    pub type_filter: Option<String>,
+}
+
+/// One page of key names; names use [`encode_key_name`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyScanPage {
+    /// Key names ([`encode_key_name`]).
+    pub keys: Vec<String>,
+    /// Cursor for the next page; `None` when the scan is complete.
+    pub next_cursor: Option<String>,
+}
+
+/// Full value of a key, by type (export, import, backup and [`crate::KeyChange::Put`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum KeyData {
+    /// A string.
+    String {
+        /// The value.
+        value: Value,
+    },
+    /// Hash fields.
+    Hash {
+        /// `(field, value)` pairs.
+        fields: Vec<(Value, Value)>,
+    },
+    /// List items in order.
+    List {
+        /// Items.
+        items: Vec<Value>,
+    },
+    /// Set members.
+    Set {
+        /// Members.
+        members: Vec<Value>,
+    },
+    /// Sorted-set members with scores as Redis text.
+    ZSet {
+        /// `(member, score)` pairs.
+        members: Vec<(Value, String)>,
+    },
+    /// Stream entries. Consumer groups are NOT backed up (callers warn).
+    Stream {
+        /// Entries.
+        entries: Vec<StreamEntry>,
+    },
+    /// RedisJSON document.
+    Json {
+        /// JSON text.
+        text: String,
+    },
+}
+
+/// One exported key (JSON export, backup NDJSON line, Redis import record).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyRecord {
+    /// Key name ([`encode_key_name`]).
+    pub key: String,
+    /// The value.
+    pub data: KeyData,
+    /// Absolute expiry (Unix ms); `None` = persistent.
+    #[serde(default)]
+    pub expire_at_ms: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,7 +246,10 @@ mod tests {
         let name = encode_key_name(raw);
         assert_ne!(name.as_bytes(), raw);
         assert_eq!(decode_key_name(&name).unwrap(), raw.to_vec());
-        assert!(decode_key_name("\u{0}b64:***").is_err());
+        assert!(matches!(
+            decode_key_name("\u{0}b64:***"),
+            Err(Error::Invalid(_))
+        ));
     }
 
     #[test]
@@ -193,6 +279,42 @@ mod tests {
             serde_json::to_value(&z).unwrap(),
             json!({"type": "zSet", "members": [[{"t": "text", "v": "a"}, "1.5"]]})
         );
+    }
+
+    #[test]
+    fn scan_and_record_shapes() {
+        let req = KeyScanRequest {
+            database: ObjectPath::root(),
+            pattern: Some("user:*".into()),
+            cursor: None,
+            count: 1000,
+            type_filter: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["typeFilter"], serde_json::Value::Null);
+        assert_eq!(serde_json::from_value::<KeyScanRequest>(json).unwrap(), req);
+        // `pattern`, `cursor`, `typeFilter` may be omitted.
+        let req: KeyScanRequest =
+            serde_json::from_value(json!({"database": {"segments": []}, "count": 5})).unwrap();
+        assert!(req.pattern.is_none() && req.cursor.is_none());
+        let rec = KeyRecord {
+            key: "k".into(),
+            data: KeyData::ZSet {
+                members: vec![(Value::Text("a".into()), "1.5".into())],
+            },
+            expire_at_ms: Some(1_700_000_000_000),
+        };
+        let json = serde_json::to_value(&rec).unwrap();
+        assert_eq!(json["expireAtMs"], 1_700_000_000_000i64);
+        assert_eq!(json["data"]["type"], "zSet");
+        assert_eq!(serde_json::from_value::<KeyRecord>(json).unwrap(), rec);
+        let page = KeyScanPage {
+            keys: vec!["a".into()],
+            next_cursor: None,
+        };
+        let json = serde_json::to_value(&page).unwrap();
+        assert!(json["nextCursor"].is_null());
+        assert_eq!(serde_json::from_value::<KeyScanPage>(json).unwrap(), page);
     }
 
     #[test]

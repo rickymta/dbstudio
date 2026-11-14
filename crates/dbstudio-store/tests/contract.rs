@@ -3,9 +3,11 @@
 
 use dbstudio_core::testing::write_or_check;
 use dbstudio_core::{DbKind, ObjectKind, ObjectPath};
+use dbstudio_core::{PlanFormat, RawPlan};
 use dbstudio_store::{
     AppSettings, CloseBehavior, EditorTabState, ErdLayout, ErdLayoutSummary, ExportPreset,
-    HistoryEntry, HistoryQuery, SavedFolder, SavedQueriesSnapshot, SavedQuery,
+    HistoryEntry, HistoryQuery, PlanHistoryEntry, PlanHistoryRecord, SavedFolder,
+    SavedQueriesSnapshot, SavedQuery, UiLanguage,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -42,6 +44,18 @@ fn store_contract_fixtures() {
         sort_order: 1,
         created_at: "2024-05-01T10:00:00Z".into(),
         updated_at: "2024-05-02T10:00:00Z".into(),
+    };
+    let plan_entry = PlanHistoryEntry {
+        id: id(7),
+        connection_id: Some(id(3)),
+        created_at: "2026-11-14T00:00:00Z".into(),
+        database: Some("app".into()),
+        statement: "SELECT * FROM users WHERE id = '***'".into(),
+        analyze: true,
+        format: PlanFormat::PostgresJson,
+        total_cost: Some(12.5),
+        total_ms: Some(1.25),
+        warnings: 2,
     };
     let samples = json!({
         "HistoryEntry": j(&HistoryEntry {
@@ -82,6 +96,7 @@ fn store_contract_fixtures() {
             file_path: Some("/tmp/q.sql".into()),
             cursor: 8,
             auto_commit: true,
+            dirty: true,
         }),
         "ErdLayout": j(&ErdLayout {
             id: id(5),
@@ -112,7 +127,24 @@ fn store_contract_fixtures() {
         }),
         "AppSettings": j(&AppSettings {
             close_to_tray: CloseBehavior::Always,
+            editor_font_family: "JetBrains Mono".into(),
+            language: UiLanguage::Vi,
             ..AppSettings::default()
+        }),
+        "UiLanguage": j(&UiLanguage::En),
+        "PlanHistoryEntry": j(&plan_entry),
+        "PlanHistoryRecord": j(&PlanHistoryRecord {
+            entry: plan_entry.clone(),
+            raw_plan: RawPlan {
+                format: PlanFormat::PostgresJson,
+                text: "[]".into(),
+                statement: "SELECT 1".into(),
+                analyzed: false,
+                rolled_back: false,
+                server_version: "17.2".into(),
+                captured_at: "2026-11-14T00:00:00Z".into(),
+                extra: Default::default(),
+            },
         }),
     });
     write_or_check("history", &samples);

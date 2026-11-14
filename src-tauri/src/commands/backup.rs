@@ -101,12 +101,12 @@ fn validate_spec(state: &AppState, spec: &BackupSpec) -> Result<()> {
     match (&spec.destination, &spec.engine) {
         (Destination::ServerDir { .. }, BackupEngine::Native { .. }) => {}
         (Destination::ServerDir { .. }, _) => {
-            return Err(Error::Other(
+            return Err(Error::Invalid(
                 "a server directory needs the SQL Server native backup".into(),
             ));
         }
         (Destination::LocalDir { path, .. }, _) if path.trim().is_empty() => {
-            return Err(Error::Other("choose a destination directory".into()));
+            return Err(Error::Invalid("choose a destination directory".into()));
         }
         _ => {}
     }
@@ -132,7 +132,7 @@ pub(crate) async fn job_save_impl(
     passphrase: SecretChange,
 ) -> Result<BackupJob> {
     if job.name.trim().is_empty() {
-        return Err(Error::Other("the job needs a name".into()));
+        return Err(Error::Invalid("the job needs a name".into()));
     }
     if let Some(s) = &job.schedule {
         dbstudio_backup::parse_cron(&s.cron)?;
@@ -158,17 +158,17 @@ pub(crate) async fn job_save_impl(
         match (encrypted, passphrase) {
             (true, SecretChange::Set { value }) => {
                 if value.expose().is_empty() {
-                    return Err(Error::Other("the passphrase cannot be empty".into()));
+                    return Err(Error::Invalid("the passphrase cannot be empty".into()));
                 }
                 secrets.set_account(&account, &value)?;
             }
             (true, SecretChange::Keep) => {
                 if secrets.get_account(&account)?.is_none() {
-                    return Err(Error::Other("an encrypted job needs a passphrase".into()));
+                    return Err(Error::Invalid("an encrypted job needs a passphrase".into()));
                 }
             }
             (true, SecretChange::Clear) => {
-                return Err(Error::Other("an encrypted job needs a passphrase".into()));
+                return Err(Error::Invalid("an encrypted job needs a passphrase".into()));
             }
             (false, _) => secrets.delete_account(&account)?,
         }
@@ -239,14 +239,24 @@ pub(crate) fn spawn_job_run(state: &AppState, job: BackupJob, trigger: RunTrigge
                 // and tell the user instead of letting it pass unnoticed.
                 Err(e) => match record_skipped(&env, &job, trigger, &e) {
                     Ok(run) => {
-                        crate::background::notify_run(host.as_ref(), &job, &run);
+                        crate::background::notify_run(
+                            host.as_ref(),
+                            crate::notify::current_language(env.service.store()),
+                            &job,
+                            &run,
+                        );
                         Err(e)
                     }
                     Err(_) => Err(e),
                 },
             };
             if let Ok(run) = &result {
-                crate::background::notify_run(host.as_ref(), &job, run);
+                crate::background::notify_run(
+                    host.as_ref(),
+                    crate::notify::current_language(env.service.store()),
+                    &job,
+                    run,
+                );
             }
             events.emit(BACKUP_CHANGED, serde_json::Value::Null);
             let run = result?;
@@ -293,7 +303,7 @@ pub(crate) async fn run_manual_impl(
         }
         match pass2 {
             Some(p) if p.expose().is_empty() => {
-                Err(Error::Other("the passphrase cannot be empty".into()))
+                Err(Error::Invalid("the passphrase cannot be empty".into()))
             }
             Some(p) => {
                 if save_passphrase {
@@ -305,7 +315,7 @@ pub(crate) async fn run_manual_impl(
             None => secrets
                 .get_account(&acc2)?
                 .map(Some)
-                .ok_or_else(|| Error::Other("an encrypted backup needs a passphrase".into())),
+                .ok_or_else(|| Error::Invalid("an encrypted backup needs a passphrase".into())),
         }
     })
     .await?;
@@ -454,7 +464,24 @@ async fn destructive_statements(
     let Ok(pre_json) = serde_json::to_value(&pre) else {
         return Vec::new();
     };
-    let mut texts = dbstudio_backup::logical::clean_preview(&pre_json, dialect, database);
+    let mut texts = match dialect {
+        // MongoDB: every collection of the backup is dropped before it is re-created.
+        "mongo" => pre_json["objects"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|o| o["name"].as_str())
+            .map(|n| {
+                format!(
+                    "db.getCollection({}).drop() // database {database}",
+                    serde_json::to_string(n).unwrap_or_default()
+                )
+            })
+            .collect(),
+        // Redis: the whole numbered database is emptied.
+        "redis" => vec![format!("FLUSHDB // database {database}")],
+        _ => dbstudio_backup::logical::clean_preview(&pre_json, dialect, database),
+    };
     if texts.is_empty() {
         texts.push(format!(
             "pg_restore / mysql with clean into database {database}"
@@ -464,7 +491,7 @@ async fn destructive_statements(
         .into_iter()
         .enumerate()
         .map(|(i, text)| {
-            let reason = if text.starts_with("DROP DATABASE") {
+            let reason = if text.starts_with("DROP DATABASE") || text.starts_with("FLUSHDB") {
                 DestructiveReason::DropDatabase
             } else {
                 DestructiveReason::Drop
@@ -783,7 +810,7 @@ mod tests {
             schedule_preview_impl("nope".into(), "utc".into(), 3)
                 .unwrap_err()
                 .kind(),
-            "other"
+            "invalid"
         );
         assert!(schedule_preview_impl("* * * * *".into(), "mars".into(), 3).is_err());
     }
@@ -1078,7 +1105,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .kind(),
-            "other"
+            "invalid"
         );
         assert_eq!(state.confirm.pending(), 0);
         spec.target_database = Some(String::new());

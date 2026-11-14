@@ -35,6 +35,7 @@ pub fn editability_of(info: &KeyInfo, read_only_conn: bool) -> Editability {
         read_only_columns: info.read_only_columns.clone(),
         reason: Some(reason),
         atomic: true,
+        notes: vec![],
     };
     if info.kind != ObjectKind::Table {
         return not_editable(NotEditableReason::NotATable);
@@ -55,6 +56,7 @@ pub fn editability_of(info: &KeyInfo, read_only_conn: bool) -> Editability {
         read_only_columns: info.read_only_columns.clone(),
         reason: None,
         atomic: true,
+        notes: vec![],
     }
 }
 

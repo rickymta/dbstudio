@@ -17,10 +17,11 @@ use crate::{
     ImportReport, ImportSpec, ImportTarget, RowError, Transform,
 };
 
+mod document;
 mod insert;
 mod preview;
 mod script;
-mod source;
+pub(crate) mod source;
 
 use insert::{MAX_STATEMENT_ROWS, Savepoint, Target, insert_statement, savepoint};
 use source::RowSource;
@@ -35,6 +36,14 @@ pub async fn run_import(ctx: ExportContext, spec: ImportSpec) -> Result<ImportRe
     let cancel = ctx.reporter.cancel_token().clone();
     if cancel.is_cancelled() {
         return Err(Error::Cancelled);
+    }
+    if matches!(spec.target, ImportTarget::Keys { .. }) {
+        return crate::keys::import_keys(&ctx, &spec, &cancel).await;
+    }
+    if matches!(ctx.dialect, ScriptDialect::MongoShell)
+        && !matches!(spec.format, ImportFormat::Sql { .. })
+    {
+        return document::run(&ctx, &spec, &cancel).await;
     }
     match &spec.format {
         ImportFormat::Sql { continue_on_error } => {
@@ -81,7 +90,7 @@ pub(crate) fn resolve_mapping(
             }
         }
         if out.is_empty() {
-            return Err(Error::Other(
+            return Err(Error::Invalid(
                 "no column of the file matches a column of the table".into(),
             ));
         }
@@ -95,21 +104,23 @@ pub(crate) fn resolve_mapping(
         {
             Some(n) if n >= 1 && n <= file_columns.len() => n - 1,
             Some(_) => {
-                return Err(Error::Other(format!(
+                return Err(Error::Invalid(format!(
                     "column {} is outside the file's {} column(s)",
                     m.source,
                     file_columns.len()
                 )));
             }
             None => find_ci(file_columns, &m.source).ok_or_else(|| {
-                Error::Other(format!("column not found in the file: {}", m.source))
+                Error::Invalid(format!("column not found in the file: {}", m.source))
             })?,
         };
         let target = find_ci(table_columns, &m.target)
             .map(|t| table_columns[t].clone())
-            .ok_or_else(|| Error::Other(format!("column not found in the table: {}", m.target)))?;
+            .ok_or_else(|| {
+                Error::Invalid(format!("column not found in the table: {}", m.target))
+            })?;
         if out.iter().any(|o| o.target == target) {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "column {target} is mapped more than once"
             )));
         }
@@ -267,7 +278,15 @@ impl Importer<'_> {
         Ok(sink.affected)
     }
 
+    /// Statements run inside a transaction of the lease (false: autocommit dialects).
+    fn in_tx(&self) -> bool {
+        self.has_lease() && has_transactions(self.dialect)
+    }
+
     async fn begin(&self) -> Result<()> {
+        if !has_transactions(self.dialect) {
+            return Ok(());
+        }
         match self.conn.lease() {
             Some(l) => l.begin(TxOptions::default()).await,
             None => Ok(()),
@@ -275,6 +294,9 @@ impl Importer<'_> {
     }
 
     async fn commit(&self) -> Result<()> {
+        if !has_transactions(self.dialect) {
+            return Ok(());
+        }
         match self.conn.lease() {
             Some(l) => l.commit().await,
             None => Ok(()),
@@ -282,6 +304,9 @@ impl Importer<'_> {
     }
 
     async fn rollback(&self) {
+        if !has_transactions(self.dialect) {
+            return;
+        }
         if let Some(l) = self.conn.lease() {
             let _ = l.rollback().await;
         }
@@ -314,6 +339,9 @@ impl Importer<'_> {
             } else {
                 self.bulk_supported = false;
             }
+        }
+        if matches!(self.dialect, ScriptDialect::Cql) {
+            return self.insert_rows_cql(rows).await;
         }
         let n = rows.len() as u64;
         let returning = matches!(self.dialect, ScriptDialect::Postgres)
@@ -359,6 +387,33 @@ impl Importer<'_> {
         })
     }
 
+    /// CQL has no multi-row `INSERT`: one statement per row. With `Skip` the lightweight
+    /// transaction answers `[applied]` per row.
+    async fn insert_rows_cql(&mut self, rows: &[Vec<EditValue>]) -> Result<Counts> {
+        let mut counts = Counts::default();
+        for row in rows {
+            let sql = insert_statement(
+                self.dialect,
+                &self.target,
+                std::slice::from_ref(row),
+                self.on_conflict,
+                false,
+            )?;
+            let mut sink = AffectedSink::default();
+            self.run_sink(sql, &mut sink).await?;
+            if self.on_conflict == OnConflict::Skip && sink.returned > 0 {
+                if sink.returned_inserted > 0 {
+                    counts.inserted += 1;
+                } else {
+                    counts.skipped += 1;
+                }
+            } else {
+                counts.inserted += 1;
+            }
+        }
+        Ok(counts)
+    }
+
     fn add(&mut self, c: Counts) {
         self.report.inserted += c.inserted;
         self.report.updated += c.updated;
@@ -386,18 +441,24 @@ impl Importer<'_> {
         if let Some(sp) = &sp {
             self.run_sql(sp.create.clone()).await?;
         }
-        let error = match self.insert_rows(&rows).await {
-            Ok(c) => {
-                if let Some(release) = sp.as_ref().and_then(|s| s.release.clone()) {
-                    self.run_sql(release).await?;
+        // CQL has no multi-row statement and no rollback: rows go one by one, each counted as it
+        // is written (a batch retried after a partial write would count rows twice).
+        let error = if matches!(self.dialect, ScriptDialect::Cql) {
+            Error::Other(String::new())
+        } else {
+            match self.insert_rows(&rows).await {
+                Ok(c) => {
+                    if let Some(release) = sp.as_ref().and_then(|s| s.release.clone()) {
+                        self.run_sql(release).await?;
+                    }
+                    self.add(c);
+                    return Ok(());
                 }
-                self.add(c);
-                return Ok(());
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(e) => e,
             }
-            Err(Error::Cancelled) => return Err(Error::Cancelled),
-            Err(e) => e,
         };
-        if self.has_lease() && sp.is_none() {
+        if self.in_tx() && sp.is_none() {
             // Nothing to roll back to: report the statement as a whole.
             let (a, b) = (
                 chunk.first().map_or(0, |m| m.line),
@@ -481,7 +542,15 @@ fn is_sql_dialect(d: ScriptDialect) -> bool {
             | ScriptDialect::MySql { .. }
             | ScriptDialect::MsSql
             | ScriptDialect::Oracle
+            | ScriptDialect::Cql
+            | ScriptDialect::ClickHouse
     )
+}
+
+/// Dialects whose servers have no multi-statement transactions (CQL, ClickHouse): the import
+/// commits as it goes and cannot undo a failed statement.
+fn has_transactions(d: ScriptDialect) -> bool {
+    !matches!(d, ScriptDialect::Cql | ScriptDialect::ClickHouse)
 }
 
 /// How a target column wants its cells coerced.
@@ -489,6 +558,11 @@ fn is_sql_dialect(d: ScriptDialect) -> bool {
 enum ColKind {
     Bytes,
     Bool,
+    /// Array / list column: a JSON array cell (what CSV, XLSX and JSON exports hold) becomes
+    /// an array value the driver writes in its own syntax (`{a,b}`, `[a, b]`).
+    Array,
+    /// MySQL `BIT(n)`: read as a number, but a quoted text would be taken as a byte string.
+    Bit,
     Plain,
 }
 
@@ -496,7 +570,9 @@ fn kind_of_detail(c: &ColumnDetail) -> ColKind {
     match c.value_kind {
         ValueKind::Bytes => ColKind::Bytes,
         ValueKind::Bool => ColKind::Bool,
+        ValueKind::Array => ColKind::Array,
         _ if c.type_name.to_lowercase().replace(' ', "") == "tinyint(1)" => ColKind::Bool,
+        ValueKind::UInt if c.type_name.to_lowercase().starts_with("bit") => ColKind::Bit,
         _ => ColKind::Plain,
     }
 }
@@ -548,7 +624,37 @@ fn coerce(cell: EditValue, kind: ColKind) -> std::result::Result<EditValue, Stri
             "false" | "f" => EditValue::Value(Value::Bool(false)),
             _ => EditValue::Text(s),
         }),
+        (ColKind::Array, EditValue::Text(s) | EditValue::Value(Value::Json(s))) => {
+            Ok(match serde_json::from_str::<serde_json::Value>(s.trim()) {
+                Ok(j @ serde_json::Value::Array(_)) => EditValue::Value(json_to_value(&j)),
+                _ => EditValue::Text(s),
+            })
+        }
+        (ColKind::Bit, EditValue::Text(s)) => Ok(match s.trim().parse::<u64>() {
+            Ok(n) => EditValue::Value(Value::UInt(n)),
+            Err(_) => EditValue::Text(s),
+        }),
         (_, other) => Ok(other),
+    }
+}
+
+/// Structured value of parsed JSON (integers stay integers, other numbers are doubles).
+fn json_to_value(j: &serde_json::Value) -> Value {
+    match j {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => match (n.as_i64(), n.as_u64()) {
+            (Some(i), _) => Value::Int(i),
+            (None, Some(u)) => Value::UInt(u),
+            _ => Value::Float(n.as_f64().unwrap_or(0.0)),
+        },
+        serde_json::Value::String(s) => Value::Text(s.clone()),
+        serde_json::Value::Array(a) => Value::Array(a.iter().map(json_to_value).collect()),
+        serde_json::Value::Object(o) => Value::Document(
+            o.iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -593,6 +699,12 @@ async fn run_rows(
     if !is_sql_dialect(ctx.dialect) {
         return Err(Error::Unsupported("import_dialect".into()));
     }
+    if matches!(spec.mode, ImportMode::SingleTransaction) && !has_transactions(ctx.dialect) {
+        return Err(Error::Invalid(
+            "this database has no transactions: import in batches instead of a single transaction"
+                .into(),
+        ));
+    }
     let path = PathBuf::from(&spec.file);
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     // Opening a workbook or scanning a JSON file for its keys must not block the runtime.
@@ -612,7 +724,7 @@ async fn run_rows(
             let name = table
                 .last()
                 .map(|s| s.name.clone())
-                .ok_or_else(|| Error::Other("invalid table path".into()))?;
+                .ok_or_else(|| Error::Invalid("invalid table path".into()))?;
             let qualified = match qualifier(Some(table), None, dialect) {
                 Some(s) => format!("{}.{}", q.quote_ident(&s), q.quote_ident(&name)),
                 None => q.quote_ident(&name),
@@ -641,7 +753,7 @@ async fn run_rows(
             columns,
         } => {
             if columns.is_empty() {
-                return Err(Error::Other("the new table has no columns".into()));
+                return Err(Error::Invalid("the new table has no columns".into()));
             }
             let qualified = match qualifier(Some(parent), None, dialect) {
                 Some(s) => format!("{}.{}", q.quote_ident(&s), q.quote_ident(name)),
@@ -675,7 +787,13 @@ async fn run_rows(
             )
         }
         ImportTarget::Script { .. } => {
-            return Err(Error::Other(
+            return Err(Error::Invalid(
+                "a table import needs an existing or a new table as target".into(),
+            ));
+        }
+        // Redis keys are imported by `crate::keys` (see `run_import`).
+        ImportTarget::Keys { .. } => {
+            return Err(Error::Invalid(
                 "a table import needs an existing or a new table as target".into(),
             ));
         }
@@ -695,7 +813,7 @@ async fn run_rows(
     let on_conflict = spec.on_conflict.unwrap_or(OnConflict::Error);
     let conflict_columns = pk;
     if on_conflict == OnConflict::Update && conflict_columns.is_empty() {
-        return Err(Error::Other(
+        return Err(Error::Invalid(
             "updating on conflict needs a table with a primary key".into(),
         ));
     }
@@ -746,7 +864,10 @@ async fn import_table(
     src: &mut dyn RowSource,
     t: TableTarget,
 ) -> Result<ImportReport> {
-    if matches!(spec.mode, ImportMode::SingleTransaction) && conn.lease().is_none() {
+    if matches!(spec.mode, ImportMode::SingleTransaction)
+        && has_transactions(ctx.dialect)
+        && conn.lease().is_none()
+    {
         return Err(Error::Unsupported("leases".into()));
     }
     let dialect = ctx.dialect;
@@ -1001,6 +1122,28 @@ mod tests {
         assert_eq!(
             coerce(EditValue::Text("maybe".into()), ColKind::Bool).unwrap(),
             EditValue::Text("maybe".into())
+        );
+        // BIT(n) cells are numbers, not byte strings.
+        assert_eq!(
+            coerce(EditValue::Text("10".into()), ColKind::Bit).unwrap(),
+            EditValue::Value(Value::UInt(10))
+        );
+        assert_eq!(
+            coerce(EditValue::Text("x".into()), ColKind::Bit).unwrap(),
+            EditValue::Text("x".into())
+        );
+        // A JSON array cell becomes an array value; anything else stays text.
+        assert_eq!(
+            coerce(EditValue::Text("[\"a\", null, 2]".into()), ColKind::Array).unwrap(),
+            EditValue::Value(Value::Array(vec![
+                Value::Text("a".into()),
+                Value::Null,
+                Value::Int(2)
+            ]))
+        );
+        assert_eq!(
+            coerce(EditValue::Text("{a,b}".into()), ColKind::Array).unwrap(),
+            EditValue::Text("{a,b}".into())
         );
         assert_eq!(kind_of_type_name("bytea"), ColKind::Bytes);
         assert_eq!(kind_of_type_name("LONGBLOB"), ColKind::Bytes);

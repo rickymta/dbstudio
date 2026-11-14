@@ -16,7 +16,10 @@ export type DbKind =
   | 'redis'
   | 'cassandra'
   | 'scylladb'
-  | 'clickhouse';
+  | 'clickhouse'
+  | 'cockroachdb'
+  | 'yugabytedb'
+  | 'tidb';
 
 export type DbFamily = 'relational' | 'document' | 'keyValue' | 'wideColumn' | 'columnar';
 
@@ -67,6 +70,10 @@ export interface Capabilities {
   readOnlySession: boolean;
   /** Connections can go through an SSH tunnel. */
   sshTunnel: boolean;
+  /** The data grid can sort by any column server-side (false: CQL, only clustering order). */
+  tableSort: boolean;
+  /** `table_count` is exact and cheap enough for the grid (false: CQL full scan). */
+  exactCount: boolean;
 }
 
 /** Every capability off; spread it and turn on what a driver supports. */
@@ -101,6 +108,8 @@ export const NO_CAPABILITIES: Capabilities = {
   pagedTree: false,
   readOnlySession: false,
   sshTunnel: false,
+  tableSort: false,
+  exactCount: false,
 };
 
 export type UnavailableReason = 'nativeClientMissing' | 'nativeClientTooOld';
@@ -119,10 +128,21 @@ export interface DriverDescriptor {
   status: DriverStatus;
 }
 
+/** One line of the driver diagnostics report. */
+export interface DiagnosticCheck {
+  /** Stable id: `driverRegistered`, `nativeTool:<tool>`, `nativeClient`, `clientVersion`... */
+  id: string;
+  ok: boolean;
+  value?: string | null;
+  detail?: string | null;
+}
+
 export interface DriverDiagnostics {
   status: DriverStatus;
   message: string;
   helpUrl?: string | null;
+  /** Structured checks behind `message` (empty until the backend fills them in). */
+  checks: DiagnosticCheck[];
 }
 
 /** Result of `connection_parse_uri`; the password is dropped (`hasPassword` asks the UI for it). */
@@ -151,6 +171,7 @@ export type IpcErrorKind =
   | 'storage'
   | 'io'
   | 'other'
+  | 'invalid'
   | 'readOnly'
   | 'confirmationRequired'
   | 'busy'
@@ -213,6 +234,8 @@ export interface ConnectionConfig {
   environment?: Environment | null;
   options: Record<string, string>;
   ssh?: SshConfig | null;
+  /** Custom label shown instead of the standard environment name (at most 32 characters). */
+  environmentLabel?: string | null;
 }
 
 /** Rust `ConnectionProfile` (config fields are flattened into the same object). */
@@ -260,6 +283,24 @@ export interface SessionInfo {
   dialect: ScriptDialect;
 }
 
+/** Health of a live session (`session://state` event). */
+export type SessionHealth = 'connected' | 'lost' | 'reconnecting' | 'reconnected' | 'gaveUp';
+
+/** Payload of the `session://state` event. */
+export interface SessionStateEvent {
+  sessionId: Uuid;
+  connectionId: Uuid;
+  state: SessionHealth;
+  /** Reconnect attempt number (0 when not reconnecting). */
+  attempt: number;
+  /** The error behind the state, if any. */
+  error: IpcError | null;
+  /** Leases that could not be reopened (transaction in flight, auto-commit off): `lease_reopen`. */
+  leasesBroken: Uuid[];
+  /** Idle auto-commit leases reopened under the same id; their SET / temp tables / search_path are gone. */
+  leasesReopened: Uuid[];
+}
+
 // ---------------------------------------------------------------------------------------------
 // Object tree
 // ---------------------------------------------------------------------------------------------
@@ -283,7 +324,8 @@ export type ObjectKind =
   | 'keyPrefix'
   | 'synonym'
   | 'package'
-  | 'type';
+  | 'type'
+  | 'dictionary';
 
 /** Stable keys used as `name` of `folder` path segments; the UI translates them. */
 export const FOLDER_KEYS = [
@@ -302,6 +344,9 @@ export const FOLDER_KEYS = [
   'synonyms',
   'packages',
   'types',
+  // `dictionaries` (ClickHouse) and `aggregates` (CQL) exist in Rust (`folder::DICTIONARIES`,
+  // `folder::AGGREGATES`); they join this list together with their `explorer:folder.*` strings
+  // (src/locales/locales.test.ts requires every key to be translated), which belong to the UI.
 ] as const;
 export type FolderKey = (typeof FOLDER_KEYS)[number];
 
@@ -544,9 +589,24 @@ export interface AppSettings {
   maxLobBytes: number;
   planMisestimateFactor: number;
   closeToTray: CloseBehavior;
+  /** Empty = the theme's default monospace font; at most 100 characters. */
+  editorFontFamily: string;
+  /** Pixels, 8..=32. */
+  editorFontSize: number;
+  /** Reconnect a lost session automatically. */
+  autoReconnect: boolean;
+  /** Seconds between lease keepalives / health checks; 0 = off, otherwise 30..=3600. */
+  keepaliveSecs: number;
+  /** Record explained plans in the plan history. */
+  planHistoryEnabled: boolean;
+  /** 10..=5000. */
+  planHistoryMaxPerConnection: number;
+  /** Language of OS notifications. */
+  language: UiLanguage;
 }
 
 export type CloseBehavior = 'auto' | 'always' | 'never';
+export type UiLanguage = 'system' | 'vi' | 'en';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   logLevel: 'info',
@@ -560,4 +620,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxLobBytes: 16 * 1024 * 1024,
   planMisestimateFactor: 10,
   closeToTray: 'auto',
+  editorFontFamily: '',
+  editorFontSize: 13,
+  autoReconnect: true,
+  keepaliveSecs: 240,
+  planHistoryEnabled: true,
+  planHistoryMaxPerConnection: 200,
+  language: 'system',
 };

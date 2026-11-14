@@ -53,6 +53,28 @@
   "ImportPreview": {
     "columns": ["id", "name"],
     "detectedDelimiter": ";",
+    "dialectGuessed": false,
+    "estimatedRows": 1000,
+    "rows": [
+      [
+        {
+          "t": "text",
+          "v": "1"
+        },
+        {
+          "t": "text",
+          "v": "a"
+        }
+      ]
+    ],
+    "sheets": [],
+    "statementsPreview": [],
+    "suggestedKinds": ["int", "text"]
+  },
+  "ImportPreview#guessed": {
+    "columns": ["id", "name"],
+    "detectedDelimiter": ";",
+    "dialectGuessed": true,
     "estimatedRows": 1000,
     "rows": [
       [
@@ -90,6 +112,7 @@
       "encoding": "utf8",
       "header": true,
       "kind": "csv",
+      "nullText": null,
       "quote": "\""
     },
     "mapping": [
@@ -124,6 +147,84 @@
           }
         ]
       }
+    }
+  },
+  "ImportSpec#csvNullText": {
+    "connectionId": "00000000-0000-0000-0000-000000000007",
+    "file": "/tmp/in.csv",
+    "format": {
+      "delimiter": ";",
+      "encoding": "utf8",
+      "header": true,
+      "kind": "csv",
+      "nullText": "\\N",
+      "quote": "\""
+    },
+    "mapping": [
+      {
+        "source": "#1",
+        "target": "id",
+        "transform": "trim"
+      }
+    ],
+    "maxErrors": 10,
+    "mode": {
+      "kind": "batches",
+      "rows": 500
+    },
+    "onConflict": "skip",
+    "target": {
+      "columns": [
+        {
+          "name": "id",
+          "nullable": false,
+          "primaryKey": true,
+          "typeName": "bigint"
+        }
+      ],
+      "kind": "new",
+      "name": "t",
+      "parent": {
+        "segments": [
+          {
+            "kind": "database",
+            "name": "app"
+          }
+        ]
+      }
+    }
+  },
+  "ImportSpec#keys": {
+    "connectionId": "00000000-0000-0000-0000-000000000007",
+    "file": "/tmp/in.csv",
+    "format": {
+      "kind": "json",
+      "layout": "ndjson"
+    },
+    "mapping": [
+      {
+        "source": "#1",
+        "target": "id",
+        "transform": "trim"
+      }
+    ],
+    "maxErrors": 10,
+    "mode": {
+      "kind": "batches",
+      "rows": 500
+    },
+    "onConflict": "skip",
+    "target": {
+      "database": {
+        "segments": [
+          {
+            "kind": "database",
+            "name": "0"
+          }
+        ]
+      },
+      "kind": "keys",
+      "mode": "ifAbsent"
     }
   },
   "ObjectMeta": {

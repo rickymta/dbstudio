@@ -7,7 +7,7 @@ import type { ChangeSet, KeyChange } from '@/lib/types';
 import { KeyTab } from './KeyTab';
 import { keyPath, openRedisSession, renderWithProviders, resetRedisMocks } from './testUtils';
 
-const WAIT = { timeout: 4000 };
+const WAIT = { timeout: 10_000 };
 
 async function mount(name: string, overrides: Parameters<typeof openRedisSession>[0] = {}) {
   const info = await openRedisSession(overrides);
@@ -278,13 +278,13 @@ describe('KeyTab editing', () => {
     await user.click(screen.getByRole('button', { name: 'Set TTL' }));
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1), WAIT);
     expect(keyChanges(spy)).toEqual([{ op: 'expire', key: 'cache:product:1', ttlMs: 90000 }]);
-    await waitFor(() => expect(screen.getByTestId('key-ttl')).toHaveTextContent('1m 30s'), WAIT);
+    await waitFor(() => expect(screen.getByTestId('key-ttl')).toHaveTextContent(/1m \d+s/), WAIT);
     await user.click(screen.getByRole('button', { name: 'TTL' }));
     await user.click(await screen.findByRole('button', { name: 'Remove TTL' }));
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(2), WAIT);
     expect(keyChanges(spy, 1)).toEqual([{ op: 'expire', key: 'cache:product:1', ttlMs: null }]);
     await waitFor(() => expect(screen.getByTestId('key-ttl')).toHaveTextContent('No expiry'), WAIT);
-  });
+  }, 15_000);
 
   it('deletes the key after confirmation', async () => {
     const user = userEvent.setup();

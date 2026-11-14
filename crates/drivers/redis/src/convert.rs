@@ -20,7 +20,7 @@ pub fn value_bytes(v: &Value) -> Result<Vec<u8>> {
         Value::Float(f) => f.to_string().into_bytes(),
         Value::Bool(b) => (if *b { "1" } else { "0" }).as_bytes().to_vec(),
         other => {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "value cannot be stored in Redis: {other:?}"
             )));
         }

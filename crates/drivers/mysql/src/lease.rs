@@ -71,15 +71,26 @@ pub(crate) async fn open(session: &MySqlSession, opts: LeaseOptions) -> Result<B
         .map_err(map_query_error)?
         .flatten();
     let conn_id = conn.id();
+    // The lexer dialect follows this very connection's sql_mode (`ANSI_QUOTES`, backslashes).
+    let sql_mode: String = conn
+        .query_first::<String, _>("SELECT @@SESSION.sql_mode")
+        .await
+        .map_err(map_query_error)?
+        .unwrap_or_default();
+    let ansi = crate::sql_mode_has_ansi_quotes(&sql_mode);
+    let dialect = ScriptDialect::MySql {
+        mariadb: inner.is_mariadb,
+        backslash_escapes: !crate::sql_mode_no_backslash_escapes(&sql_mode),
+        ansi_quotes: ansi,
+    };
     let backend = MyBackend {
         killer: Arc::new(Killer {
             opts: inner.opts.clone(),
             conn_id,
         }),
-        dialect: ScriptDialect::MySql {
-            mariadb: inner.is_mariadb,
-            backslash_escapes: inner.backslash_escapes,
-        },
+        dialect,
+        is_tidb: inner.is_tidb,
+        dialect_cell: Arc::new(Mutex::new(dialect)),
         conn: Some(conn),
         auto_commit: opts.auto_commit,
         in_tx: false,
@@ -220,6 +231,7 @@ pub(crate) fn ambiguity(script: &str, dialect: ScriptDialect) -> Option<String> 
     let ScriptDialect::MySql {
         mariadb,
         backslash_escapes,
+        ansi_quotes,
     } = dialect
     else {
         return None;
@@ -227,6 +239,7 @@ pub(crate) fn ambiguity(script: &str, dialect: ScriptDialect) -> Option<String> 
     let other = ScriptDialect::MySql {
         mariadb,
         backslash_escapes: !backslash_escapes,
+        ansi_quotes,
     };
     (dbstudio_sql::split(dialect, script) != dbstudio_sql::split(other, script)).then(|| {
         "the statement boundaries depend on the NO_BACKSLASH_ESCAPES sql_mode (a quote that \
@@ -847,6 +860,11 @@ struct Parked {
 struct MyBackend {
     killer: Arc<Killer>,
     dialect: ScriptDialect,
+    /// The server is TiDB (no read-only transactions, `FORMAT='row'` plans).
+    is_tidb: bool,
+    /// This connection's dialect, published for `Lease::script_dialect` (guard and explain
+    /// checks must split like this lease does, whatever other leases set).
+    dialect_cell: Arc<Mutex<ScriptDialect>>,
     /// `None` while a parked task owns it, or after the connection was lost / closed.
     conn: Option<Conn>,
     auto_commit: bool,
@@ -861,7 +879,19 @@ fn lost() -> Error {
     Error::Connection("the connection is closed".into())
 }
 
-fn isolation_sql(level: IsolationLevel) -> Result<&'static str> {
+fn isolation_sql(level: IsolationLevel, tidb: bool) -> Result<&'static str> {
+    // TiDB only knows READ COMMITTED and REPEATABLE READ (it rejects the others unless
+    // `tidb_skip_isolation_level_check` is on, which would silently run another level).
+    if tidb
+        && matches!(
+            level,
+            IsolationLevel::ReadUncommitted | IsolationLevel::Serializable
+        )
+    {
+        return Err(Error::Unsupported(
+            "read uncommitted / serializable isolation on TiDB".into(),
+        ));
+    }
     Ok(match level {
         IsolationLevel::ReadUncommitted => "READ UNCOMMITTED",
         IsolationLevel::ReadCommitted => "READ COMMITTED",
@@ -875,7 +905,40 @@ fn isolation_sql(level: IsolationLevel) -> Result<&'static str> {
     })
 }
 
+/// True for a `SET ... sql_mode ...` statement.
+fn mentions_sql_mode(stmt: &str) -> bool {
+    let t = stmt.trim_start();
+    t.len() >= 3
+        && t[..3].eq_ignore_ascii_case("SET")
+        && stmt.to_ascii_lowercase().contains("sql_mode")
+}
+
 impl MyBackend {
+    /// Re-read this connection's `sql_mode` and update the lexer dialect. A failed read keeps
+    /// the current dialect.
+    async fn refresh_dialect(&mut self) {
+        let Some(conn) = self.conn.as_mut() else {
+            return;
+        };
+        let Ok(Some(mode)) = conn
+            .query_first::<String, _>("SELECT @@SESSION.sql_mode")
+            .await
+        else {
+            return;
+        };
+        let ansi = crate::sql_mode_has_ansi_quotes(&mode);
+        if let ScriptDialect::MySql {
+            backslash_escapes,
+            ansi_quotes,
+            ..
+        } = &mut self.dialect
+        {
+            *backslash_escapes = !crate::sql_mode_no_backslash_escapes(&mode);
+            *ansi_quotes = ansi;
+        }
+        *self.dialect_cell.lock().unwrap_or_else(|e| e.into_inner()) = self.dialect;
+    }
+
     fn conn(&mut self) -> Result<&mut Conn> {
         self.conn.as_mut().ok_or_else(lost)
     }
@@ -1293,7 +1356,8 @@ impl LeaseBackend for MyBackend {
         let result = match self.conn.as_mut() {
             None => Err(lost()),
             Some(conn) => {
-                let work = crate::explain::explain_on_lease(conn, &req, mariadb, in_tx);
+                let work =
+                    crate::explain::explain_on_lease(conn, &req, mariadb, self.is_tidb, in_tx);
                 tokio::pin!(work);
                 let sleep =
                     tokio::time::sleep(timeout.unwrap_or(Duration::from_secs(86_400 * 365)));
@@ -1362,13 +1426,21 @@ impl LeaseBackend for MyBackend {
         self.drop_pending().await;
         match op {
             TxControl::Begin => {
+                // TiDB cannot start read-only transactions (noop implementation): refuse rather
+                // than silently run a read-write one.
+                if self.is_tidb && opts.read_only {
+                    return Err(Error::Unsupported("read_only_transaction".into()));
+                }
                 if let Some(level) = opts.isolation {
-                    let sql = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_sql(level)?);
+                    let sql = format!(
+                        "SET TRANSACTION ISOLATION LEVEL {}",
+                        isolation_sql(level, self.is_tidb)?
+                    );
                     self.simple(&sql).await?;
                 }
                 // A read-only profile never gets a read-write transaction.
                 let sql = if opts.read_only || self.read_only {
-                    "START TRANSACTION READ ONLY"
+                    crate::read_tx_sql(self.is_tidb)
                 } else {
                     "START TRANSACTION"
                 };
@@ -1430,9 +1502,12 @@ impl LeaseBackend for MyBackend {
         if self.conn.is_none() {
             return Ok(None);
         }
-        let switched = split_statements(executed_text, self.dialect)
-            .iter()
-            .any(|p| starts_with_use(&p.text));
+        let pieces = split_statements(executed_text, self.dialect);
+        // A script that touches `sql_mode` may change how the next text is split.
+        if pieces.iter().any(|p| mentions_sql_mode(&p.text)) {
+            self.refresh_dialect().await;
+        }
+        let switched = pieces.iter().any(|p| starts_with_use(&p.text));
         if !switched {
             return Ok(None);
         }
@@ -1473,6 +1548,10 @@ impl LeaseBackend for MyBackend {
         (self.parked.is_some() && self.auto_commit).then_some(AUTO_COMMIT_PENDING_TTL)
     }
 
+    fn dialect_cell(&self) -> Option<Arc<Mutex<ScriptDialect>>> {
+        Some(self.dialect_cell.clone())
+    }
+
     fn canceller(&self) -> Arc<dyn Canceller> {
         Arc::new(MyCanceller {
             killer: self.killer.clone(),
@@ -1485,10 +1564,7 @@ impl LeaseBackend for MyBackend {
 mod tests {
     use super::*;
 
-    const MYSQL: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
+    const MYSQL: ScriptDialect = ScriptDialect::mysql(false, true);
 
     fn texts(script: &str) -> Vec<String> {
         split_statements(script, MYSQL)
@@ -1536,16 +1612,7 @@ mod tests {
     fn ambiguous_scripts_are_detected() {
         let attack = "SELECT 'a\\'; DROP TABLE t; -- '";
         assert!(ambiguity(attack, MYSQL).is_some());
-        assert!(
-            ambiguity(
-                attack,
-                ScriptDialect::MySql {
-                    mariadb: false,
-                    backslash_escapes: false
-                }
-            )
-            .is_some()
-        );
+        assert!(ambiguity(attack, ScriptDialect::mysql(false, false)).is_some());
         assert!(ambiguity("SELECT 1; SELECT 'it''s'", MYSQL).is_none());
         assert!(ambiguity("SELECT 'a\\nb'", MYSQL).is_none());
         assert!(ambiguity("SELECT 1", ScriptDialect::Postgres).is_none());

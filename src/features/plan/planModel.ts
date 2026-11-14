@@ -177,6 +177,10 @@ export const FORMAT_LANGUAGE: Record<PlanFormat, 'json' | 'xml' | 'text'> = {
   msSqlShowplanXml: 'xml',
   oraclePlanRows: 'json',
   mongoExplain: 'json',
+  clickHouseJson: 'json',
+  cockroachText: 'text',
+  tiDbRows: 'json',
+  cqlTrace: 'json',
 };
 
 // ---------------------------------------------------------------------------------------------

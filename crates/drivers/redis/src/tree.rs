@@ -152,7 +152,7 @@ impl Shared {
         let mut cursor = match req.cursor.as_deref() {
             Some(c) => c
                 .parse::<u64>()
-                .map_err(|_| Error::Other(format!("invalid cursor `{c}`")))?,
+                .map_err(|_| Error::Invalid(format!("invalid cursor `{c}`")))?,
             None => 0,
         };
         let mut prefixes: Vec<Vec<u8>> = Vec::new();

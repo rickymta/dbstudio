@@ -717,6 +717,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Client<S> {
         crate::CancelHandle(self.connection.context().attention())
     }
 
+    /// DBStudio patch: cap the bytes kept of each PLP value (`varchar(max)`, `nvarchar(max)`,
+    /// `varbinary(max)`, `xml`) read from now on; `None` removes the cap. Longer values are cut,
+    /// the rest is skipped on the wire, and a [`QueryItem::Truncated`](crate::QueryItem) precedes
+    /// the row. Reset it to `None` before running statements whose values must stay whole.
+    pub fn set_plp_limit(&mut self, limit: Option<usize>) {
+        self.connection.context_mut().set_plp_limit(limit);
+    }
+
     /// Closes this database connection explicitly.
     pub async fn close(self) -> crate::Result<()> {
         self.connection.close().await

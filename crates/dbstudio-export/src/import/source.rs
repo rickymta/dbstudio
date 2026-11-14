@@ -48,9 +48,14 @@ pub(crate) fn open(
             delimiter,
             quote,
             header,
+            null_text,
             ..
-        } => Ok(Box::new(CsvSource::open(
-            path, *delimiter, *quote, *header,
+        } => Ok(Box::new(CsvSource::open_with_null(
+            path,
+            *delimiter,
+            *quote,
+            *header,
+            null_text.clone(),
         )?)),
         ImportFormat::Xlsx { sheet, header } => xlsx_open(path, sheet, *header),
         ImportFormat::Json { layout } => Ok(Box::new(JsonSource::open(
@@ -58,7 +63,7 @@ pub(crate) fn open(
             *layout,
             preview.then_some(PREVIEW_KEY_SCAN),
         )?)),
-        ImportFormat::Sql { .. } => Err(Error::Other("a SQL script has no rows".into())),
+        ImportFormat::Sql { .. } => Err(Error::Invalid("a SQL script has no rows".into())),
     }
 }
 
@@ -70,7 +75,7 @@ fn ascii_byte(c: char, what: &str) -> Result<u8> {
     u8::try_from(c as u32)
         .ok()
         .filter(u8::is_ascii)
-        .ok_or_else(|| Error::Other(format!("the CSV {what} must be an ASCII character")))
+        .ok_or_else(|| Error::Invalid(format!("the CSV {what} must be an ASCII character")))
 }
 
 /// Strip a UTF-8 byte order mark at the start of `r`.
@@ -217,10 +222,27 @@ pub(crate) struct CsvSource {
     parser: CsvParser<BufReader<File>>,
     columns: Vec<String>,
     pending: Option<SourceRow>,
+    /// `None`: an empty unquoted field is NULL. `Some(t)`: an unquoted field equal to `t` is
+    /// NULL and an empty field is the empty string.
+    null_text: Option<String>,
 }
 
 impl CsvSource {
+    #[cfg(test)]
     pub fn open(path: &Path, delimiter: char, quote: char, header: bool) -> Result<CsvSource> {
+        Self::open_with_null(path, delimiter, quote, header, None)
+    }
+
+    pub fn open_with_null(
+        path: &Path,
+        delimiter: char,
+        quote: char,
+        header: bool,
+        null_text: Option<String>,
+    ) -> Result<CsvSource> {
+        if let Some(t) = &null_text {
+            crate::check_null_text(t, delimiter, quote)?;
+        }
         let delim = ascii_byte(delimiter, "delimiter")?;
         let quote = ascii_byte(quote, "quote")?;
         let file = File::open(path).map_err(|e| io_err(path, e))?;
@@ -230,6 +252,7 @@ impl CsvSource {
             parser: CsvParser::new(buffered, delim, quote),
             columns: Vec::new(),
             pending: None,
+            null_text,
         };
         if let Some(first) = src.read_record()? {
             if header {
@@ -255,12 +278,18 @@ impl CsvSource {
             Ok(None) => Ok(None),
             Ok(Some((line, fields))) => Ok(Some(SourceRow {
                 line,
-                // An empty field without quotes is NULL, `""` is the empty string: what the
-                // CSV export writes.
+                // Default: an empty field without quotes is NULL, `""` is the empty string (what
+                // the CSV export writes). With a NULL text: only an unquoted field equal to it
+                // is NULL; quoted fields are always strings.
                 cells: fields
                     .into_iter()
                     .map(|(text, quoted)| {
-                        if text.is_empty() && !quoted {
+                        let null = !quoted
+                            && match &self.null_text {
+                                None => text.is_empty(),
+                                Some(t) => text == *t,
+                            };
+                        if null {
                             EditValue::Value(Value::Null)
                         } else {
                             EditValue::Text(text)
@@ -316,7 +345,7 @@ impl XlsxMemSource {
             wb.sheet_names()
                 .first()
                 .cloned()
-                .ok_or_else(|| Error::Other("the workbook has no sheets".into()))?
+                .ok_or_else(|| Error::Invalid("the workbook has no sheets".into()))?
         } else {
             sheet.to_string()
         };
@@ -713,7 +742,7 @@ impl<R: BufRead> ArrayReader<R> {
                     }
                     Some(b'[') => break,
                     _ => {
-                        return Err(Error::Other(
+                        return Err(Error::Invalid(
                             "the JSON file must hold an array of objects".into(),
                         ));
                     }
@@ -725,7 +754,7 @@ impl<R: BufRead> ArrayReader<R> {
         let (mut depth, mut in_str, mut escaped) = (0i32, false, false);
         loop {
             let Some(b) = self.next_byte().map_err(io)? else {
-                return Err(Error::Other("the JSON array is not closed".into()));
+                return Err(Error::Invalid("the JSON array is not closed".into()));
             };
             if in_str {
                 out.push(b);
@@ -761,7 +790,7 @@ impl<R: BufRead> ArrayReader<R> {
                 }
                 b',' if depth == 0 => {
                     return non_blank(out)
-                        .ok_or_else(|| Error::Other("empty element in the JSON array".into()))
+                        .ok_or_else(|| Error::Invalid("empty element in the JSON array".into()))
                         .map(Some);
                 }
                 _ => out.push(b),
@@ -874,6 +903,29 @@ impl JsonSource {
     }
 }
 
+/// Whole records (the text of each element) of a JSON array / NDJSON file, for imports that
+/// keep the record intact instead of splitting it into columns.
+pub(crate) struct JsonRecords {
+    layout: JsonLayout,
+    reader: JsonReader,
+    line: u64,
+}
+
+impl JsonRecords {
+    pub fn open(path: &Path, layout: JsonLayout) -> Result<JsonRecords> {
+        Ok(JsonRecords {
+            layout,
+            reader: JsonSource::reader(path, layout)?,
+            line: 0,
+        })
+    }
+
+    /// `(line, text)` of the next record; `None` at the end.
+    pub fn next(&mut self) -> Result<Option<(u64, String)>> {
+        JsonSource::read_text(&mut self.reader, self.layout, &mut self.line)
+    }
+}
+
 impl RowSource for JsonSource {
     fn columns(&self) -> &[String] {
         &self.columns
@@ -885,7 +937,7 @@ impl RowSource for JsonSource {
             return Ok(None);
         };
         let obj: OrderedObject = serde_json::from_str(&text)
-            .map_err(|e| Error::Other(format!("record {line}: not a JSON object ({e})")))?;
+            .map_err(|e| Error::Invalid(format!("record {line}: not a JSON object ({e})")))?;
         let mut cells = vec![EditValue::Value(Value::Null); self.columns.len()];
         for (k, v) in &obj.0 {
             if let Some(&i) = self.index.get(k) {
@@ -967,6 +1019,43 @@ mod tests {
             s.next_row().unwrap().unwrap().cells,
             [text(""), null(), null()]
         );
+    }
+
+    #[test]
+    fn csv_null_text_round_trips_with_the_writer() {
+        use crate::CsvOptions;
+        for nt in ["NULL", "\\N"] {
+            let o = CsvOptions {
+                null_text: nt.into(),
+                ..CsvOptions::default()
+            };
+            let mut buf = String::new();
+            // NULL, empty string, the NULL text itself as a string, plain text.
+            for (i, v) in [None, Some(""), Some(nt), Some("x")]
+                .into_iter()
+                .enumerate()
+            {
+                if i > 0 {
+                    buf.push(',');
+                }
+                crate::writers::push_field_for_test(&mut buf, v, &o);
+            }
+            buf.push('\n');
+            let dir = tempfile::tempdir().unwrap();
+            let p = write(&dir, "n.csv", format!("a,b,c,d\n{buf}").as_bytes());
+            let mut s =
+                CsvSource::open_with_null(&p, ',', '"', true, Some(nt.to_string())).unwrap();
+            assert_eq!(
+                s.next_row().unwrap().unwrap().cells,
+                [null(), text(""), text(nt), text("x")],
+                "null text {nt}"
+            );
+        }
+        // Without a NULL text the old rule holds: empty unquoted = NULL.
+        let dir = tempfile::tempdir().unwrap();
+        let p = write(&dir, "o.csv", b"a,b\nNULL,\n");
+        let mut s = CsvSource::open(&p, ',', '"', true).unwrap();
+        assert_eq!(s.next_row().unwrap().unwrap().cells, [text("NULL"), null()]);
     }
 
     #[test]

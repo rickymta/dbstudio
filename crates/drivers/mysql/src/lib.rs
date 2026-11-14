@@ -23,6 +23,13 @@
 //! * `raw_where` is user-trusted SQL, but must be a single expression: a lexer rejects `;` and
 //!   unbalanced parentheses and the server confirms the statement with `COM_STMT_PREPARE`.
 //!
+//! * TiDB (flavour detected from `VERSION()`): `SET SESSION TRANSACTION READ ONLY` and
+//!   `START TRANSACTION READ ONLY` are rejected by the server, so there is NO server-side
+//!   read-only layer. A read-only profile is enforced by the application's statement guard
+//!   only; `server_info().extra["readOnlyEnforcement"] == "application"` (plus
+//!   `readOnlyNote`) tells the UI to show that, and the capability `read_only_session` is
+//!   false. A user-requested read-only transaction is refused (`Unsupported`).
+//!
 //! # Tested versions and version differences
 //!
 //! The integration suite runs on MySQL 8.4, MySQL 5.7.44, MariaDB 10.4.34 and MariaDB 10.6.
@@ -69,6 +76,22 @@ pub(crate) fn detect_mariadb(version: &str) -> bool {
     version.to_ascii_lowercase().contains("mariadb")
 }
 
+/// True when a `VERSION()` string identifies TiDB (`8.0.11-TiDB-v8.5.7`).
+pub(crate) fn detect_tidb(version: &str) -> bool {
+    version.to_ascii_lowercase().contains("tidb")
+}
+
+/// Statement that opens a read-only transaction. TiDB rejects `START TRANSACTION READ ONLY`
+/// (noop implementation), so a plain transaction is used there (the app-level guard and the
+/// `read_only_session = false` capability cover read-only profiles).
+pub(crate) fn read_tx_sql(is_tidb: bool) -> &'static str {
+    if is_tidb {
+        "START TRANSACTION"
+    } else {
+        "START TRANSACTION READ ONLY"
+    }
+}
+
 /// Strip the `5.5.5-` replication-compat prefix MariaDB prepends to its version string.
 pub(crate) fn normalize_version(raw: &str) -> String {
     match raw.strip_prefix("5.5.5-") {
@@ -93,8 +116,10 @@ async fn try_connect(
     secret: Option<&Secret>,
     ssl: Option<mysql_async::SslOpts>,
     tunables: &connect::Tunables,
+    server_read_only: bool,
 ) -> std::result::Result<(Pool, mysql_async::Opts, Conn), TryError> {
-    let opts = connect::build_opts(cfg, secret, ssl, tunables).map_err(TryError::Core)?;
+    let opts = connect::build_opts(cfg, secret, ssl, tunables, server_read_only)
+        .map_err(TryError::Core)?;
     let pool = Pool::new(opts.clone());
     let timeout = connect::connect_timeout(cfg);
     match tokio::time::timeout(timeout, pool.get_conn()).await {
@@ -130,72 +155,171 @@ impl Driver for MySqlDriver {
         config: &ConnectionConfig,
         secret: Option<&Secret>,
     ) -> Result<Box<dyn Session>> {
-        connect::ensure_crypto_provider();
-        let tunables = connect::Tunables::from_config(config)?;
-        let ssl = connect::ssl_opts(&config.tls)?;
-        let secret_text = secret.map(|s| s.expose().to_string());
+        connect_flavored(config, secret).await
+    }
+}
 
-        let mut attempt = try_connect(config, secret, ssl, &tunables).await;
-        // `Prefer`: a server without TLS (or a failed handshake) falls back to plain text.
-        if config.tls.mode == TlsMode::Prefer {
-            if let Err(TryError::My(e)) = &attempt {
-                if error::is_tls_unavailable(e) {
-                    attempt = try_connect(config, secret, None, &tunables).await;
-                }
+/// True when `sql_mode` makes `"x"` an identifier (`ANSI_QUOTES`, or the combined `ANSI` mode).
+pub(crate) fn sql_mode_has_ansi_quotes(sql_mode: &str) -> bool {
+    sql_mode
+        .split(',')
+        .map(|m| m.trim().to_ascii_uppercase())
+        .any(|m| m == "ANSI_QUOTES" || m == "ANSI")
+}
+
+/// True when `sql_mode` turns off backslash escapes in string literals.
+pub(crate) fn sql_mode_no_backslash_escapes(sql_mode: &str) -> bool {
+    sql_mode
+        .split(',')
+        .any(|m| m.trim().eq_ignore_ascii_case("NO_BACKSLASH_ESCAPES"))
+}
+
+/// Shared by the MySQL and TiDB drivers: the flavour is read from `VERSION()` after connecting,
+/// whatever kind the profile names.
+async fn connect_flavored(
+    config: &ConnectionConfig,
+    secret: Option<&Secret>,
+) -> Result<Box<dyn Session>> {
+    connect::ensure_crypto_provider();
+    let tunables = connect::Tunables::from_config(config)?;
+    let ssl = connect::ssl_opts(&config.tls)?;
+    let secret_text = secret.map(|s| s.expose().to_string());
+
+    // Server-side `SET SESSION TRANSACTION READ ONLY` is a setup command of read-only profiles;
+    // TiDB rejects it, which fails the connection: retry once without it.
+    let mut server_read_only = true;
+    let mut attempt = try_connect(config, secret, ssl.clone(), &tunables, server_read_only).await;
+    if config.read_only {
+        if let Err(TryError::My(e)) = &attempt {
+            if error::is_tidb_noop_error(e) {
+                server_read_only = false;
+                attempt = try_connect(config, secret, ssl.clone(), &tunables, false).await;
             }
         }
-        let (pool, opts, mut conn) = match attempt {
-            Ok(v) => v,
-            Err(TryError::Core(e)) => return Err(e),
-            Err(TryError::My(e)) => {
-                let err = error::map_connect_error(e, secret_text.as_deref());
-                return Err(match err {
-                    Error::Tls(m) if m.contains("not valid for name") => Error::Tls(format!(
-                        "{m}. The server certificate does not list host `{}`. Connect with a host \
-                         name or address that appears in the certificate, or re-issue it with \
-                         that name. Note: with this driver verify-ca also checks the host name \
-                         (the TLS library cannot skip it).",
-                        config.host
-                    )),
-                    other => other,
-                });
-            }
-        };
-
-        // Identify the product from the version string.
-        let version: Option<String> =
-            mysql_async::prelude::Queryable::query_first(&mut conn, "SELECT VERSION()")
-                .await
-                .map_err(|e| error::map_connect_error(e, secret_text.as_deref()))?;
-        // Cached once: whether `\` escapes inside string literals (script lexer dialect).
-        let sql_mode: Option<String> =
-            mysql_async::prelude::Queryable::query_first(&mut conn, "SELECT @@sql_mode")
-                .await
-                .map_err(|e| error::map_connect_error(e, secret_text.as_deref()))?;
-        let backslash_escapes = !sql_mode
-            .unwrap_or_default()
-            .to_ascii_uppercase()
-            .contains("NO_BACKSLASH_ESCAPES");
-        drop(conn);
-        let is_mariadb = detect_mariadb(&version.unwrap_or_default());
-        let inner = session::Inner::new(
-            pool,
-            opts,
-            connect::connect_timeout(config),
-            secret_text,
-            is_mariadb,
-            backslash_escapes,
-            config.database.clone().filter(|d| !d.is_empty()),
-            tunables.search_timeout_ms,
-            tunables.debug_search_sleep_ms,
-        );
-        Ok(Box::new(MySqlSession::new(inner)))
     }
+    // `Prefer`: a server without TLS (or a failed handshake) falls back to plain text.
+    if config.tls.mode == TlsMode::Prefer {
+        if let Err(TryError::My(e)) = &attempt {
+            if error::is_tls_unavailable(e) {
+                attempt = try_connect(config, secret, None, &tunables, server_read_only).await;
+            }
+        }
+    }
+    let (pool, opts, mut conn) = match attempt {
+        Ok(v) => v,
+        Err(TryError::Core(e)) => return Err(e),
+        Err(TryError::My(e)) => {
+            let err = error::map_connect_error(e, secret_text.as_deref());
+            return Err(match err {
+                Error::Tls(m) if m.contains("not valid for name") => Error::Tls(format!(
+                    "{m}. The server certificate does not list host `{}`. Connect with a host \
+                     name or address that appears in the certificate, or re-issue it with \
+                     that name. Note: with this driver verify-ca also checks the host name \
+                     (the TLS library cannot skip it).",
+                    config.tls.server_name.as_deref().unwrap_or(&config.host)
+                )),
+                other => other,
+            });
+        }
+    };
+
+    // Identify the product from the version string.
+    let version: Option<String> =
+        mysql_async::prelude::Queryable::query_first(&mut conn, "SELECT VERSION()")
+            .await
+            .map_err(|e| error::map_connect_error(e, secret_text.as_deref()))?;
+    // Cached once: whether `\` escapes inside string literals and `"x"` is an identifier (script
+    // lexer dialect).
+    let sql_mode: Option<String> =
+        mysql_async::prelude::Queryable::query_first(&mut conn, "SELECT @@sql_mode")
+            .await
+            .map_err(|e| error::map_connect_error(e, secret_text.as_deref()))?;
+    let sql_mode = sql_mode.unwrap_or_default();
+    let backslash_escapes = !sql_mode_no_backslash_escapes(&sql_mode);
+    let ansi_quotes = sql_mode_has_ansi_quotes(&sql_mode);
+    drop(conn);
+    let version = version.unwrap_or_default();
+    let is_mariadb = detect_mariadb(&version);
+    let is_tidb = detect_tidb(&version);
+    let inner = session::Inner::new(
+        pool,
+        opts,
+        connect::connect_timeout(config),
+        secret_text,
+        is_mariadb,
+        is_tidb,
+        backslash_escapes,
+        ansi_quotes,
+        config.database.clone().filter(|d| !d.is_empty()),
+        tunables.search_timeout_ms,
+        tunables.debug_search_sleep_ms,
+    );
+    Ok(Box::new(MySqlSession::new(inner)))
+}
+
+/// Driver of the TiDB flavour (MySQL protocol): the shared MySQL implementation; the session
+/// detects TiDB from `VERSION()` and reports its own capabilities.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TiDbDriver;
+
+impl TiDbDriver {
+    /// Create the driver.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Driver for TiDbDriver {
+    fn descriptor(&self) -> DriverDescriptor {
+        DriverDescriptor::new(
+            DbKind::TiDb,
+            Capabilities::planned_for(DbKind::TiDb),
+            DriverStatus::Available,
+        )
+    }
+
+    async fn connect(
+        &self,
+        config: &ConnectionConfig,
+        secret: Option<&Secret>,
+    ) -> Result<Box<dyn Session>> {
+        connect_flavored(config, secret).await
+    }
+}
+
+/// Register the flavour drivers (TiDB) next to [`MySqlDriver`].
+pub fn register_flavors(registry: &mut dbstudio_core::DriverRegistry) {
+    registry.register(std::sync::Arc::new(TiDbDriver::new()));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tidb_registers() {
+        let mut registry = dbstudio_core::DriverRegistry::new();
+        register_flavors(&mut registry);
+        let driver = registry.get(DbKind::TiDb).expect("registered");
+        assert_eq!(driver.descriptor().default_port, 4000);
+        assert_eq!(driver.descriptor().status, DriverStatus::Available);
+    }
+
+    #[test]
+    fn tidb_detection_and_sql_mode_flags() {
+        assert!(detect_tidb("8.0.11-TiDB-v8.5.7"));
+        assert!(!detect_tidb("8.4.0"));
+        assert!(sql_mode_has_ansi_quotes("STRICT_TRANS_TABLES,ANSI_QUOTES"));
+        assert!(sql_mode_has_ansi_quotes("ansi"));
+        assert!(!sql_mode_has_ansi_quotes(
+            "STRICT_TRANS_TABLES,ONLY_FULL_GROUP_BY"
+        ));
+        assert!(sql_mode_no_backslash_escapes("A,no_backslash_escapes"));
+        assert!(!sql_mode_no_backslash_escapes("ANSI_QUOTES"));
+        assert_eq!(read_tx_sql(true), "START TRANSACTION");
+        assert_eq!(read_tx_sql(false), "START TRANSACTION READ ONLY");
+    }
 
     #[test]
     fn descriptor_is_available() {

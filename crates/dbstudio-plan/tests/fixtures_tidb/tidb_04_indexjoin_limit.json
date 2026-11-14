@@ -1,0 +1,58 @@
+[
+ {
+  "id": "TopN_14",
+  "estRows": "10.00",
+  "task": "root",
+  "access object": "",
+  "operator info": "tidbfx.orders.amount, offset:0, count:10"
+ },
+ {
+  "id": "└─IndexHashJoin_28",
+  "estRows": "400.00",
+  "task": "root",
+  "access object": "",
+  "operator info": "inner join, inner:IndexLookUp_25, outer key:tidbfx.customers.id, inner key:tidbfx.orders.customer_id, equal cond:eq(tidbfx.customers.id, tidbfx.orders.customer_id)"
+ },
+ {
+  "id": "  ├─TableReader_52(Build)",
+  "estRows": "4.00",
+  "task": "root",
+  "access object": "",
+  "operator info": "data:TableRangeScan_51"
+ },
+ {
+  "id": "  │ └─TableRangeScan_51",
+  "estRows": "4.00",
+  "task": "cop[tikv]",
+  "access object": "table:c",
+  "operator info": "range:[-inf,5), keep order:false"
+ },
+ {
+  "id": "  └─IndexLookUp_25(Probe)",
+  "estRows": "400.00",
+  "task": "root",
+  "access object": "",
+  "operator info": ""
+ },
+ {
+  "id": "    ├─Selection_24(Build)",
+  "estRows": "400.00",
+  "task": "cop[tikv]",
+  "access object": "",
+  "operator info": "lt(tidbfx.orders.customer_id, 5), not(isnull(tidbfx.orders.customer_id))"
+ },
+ {
+  "id": "    │ └─IndexRangeScan_22",
+  "estRows": "100000.00",
+  "task": "cop[tikv]",
+  "access object": "table:o, index:idx_customer(customer_id)",
+  "operator info": "range: decided by [eq(tidbfx.orders.customer_id, tidbfx.customers.id)], keep order:false"
+ },
+ {
+  "id": "    └─TableRowIDScan_23(Probe)",
+  "estRows": "400.00",
+  "task": "cop[tikv]",
+  "access object": "table:o",
+  "operator info": "keep order:false"
+ }
+]

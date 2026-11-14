@@ -28,6 +28,8 @@ dbstudio-driver-postgres = { version = "0.1.0", path = "../crates/drivers/postgr
 dbstudio-driver-mssql = { version = "0.1.0", path = "../crates/drivers/mssql", optional = true }
 dbstudio-driver-oracle = { version = "0.1.0", path = "../crates/drivers/oracle", optional = true }
 dbstudio-driver-mongodb = { version = "0.1.0", path = "../crates/drivers/mongodb", optional = true }
+dbstudio-driver-cassandra = { version = "0.1.0", path = "../crates/drivers/cassandra", optional = true }
+dbstudio-driver-clickhouse = { version = "0.1.0", path = "../crates/drivers/clickhouse", optional = true }
 dbstudio-driver-redis = { version = "0.1.0", path = "../crates/drivers/redis", optional = true }
 axum = { workspace = true, optional = true }
 base64.workspace = true
@@ -53,13 +55,16 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [features]
-default = ["postgres", "mysql", "mssql", "oracle", "mongodb", "redis"]
+default = ["postgres", "mysql", "mssql", "oracle", "mongodb", "redis", "cassandra", "clickhouse"]
 postgres = ["dep:dbstudio-driver-postgres"]
 mysql = ["dep:dbstudio-driver-mysql"]
 mssql = ["dep:dbstudio-driver-mssql"]
 oracle = ["dep:dbstudio-driver-oracle"]
 mongodb = ["dep:dbstudio-driver-mongodb"]
 redis = ["dep:dbstudio-driver-redis"]
+# `clickhouse` is not in `default` yet (package H).
+cassandra = ["dep:dbstudio-driver-cassandra"]
+clickhouse = ["dep:dbstudio-driver-clickhouse"]
 # Enabled by `tauri build`; also what makes a bundle load the embedded frontend.
 custom-protocol = ["tauri/custom-protocol"]
 # Debug-only HTTP bridge so a browser UI can drive the real backend. Never enable in release.
@@ -69,6 +74,7 @@ dev-bridge = ["dep:axum", "dep:tokio-stream", "tokio/net"]
 workspace = true
 
 [dev-dependencies]
+dbstudio-core = { workspace = true, features = ["testing"] }
 tower = { version = "0.5", features = ["util"] }
 tempfile.workspace = true
 async-trait.workspace = true

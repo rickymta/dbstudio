@@ -5,14 +5,8 @@ use dbstudio_core::{Error, ScriptDialect};
 use dbstudio_sql::{Policy, Verdict, analyze, check, split};
 
 const PG: ScriptDialect = ScriptDialect::Postgres;
-const MY: ScriptDialect = ScriptDialect::MySql {
-    mariadb: false,
-    backslash_escapes: true,
-};
-const MY_NB: ScriptDialect = ScriptDialect::MySql {
-    mariadb: false,
-    backslash_escapes: false,
-};
+const MY: ScriptDialect = ScriptDialect::mysql(false, true);
+const MY_NB: ScriptDialect = ScriptDialect::mysql(false, false);
 
 fn ro(d: ScriptDialect, sql: &str) -> Verdict {
     let policy = Policy {
@@ -216,10 +210,7 @@ fn mysql_backslash_escapes_follow_the_dialect_flag() {
         Verdict::Confirm(_)
     ));
     // mariadb flag does not change the lexing, only backslash_escapes does
-    let mariadb = ScriptDialect::MySql {
-        mariadb: true,
-        backslash_escapes: true,
-    };
+    let mariadb = ScriptDialect::mysql(true, true);
     assert_eq!(split(mariadb, sql).len(), 1);
 }
 

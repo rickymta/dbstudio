@@ -80,6 +80,7 @@
     "sql": "CREATE TABLE orders (id bigint PRIMARY KEY);"
   },
   "DdlLanguage": "mongoShell",
+  "DdlLanguage#cql": "cql",
   "DdlOptions": {
     "ifNotExists": false,
     "includeComments": true,

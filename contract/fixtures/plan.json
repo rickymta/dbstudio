@@ -17,6 +17,10 @@
     "timeoutMs": 30000
   },
   "PlanFormat": "mySqlJsonV2",
+  "PlanFormat#clickHouseJson": "clickHouseJson",
+  "PlanFormat#cockroachText": "cockroachText",
+  "PlanFormat#cqlTrace": "cqlTrace",
+  "PlanFormat#tiDbRows": "tiDbRows",
   "PlanNode": {
     "actualRows": 950.0,
     "actualRowsTotal": 950.0,

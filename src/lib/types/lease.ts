@@ -44,6 +44,13 @@ export interface LeaseInfo {
   state: LeaseState;
 }
 
+/** Result of `lease_reopen`; the lease keeps its id. */
+export interface LeaseReopened {
+  lease: LeaseInfo;
+  /** A transaction was open when the connection broke and its changes are lost. */
+  transactionLost: boolean;
+}
+
 export interface LeaseCloseReport {
   rolledBack: boolean;
   forced: boolean;

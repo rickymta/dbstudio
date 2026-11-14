@@ -25,6 +25,7 @@ pub(crate) async fn editability(session: &MySqlSession, path: &ObjectPath) -> Re
         read_only_columns: vec![],
         reason: Some(reason),
         atomic: true,
+        notes: vec![],
     };
     let d = match session.table_details(path).await {
         Ok(d) => d,
@@ -48,6 +49,7 @@ pub(crate) async fn editability(session: &MySqlSession, path: &ObjectPath) -> Re
         read_only_columns,
         reason: (!editable).then_some(NotEditableReason::NoUniqueKey),
         atomic: true,
+        notes: vec![],
     })
 }
 
@@ -176,7 +178,7 @@ fn validate(ed: &Editability, rs: &RowChangeSet, strict_table: bool) -> Result<(
             )));
         }
         if keyed && rs.key_columns != ed.key_columns {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "key columns {:?} do not match the table's key {:?}",
                 rs.key_columns, ed.key_columns
             )));

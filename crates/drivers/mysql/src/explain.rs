@@ -2,6 +2,9 @@
 //!
 //! * MySQL: `EXPLAIN FORMAT=JSON` (plan only) or `EXPLAIN ANALYZE` (8.0.18+, tree text).
 //! * MariaDB: `EXPLAIN FORMAT=JSON` or `ANALYZE FORMAT=JSON`.
+//! * TiDB: `EXPLAIN [ANALYZE] FORMAT='row'`; the result rows are packed as a JSON array of
+//!   objects keyed by column name (`id`, `estRows`, `actRows`, `task`, ...) for the `tidb`
+//!   plan parser.
 //!
 //! ANALYZE executes the statement. Only read statements are analysed (inside a read-only
 //! transaction that is rolled back); write statements answer `Unsupported`, because tables of
@@ -44,7 +47,14 @@ pub(crate) async fn explain(session: &MySqlSession, req: ExplainRequest) -> Resu
 }
 
 async fn run(session: &MySqlSession, conn: &mut Conn, req: &ExplainRequest) -> Result<RawPlan> {
-    run_on(conn, req, session.inner.is_mariadb, false).await
+    run_on(
+        conn,
+        req,
+        session.inner.is_mariadb,
+        session.inner.is_tidb,
+        false,
+    )
+    .await
 }
 
 /// Explain one statement on a dedicated (lease) connection. With `in_transaction` the user's
@@ -54,15 +64,17 @@ pub(crate) async fn explain_on_lease(
     conn: &mut Conn,
     req: &ExplainRequest,
     mariadb: bool,
+    tidb: bool,
     in_transaction: bool,
 ) -> Result<RawPlan> {
-    run_on(conn, req, mariadb, in_transaction).await
+    run_on(conn, req, mariadb, tidb, in_transaction).await
 }
 
 async fn run_on(
     conn: &mut Conn,
     req: &ExplainRequest,
     mariadb: bool,
+    tidb: bool,
     in_transaction: bool,
 ) -> Result<RawPlan> {
     let (raw_version, sql_mode): (String, String) = conn
@@ -74,9 +86,8 @@ async fn run_on(
     // The dialect follows this very connection's sql_mode (backslash escapes in strings).
     let dialect = ScriptDialect::MySql {
         mariadb,
-        backslash_escapes: !sql_mode
-            .to_ascii_uppercase()
-            .contains("NO_BACKSLASH_ESCAPES"),
+        backslash_escapes: !crate::sql_mode_no_backslash_escapes(&sql_mode),
+        ansi_quotes: crate::sql_mode_has_ansi_quotes(&sql_mode),
     };
     let (statement, class) = single_statement(dialect, &req.text)?;
     if req.analyze {
@@ -85,11 +96,31 @@ async fn run_on(
             Kind::Write => return Err(Error::Unsupported("explain_analyze_writes".into())),
             Kind::Other => return Err(Error::Unsupported("explain_analyze_ddl".into())),
         }
-        if !mariadb && !supports_explain_analyze(&version) {
+        if !mariadb && !tidb && !supports_explain_analyze(&version) {
             return Err(Error::Unsupported("explain_analyze".into()));
         }
     }
     let statement = statement.as_str();
+
+    if tidb {
+        let sql = if req.analyze {
+            format!("EXPLAIN ANALYZE FORMAT='row' {statement}")
+        } else {
+            format!("EXPLAIN FORMAT='row' {statement}")
+        };
+        let own_tx = req.analyze && !in_transaction;
+        let text = fetch_rows_json(conn, &sql, own_tx).await?;
+        return Ok(RawPlan {
+            format: PlanFormat::TiDbRows,
+            text,
+            statement: statement.to_string(),
+            analyzed: req.analyze,
+            rolled_back: own_tx,
+            server_version: version,
+            captured_at: rfc3339_now(),
+            extra: Default::default(),
+        });
+    }
 
     let (sql, format) = match (mariadb, req.analyze) {
         (true, false) => (
@@ -210,6 +241,45 @@ async fn fetch(conn: &mut Conn, sql: &str, own_tx: bool) -> Result<String> {
         .ok_or_else(|| Error::Other("EXPLAIN returned no plan".into()))
 }
 
+/// Like [`fetch`] for TiDB: every result row as an object keyed by column name, in a JSON array.
+/// Runs in a plain transaction that is rolled back (TiDB has no read-only transactions).
+async fn fetch_rows_json(conn: &mut Conn, sql: &str, own_tx: bool) -> Result<String> {
+    let stmt = conn.prep(sql).await.map_err(map_query_error)?;
+    if own_tx {
+        conn.query_drop(crate::read_tx_sql(true))
+            .await
+            .map_err(map_query_error)?;
+    }
+    let rows: std::result::Result<Vec<Row>, _> = conn.exec(&stmt, ()).await;
+    if own_tx {
+        let _ = conn.query_drop("ROLLBACK").await;
+    }
+    let _ = conn.close(stmt).await;
+    let rows = rows.map_err(map_query_error)?;
+    if rows.is_empty() {
+        return Err(Error::Other("EXPLAIN returned no plan".into()));
+    }
+    Ok(rows_to_json(&rows))
+}
+
+fn rows_to_json(rows: &[Row]) -> String {
+    let list: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            let mut obj = serde_json::Map::new();
+            for (i, c) in r.columns_ref().iter().enumerate() {
+                let v = r
+                    .as_ref(i)
+                    .and_then(value_to_string)
+                    .map_or(serde_json::Value::Null, serde_json::Value::String);
+                obj.insert(c.name_str().to_string(), v);
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+    serde_json::Value::Array(list).to_string()
+}
+
 /// MySQL 8.0.18 introduced EXPLAIN ANALYZE.
 fn supports_explain_analyze(version: &str) -> bool {
     let nums: Vec<u32> = version
@@ -327,10 +397,7 @@ mod tests {
     use super::*;
 
     fn kind(sql: &str) -> Kind {
-        let d = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        };
+        let d = ScriptDialect::mysql(false, true);
         let (body, class) = single_statement(d, sql).unwrap();
         kind_of(class, &body)
     }
@@ -360,10 +427,7 @@ mod tests {
 
     #[test]
     fn only_one_statement_and_no_versioned_comments() {
-        let d = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        };
+        let d = ScriptDialect::mysql(false, true);
         for bad in [
             "SELECT 1; DROP TABLE t",
             "select 1; commit; /*!update t set a=2*/",
@@ -384,10 +448,7 @@ mod tests {
             assert!(single_statement(d, ok).is_ok(), "{ok}");
         }
         // With NO_BACKSLASH_ESCAPES the backslash does not escape the quote.
-        let no_bs = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: false,
-        };
+        let no_bs = ScriptDialect::mysql(false, false);
         assert!(single_statement(no_bs, "select '\\'; drop table t; select '").is_err());
         assert!(matches!(
             single_statement(d, "  ").unwrap_err(),

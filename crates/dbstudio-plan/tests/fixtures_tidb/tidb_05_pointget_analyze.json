@@ -1,0 +1,13 @@
+[
+ {
+  "id": "Point_Get_1",
+  "estRows": "1.00",
+  "actRows": "1",
+  "task": "root",
+  "access object": "table:orders",
+  "execution info": "time:2.27ms, loops:2, RU:0.47, Get:{num_rpc:1, total_time:2.08ms}",
+  "operator info": "handle:4242",
+  "memory": "N/A",
+  "disk": "N/A"
+ }
+]

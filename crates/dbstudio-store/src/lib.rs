@@ -11,6 +11,7 @@ mod erd;
 mod history;
 mod known_hosts;
 mod model;
+mod plan_history;
 mod presets;
 mod saved;
 mod secret;
@@ -27,6 +28,9 @@ pub use history::{
 };
 pub use known_hosts::KnownHost;
 pub use model::{ConnectionGroup, ConnectionProfile, ConnectionsSnapshot, SecretChange};
+pub use plan_history::{
+    NewPlanHistory, PLAN_HISTORY_MAX_RAW_BYTES, PlanHistoryEntry, PlanHistoryRecord,
+};
 pub use presets::ExportPreset;
 pub use saved::{SavedFolder, SavedQueriesSnapshot, SavedQuery};
 pub use secret::{
@@ -38,9 +42,10 @@ pub use service::{
     MAX_IMPORT_GROUPS, MAX_IMPORT_PROFILES,
 };
 pub use settings::{
-    AppSettings, CloseBehavior, EDITOR_ROWS_RANGE, GRID_CELLS_RANGE, GRID_ROWS_RANGE,
-    HISTORY_MAX_RANGE, LOB_BYTES_RANGE, LogLevel, OracleClientSettings, PLAN_FACTOR_RANGE,
-    QUERY_TIMEOUT_MAX_MS, TimestampDisplay,
+    AppSettings, CloseBehavior, EDITOR_ROWS_RANGE, FONT_FAMILY_MAX_CHARS, FONT_SIZE_RANGE,
+    GRID_CELLS_RANGE, GRID_ROWS_RANGE, HISTORY_MAX_RANGE, KEEPALIVE_RANGE, LOB_BYTES_RANGE,
+    LogLevel, OracleClientSettings, PLAN_FACTOR_RANGE, PLAN_HISTORY_MAX_RANGE,
+    QUERY_TIMEOUT_MAX_MS, TimestampDisplay, UiLanguage,
 };
 pub use tabs::EditorTabState;
 pub use validate::{IMPORT_OPTION_ALLOWLIST, MAX_FIELD_CHARS, is_valid_color};

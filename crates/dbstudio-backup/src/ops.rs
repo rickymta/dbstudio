@@ -203,7 +203,7 @@ fn groups(ctx: &BackupContext, spec: &BackupSpec) -> Result<Vec<(String, Vec<Obj
     let mut out: Vec<(String, Vec<ObjectPath>)> = Vec::new();
     for t in &spec.targets {
         let db = logical::database_of(t)
-            .ok_or_else(|| Error::Other("a backup target must be inside a database".into()))?;
+            .ok_or_else(|| Error::Invalid("a backup target must be inside a database".into()))?;
         match out.iter_mut().find(|(d, _)| *d == db) {
             Some((_, v)) => v.push(t.clone()),
             None => out.push((db, vec![t.clone()])),
@@ -256,15 +256,22 @@ pub async fn run_backup(
                     tool: NativeTool::MsSqlServerBackup,
                     ..
                 } => mssql_server_backup(&ctx, spec, path).await,
+                BackupEngine::Native {
+                    tool:
+                        tool @ (NativeTool::ClickHouseServerBackup | NativeTool::CockroachServerBackup),
+                    ..
+                } => server_side_backup(&ctx, spec, path, *tool).await,
                 _ => Err(Error::Unsupported(
-                    "a server directory destination needs the SQL Server native backup".into(),
+                    "a server directory destination needs a native backup that writes on the \
+                     server (SQL Server, ClickHouse or CockroachDB)"
+                        .into(),
                 )),
             };
         }
     };
     let passphrase = if spec.encrypted {
         Some(passphrase.ok_or_else(|| {
-            Error::Other("this backup is encrypted but no passphrase is available".into())
+            Error::Invalid("this backup is encrypted but no passphrase is available".into())
         })?)
     } else {
         None
@@ -393,9 +400,16 @@ async fn native_dump(
     server_version: &str,
     source: Json,
 ) -> Result<(SpoolEntry, Json)> {
-    if tool == NativeTool::MsSqlServerBackup {
+    if matches!(
+        tool,
+        NativeTool::MsSqlServerBackup
+            | NativeTool::ClickHouseServerBackup
+            | NativeTool::CockroachServerBackup
+    ) {
         return Err(Error::Unsupported(
-            "the SQL Server backup writes on the server: choose a server directory".into(),
+            "this backup is written by the server itself: choose a server destination \
+             (SQL Server: directory, ClickHouse: backup disk, CockroachDB: nodelocal path)"
+                .into(),
         ));
     }
     if matches!(tool, NativeTool::Expdp | NativeTool::Impdp) {
@@ -483,6 +497,110 @@ async fn mssql_server_backup(
     })
 }
 
+/// `BACKUP` run by the server itself: ClickHouse writes a `.zip` to a backup disk named in the
+/// server configuration (`path` is the disk name), CockroachDB writes a backup collection to
+/// `nodelocal://<node>/<path>` of its own nodes. Nothing is copied to this machine, and the
+/// backups are restored with the server's `RESTORE` statement.
+async fn server_side_backup(
+    ctx: &BackupContext,
+    spec: &BackupSpec,
+    path: &str,
+    tool: NativeTool,
+) -> Result<BackupOutcome> {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
+            && !s.split('/').any(|seg| seg == "..")
+    };
+    let mut files = Vec::new();
+    for (database, _) in groups(ctx, spec)? {
+        if database.is_empty() {
+            return Err(Error::Invalid(
+                "a backup target must be inside a database".into(),
+            ));
+        }
+        let stamp = render_file_name(
+            "{database}-{date:%Y%m%d-%H%M%S}",
+            &ctx.config.name,
+            &database,
+            ctx.job_name.as_deref().unwrap_or("manual"),
+            Local::now(),
+        );
+        let stamp = stamp.trim_end_matches(".dbsbak").to_string();
+        let (sql, shown) = match tool {
+            NativeTool::ClickHouseServerBackup => {
+                let disk = path.trim();
+                if !disk.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || disk.is_empty() {
+                    return Err(Error::Invalid(
+                        "the destination of a ClickHouse backup is the name of a backup disk \
+                         configured on the server"
+                            .into(),
+                    ));
+                }
+                let file = format!("{stamp}.zip");
+                (
+                    format!(
+                        "BACKUP DATABASE `{}` TO Disk('{disk}', '{}')",
+                        database.replace('`', "``"),
+                        file.replace('\'', "\\'")
+                    ),
+                    format!("{disk}/{file}"),
+                )
+            }
+            _ => {
+                // `nodelocal://1/dir` or just `dir`: only the cluster's own nodes, never a cloud
+                // URL (which would carry credentials in its query string).
+                let rest = path
+                    .trim()
+                    .strip_prefix("nodelocal://")
+                    .map(|r| r.split_once('/').map_or("", |(_, p)| p))
+                    .unwrap_or(path.trim())
+                    .trim_matches('/');
+                if !plain(rest) {
+                    return Err(Error::Invalid(
+                        "the destination of a CockroachDB backup is a directory on the \
+                         cluster's nodes (`nodelocal://1/dir` or `dir`)"
+                            .into(),
+                    ));
+                }
+                let uri = format!("nodelocal://1/{rest}/{stamp}");
+                (
+                    format!(
+                        "BACKUP DATABASE \"{}\" INTO '{uri}'",
+                        database.replace('"', "\"\"")
+                    ),
+                    uri,
+                )
+            }
+        };
+        ctx.reporter.progress(&JobProgress {
+            phase: "data".into(),
+            object: Some(database.clone()),
+            message: Some("the server is writing the backup".into()),
+            ..Default::default()
+        });
+        let results =
+            dbstudio_core::execute_collect(ctx.session.as_ref(), QueryRequest::new(sql)).await?;
+        // ClickHouse answers `(id, status)`; a failed backup is an error, not a status.
+        if let Some(dbstudio_core::StatementOutcome::Rows(rs)) = results.first().map(|r| &r.outcome)
+        {
+            if let Some(row) = rs.rows.first() {
+                ctx.reporter.log(&format!("server answered {row:?}"));
+            }
+        }
+        ctx.reporter.log(&format!("server wrote {shown}"));
+        files.push(shown);
+    }
+    Ok(BackupOutcome {
+        objects: files.len() as u32,
+        files,
+        size_bytes: 0,
+        checksum: String::new(),
+        rows: 0,
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // Inspect / verify
 // ---------------------------------------------------------------------------------------------
@@ -502,6 +620,12 @@ pub async fn inspect(path: &Path, passphrase: Option<&Secret>) -> Result<BackupI
             Some(container::read_preamble(&path, pass.as_ref())?)
         };
         let native = header.native;
+        // Objects for the partial restore: only files with markers (format 3) list them.
+        let objects: Vec<crate::BackupObject> = preamble
+            .as_ref()
+            .filter(|p| p["formatVersion"].as_u64().unwrap_or(1) >= 3)
+            .and_then(|p| serde_json::from_value(p["objects"].clone()).ok())
+            .unwrap_or_default();
         let mut header_json =
             serde_json::to_value(&header).map_err(|e| Error::Other(e.to_string()))?;
         // The summary is returned as `preamble`; do not send it twice.
@@ -513,6 +637,7 @@ pub async fn inspect(path: &Path, passphrase: Option<&Secret>) -> Result<BackupI
             preamble,
             encrypted,
             native,
+            objects,
         })
     })
     .await
@@ -554,7 +679,7 @@ pub async fn run_restore(
 ) -> Result<RestoreOutcome> {
     let reporter = ctx.reporter.clone();
     if spec.clean && spec.target_database.as_deref().is_none_or(str::is_empty) {
-        return Err(Error::Other(
+        return Err(Error::Invalid(
             "a clean restore needs the target database to be named explicitly".into(),
         ));
     }
@@ -573,7 +698,7 @@ pub async fn run_restore(
     .await?;
     logical::check_supported(&scanned.preamble)?;
     match scanned.header.native {
-        None => logical::restore(&ctx.session, &scanned, spec, reporter.as_ref()).await,
+        None => logical::restore(&ctx.session, &scanned, spec, &reporter).await,
         Some(tool) => native_restore(&ctx, &scanned, tool, spec, work.path()).await,
     }
 }
@@ -585,6 +710,12 @@ async fn native_restore(
     spec: &RestoreSpec,
     tmp: &Path,
 ) -> Result<RestoreOutcome> {
+    if !spec.objects.is_empty() {
+        return Err(Error::Unsupported(
+            "a backup made by a native tool is restored whole; selected objects are not available"
+                .into(),
+        ));
+    }
     let pre = &scanned.preamble;
     let format = pre["native"]["format"].as_str().unwrap_or("plain");
     let restore_tool = native::restore_tool_for(tool, format)?;
@@ -593,21 +724,24 @@ async fn native_restore(
         .target_database
         .clone()
         .or_else(|| pre["database"].as_str().map(str::to_string))
-        .ok_or_else(|| Error::Other("target database is not specified".into()))?;
+        .ok_or_else(|| Error::Invalid("target database is not specified".into()))?;
     if let Some(input) = scanned
         .files
         .get(pre["native"]["file"].as_str().unwrap_or_default())
     {
-        if matches!(restore_tool, NativeTool::Psql | NativeTool::MySqlClient) {
+        if matches!(
+            restore_tool,
+            NativeTool::Psql | NativeTool::Ysqlsh | NativeTool::MySqlClient
+        ) {
             native::scan_restore_script(restore_tool, input)?;
         }
     }
     if spec.create_database {
         let sql = match ctx.config.kind {
-            dbstudio_core::DbKind::Postgres => {
+            dbstudio_core::DbKind::Postgres | dbstudio_core::DbKind::YugabyteDb => {
                 format!("CREATE DATABASE \"{}\"", target_db.replace('"', "\"\""))
             }
-            dbstudio_core::DbKind::MySql => format!(
+            dbstudio_core::DbKind::MySql | dbstudio_core::DbKind::TiDb => format!(
                 "CREATE DATABASE IF NOT EXISTS `{}`",
                 target_db.replace('`', "``")
             ),
@@ -615,7 +749,10 @@ async fn native_restore(
         };
         if !sql.is_empty() {
             let mut req = QueryRequest::new(sql);
-            if ctx.config.kind == dbstudio_core::DbKind::Postgres {
+            if matches!(
+                ctx.config.kind,
+                dbstudio_core::DbKind::Postgres | dbstudio_core::DbKind::YugabyteDb
+            ) {
                 req.database = Some("postgres".into());
             }
             if let Err(e) = ctx.session.execute(req, &mut NullSink).await {

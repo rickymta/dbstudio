@@ -61,16 +61,17 @@ pub use driver::{
     execute_collect, planned_descriptors,
 };
 pub use edit::{
-    ApplyResult, CellEdit, ChangeSet, DocInput, DocumentChange, DocumentChangeSet, EditValue,
-    Editability, FieldEdit, KeyChange, KeyChangeSet, NotEditableReason, RowChange, RowChangeSet,
+    ApplyResult, CellEdit, ChangeSet, DocInput, DocumentChange, DocumentChangeSet, EditNote,
+    EditValue, Editability, FieldEdit, FieldOriginal, KeyChange, KeyChangeSet, NotEditableReason,
+    PutMode, RowChange, RowChangeSet,
 };
 pub use error::{Error, Result};
 pub use job::{
     CancelToken, JobError, JobEvent, JobId, JobInfo, JobKind, JobProgress, JobReporter, JobStatus,
 };
 pub use keyvalue::{
-    BINARY_KEY_PREFIX, KeyEntries, KeyReadRequest, KeyValuePage, StreamEntry, decode_key_name,
-    encode_key_name,
+    BINARY_KEY_PREFIX, KeyData, KeyEntries, KeyReadRequest, KeyRecord, KeyScanPage, KeyScanRequest,
+    KeyValuePage, StreamEntry, decode_key_name, encode_key_name,
 };
 pub use kind::{DbFamily, DbKind};
 pub use lease::{

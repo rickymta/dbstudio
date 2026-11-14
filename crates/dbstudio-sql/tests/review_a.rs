@@ -6,10 +6,7 @@ use dbstudio_sql::redact::redact;
 use dbstudio_sql::{Policy, Verdict, analyze, check, split, statement_databases};
 
 const PG: ScriptDialect = ScriptDialect::Postgres;
-const MY: ScriptDialect = ScriptDialect::MySql {
-    mariadb: false,
-    backslash_escapes: true,
-};
+const MY: ScriptDialect = ScriptDialect::mysql(false, true);
 const MS: ScriptDialect = ScriptDialect::MsSql;
 const ORA: ScriptDialect = ScriptDialect::Oracle;
 const MONGO: ScriptDialect = ScriptDialect::MongoShell;
@@ -218,10 +215,7 @@ fn mysql_describe_analyze_executes_the_statement() {
 
 #[test]
 fn mariadb_set_statement_is_judged_by_the_statement() {
-    let m = ScriptDialect::MySql {
-        mariadb: true,
-        backslash_escapes: true,
-    };
+    let m = ScriptDialect::mysql(true, true);
     assert_eq!(
         one(m, "SET STATEMENT max_statement_time=10 FOR DELETE FROM t"),
         (C::Write, Some(R::DeleteWithoutWhere))

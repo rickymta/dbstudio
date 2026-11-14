@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8e2316044b1655eef4ec8b4a65513f2878315a5dc3ee3b06d21578c14a5aba57 # shrinks to parts = [("-- c", " ")]
+cc 39cf4ae97c51941af3db4ab50bbf41055a68137ce1edf5cb01f39cdbdd2263a4 # shrinks to parts = [("/* c */", "; "), ("-- c", " ")]

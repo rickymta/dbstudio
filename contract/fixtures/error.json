@@ -49,6 +49,10 @@
     "kind": "integrity",
     "message": "checksum mismatch"
   },
+  "invalid": {
+    "kind": "invalid",
+    "message": "name is empty"
+  },
   "io": {
     "kind": "io",
     "message": "broken pipe"

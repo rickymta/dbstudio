@@ -25,6 +25,8 @@ pub struct Target {
     pub version: &'static str,
     /// Emulated / slow server: tests allow more time.
     pub slow: bool,
+    /// TiDB (MySQL protocol, `root` without a password, no procedures / triggers / events).
+    pub tidb: bool,
 }
 
 pub const MYSQL8: Target = Target {
@@ -34,6 +36,7 @@ pub const MYSQL8: Target = Target {
     tls: true,
     version: "8.4",
     slow: false,
+    tidb: false,
 };
 pub const MARIADB: Target = Target {
     name: "mariadb",
@@ -42,6 +45,7 @@ pub const MARIADB: Target = Target {
     tls: false,
     version: "10.6",
     slow: false,
+    tidb: false,
 };
 /// MySQL 5.7 (amd64 emulation: slow). It may generate its own self-signed certificate.
 pub const MYSQL57: Target = Target {
@@ -51,6 +55,7 @@ pub const MYSQL57: Target = Target {
     tls: false,
     version: "5.7",
     slow: true,
+    tidb: false,
 };
 pub const MARIADB104: Target = Target {
     name: "mariadb104",
@@ -59,24 +64,60 @@ pub const MARIADB104: Target = Target {
     tls: false,
     version: "10.4",
     slow: false,
+    tidb: false,
 };
-pub const TARGETS: [Target; 4] = [MYSQL8, MARIADB, MYSQL57, MARIADB104];
+/// TiDB (`newsql` profile, port `DBSTUDIO_IT_TIDB_PORT`, default 34000). Probe-then-skip: when
+/// the container is not running the target is left out, unless `DBSTUDIO_IT_STRICT=1`.
+pub const TIDB: Target = Target {
+    name: "tidb",
+    port: 34000,
+    mariadb: false,
+    tls: false,
+    version: "8.0.11-TiDB",
+    slow: true,
+    tidb: true,
+};
+pub const TARGETS: [Target; 5] = [MYSQL8, MARIADB, MYSQL57, MARIADB104, TIDB];
 
-/// Servers to test: all of them, or the comma-separated names in `DBSTUDIO_IT_SERVERS`
-/// (e.g. when a container is down). Unset means every server must be reachable.
+/// Port of `t` (TiDB's can be overridden by `DBSTUDIO_IT_TIDB_PORT`).
+pub fn port_of(t: Target) -> u16 {
+    if t.tidb {
+        std::env::var("DBSTUDIO_IT_TIDB_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(t.port)
+    } else {
+        t.port
+    }
+}
+
+fn reachable(t: Target) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    let addr = SocketAddr::from(([127, 0, 0, 1], port_of(t)));
+    TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)).is_ok()
+}
+
+/// Servers to test: the original four (all must be reachable), TiDB when its container runs
+/// (or `DBSTUDIO_IT_STRICT=1`), or the comma-separated names in `DBSTUDIO_IT_SERVERS`.
 pub fn targets() -> Vec<Target> {
     match std::env::var("DBSTUDIO_IT_SERVERS") {
         Ok(list) => TARGETS
             .into_iter()
             .filter(|t| list.split(',').any(|n| n.trim() == t.name))
             .collect(),
-        Err(_) => TARGETS.to_vec(),
+        Err(_) => {
+            let strict = std::env::var("DBSTUDIO_IT_STRICT").is_ok_and(|v| v == "1");
+            TARGETS
+                .into_iter()
+                .filter(|t| !t.tidb || strict || reachable(*t))
+                .collect()
+        }
     }
 }
 
 /// Whether `t` is part of this run.
 pub fn selected(t: Target) -> bool {
-    targets().iter().any(|x| x.port == t.port)
+    targets().iter().any(|x| x.name == t.name)
 }
 
 /// Scale a timing bound for slow (emulated) servers.
@@ -94,13 +135,21 @@ pub fn certs_dir() -> PathBuf {
 
 pub fn config(t: Target, user: &str, tls: TlsMode) -> ConnectionConfig {
     let mut c = ConnectionConfig::new(DbKind::MySql, t.name, "127.0.0.1");
-    c.port = t.port;
+    c.port = port_of(t);
     c.username = Some(user.to_string());
     c.tls = TlsConfig {
         mode: tls,
         ..Default::default()
     };
-    c.connect_timeout_ms = Some(5000);
+    c.connect_timeout_ms = Some(if t.tidb { 20_000 } else { 5000 });
+    if t.tidb {
+        // TiDB's connection collation is binary (case-sensitive filters); the shared tests expect
+        // the case-insensitive comparisons of MySQL, which `init_command` provides.
+        c.options.insert(
+            "init_command".into(),
+            "SET collation_connection = 'utf8mb4_general_ci'".into(),
+        );
+    }
     c
 }
 
@@ -109,7 +158,44 @@ pub fn secret() -> Secret {
 }
 
 pub async fn connect_cfg(cfg: &ConnectionConfig) -> Result<Box<dyn Session>> {
+    // TiDB's `root` has no password (compose); `dbstudio` is created by `ensure_tidb_user`.
+    // All grants happen before any other connection: TiDB reloads its privilege cache on every
+    // GRANT and checks made during a reload are not reliable.
+    let is_tidb = cfg.port == port_of(TIDB);
+    if is_tidb {
+        ensure_tidb_user().await;
+    }
+    if is_tidb && cfg.username.as_deref() == Some("root") {
+        return MySqlDriver::new().connect(cfg, None).await;
+    }
     MySqlDriver::new().connect(cfg, Some(&secret())).await
+}
+
+static TIDB_USER: OnceCell<()> = OnceCell::const_new();
+
+/// Create the `dbstudio` login on TiDB once per process.
+async fn ensure_tidb_user() {
+    TIDB_USER
+        .get_or_init(|| async {
+            let mut cfg = config(TIDB, "root", TlsMode::Disable);
+            cfg.database = None;
+            let root = MySqlDriver::new()
+                .connect(&cfg, None)
+                .await
+                .unwrap_or_else(|e| panic!("[tidb] root connect failed: {e}"));
+            run(
+                &*root,
+                "CREATE USER IF NOT EXISTS 'dbstudio'@'%' IDENTIFIED BY 'dbstudio_test'; \
+                 CREATE DATABASE IF NOT EXISTS dbstudio; \
+                 GRANT ALL PRIVILEGES ON `dbstudio`.* TO 'dbstudio'@'%'; \
+                 GRANT ALL PRIVILEGES ON `dbstudio\\_it%`.* TO 'dbstudio'@'%'",
+            )
+            .await;
+            root.close().await.unwrap();
+            // Let the privilege cache settle.
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        })
+        .await;
 }
 
 /// Session as the `dbstudio` user without TLS.
@@ -230,7 +316,8 @@ impl ResultSink for CountingSink {
     }
 }
 
-static FIXTURES: [OnceCell<()>; 4] = [
+static FIXTURES: [OnceCell<()>; 5] = [
+    OnceCell::const_new(),
     OnceCell::const_new(),
     OnceCell::const_new(),
     OnceCell::const_new(),
@@ -239,10 +326,20 @@ static FIXTURES: [OnceCell<()>; 4] = [
 
 /// Create (once per process and server) the shared read-only fixture database.
 pub async fn ensure_fixture(t: Target) {
-    let idx = TARGETS.iter().position(|x| x.port == t.port).unwrap();
+    let idx = TARGETS.iter().position(|x| x.name == t.name).unwrap();
     FIXTURES[idx]
         .get_or_init(|| async move { build_fixture(t).await })
         .await;
+}
+
+/// TiDB defaults to the binary collation; the tests expect case-insensitive comparisons like
+/// MySQL / MariaDB, so its databases are created with a case-insensitive one.
+pub fn ci_collation(t: Target) -> &'static str {
+    if t.tidb {
+        " COLLATE utf8mb4_general_ci"
+    } else {
+        ""
+    }
 }
 
 const SCRIPT_TABLES: &[&str] = &[
@@ -309,23 +406,48 @@ async fn build_fixture(t: Target) {
     let root = root_session(t).await;
     run(
         &*root,
-        &format!("DROP DATABASE IF EXISTS {FIXTURE_DB}; CREATE DATABASE {FIXTURE_DB} CHARACTER SET utf8mb4"),
+        &format!(
+            "DROP DATABASE IF EXISTS {FIXTURE_DB}; CREATE DATABASE {FIXTURE_DB} CHARACTER SET utf8mb4{}",
+            ci_collation(t)
+        ),
     )
     .await;
-    run(
-        &*root,
-        "GRANT ALL PRIVILEGES ON `dbstudio\\_it%`.* TO 'dbstudio'@'%'",
-    )
-    .await;
+    if !t.tidb {
+        // (TiDB: granted once up front by `ensure_tidb_user`.)
+        run(
+            &*root,
+            "GRANT ALL PRIVILEGES ON `dbstudio\\_it%`.* TO 'dbstudio'@'%'",
+        )
+        .await;
+    }
     for sql in SCRIPT_TABLES {
-        let mut r = QueryRequest::new(*sql);
+        let mut sql = (*sql).to_string();
+        if t.tidb {
+            // TiDB: no stored routines / triggers and no spatial types.
+            if sql.starts_with("CREATE DEFINER") || sql.starts_with("CREATE TRIGGER") {
+                continue;
+            }
+            sql = sql.replace("c_geom POINT NULL, ", "");
+        }
+        let sql = sql.as_str();
+        let mut r = QueryRequest::new(sql);
         r.database = Some(FIXTURE_DB.into());
         execute_collect(&*root, r)
             .await
             .unwrap_or_else(|e| panic!("[{}] fixture failed: {e}\n{sql}", t.name));
         if sql.starts_with("CREATE TABLE all_types") {
             // Rows are inserted after the table exists.
-            let mut r = QueryRequest::new(ALL_TYPES_ROWS);
+            let rows = if t.tidb {
+                ALL_TYPES_ROWS
+                    .replace("c_bit, c_geom, c_zero_dt", "c_bit, c_zero_dt")
+                    .replace(
+                        "b'101010101010', ST_GeomFromText('POINT(1 2)'),",
+                        "b'101010101010',",
+                    )
+            } else {
+                ALL_TYPES_ROWS.to_string()
+            };
+            let mut r = QueryRequest::new(rows);
             r.database = Some(FIXTURE_DB.into());
             execute_collect(&*root, r)
                 .await
@@ -384,12 +506,24 @@ impl Drop for ScratchDb {
     }
 }
 
+/// Guard that drops database `db` (any name) when it goes out of scope, also when the test
+/// panics. Create it BEFORE the database so a failing setup is cleaned too.
+pub fn drop_guard(t: Target, db: &str) -> ScratchDb {
+    ScratchDb {
+        t,
+        name: db.to_string(),
+    }
+}
+
 pub async fn scratch_db(t: Target, name: &str) -> ScratchDb {
     let db = format!("dbstudio_it_{name}");
     let root = root_session(t).await;
     run(
         &*root,
-        &format!("DROP DATABASE IF EXISTS `{db}`; CREATE DATABASE `{db}` CHARACTER SET utf8mb4"),
+        &format!(
+            "DROP DATABASE IF EXISTS `{db}`; CREATE DATABASE `{db}` CHARACTER SET utf8mb4{}",
+            ci_collation(t)
+        ),
     )
     .await;
     root.close().await.unwrap();

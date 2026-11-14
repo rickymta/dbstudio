@@ -1,0 +1,43 @@
+planning time: 3ms
+execution time: 8ms
+distribution: local
+vectorized: true
+plan type: custom
+rows decoded from KV: 6,000 (264 KiB, 6,000 KVs, 1 gRPC calls)
+cumulative time spent in KV: 5ms
+maximum memory usage: 970 KiB
+DistSQL network usage: 0 B (0 messages)
+sql cpu time: 3ms
+isolation level: serializable
+priority: normal
+quality of service: regular
+
+• sort
+│ columns: (id, grp, name, amount)
+│ sql nodes: n1
+│ actual row count: 6,000
+│ vectorized batch count: 6
+│ execution time: 2ms
+│ estimated max memory allocated: 745 KiB
+│ sql cpu time: 2ms
+│ estimated row count: 6,000
+│ order: +name
+│
+└── • scan
+      columns: (id, grp, name, amount)
+      sql nodes: n1
+      kv nodes: n1
+      actual row count: 6,000
+      vectorized batch count: 6
+      KV time: 5ms
+      KV rows decoded: 6,000
+      KV pairs read: 6,000
+      KV bytes read: 264 KiB
+      KV gRPC calls: 1
+      estimated max memory allocated: 360 KiB
+      sql cpu time: 901µs
+      MVCC step count (ext/int): 6,000/6,000
+      MVCC seek count (ext/int): 5/5
+      estimated row count: 6,000 (100% of the table; stats collected 47 seconds ago)
+      table: big@big_pkey
+      spans: FULL SCAN

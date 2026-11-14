@@ -87,7 +87,7 @@ pub(crate) async fn trust_host_impl(
         .get(&(host.clone(), port))
         .cloned();
     if seen != Some((key_type.clone(), fingerprint.clone())) {
-        return Err(Error::Other(format!(
+        return Err(Error::Invalid(format!(
             "the SSH host key of {host}:{port} was not observed: connect again to see its current key"
         )));
     }
@@ -170,7 +170,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, Error::Other(_)));
+        assert!(matches!(err, Error::Invalid(_)));
         assert!(
             state
                 .connections

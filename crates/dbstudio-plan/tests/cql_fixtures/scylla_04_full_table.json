@@ -1,0 +1,127 @@
+{
+  "command": "QUERY",
+  "coordinator": "172.28.0.7",
+  "durationUs": 428,
+  "events": [
+    {
+      "activity": "Parsing a statement",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 1,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Processing a statement for authenticated user: dbstudio",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 37,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Executing read query (reversed false)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 49,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "read_data: querying locally",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 66,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Start querying singular range (-inf, {-4980559482591167594, end}]",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 70,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "[reader concurrency semaphore sl:default] admitted immediately",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 73,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "[reader concurrency semaphore sl:default] executing read",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 76,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Scanning cache for range (-inf, {-4980559482591167594, end}] and slice [(-inf, +inf)]",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 85,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Page stats: 0 partition(s) (0 live, 0 dead), 0 static row(s) (0 live, 0 dead), 0 clustering row(s) (0 live, 0 dead), 0 range tombstone(s) and 0 cell(s) (0 live, 0 dead)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 100,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Querying is done",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 104,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "read_data: querying locally",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 114,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Start querying singular range ({-4980559482591167594, end},+inf)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 115,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "[reader concurrency semaphore sl:default] admitted immediately",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 115,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "[reader concurrency semaphore sl:default] executing read",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 116,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Scanning cache for range ({-4980559482591167594, end},+inf) and slice [(-inf, +inf)]",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 117,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Page stats: 6 partition(s) (6 live, 0 dead), 0 static row(s) (0 live, 0 dead), 420 clustering row(s) (419 live, 1 dead), 0 range tombstone(s) and 419 cell(s) (399 live, 20 dead)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 335,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Querying is done",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 336,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Done processing - preparing a result",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 352,
+      "thread": "shard 0/sl:default"
+    }
+  ],
+  "parameters": {
+    "consistency_level": "LOCAL_ONE",
+    "page_size": "1000",
+    "query": "SELECT * FROM nums",
+    "serial_consistency_level": "SERIAL",
+    "table": "it_scylla_explain.nums",
+    "user_timestamp": "-9223372036854775808"
+  },
+  "request": "Execute CQL3 query",
+  "rows": 419,
+  "sessionId": "bf612cb0-dfd9-11f1-92fc-9f6336da3617",
+  "startedAt": "2026-11-14T03:16:13.692Z"
+}

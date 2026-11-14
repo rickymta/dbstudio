@@ -31,6 +31,9 @@ pub struct EditorTabState {
     pub cursor: u32,
     /// Auto-commit mode of the tab's lease.
     pub auto_commit: bool,
+    /// Text differs from `file_path` on disk (or the tab was never saved).
+    #[serde(default)]
+    pub dirty: bool,
 }
 
 impl Store {
@@ -40,7 +43,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT id, position, title, connection_id, database_name, schema_name, text,
-                        file_path, cursor, auto_commit
+                        file_path, cursor, auto_commit, dirty
                  FROM editor_tabs ORDER BY position, updated_at, id",
             )
             .map_err(db_err)?;
@@ -57,6 +60,7 @@ impl Store {
                     r.get::<_, Option<String>>(7)?,
                     r.get::<_, i64>(8)?,
                     r.get::<_, bool>(9)?,
+                    r.get::<_, bool>(10)?,
                 ))
             })
             .map_err(db_err)?
@@ -64,7 +68,19 @@ impl Store {
             .map_err(db_err)?;
         rows.into_iter()
             .map(
-                |(id, position, title, conn_id, database, schema, text, file_path, cursor, ac)| {
+                |(
+                    id,
+                    position,
+                    title,
+                    conn_id,
+                    database,
+                    schema,
+                    text,
+                    file_path,
+                    cursor,
+                    ac,
+                    dirty,
+                )| {
                     Ok(EditorTabState {
                         id: parse_uuid(&id)?,
                         position: position.clamp(0, i64::from(u32::MAX)) as u32,
@@ -76,6 +92,7 @@ impl Store {
                         file_path,
                         cursor: cursor.clamp(0, i64::from(u32::MAX)) as u32,
                         auto_commit: ac,
+                        dirty,
                     })
                 },
             )
@@ -92,9 +109,9 @@ impl Store {
         for tab in tabs {
             tx.execute(
                 "INSERT OR REPLACE INTO editor_tabs (id, position, title, connection_id,
-                     database_name, schema_name, text, file_path, cursor, auto_commit, updated_at)
+                     database_name, schema_name, text, file_path, cursor, auto_commit, dirty, updated_at)
                  VALUES (?1, ?2, ?3, (SELECT id FROM connections WHERE id = ?4), ?5, ?6, ?7, ?8,
-                     ?9, ?10, ?11)",
+                     ?9, ?10, ?11, ?12)",
                 params![
                     tab.id.to_string(),
                     i64::from(tab.position),
@@ -106,6 +123,7 @@ impl Store {
                     tab.file_path,
                     i64::from(tab.cursor),
                     tab.auto_commit,
+                    tab.dirty,
                     now,
                 ],
             )
@@ -133,6 +151,7 @@ mod tests {
             file_path: Some("/tmp/q.sql".into()),
             cursor: 7,
             auto_commit: false,
+            dirty: true,
         }
     }
 

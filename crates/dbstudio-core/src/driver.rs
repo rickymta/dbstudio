@@ -8,9 +8,9 @@ use uuid::Uuid;
 use crate::{
     ApplyResult, Capabilities, ChangeSet, ChildrenPage, ChildrenPageRequest, CollectingSink,
     ConnectionConfig, DbFamily, DbKind, DdlItem, DdlRequest, Editability, Error, ExecSummary,
-    ExplainRequest, KeyReadRequest, KeyValuePage, Lease, LeaseOptions, ObjectNode, ObjectPath,
-    ObjectSearchRequest, QueryRequest, RawPlan, Result, ResultSink, SchemaModel,
-    SchemaModelRequest, ScriptDialect, Secret, StatementResult, TableCountRequest,
+    ExplainRequest, KeyReadRequest, KeyScanPage, KeyScanRequest, KeyValuePage, Lease, LeaseOptions,
+    ObjectNode, ObjectPath, ObjectSearchRequest, QueryRequest, RawPlan, Result, ResultSink,
+    SchemaModel, SchemaModelRequest, ScriptDialect, Secret, StatementResult, TableCountRequest,
     TableDataRequest, TableDetails,
 };
 
@@ -275,6 +275,20 @@ pub trait Session: Send + Sync {
         Err(Error::Unsupported("key_value".into()))
     }
 
+    /// Capabilities of THIS server when they differ from the driver descriptor (flavour detected
+    /// from `version()`, server version gates). `session_open` puts them in
+    /// `SessionInfo.descriptor.capabilities`. `None` = same as the descriptor.
+    fn capabilities(&self) -> Option<Capabilities> {
+        None
+    }
+
+    /// One page of raw key names of a key-value database (export, backup). Names use the `Key`
+    /// segment encoding ([`crate::encode_key_name`]). Unsupported by default.
+    async fn scan_keys(&self, req: KeyScanRequest) -> Result<KeyScanPage> {
+        let _ = req;
+        Err(Error::Unsupported("scan_keys".into()))
+    }
+
     /// Close the connection and release resources.
     async fn close(&self) -> Result<()>;
 }
@@ -480,7 +494,7 @@ mod tests {
     #[test]
     fn planned_covers_all_kinds_with_phases() {
         let all = planned_descriptors();
-        assert_eq!(all.len(), 9);
+        assert_eq!(all.len(), 12);
         let phase = |k: DbKind| match all.iter().find(|d| d.kind == k).unwrap().status {
             DriverStatus::Planned { phase } => phase,
             _ => panic!("must be planned"),
@@ -494,6 +508,9 @@ mod tests {
         assert_eq!(phase(DbKind::ClickHouse), 10);
         assert_eq!(phase(DbKind::ScyllaDb), 10);
         assert_eq!(phase(DbKind::Cassandra), 10);
+        assert_eq!(phase(DbKind::CockroachDb), 10);
+        assert_eq!(phase(DbKind::YugabyteDb), 10);
+        assert_eq!(phase(DbKind::TiDb), 10);
     }
 
     #[test]
@@ -722,6 +739,18 @@ mod tests {
             })
             .await,
             Err(Error::Unsupported(c)) if c == "key_value"
+        ));
+        assert!(s.capabilities().is_none());
+        assert!(matches!(
+            s.scan_keys(KeyScanRequest {
+                database: ObjectPath::root(),
+                pattern: None,
+                cursor: None,
+                count: 10,
+                type_filter: None
+            })
+            .await,
+            Err(Error::Unsupported(c)) if c == "scan_keys"
         ));
         assert!(matches!(
             s.generate_ddl(DdlRequest {

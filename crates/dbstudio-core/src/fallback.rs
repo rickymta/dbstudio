@@ -133,7 +133,7 @@ pub async fn children_page<S: Session + ?Sized>(
         None => 0,
         Some(c) => c
             .parse()
-            .map_err(|_| Error::Other(format!("invalid cursor: {c}")))?,
+            .map_err(|_| Error::Invalid(format!("invalid cursor: {c}")))?,
     };
     let limit = req.limit.clamp(1, 5000) as usize;
     let mut nodes = s.list_children(&req.parent).await?;
@@ -176,6 +176,7 @@ pub async fn editability_from_details<S: Session + ?Sized>(
         read_only_columns: vec![],
         reason: Some(reason),
         atomic: true,
+        notes: vec![],
     };
     let details = match s.table_details(path).await {
         Ok(d) => d,
@@ -199,6 +200,7 @@ pub async fn editability_from_details<S: Session + ?Sized>(
         read_only_columns,
         reason: (!editable).then_some(NotEditableReason::NoUniqueKey),
         atomic: true,
+        notes: vec![],
     })
 }
 

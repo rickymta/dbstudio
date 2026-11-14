@@ -4,6 +4,10 @@ on:
   push:
     branches: [main, develop]
   pull_request:
+  # Weekly run of the heavy / old-version service groups (`integration-extra`).
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -53,14 +57,52 @@ jobs:
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The Cassandra / ScyllaDB and ClickHouse drivers are behind features that are not default yet.
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
+      - run: cargo test -p dbstudio-driver-cassandra -p dbstudio-driver-clickhouse
+      - run: cargo check -p dbstudio -p dbstudio-cli --features cassandra,clickhouse
       # Keep the debug-only dev bridge feature compiling and tested.
       - run: cargo clippy -p dbstudio --features dev-bridge --all-targets -- -D warnings
       - run: cargo test -p dbstudio --features dev-bridge
 
+  # Integration tests, one matrix entry per group of services so the CI machine never runs every
+  # database at once (see docker/compose.test.yml: new services live in profiles and a profile is
+  # started by naming its services). DBSTUDIO_IT_STRICT=1 turns "container not reachable" into a
+  # failure instead of a skip. `heavy` and `extra` run weekly in `integration-extra`.
   integration:
-    name: Integration tests (all databases)
+    name: Integration tests (${{ matrix.group }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Every service without a profile: PostgreSQL 12/16, MySQL 5.7/8, MariaDB 10.4/10.6,
+          # SQL Server 2022, Oracle Free, MongoDB 4.4/7 (rs0 initiated by its healthcheck),
+          # Redis 6/7, Valkey 8, sshd. MySQL 5.7 runs under emulation: generous timeouts.
+          - group: core
+            services: ''
+            profile: ''
+            test: cargo test --workspace
+            oracle: true
+          # CQL: ScyllaDB (+TLS) and Cassandra 5.
+          - group: wide
+            services: scylla cassandra5 sshd
+            profile: wide
+            test: cargo test -p dbstudio-driver-cassandra -p dbstudio-ssh
+          # ClickHouse 26.3 (HTTP + HTTPS).
+          - group: analytics
+            services: clickhouse26 sshd
+            profile: analytics
+            test: cargo test -p dbstudio-driver-clickhouse -p dbstudio-ssh
+          # CockroachDB and TiDB: the flavour tests live in the PostgreSQL / MySQL driver crates and
+          # carry the flavour in their names.
+          - group: newsql
+            services: cockroach tidb sshd
+            profile: newsql
+            test: |
+              cargo test -p dbstudio-driver-postgres -- cockroach
+              cargo test -p dbstudio-driver-mysql -- tidb
     steps:
       - uses: actions/checkout@v4
 
@@ -92,17 +134,20 @@ jobs:
           sh docker/gen-certs.sh
           sh docker/gen-ssh-keys.sh
 
-      # Starts every service of compose.test.yml (PostgreSQL 12/16, MySQL 5.7/8, MariaDB 10.4/10.6,
-      # SQL Server 2022, Oracle Free, MongoDB 4.4/7 (rs0 initiated by its healthcheck), Redis 6/7,
-      # Valkey 8, sshd). Images are large and MySQL 5.7 runs under emulation, so allow generous
-      # time for pulls and health checks. The `tools` profile (oracle-it) is not started here.
       - name: Start test databases
         timeout-minutes: 25
-        run: docker compose -f docker/compose.test.yml up -d --wait --wait-timeout 900
+        run: |
+          if [ -z "${{ matrix.profile }}" ]; then
+            docker compose -f docker/compose.test.yml up -d --wait --wait-timeout 900
+          else
+            docker compose -f docker/compose.test.yml --profile "${{ matrix.profile }}" \
+              up -d --wait --wait-timeout 900 ${{ matrix.services }}
+          fi
 
       - name: Run integration tests
         env:
           DBSTUDIO_IT: '1'
+          DBSTUDIO_IT_STRICT: '1'
           DBSTUDIO_IT_MSSQL_PORT: '14333'
           DBSTUDIO_IT_ORACLE_PORT: '15213'
           DBSTUDIO_IT_MONGO44_PORT: '27044'
@@ -111,18 +156,100 @@ jobs:
           DBSTUDIO_IT_REDIS7_PORT: '63797'
           DBSTUDIO_IT_VALKEY8_PORT: '63798'
           DBSTUDIO_IT_SSH_PORT: '22022'
-        run: cargo test --workspace
+          DBSTUDIO_IT_SCYLLA_PORT: '19060'
+          DBSTUDIO_IT_SCYLLA_TLS_PORT: '19062'
+          DBSTUDIO_IT_CASSANDRA5_PORT: '19050'
+          DBSTUDIO_IT_CLICKHOUSE_PORT: '18123'
+          DBSTUDIO_IT_CLICKHOUSE_TLS_PORT: '18443'
+          DBSTUDIO_IT_COCKROACH_PORT: '26258'
+          DBSTUDIO_IT_TIDB_PORT: '34000'
+        run: ${{ matrix.test }}
 
       # The Oracle driver needs Instant Client (a Linux build of it lives in the oracle-it image),
       # so its tests run in a container on the compose network instead of on the runner.
       - name: Run Oracle driver integration tests
+        if: matrix.oracle
         timeout-minutes: 30
         run: docker compose -f docker/compose.test.yml --profile tools run --rm oracle-it
 
       - name: Container logs (on failure)
         if: failure()
-        run: docker compose -f docker/compose.test.yml logs --no-color
+        run: docker compose -f docker/compose.test.yml --profile ${{ matrix.profile || 'tools' }} logs --no-color
 
       - name: Stop test databases
         if: always()
-        run: docker compose -f docker/compose.test.yml down -v
+        run: docker compose -f docker/compose.test.yml --profile ${{ matrix.profile || 'tools' }} down -v
+
+  # Weekly: YugabyteDB (heavy, ~2 GB) and the oldest versions of the new databases. May fail while
+  # their IT suites are young, so it never blocks a merge.
+  integration-extra:
+    name: Integration tests (${{ matrix.group }}, weekly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: heavy
+            services: yugabyte sshd
+            test: cargo test -p dbstudio-driver-postgres -- yugabyte
+          - group: extra
+            services: cassandra41 scylla62 clickhouse23 sshd
+            test: |
+              cargo test -p dbstudio-driver-cassandra -- cassandra41 scylla62
+              cargo test -p dbstudio-driver-clickhouse -- clickhouse23
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies for Tauri 2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev build-essential curl wget file
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Generate test certificates and SSH keys
+        run: |
+          sh docker/gen-certs.sh
+          sh docker/gen-ssh-keys.sh
+
+      - name: Start test databases
+        timeout-minutes: 25
+        run: |
+          docker compose -f docker/compose.test.yml --profile ${{ matrix.group }} \
+            up -d --wait --wait-timeout 900 ${{ matrix.services }}
+
+      - name: Run integration tests
+        env:
+          DBSTUDIO_IT: '1'
+          DBSTUDIO_IT_STRICT: '1'
+          DBSTUDIO_IT_SSH_PORT: '22022'
+          DBSTUDIO_IT_YUGABYTE_PORT: '54333'
+          DBSTUDIO_IT_CASSANDRA41_PORT: '19041'
+          DBSTUDIO_IT_SCYLLA62_PORT: '19061'
+          DBSTUDIO_IT_CLICKHOUSE23_PORT: '18023'
+        run: ${{ matrix.test }}
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker compose -f docker/compose.test.yml --profile ${{ matrix.group }} logs --no-color
+
+      - name: Stop test databases
+        if: always()
+        run: docker compose -f docker/compose.test.yml --profile ${{ matrix.group }} down -v

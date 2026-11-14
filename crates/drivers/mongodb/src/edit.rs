@@ -2,7 +2,8 @@
 
 use bson::{Bson, Document, doc};
 use dbstudio_core::{
-    ApplyResult, ChangeSet, DocInput, DocumentChange, DocumentChangeSet, Error, FieldEdit, Result,
+    ApplyResult, ChangeSet, DocInput, DocumentChange, DocumentChangeSet, Error, FieldEdit,
+    FieldOriginal, Result,
 };
 use mongodb::Client;
 
@@ -100,9 +101,40 @@ fn update_docs(set: &[FieldEdit], unset: &[Vec<String>]) -> Result<Document> {
     Ok(u)
 }
 
+/// Filter of a change: `{_id, <expected conditions>}`. A field that was present must still hold
+/// its original value (wrapped in `$eq`, so a regex or a sub-document with `$` keys is compared
+/// as a value, not read as an operator); a field that was absent must still be absent.
+///
+/// Limit: MongoDB equality on an array field also matches a document whose array merely
+/// CONTAINS the original array as an element, and a path through an array uses the usual
+/// membership semantics; for such fields the check is weaker than "unchanged".
+fn guarded_filter(id: &dbstudio_core::Value, expected: &[FieldOriginal]) -> Result<Document> {
+    let mut q = doc! {"_id": value_to_bson(id)?};
+    for e in expected {
+        check_path(&e.path)?;
+        let path = e.path.join(".");
+        let cond = match &e.value {
+            None => doc! {"$exists": false},
+            // `{f: null}` would also match a missing field.
+            Some(v) => match value_to_bson(v)? {
+                Bson::Null => doc! {"$type": "null"},
+                Bson::Undefined => doc! {"$type": "undefined"},
+                b => doc! {"$eq": b},
+            },
+        };
+        q.insert(path, Bson::Document(cond));
+    }
+    Ok(q)
+}
+
 /// One planned write: the command, its shell text, and whether it must affect exactly one doc.
 struct Step {
     index: u32,
+    collection: String,
+    /// `{_id}` of the target document and whether the filter also carries `expected` field
+    /// conditions (optimistic concurrency check, see `explain_miss`).
+    id_filter: Option<Document>,
+    guarded: bool,
     command: Document,
     text: String,
     exactly_one: bool,
@@ -113,18 +145,23 @@ struct Step {
 fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
     let (_, coll) = resolve(&set.collection).ok_or_else(|| bad("invalid collection path"))?;
     let (coll, _) = coll.ok_or_else(|| bad("invalid collection path"))?;
-    let q =
-        |id: &dbstudio_core::Value| -> Result<Document> { Ok(doc! {"_id": value_to_bson(id)?}) };
+    let q = guarded_filter;
+    let id_q = |id: &dbstudio_core::Value| -> Result<Option<Document>> {
+        Ok(Some(doc! {"_id": value_to_bson(id)?}))
+    };
     let mut deletes = vec![];
     let mut updates = vec![];
     let mut inserts = vec![];
     for (i, ch) in set.changes.iter().enumerate() {
         let index = i as u32;
         match ch {
-            DocumentChange::Delete { id } => {
-                let query = q(id)?;
+            DocumentChange::Delete { id, expected } => {
+                let query = q(id, expected)?;
                 deletes.push(Step {
                     index,
+                    collection: coll.clone(),
+                    id_filter: id_q(id)?,
+                    guarded: !expected.is_empty(),
                     text: format!(
                         "db.getCollection({}).deleteOne({})",
                         jstr(&coll),
@@ -135,11 +172,19 @@ fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
                     is_insert: false,
                 });
             }
-            DocumentChange::Update { id, set: s, unset } => {
-                let query = q(id)?;
+            DocumentChange::Update {
+                id,
+                set: s,
+                unset,
+                expected,
+            } => {
+                let query = q(id, expected)?;
                 let u = update_docs(s, unset)?;
                 updates.push(Step {
                     index,
+                    collection: coll.clone(),
+                    id_filter: id_q(id)?,
+                    guarded: !expected.is_empty(),
                     text: format!(
                         "db.getCollection({}).updateOne({}, {})",
                         jstr(&coll),
@@ -151,8 +196,12 @@ fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
                     is_insert: false,
                 });
             }
-            DocumentChange::Replace { id, document } => {
-                let query = q(id)?;
+            DocumentChange::Replace {
+                id,
+                document,
+                expected,
+            } => {
+                let query = q(id, expected)?;
                 let d = input_doc(document)?;
                 if d.keys().next().is_some_and(|k| k.starts_with('$')) {
                     return Err(bad(
@@ -161,6 +210,9 @@ fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
                 }
                 updates.push(Step {
                     index,
+                    collection: coll.clone(),
+                    id_filter: id_q(id)?,
+                    guarded: !expected.is_empty(),
                     text: format!(
                         "db.getCollection({}).replaceOne({}, {})",
                         jstr(&coll),
@@ -176,6 +228,9 @@ fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
                 let d = input_doc(document)?;
                 inserts.push(Step {
                     index,
+                    collection: coll.clone(),
+                    id_filter: None,
+                    guarded: false,
                     text: format!(
                         "db.getCollection({}).insertOne({})",
                         jstr(&coll),
@@ -208,6 +263,9 @@ pub fn preview(changes: &ChangeSet) -> Result<Vec<String>> {
 async fn run_step(cmd: &mut Cmd<'_>, db: &str, step: &Step) -> Result<u64> {
     let reply = cmd.run(db, step.command.clone()).await?;
     let n = num(&reply, "n");
+    if step.exactly_one && n != 1 && step.guarded {
+        return Err(bad(explain_miss(cmd, db, step).await?));
+    }
     if step.exactly_one && n != 1 {
         let what = if step.is_insert {
             "inserted"
@@ -217,6 +275,32 @@ async fn run_step(cmd: &mut Cmd<'_>, db: &str, step: &Step) -> Result<u64> {
         return Err(bad(format!("expected exactly 1 document {what}, got {n}")));
     }
     Ok(n.max(0) as u64)
+}
+
+/// Why a guarded write matched nothing: the document is gone, or a checked field changed.
+async fn explain_miss(cmd: &mut Cmd<'_>, db: &str, step: &Step) -> Result<&'static str> {
+    let Some(filter) = &step.id_filter else {
+        return Ok("document was modified by another client");
+    };
+    let reply = cmd
+        .run(
+            db,
+            doc! {
+                "find": &step.collection, "filter": filter.clone(),
+                "projection": {"_id": 1}, "limit": 1, "singleBatch": true,
+            },
+        )
+        .await?;
+    let found = reply
+        .get_document("cursor")
+        .ok()
+        .and_then(|c| c.get_array("firstBatch").ok())
+        .is_some_and(|b| !b.is_empty());
+    Ok(if found {
+        "document was modified by another client"
+    } else {
+        "document no longer exists"
+    })
 }
 
 /// Apply a document change set.
@@ -333,8 +417,12 @@ mod tests {
                     value: Value::Text("Hue".into()),
                 }],
                 unset: vec![vec!["old".into()]],
+                expected: vec![],
             },
-            DocumentChange::Delete { id },
+            DocumentChange::Delete {
+                id,
+                expected: vec![],
+            },
         ]))
         .unwrap();
         assert!(
@@ -360,6 +448,7 @@ mod tests {
                     value: Value::Int(1),
                 }],
                 unset: vec![],
+                expected: vec![],
             }]))
         };
         assert!(upd(&["a", "b"]).is_ok());
@@ -374,16 +463,57 @@ mod tests {
             id: Value::Int(1),
             set: vec![],
             unset: vec![vec!["x.y".into()]],
+            expected: vec![],
         }]));
         assert!(unset.is_err());
         let rep = |text: &str| {
             preview(&set(vec![DocumentChange::Replace {
                 id: Value::Int(1),
                 document: DocInput::Ejson { text: text.into() },
+                expected: vec![],
             }]))
         };
         assert!(rep("{\"a\": 1}").is_ok());
         assert!(rep("{\"$set\": {\"a\": 1}}").is_err());
+    }
+
+    #[test]
+    fn expected_fields_become_filter_conditions() {
+        let p = preview(&set(vec![
+            DocumentChange::Update {
+                id: Value::Int(1),
+                set: vec![FieldEdit {
+                    path: vec!["a".into(), "b".into()],
+                    value: Value::Int(2),
+                }],
+                unset: vec![],
+                expected: vec![
+                    FieldOriginal {
+                        path: vec!["a".into(), "b".into()],
+                        value: Some(Value::Int(1)),
+                    },
+                    FieldOriginal {
+                        path: vec!["c".into()],
+                        value: None,
+                    },
+                    FieldOriginal {
+                        path: vec!["n".into()],
+                        value: Some(Value::Null),
+                    },
+                ],
+            },
+            DocumentChange::Delete {
+                id: Value::Int(1),
+                expected: vec![],
+            },
+        ]))
+        .unwrap();
+        // Deletes run first; the update is second.
+        assert_eq!(p[0], "db.getCollection(\"users\").deleteOne({\"_id\": 1})");
+        assert!(
+            p[1].contains("{\"_id\": 1, \"a.b\": {\"$eq\": 1}, \"c\": {\"$exists\": false}, \"n\": {\"$type\": \"null\"}}"),
+            "{p:?}"
+        );
     }
 
     #[test]
@@ -399,6 +529,7 @@ mod tests {
             id: Value::Int(1),
             set: vec![],
             unset: vec![],
+            expected: vec![],
         }]))
         .unwrap_err();
         assert_eq!(e.kind(), "query");

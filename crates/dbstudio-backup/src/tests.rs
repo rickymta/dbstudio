@@ -112,6 +112,7 @@ fn inspection() -> BackupInspection {
         preamble: Some(json!({"engine": "postgres"})),
         encrypted: false,
         native: None,
+        objects: vec![],
     }
 }
 
@@ -247,7 +248,7 @@ fn json_shapes() {
 #[test]
 fn detection_lists_every_binary_tool() {
     let tools = detect_tools(&BTreeMap::new());
-    assert_eq!(tools.len(), 10);
+    assert_eq!(tools.len(), 12);
     // Either found, or a human readable problem is attached.
     assert!(
         tools
@@ -255,9 +256,8 @@ fn detection_lists_every_binary_tool() {
             .all(|t| t.path.is_some() || t.problem.is_some())
     );
     assert!(
-        tools
-            .iter()
-            .all(|t| t.tool != NativeTool::MsSqlServerBackup)
+        tools.iter().all(|t| t.tool.binary().is_some()),
+        "tools run by the server have no binary to detect"
     );
 }
 
@@ -393,6 +393,29 @@ fn fixtures() {
             "BackupRun": j(&run()),
             "RestoreSpec": j(&restore()),
             "BackupInspection": j(&inspection()),
+            "BackupInspection#objects": j(&BackupInspection {
+                objects: vec![
+                    BackupObject {
+                        kind: ObjectKind::Table,
+                        schema: Some("public".into()),
+                        name: "orders".into(),
+                        phases: vec![BackupPhase::Pre, BackupPhase::Data, BackupPhase::Post],
+                        rows: Some(1200),
+                    },
+                    BackupObject {
+                        kind: ObjectKind::Collection,
+                        schema: None,
+                        name: "users".into(),
+                        phases: vec![BackupPhase::Data],
+                        rows: None,
+                    },
+                ],
+                ..inspection()
+            }),
+            "NativeTool": j(&NativeTool::ClickHouseServerBackup),
+            "NativeTool#cockroach": j(&NativeTool::CockroachServerBackup),
+            "NativeTool#ysqlDump": j(&NativeTool::YsqlDump),
+            "NativeTool#ysqlsh": j(&NativeTool::Ysqlsh),
             "NativeToolInfo": j(&tool_info()),
             "BackupOutcome": j(&backup_outcome()),
             "RestoreOutcome": j(&restore_outcome()),

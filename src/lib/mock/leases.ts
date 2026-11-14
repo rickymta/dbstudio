@@ -13,12 +13,16 @@ import type {
   LeaseContext,
   LeaseInfo,
   LeaseOptions,
+  LeaseReopened,
   LeaseState,
+  ObjectPath,
   ParamRef,
   QueryEvent,
   ScriptAnalysis,
   ScriptDialect,
+  ScriptGenerated,
   ScriptProblem,
+  ScriptTemplate,
   StatementClass,
   StatementInfo,
   TxOptions,
@@ -698,6 +702,43 @@ export const leasesMock = {
     };
     leases.set(leaseId, { sessionId, state, cancelled: new Set(), pending: null });
     return { leaseId, sessionId, state: clone(state) };
+  },
+  /** The mock connection never breaks; reopening clears `broken` and drops an open transaction. */
+  async leaseReopen(leaseId: Uuid): Promise<LeaseReopened> {
+    const lease = find(leaseId);
+    await sleep(5, 20);
+    const transactionLost =
+      lease.state.transaction === 'active' || lease.state.transaction === 'failed';
+    lease.state = { ...lease.state, broken: false, transaction: 'idle', running: null };
+    lease.pending = null;
+    pushLeaseState(leaseId, lease);
+    return {
+      lease: { leaseId, sessionId: lease.sessionId, state: clone(lease.state) },
+      transactionLost,
+    };
+  },
+  /** A sample template; the real backend generates it from the table's columns. */
+  async scriptGenerate(
+    sessionId: Uuid,
+    path: ObjectPath,
+    template: ScriptTemplate,
+  ): Promise<ScriptGenerated> {
+    const dialect = mockSessionDialect(sessionId);
+    await sleep(5, 20);
+    const table = path.segments.at(-1)?.name ?? 'table';
+    const quote = dialect.name === 'mySql' ? '`' : '"';
+    const name = `${quote}${table}${quote}`;
+    const named = dialect.name !== 'msSql';
+    const text = {
+      select:
+        dialect.name === 'msSql'
+          ? `SELECT TOP 100 * FROM ${name}`
+          : `SELECT * FROM ${name} LIMIT 100`,
+      insert: `INSERT INTO ${name} (id) VALUES (${named ? ':id' : '@id'})`,
+      update: `UPDATE ${name} SET id = ${named ? ':id' : '@id'} WHERE id = ${named ? ':id' : '@id'}`,
+      delete: `DELETE FROM ${name} WHERE id = ${named ? ':id' : '@id'}`,
+    }[template];
+    return { text, dialect };
   },
   async leaseClose(leaseId: Uuid): Promise<LeaseCloseReport> {
     const lease = leases.get(leaseId);

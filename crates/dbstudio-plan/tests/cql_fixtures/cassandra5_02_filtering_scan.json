@@ -1,0 +1,59 @@
+{
+  "command": "QUERY",
+  "coordinator": "172.28.0.7",
+  "durationUs": 20650,
+  "events": [
+    {
+      "activity": "Parsing SELECT * FROM nums WHERE v = 'x5' ALLOW FILTERING",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 1985,
+      "thread": "Native-Transport-Requests-13"
+    },
+    {
+      "activity": "Preparing statement",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 4355,
+      "thread": "Native-Transport-Requests-13"
+    },
+    {
+      "activity": "Computing ranges to query",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 11893,
+      "thread": "Native-Transport-Requests-13"
+    },
+    {
+      "activity": "Submitting range requests on 17 ranges with a concurrency of 1 (0.0 rows per range expected)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 12248,
+      "thread": "Native-Transport-Requests-13"
+    },
+    {
+      "activity": "Submitted 1 concurrent range requests",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 17996,
+      "thread": "Native-Transport-Requests-13"
+    },
+    {
+      "activity": "Executing seq scan across 0 sstables for (min(-9223372036854775808), min(-9223372036854775808)]",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 18176,
+      "thread": "ReadStage-2"
+    },
+    {
+      "activity": "Read 400 live rows and 0 tombstone cells",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 19478,
+      "thread": "ReadStage-2"
+    }
+  ],
+  "parameters": {
+    "consistency_level": "LOCAL_ONE",
+    "page_size": "1000",
+    "query": "SELECT * FROM nums WHERE v = 'x5' ALLOW FILTERING",
+    "serial_consistency_level": "SERIAL"
+  },
+  "request": "Execute CQL3 query",
+  "rows": 1,
+  "sessionId": "ca1e3d40-dfda-11f1-8407-d9e3705a30bf",
+  "startedAt": "2026-11-14T03:23:41.204Z"
+}

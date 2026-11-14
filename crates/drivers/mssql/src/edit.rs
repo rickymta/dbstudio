@@ -26,6 +26,7 @@ pub async fn editability(sess: &MssqlSession, path: &ObjectPath) -> Result<Edita
         read_only_columns: Vec::new(),
         reason: Some(reason),
         atomic: true,
+        notes: vec![],
     };
     if !matches!(obj.kind, ObjectKind::Table | ObjectKind::View) {
         return Ok(not_editable(NotEditableReason::NotATable));
@@ -74,6 +75,7 @@ pub async fn editability(sess: &MssqlSession, path: &ObjectPath) -> Result<Edita
             read_only_columns,
             reason: Some(NotEditableReason::ReadOnlyConnection),
             atomic: true,
+            notes: vec![],
         });
     }
     if key.is_empty() {
@@ -83,6 +85,7 @@ pub async fn editability(sess: &MssqlSession, path: &ObjectPath) -> Result<Edita
             read_only_columns,
             reason: Some(NotEditableReason::NoUniqueKey),
             atomic: true,
+            notes: vec![],
         });
     }
     Ok(Editability {
@@ -91,6 +94,7 @@ pub async fn editability(sess: &MssqlSession, path: &ObjectPath) -> Result<Edita
         read_only_columns,
         reason: None,
         atomic: true,
+        notes: vec![],
     })
 }
 
@@ -104,10 +108,10 @@ fn edit_lit(v: &EditValue) -> String {
 
 fn key_condition(cols: &[String], key: &[Value]) -> Result<String> {
     if cols.is_empty() {
-        return Err(Error::Other("the change set has no key columns".into()));
+        return Err(Error::Invalid("the change set has no key columns".into()));
     }
     if cols.len() != key.len() {
-        return Err(Error::Other(format!(
+        return Err(Error::Invalid(format!(
             "key has {} values but {} key columns were given",
             key.len(),
             cols.len()
@@ -140,7 +144,7 @@ pub fn statements(cs: &RowChangeSet) -> Result<Vec<String>> {
         .map(|ch| match ch {
             RowChange::Update { key, set } => {
                 if set.is_empty() {
-                    return Err(Error::Other("an update without cells".into()));
+                    return Err(Error::Invalid("an update without cells".into()));
                 }
                 Ok(format!(
                     "UPDATE {table} SET {} WHERE {};",
@@ -188,6 +192,7 @@ async fn run_change(conn: &mut Conn, sql: &str) -> Result<u64> {
         max_rows: None,
         batch_size: 100,
         timeout: None,
+        full_lob: false,
     };
     run_script(conn, sql, &params, &ctl, None, &mut SinkOut(&mut sink)).await?;
     Ok(sink
@@ -236,7 +241,7 @@ pub async fn apply(sess: &MssqlSession, changes: ChangeSet) -> Result<ApplyResul
         };
         if !candidates.iter().any(|k| same(k, &cs.key_columns)) {
             conn.release();
-            return Err(Error::Other(
+            return Err(Error::Invalid(
                 "key_columns do not match a primary or unique NOT NULL key of the table".into(),
             ));
         }

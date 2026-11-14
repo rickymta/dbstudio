@@ -1,9 +1,12 @@
 //! Connection options, TLS policy, error mapping and the raw command helper.
 //!
-//! Limitation (R6): the `mongodb` crate verifies the certificate (and sends SNI) for the host in
-//! the connection string and offers no override, so `tls.server_name` is not honoured. Behind an
-//! SSH tunnel the host is `127.0.0.1`; `VerifyFull` then needs a certificate that lists that
-//! address, otherwise use `VerifyCa`/`Require`.
+//! R6 (TLS name check behind SSH): the `mongodb` crate verifies the certificate (and sends SNI)
+//! for the host in the connection string and has no name override. The way through is the option
+//! `socks5Proxy` (`host:port`): the profile keeps its ORIGINAL host, the driver connects through
+//! a local SOCKS5 proxy (`dbstudio_ssh::Tunnel::open_socks5`, which forwards over the SSH
+//! session), and TLS then checks the original name. Without that option `tls.server_name` is not
+//! honoured and a tunnel to `127.0.0.1` needs a certificate that lists that address (or
+//! `VerifyCa`/`Require`).
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -160,6 +163,26 @@ fn tls_attempts(mode: TlsMode) -> Vec<TlsAttempt> {
     }
 }
 
+/// `host:port` (or `[v6]:port`, or just `host`) of the `socks5Proxy` option.
+fn parse_proxy(text: &str) -> Result<mongodb::options::Socks5Proxy> {
+    let t = text.trim();
+    let (host, port) = match t.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(':') || h.starts_with('[') => match p.parse::<u16>() {
+            Ok(p) => (h, Some(p)),
+            Err(_) => return Err(Error::Invalid(format!("invalid socks5Proxy `{text}`"))),
+        },
+        _ => (t, None),
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() {
+        return Err(Error::Invalid(format!("invalid socks5Proxy `{text}`")));
+    }
+    Ok(mongodb::options::Socks5Proxy::builder()
+        .host(host.to_string())
+        .port(port)
+        .build())
+}
+
 /// Base `mongodb://` / `mongodb+srv://` URI (no credentials, no options).
 fn base_uri(config: &ConnectionConfig) -> String {
     let srv = truthy(config, "srv");
@@ -205,6 +228,9 @@ async fn build_options(
     }
     if let Some(rs) = opt(config, "replicaSet") {
         o.repl_set_name = Some(rs.to_string());
+    }
+    if let Some(proxy) = opt(config, "socks5Proxy") {
+        o.socks5_proxy = Some(parse_proxy(proxy)?);
     }
     o.tls = match attempt {
         TlsAttempt::Plain => None,
@@ -471,6 +497,30 @@ impl Cmd<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_option_is_parsed() {
+        let p = parse_proxy("127.0.0.1:1080").unwrap();
+        assert_eq!((p.host.as_str(), p.port), ("127.0.0.1", Some(1080)));
+        let p = parse_proxy("[::1]:9").unwrap();
+        assert_eq!((p.host.as_str(), p.port), ("::1", Some(9)));
+        assert_eq!(parse_proxy("proxy.local").unwrap().port, None);
+        assert!(parse_proxy("h:notaport").is_err());
+        assert!(parse_proxy(":80").is_err());
+    }
+
+    #[tokio::test]
+    async fn proxy_option_reaches_the_client_options() {
+        let mut cfg = ConnectionConfig::new(dbstudio_core::DbKind::MongoDb, "x", "db.example.com");
+        cfg.options
+            .insert("socks5Proxy".into(), "127.0.0.1:4040".into());
+        let o = build_options(&cfg, None, TlsAttempt::Plain, None, false)
+            .await
+            .unwrap();
+        let p = o.socks5_proxy.expect("proxy");
+        assert_eq!((p.host.as_str(), p.port), ("127.0.0.1", Some(4040)));
+        assert_eq!(o.hosts[0].to_string(), "db.example.com:27017");
+    }
 
     #[test]
     fn only_explicit_tls_failures_downgrade() {

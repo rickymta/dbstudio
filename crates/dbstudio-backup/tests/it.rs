@@ -25,6 +25,7 @@ fn enabled() -> bool {
 struct Rep {
     cancel: CancelToken,
     phases: std::sync::Mutex<Vec<String>>,
+    logs: std::sync::Mutex<Vec<String>>,
 }
 
 impl JobReporter for Rep {
@@ -33,6 +34,9 @@ impl JobReporter for Rep {
         if v.last() != Some(&p.phase) {
             v.push(p.phase.clone());
         }
+    }
+    fn log(&self, line: &str) {
+        self.logs.lock().unwrap().push(line.to_string());
     }
     fn cancel_token(&self) -> &CancelToken {
         &self.cancel
@@ -350,7 +354,7 @@ async fn native_pg_dump_and_mysqldump_roundtrip_through_shims() {
         format!("dbstudio_it_ndst_{n}"),
     );
     let _cleanup = DbGuard::new(DbKind::MySql, 33068, [&src, &dst]);
-    exec(&*s, None, &format!("CREATE DATABASE `{src}`")).await;
+    exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
     for sql in &MY_FIXTURE[..3] {
         exec(&*s, Some(&src), sql).await;
     }
@@ -714,7 +718,7 @@ async fn mysql_and_mariadb_full_round_trip() {
             format!("dbstudio_it_full_dst_{n}"),
         );
         let _cleanup = DbGuard::new(DbKind::MySql, port, [&src, &dst]);
-        exec(&*s, None, &format!("CREATE DATABASE `{src}`")).await;
+        exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
         for sql in MY_FULL {
             exec(&*s, Some(&src), sql).await;
         }
@@ -797,16 +801,7 @@ async fn restore_guards_clean_and_failure_semantics() {
         objects: vec![],
         continue_on_error: false,
     };
-    // Selected objects are not supported for integrated backups.
-    let mut subset = rspec.clone();
-    subset.objects = vec!["app.people".into()];
-    assert_eq!(
-        run_restore(ctx(&cfg, &s, &rep, BTreeMap::new()), &subset, None)
-            .await
-            .unwrap_err()
-            .kind(),
-        "unsupported"
-    );
+    // (Selected objects are restored since format 3: see `partial_restore_*`.)
     run_restore(ctx(&cfg, &s, &rep, BTreeMap::new()), &rspec, None)
         .await
         .unwrap();
@@ -1196,7 +1191,7 @@ async fn mysql_clean_keeps_the_database_charset() {
             format!("dbstudio_it_cl_dst_{n}"),
         );
         let _cleanup = DbGuard::new(DbKind::MySql, port, [&src, &dst]);
-        exec(&*s, None, &format!("CREATE DATABASE `{src}`")).await;
+        exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
         exec(
             &*s,
             Some(&src),
@@ -1216,7 +1211,7 @@ async fn mysql_clean_keeps_the_database_charset() {
         exec(
             &*s,
             None,
-            &format!("CREATE DATABASE `{dst}` CHARACTER SET latin1 COLLATE latin1_general_ci"),
+            &format!("CREATE DATABASE {dst} CHARACTER SET latin1 COLLATE latin1_general_ci"),
         )
         .await;
         exec(&*s, Some(&dst), "CREATE TABLE extra (id INT)").await;
@@ -1305,4 +1300,210 @@ async fn concurrent_backups_never_share_or_overwrite_a_file() {
     assert_eq!(all.len(), 2, "{all:?}");
     assert!(all.iter().all(|n| !n.ends_with(".part")), "{all:?}");
     drop_pg(&*s, &src).await;
+}
+
+/// Partial restore: five tables with foreign keys, restore two. The restored tables exist and
+/// hold their rows; the constraint that points at a table that is not restored is dropped and
+/// the log says so.
+async fn partial_restore_case(kind: DbKind, port: u16) {
+    let (cfg, s) = connect_at(kind, port).await;
+    let (src, dst) = (
+        format!("dbstudio_it_part_src_{}", unique()),
+        format!("dbstudio_it_part_dst_{}", unique()),
+    );
+    let _cleanup = DbGuard::new(kind, port, [&src, &dst]);
+    let pg = kind == DbKind::Postgres;
+    exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
+    let ddl = [
+        "CREATE TABLE t1 (id INT PRIMARY KEY, v VARCHAR(20))",
+        "CREATE TABLE t2 (id INT PRIMARY KEY, t1_id INT, CONSTRAINT fk_t2_t1 FOREIGN KEY (t1_id) REFERENCES t1 (id))",
+        "CREATE TABLE t3 (id INT PRIMARY KEY, t2_id INT, CONSTRAINT fk_t3_t2 FOREIGN KEY (t2_id) REFERENCES t2 (id))",
+        "CREATE TABLE t4 (id INT PRIMARY KEY, v VARCHAR(20))",
+        "CREATE TABLE t5 (id INT PRIMARY KEY, t4_id INT, CONSTRAINT fk_t5_t4 FOREIGN KEY (t4_id) REFERENCES t4 (id))",
+        "INSERT INTO t1 VALUES (1, 'a'), (2, 'b')",
+        "INSERT INTO t2 VALUES (1, 1), (2, 2), (3, 2)",
+        "INSERT INTO t3 VALUES (1, 1)",
+        "INSERT INTO t4 VALUES (1, 'x'), (2, 'y')",
+        "INSERT INTO t5 VALUES (1, 1)",
+    ];
+    for sql in ddl {
+        exec(&*s, Some(&src), sql).await;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let rep = Arc::new(Rep::default());
+    let out = run_backup(
+        ctx(&cfg, &s, &rep, BTreeMap::new()),
+        &spec(&src, false, dir.path(), logical()),
+        None,
+    )
+    .await
+    .unwrap();
+    let file = PathBuf::from(&out.files[0]);
+    let ins = inspect(&file, None).await.unwrap();
+    assert_eq!(ins.preamble.as_ref().unwrap()["formatVersion"], 3);
+    let tables: Vec<_> = ins
+        .objects
+        .iter()
+        .filter(|o| o.kind == ObjectKind::Table)
+        .map(|o| o.name.clone())
+        .collect();
+    assert_eq!(tables.len(), 5, "{tables:?}");
+    let rspec = RestoreSpec {
+        file: file.to_string_lossy().into_owned(),
+        target_connection_id: Uuid::nil(),
+        target_database: Some(dst.clone()),
+        create_database: true,
+        clean: false,
+        objects: vec!["t2".into(), "t4".into()],
+        continue_on_error: false,
+    };
+    let res = run_restore(ctx(&cfg, &s, &rep, BTreeMap::new()), &rspec, None)
+        .await
+        .unwrap_or_else(|e| panic!("partial restore: {e}"));
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    assert_eq!(res.objects, 2);
+    let listing = if pg {
+        "SELECT string_agg(table_name, ',' ORDER BY table_name) FROM information_schema.tables WHERE table_schema = 'public'"
+    } else {
+        "SELECT GROUP_CONCAT(table_name ORDER BY table_name) FROM information_schema.tables WHERE table_schema = DATABASE()"
+    };
+    let v = scalar(&*s, &dst, listing).await;
+    assert!(matches!(&v, Value::Text(t) if t == "t2,t4"), "{v:?}");
+    assert!(matches!(
+        scalar(&*s, &dst, "SELECT COUNT(*) FROM t2").await,
+        Value::Int(3) | Value::UInt(3)
+    ));
+    assert!(matches!(
+        scalar(&*s, &dst, "SELECT COUNT(*) FROM t4").await,
+        Value::Int(2) | Value::UInt(2)
+    ));
+    let fks = if pg {
+        "SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_type = 'FOREIGN KEY' AND table_schema = 'public'"
+    } else {
+        "SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_type = 'FOREIGN KEY' AND table_schema = DATABASE()"
+    };
+    // t2 -> t1 is dropped (t1 is not restored); t5 -> t4 is not restored with t5.
+    assert!(matches!(
+        scalar(&*s, &dst, fks).await,
+        Value::Int(0) | Value::UInt(0)
+    ));
+    let logs = rep.logs.lock().unwrap().join("\n");
+    assert!(
+        logs.contains("references") && logs.contains("t1"),
+        "the skipped constraint is reported: {logs}"
+    );
+    // `clean` together with selected objects would lose everything else: refused.
+    let mut dirty = rspec.clone();
+    dirty.clean = true;
+    dirty.create_database = false;
+    let e = run_restore(ctx(&cfg, &s, &rep, BTreeMap::new()), &dirty, None)
+        .await
+        .unwrap_err();
+    assert!(e.message().contains("clean"), "{}", e.message());
+    // A table that is not in the backup is refused.
+    let mut bad = rspec.clone();
+    bad.objects = vec!["nope".into()];
+    assert!(
+        run_restore(ctx(&cfg, &s, &rep, BTreeMap::new()), &bad, None)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn partial_restore_postgres_and_mysql() {
+    if !enabled() {
+        return;
+    }
+    partial_restore_case(DbKind::Postgres, 54316).await;
+    partial_restore_case(DbKind::MySql, 33068).await;
+}
+
+/// PostgreSQL partial restore with serial and identity columns and a trigger: only the chosen
+/// table comes back, its sequence continues after the restored rows, the sequences of the other
+/// tables are not touched (no `OWNED BY` on a missing table) and the trigger function it needs
+/// is created.
+#[tokio::test(flavor = "multi_thread")]
+async fn partial_restore_postgres_serial_identity_and_trigger() {
+    if !enabled() {
+        return;
+    }
+    let (cfg, s) = connect_at(DbKind::Postgres, 54316).await;
+    let n = unique();
+    let (src, dst) = (
+        format!("dbstudio_it_pser_src_{n}"),
+        format!("dbstudio_it_pser_dst_{n}"),
+    );
+    let _cleanup = DbGuard::new(DbKind::Postgres, 54316, [&src, &dst]);
+    exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
+    for sql in [
+        "CREATE TABLE a (id SERIAL PRIMARY KEY, v TEXT)",
+        "CREATE TABLE b (id SERIAL PRIMARY KEY, v TEXT, touched BOOLEAN DEFAULT false)",
+        "CREATE TABLE c (id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v TEXT)",
+        "CREATE FUNCTION touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.touched := true; RETURN NEW; END $$",
+        "CREATE TRIGGER b_touch BEFORE INSERT ON b FOR EACH ROW EXECUTE FUNCTION touch()",
+        "INSERT INTO a (v) VALUES ('x'), ('y'), ('z')",
+        "INSERT INTO b (v) VALUES ('p'), ('q')",
+        "INSERT INTO c (v) VALUES ('i'), ('j')",
+    ] {
+        exec(&*s, Some(&src), sql).await;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let rep = Arc::new(Rep::default());
+    let out = run_backup(
+        ctx(&cfg, &s, &rep, BTreeMap::new()),
+        &spec(&src, false, dir.path(), logical()),
+        None,
+    )
+    .await
+    .unwrap();
+    let restore = |objects: Vec<&str>| RestoreSpec {
+        file: out.files[0].clone(),
+        target_connection_id: Uuid::nil(),
+        target_database: Some(dst.clone()),
+        create_database: true,
+        clean: false,
+        objects: objects.into_iter().map(str::to_string).collect(),
+        continue_on_error: false,
+    };
+    let res = run_restore(
+        ctx(&cfg, &s, &rep, BTreeMap::new()),
+        &restore(vec!["a"]),
+        None,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("partial restore: {e}"));
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let tables = scalar(&*s, &dst, "SELECT string_agg(table_name, ',' ORDER BY table_name) FROM information_schema.tables WHERE table_schema = 'public'").await;
+    assert!(matches!(&tables, Value::Text(t) if t == "a"), "{tables:?}");
+    // The serial continues after the restored rows.
+    exec(&*s, Some(&dst), "INSERT INTO a (v) VALUES ('new')").await;
+    assert!(matches!(
+        scalar(&*s, &dst, "SELECT MAX(id) FROM a").await,
+        Value::Int(4)
+    ));
+    // The identity table and its trigger come back together with their own table.
+    let dst2 = format!("{dst}_2");
+    let _c2 = DbGuard::new(DbKind::Postgres, 54316, [&dst2]);
+    let mut sp = restore(vec!["b", "c"]);
+    sp.target_database = Some(dst2.clone());
+    let res = run_restore(ctx(&cfg, &s, &rep, BTreeMap::new()), &sp, None)
+        .await
+        .unwrap_or_else(|e| panic!("partial restore b,c: {e}"));
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    exec(&*s, Some(&dst2), "INSERT INTO b (v) VALUES ('t')").await;
+    assert!(matches!(
+        scalar(&*s, &dst2, "SELECT touched FROM b WHERE v = 't'").await,
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        scalar(&*s, &dst2, "SELECT MAX(id) FROM b").await,
+        Value::Int(3)
+    ));
+    exec(
+        &*s,
+        Some(&dst2),
+        "INSERT INTO c (v) OVERRIDING SYSTEM VALUE VALUES ('k')",
+    )
+    .await;
 }

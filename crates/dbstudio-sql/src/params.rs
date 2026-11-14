@@ -243,6 +243,8 @@ fn find_params_chars(d: ScriptDialect, chars: &[char]) -> Vec<ParamRef> {
             | ScriptDialect::MySql { .. }
             | ScriptDialect::MsSql
             | ScriptDialect::Oracle
+            | ScriptDialect::Cql
+            | ScriptDialect::ClickHouse
     ) {
         return Vec::new();
     }
@@ -281,6 +283,21 @@ fn find_params_chars(d: ScriptDialect, chars: &[char]) -> Vec<ParamRef> {
                     continue;
                 }
                 let oracle = matches!(d, ScriptDialect::Oracle);
+                // CQL / ClickHouse: `{f:v}`, `{'k':v}` and ClickHouse `{name:Type}` have the
+                // colon glued to the previous token; a marker never does.
+                if matches!(d, ScriptDialect::Cql | ScriptDialect::ClickHouse)
+                    && i > 0
+                    && t[i - 1].end == x.start
+                    && matches!(
+                        t[i - 1].kind,
+                        TokenKind::Word
+                            | TokenKind::String
+                            | TokenKind::QuotedIdent
+                            | TokenKind::Number
+                    )
+                {
+                    continue;
+                }
                 let ok = match nx.kind {
                     TokenKind::Word => !nx.text.starts_with(['@', '#']),
                     TokenKind::Number => oracle && nx.text.chars().all(|c| c.is_ascii_digit()),
@@ -301,7 +318,11 @@ fn find_params_chars(d: ScriptDialect, chars: &[char]) -> Vec<ParamRef> {
                     range(x.start, nx.end),
                 ));
             }
-            (TokenKind::Punct, ScriptDialect::MySql { .. }) if x.text == "?" => {
+            // ClickHouse has the ternary operator `a ? b : c`, so a bare `?` is never a
+            // parameter there: use `:name` (or the server's own `{name:Type}`, left as is).
+            (TokenKind::Punct, ScriptDialect::MySql { .. } | ScriptDialect::Cql)
+                if x.text == "?" =>
+            {
                 question += 1;
                 found.push((
                     format!("?{question}"),
@@ -455,10 +476,7 @@ mod tests {
     use super::*;
 
     const PG: ScriptDialect = ScriptDialect::Postgres;
-    const MY: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
+    const MY: ScriptDialect = ScriptDialect::mysql(false, true);
     const MS: ScriptDialect = ScriptDialect::MsSql;
     const ORA: ScriptDialect = ScriptDialect::Oracle;
 

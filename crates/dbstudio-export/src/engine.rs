@@ -39,7 +39,7 @@ pub async fn run_export_tuned(
         return Err(Error::Cancelled);
     }
     if matches!(spec.source, ExportSource::Keys { .. }) {
-        return Err(Error::Unsupported("export_keys".into()));
+        return crate::keys::export_keys(&ctx, &spec, &tuning).await;
     }
     // Refuse a query that is not a single read-only statement before anything reaches the
     // server (no snapshot transaction, no catalog lookups).
@@ -231,7 +231,7 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, _warnings: &mut Vec<String
         }
         ExportSource::Tables { paths } => {
             if paths.is_empty() {
-                return Err(Error::Other("no tables selected".into()));
+                return Err(Error::Invalid("no tables selected".into()));
             }
             let mut groups: Vec<(ObjectPath, Vec<ObjectPath>)> = Vec::new();
             for p in paths {
@@ -279,7 +279,7 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, _warnings: &mut Vec<String
             dbs.sort();
             dbs.dedup();
             if dbs.len() > 1 {
-                return Err(Error::Other(format!(
+                return Err(Error::Invalid(format!(
                     "the tables belong to several databases ({}); export them one database at a time",
                     dbs.join(", ")
                 )));
@@ -288,7 +288,7 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, _warnings: &mut Vec<String
         }
     };
     if !is_query && tables.is_empty() {
-        return Err(Error::Other("nothing to export: no tables found".into()));
+        return Err(Error::Invalid("nothing to export: no tables found".into()));
     }
     tables.sort_by(|a, b| {
         let qa = qualifier(Some(&a.path), a.schema.as_deref(), ctx.dialect);
@@ -333,8 +333,17 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, _warnings: &mut Vec<String
 
 /// Destination path of the output: a `.zip` when several files are produced.
 fn output_path(spec: &ExportSpec, work: &Work, warnings: &mut Vec<String>) -> PathBuf {
+    output_path_for(spec, work.files, warnings)
+}
+
+/// [`output_path`] for an export that produces `files` files.
+pub(crate) fn output_path_for(
+    spec: &ExportSpec,
+    files: usize,
+    warnings: &mut Vec<String>,
+) -> PathBuf {
     let dest = PathBuf::from(&spec.destination.path);
-    let zip_needed = work.files > 1;
+    let zip_needed = files > 1;
     let is_zip = dest
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
@@ -438,6 +447,9 @@ async fn run(
         overwrite: spec.destination.overwrite,
         zip: work.files > 1,
         tuning: *tuning,
+        flatten_fields: spec.values.flatten_fields.clone(),
+        ejson_cells: spec.values.ejson_cells,
+        kind: ctx.kind,
     })?;
     let mut progress = Progress::new(&*ctx.reporter, work);
     let is_sql = matches!(spec.format, ExportFormat::Sql(_));
@@ -539,6 +551,8 @@ async fn run(
     }
     progress.phase("finish", None);
     warnings.extend(writer.warnings());
+    let object_list = writer.objects();
+    let marker_nonce = writer.nonce();
     let files = writer.finish()?;
     let bytes: u64 = files
         .iter()
@@ -554,6 +568,8 @@ async fn run(
         rows: rows_total,
         bytes,
         warnings: std::mem::take(warnings),
+        object_list,
+        marker_nonce,
     })
 }
 
@@ -589,7 +605,7 @@ fn check_query_is_read_only(dialect: ScriptDialect, text: &str) -> Result<()> {
         })
         .count();
     if statements != 1 {
-        return Err(Error::Other(
+        return Err(Error::Invalid(
             "the query to export must be exactly one statement".into(),
         ));
     }
@@ -623,6 +639,15 @@ async fn generate_ddl(
             })
             .await?;
         for item in items {
+            // A script without schema qualification must replay into any namespace: the
+            // `CREATE KEYSPACE` / `CREATE DATABASE` (and its `DROP`) of the source would
+            // collide with, or create next to, the target.
+            if !options.qualify_schema
+                && item.kind == ObjectKind::Database
+                && matches!(ctx.dialect, ScriptDialect::Cql | ScriptDialect::ClickHouse)
+            {
+                continue;
+            }
             match item.section {
                 DdlSection::PreData => pre.push(item),
                 DdlSection::PostData => post.push(item),
@@ -712,6 +737,8 @@ fn is_sql_dialect(d: ScriptDialect) -> bool {
             | ScriptDialect::MySql { .. }
             | ScriptDialect::MsSql
             | ScriptDialect::Oracle
+            | ScriptDialect::Cql
+            | ScriptDialect::ClickHouse
     )
 }
 

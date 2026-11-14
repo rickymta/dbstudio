@@ -20,6 +20,7 @@ mod host;
 mod jobs;
 mod lease;
 mod logging;
+mod notify;
 mod redact;
 mod scheduler;
 mod session;
@@ -59,6 +60,9 @@ fn build_state(app: &tauri::App) -> Result<state::AppState, Box<dyn std::error::
     let state = state::AppState::new(state::build_registry(), connections, secrets, host)
         .with_data_dir(data_dir);
     state.events.attach_tauri(app.handle().clone());
+    // Background housekeeping (contract v2 scaffolds, implemented by packages X and E).
+    dbstudio_export::startup_cleanup(state.connections.store());
+    state.sessions.spawn_health(&state);
     Ok(state)
 }
 
@@ -218,6 +222,14 @@ pub fn run() {
             commands::keyvalue::object_children_page,
             commands::keyvalue::key_read,
             commands::keyvalue::keys_delete_pattern,
+            // Backlog + phase 9 (contract v2 stubs; implemented by packages E/S)
+            commands::sessions::session_reconnect,
+            commands::editor::lease_reopen,
+            commands::editor::script_generate,
+            commands::plan::plan_history_list,
+            commands::plan::plan_history_get,
+            commands::plan::plan_history_delete,
+            commands::plan::plan_history_clear,
         ])
         .build(tauri::generate_context!())
         .expect("error while building DBStudio");
@@ -237,6 +249,8 @@ pub fn run() {
     });
 }
 
+#[cfg(test)]
+mod contract_tests;
 #[cfg(all(test, any(feature = "postgres", feature = "mysql")))]
 mod it;
 #[cfg(test)]
