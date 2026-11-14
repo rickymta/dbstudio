@@ -88,25 +88,22 @@ fn app_contract_fixtures() {
 }
 
 #[tokio::test]
-async fn stub_commands_answer_unsupported_until_their_package_lands() {
+async fn package_e_commands_reject_unknown_ids() {
     let (state, _) = test_state(DriverRegistry::new());
-    let unsupported = |e: Error, what: &str| {
-        assert!(
-            matches!(&e, Error::Unsupported(c) if c == what),
-            "{what}: {e:?}"
-        );
+    let not_found = |e: Error, what: &str| {
+        assert_eq!(e.kind(), "notFound", "{what}: {e:?}");
     };
-    unsupported(
+    not_found(
         sessions::reconnect_impl(&state, Uuid::new_v4(), None)
             .await
             .unwrap_err(),
         "session_reconnect",
     );
-    unsupported(
+    not_found(
         lease_reopen_impl(&state, Uuid::new_v4()).await.unwrap_err(),
         "lease_reopen",
     );
-    unsupported(
+    not_found(
         script_generate_impl(
             &state,
             Uuid::new_v4(),
@@ -117,28 +114,25 @@ async fn stub_commands_answer_unsupported_until_their_package_lands() {
         .unwrap_err(),
         "script_generate",
     );
-    unsupported(
-        plan::history_list_impl(&state, None, 10, None)
-            .await
-            .unwrap_err(),
-        "plan_history",
-    );
-    unsupported(
+    not_found(
         plan::history_get_impl(&state, Uuid::new_v4())
             .await
             .unwrap_err(),
-        "plan_history",
+        "plan_history_get",
     );
-    unsupported(
+    not_found(
         plan::history_delete_impl(&state, Uuid::new_v4())
             .await
             .unwrap_err(),
-        "plan_history",
+        "plan_history_delete",
     );
-    unsupported(
-        plan::history_clear_impl(&state, None).await.unwrap_err(),
-        "plan_history",
+    assert!(
+        plan::history_list_impl(&state, None, 10, None)
+            .await
+            .unwrap()
+            .is_empty()
     );
+    assert_eq!(plan::history_clear_impl(&state, None).await.unwrap(), 0);
 }
 
 /// Driver whose sessions narrow the descriptor's capabilities (flavour / version gates).

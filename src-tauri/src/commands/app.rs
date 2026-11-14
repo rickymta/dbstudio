@@ -53,7 +53,8 @@ pub struct DriverDiagnostics {
     pub status: DriverStatus,
     pub message: String,
     pub help_url: Option<String>,
-    /// Structured checks behind `message` (empty until package E fills them in).
+    /// Structured checks behind `message`: `driverRegistered`, `nativeTool:<tool>` for the
+    /// native tools the kind's backup / restore can use.
     #[serde(default)]
     pub checks: Vec<DiagnosticCheck>,
 }
@@ -108,12 +109,71 @@ pub(crate) fn driver_diagnostics_impl(state: &AppState, kind: DbKind) -> Result<
             (message, help)
         }
     };
+    let mut checks = vec![DiagnosticCheck {
+        id: "driverRegistered".into(),
+        ok: !matches!(descriptor.status, DriverStatus::Planned { .. }),
+        value: None,
+        detail: Some(message.clone()),
+    }];
+    checks.extend(native_tool_checks(state, kind));
     Ok(DriverDiagnostics {
         status: descriptor.status,
         message,
         help_url,
-        checks: Vec::new(),
+        checks,
     })
+}
+
+/// Native tools whose absence matters for `kind` (the kinds that back up without a binary have
+/// none).
+fn native_tools_of(kind: DbKind) -> &'static [dbstudio_backup::NativeTool] {
+    use dbstudio_backup::NativeTool as T;
+    match kind {
+        DbKind::Postgres => &[T::PgDump, T::PgRestore, T::Psql],
+        DbKind::MySql | DbKind::TiDb => &[T::MySqlDump, T::MySqlClient],
+        DbKind::MongoDb => &[T::MongoDump, T::MongoRestore],
+        DbKind::Oracle => &[T::Expdp, T::Impdp],
+        DbKind::Redis => &[T::RedisCli],
+        DbKind::YugabyteDb => &[T::YsqlDump, T::Ysqlsh],
+        _ => &[],
+    }
+}
+
+/// One `nativeTool:<tool>` check per tool of `kind`: path and version when found, the problem
+/// otherwise. Runs the tools' `--version`, so it blocks briefly.
+fn native_tool_checks(state: &AppState, kind: DbKind) -> Vec<DiagnosticCheck> {
+    let tools = native_tools_of(kind);
+    if tools.is_empty() {
+        return Vec::new();
+    }
+    let overrides: std::collections::BTreeMap<dbstudio_backup::NativeTool, String> = state
+        .connections
+        .store()
+        .get_native_tools()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(k, v)| {
+            serde_json::from_value(serde_json::Value::String(k))
+                .ok()
+                .map(|tool| (tool, v))
+        })
+        .collect();
+    dbstudio_backup::detect_tools(&overrides)
+        .into_iter()
+        .filter(|info| tools.contains(&info.tool))
+        .map(|info| {
+            let key = serde_json::to_value(info.tool)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            DiagnosticCheck {
+                id: format!("nativeTool:{key}"),
+                ok: info.path.is_some() && info.problem.is_none(),
+                value: info.path,
+                detail: info.problem.or(info.version),
+            }
+        })
+        .collect()
 }
 
 /// Text of the Oracle report: the state of the client library, the places that were searched and
@@ -165,7 +225,12 @@ pub(crate) fn oracle_diagnostics_impl(state: &AppState) -> Result<DriverDiagnost
         status: descriptor.status,
         message: oracle_report(&report),
         help_url,
-        checks: Vec::new(),
+        checks: vec![DiagnosticCheck {
+            id: "driverRegistered".into(),
+            ok: !matches!(descriptor.status, DriverStatus::Planned { .. }),
+            value: None,
+            detail: None,
+        }],
     })
 }
 
@@ -193,6 +258,8 @@ pub(crate) async fn settings_set_impl(
     state: &AppState,
     settings: AppSettings,
 ) -> Result<AppSettings> {
+    // Out-of-range values are the caller's mistake: refuse them instead of clamping.
+    settings.validate()?;
     let svc = state.connections.clone();
     let stored = blocking(move || svc.set_settings(settings)).await?;
     if logging::set_level(stored.log_level) {
@@ -334,9 +401,14 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
 
 /// Diagnostics of a driver (`DriverStatus` plus an explanation and a help link).
 #[tauri::command]
-pub fn driver_diagnostics(state: State<'_, AppState>, kind: DbKind) -> Result<DriverDiagnostics> {
+pub async fn driver_diagnostics(
+    state: State<'_, AppState>,
+    kind: DbKind,
+) -> Result<DriverDiagnostics> {
     tracing::debug!(command = "driver_diagnostics", kind = kind.id(), "ipc call");
-    driver_diagnostics_impl(&state, kind)
+    // Probing the native tools runs their `--version`: keep it off the main thread.
+    let state = state.inner().clone();
+    blocking(move || driver_diagnostics_impl(&state, kind)).await
 }
 
 #[tauri::command]
@@ -497,7 +569,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn settings_commands_persist_and_clamp() {
+    async fn settings_commands_persist_and_reject_out_of_range_values() {
         let (state, _, _) = test_state_with_host(DriverRegistry::new());
         assert_eq!(
             settings_get_impl(&state).await.unwrap(),
@@ -506,14 +578,73 @@ mod tests {
         let stored = settings_set_impl(
             &state,
             AppSettings {
-                grid_max_rows: 1,
+                grid_max_rows: 2_000,
+                editor_font_size: 16,
+                keepalive_secs: 0,
+                language: dbstudio_store::UiLanguage::Vi,
                 ..AppSettings::default()
             },
         )
         .await
         .unwrap();
-        assert_eq!(stored.grid_max_rows, 1_000);
+        assert_eq!(stored.grid_max_rows, 2_000);
         assert_eq!(settings_get_impl(&state).await.unwrap(), stored);
+        // Out of range: refused with `invalid`, nothing stored.
+        for bad in [
+            AppSettings {
+                grid_max_rows: 1,
+                ..AppSettings::default()
+            },
+            AppSettings {
+                keepalive_secs: 5,
+                ..AppSettings::default()
+            },
+            AppSettings {
+                editor_font_size: 99,
+                ..AppSettings::default()
+            },
+            AppSettings {
+                plan_history_max_per_connection: 9,
+                ..AppSettings::default()
+            },
+        ] {
+            let e = settings_set_impl(&state, bad).await.unwrap_err();
+            assert_eq!(e.kind(), "invalid", "{e:?}");
+        }
+        assert_eq!(settings_get_impl(&state).await.unwrap(), stored);
+    }
+
+    #[test]
+    fn diagnostics_list_the_registration_and_the_native_tools() {
+        let (state, _, _) = test_state_with_host(DriverRegistry::new());
+        // Nothing registered: the driver check fails, tool checks follow the kind.
+        let d = driver_diagnostics_impl(&state, DbKind::Postgres).unwrap();
+        assert_eq!(d.checks[0].id, "driverRegistered");
+        assert!(!d.checks[0].ok);
+        let ids: Vec<_> = d.checks.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "driverRegistered",
+                "nativeTool:pgDump",
+                "nativeTool:pgRestore",
+                "nativeTool:psql"
+            ]
+        );
+        // A kind without native binaries only has the registration check.
+        let d = driver_diagnostics_impl(&state, DbKind::ClickHouse).unwrap();
+        assert_eq!(d.checks.len(), 1);
+        // A registered driver passes.
+        let (driver, _) = crate::session::testing::MockDriver::new(DbKind::Redis);
+        let mut registry = DriverRegistry::new();
+        registry.register(driver);
+        let (state, _, _) = test_state_with_host(registry);
+        let d = driver_diagnostics_impl(&state, DbKind::Redis).unwrap();
+        assert!(d.checks[0].ok);
+        assert!(d.checks[1].id.starts_with("nativeTool:redisCli"));
+        let json = serde_json::to_value(&d.checks[0]).unwrap();
+        assert_eq!(json["id"], "driverRegistered");
+        assert_eq!(json["ok"], true);
     }
 
     #[tokio::test]

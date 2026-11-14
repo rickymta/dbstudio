@@ -27,15 +27,31 @@ pub(crate) async fn open_impl(
         .await
 }
 
-/// Reconnect a lost session, keeping its `session_id` (package E). `secret` is the password when
-/// it is neither stored in the keychain nor still held in memory.
+/// Reconnect a lost session, keeping its `session_id`. `secret` is the password when it is
+/// neither stored in the keychain nor still held in memory; a typed one wins. Idle leases are
+/// reopened, leases with a transaction in flight wait for `lease_reopen` (`session://state`
+/// lists them).
 pub(crate) async fn reconnect_impl(
     state: &AppState,
     session_id: Uuid,
     secret: Option<Secret>,
 ) -> Result<SessionInfo> {
-    let _ = (state, session_id, secret);
-    Err(Error::Unsupported("session_reconnect".into()))
+    use crate::session::{Credentials, StateCredentials};
+    let (_, config) = state.sessions.get_with_config(session_id)?;
+    let (secret, ssh) = match secret {
+        Some(typed) => (Some(typed), super::ssh::ssh_env(state, &config).await?),
+        None => {
+            let remembered = state.sessions.remembered_secret(session_id);
+            StateCredentials(state.clone())
+                .resolve(&config, remembered)
+                .await?
+        }
+    };
+    state
+        .sessions
+        .reconnect_manual(session_id, secret, ssh.as_ref())
+        .await
+        .map(|done| done.info)
 }
 
 pub(crate) async fn close_impl(state: &AppState, session_id: Uuid) -> Result<()> {
