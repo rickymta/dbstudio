@@ -234,12 +234,15 @@ mod tests {
         let gone = root.join("dbstudio-definitely-missing-dir");
         let gone = gone.to_string_lossy().into_owned();
         store.export_recent_dirs_record(&gone).unwrap();
-        assert_eq!(store.export_recent_dirs().unwrap(), [gone.clone()]);
+        assert_eq!(
+            store.export_recent_dirs().unwrap(),
+            std::slice::from_ref(&gone)
+        );
         // Recording another directory drops the one that no longer exists.
         let list = store.export_recent_dirs_record(&a).unwrap();
-        assert_eq!(list, [a.clone()]);
+        assert_eq!(list, std::slice::from_ref(&a));
         let list = store.export_recent_dirs_record(&a).unwrap();
-        assert_eq!(list, [a.clone()]);
+        assert_eq!(list, std::slice::from_ref(&a));
         assert!(store.export_recent_dirs_record(" ").is_err());
         // Cap.
         let dirs: Vec<tempfile::TempDir> = (0..25).map(|_| tempfile::tempdir().unwrap()).collect();
