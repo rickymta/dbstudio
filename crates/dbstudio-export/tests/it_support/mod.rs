@@ -908,6 +908,236 @@ pub async fn csv_round_trip(env: &Env) {
     );
 }
 
+/// CSV with a NULL text (`NULL`, `\N`): NULL, the empty string, the text `NULL` and the text
+/// `\N` all come back as what they were.
+pub async fn csv_null_text(env: &Env) {
+    let dir = tempfile::tempdir().unwrap();
+    let s = &*env.src;
+    let db = env.src_database();
+    run(s, db, "DROP TABLE IF EXISTS exp_n").await;
+    run(s, db, "CREATE TABLE exp_n (id INT PRIMARY KEY, v TEXT)").await;
+    let lit = |v: &str| match env.flavor {
+        Flavor::Pg => format!("E'{}'", v.replace('\\', "\\\\")),
+        Flavor::My => format!("'{}'", v.replace('\\', "\\\\")),
+    };
+    run(
+        s,
+        db,
+        &format!(
+            "INSERT INTO exp_n VALUES (1, NULL), (2, ''), (3, 'NULL'), (4, {}), (5, 'x')",
+            lit("\\N")
+        ),
+    )
+    .await;
+    let agg = match env.flavor {
+        Flavor::Pg => "SELECT string_agg(coalesce(v, '~null~'), '|' ORDER BY id) FROM exp_n",
+        Flavor::My => {
+            "SELECT GROUP_CONCAT(IFNULL(v, '~null~') ORDER BY id SEPARATOR '|') FROM exp_n"
+        }
+    };
+    let want = text_of(s, db, agg).await;
+    assert_eq!(want, "~null~||NULL|\\N|x", "fixture");
+    for (n, null_text) in ["NULL", "\\N"].into_iter().enumerate() {
+        let dest = dir.path().join(format!("n{n}.csv"));
+        run_export(
+            env.ctx(&env.src, Recorder::new()),
+            export_spec(
+                ExportSource::Tables {
+                    paths: vec![env.table("exp_n")],
+                },
+                ExportContent::Data,
+                ExportFormat::Csv(CsvOptions {
+                    null_text: null_text.into(),
+                    ..CsvOptions::default()
+                }),
+                &dest,
+            ),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("[{}] {e}", env.label));
+        let (dst, database) = env.destination(&format!("nt{n}")).await;
+        let db2 = database.as_deref();
+        run(
+            &*dst,
+            db2,
+            "CREATE TABLE exp_n (id INT PRIMARY KEY, v TEXT)",
+        )
+        .await;
+        let db_name = dst_db_name(env, &format!("nt{n}"), &database);
+        let mut table = import_table_path(env, &db_name);
+        table.segments.last_mut().unwrap().name = "exp_n".into();
+        let report = run_import(
+            env.ctx(&dst, Recorder::new()),
+            ImportSpec {
+                connection_id: Uuid::nil(),
+                file: dest.to_string_lossy().into_owned(),
+                format: ImportFormat::Csv {
+                    delimiter: ',',
+                    quote: '"',
+                    header: true,
+                    encoding: TextEncoding::Utf8Bom,
+                    null_text: Some(null_text.into()),
+                },
+                target: ImportTarget::Existing { table },
+                mapping: vec![],
+                on_conflict: None,
+                mode: ImportMode::Batches { rows: 10 },
+                max_errors: 0,
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("[{}] {e}", env.label));
+        assert_eq!(report.inserted, 5);
+        assert_eq!(
+            text_of(&*dst, db2, agg).await,
+            want,
+            "[{}] null text {null_text}",
+            env.label
+        );
+    }
+}
+
+/// 20 MB binary and text values go through SQL, CSV and JSON files and come back intact
+/// (nothing in the engine or the drivers cuts large values).
+pub async fn lob_round_trip(env: &Env) {
+    let dir = tempfile::tempdir().unwrap();
+    let s = &*env.src;
+    let db = env.src_database();
+    let (blob_ty, text_ty) = match env.flavor {
+        Flavor::Pg => ("BYTEA", "TEXT"),
+        Flavor::My => ("LONGBLOB", "LONGTEXT"),
+    };
+    let ddl = format!("CREATE TABLE exp_lob (id INT PRIMARY KEY, b {blob_ty}, t {text_ty})");
+    run(s, db, "DROP TABLE IF EXISTS exp_lob").await;
+    run(s, db, &ddl).await;
+    let insert = match env.flavor {
+        Flavor::Pg => {
+            "INSERT INTO exp_lob VALUES (1, decode(repeat('0123456789abcdef', 2621440), 'hex'), \
+                       repeat('héllo wörld ', 1747627)), (2, NULL, '')"
+        }
+        Flavor::My => {
+            "INSERT INTO exp_lob VALUES (1, UNHEX(REPEAT('0123456789abcdef', 2621440)), \
+                       REPEAT('héllo wörld ', 1747627)), (2, NULL, '')"
+        }
+    };
+    run(s, db, insert).await;
+    let agg = match env.flavor {
+        Flavor::Pg => {
+            "SELECT string_agg(coalesce(length(b)::text || ':' || md5(b), '~') || ':' || length(t) || ':' || md5(t), '|' ORDER BY id) FROM exp_lob"
+        }
+        Flavor::My => {
+            "SELECT GROUP_CONCAT(CONCAT(IFNULL(CONCAT(LENGTH(b), ':', MD5(b)), '~'), ':', CHAR_LENGTH(t), ':', MD5(t)) ORDER BY id SEPARATOR '|') FROM exp_lob"
+        }
+    };
+    let want = text_of(s, db, agg).await;
+    assert!(want.starts_with("20971520:"), "fixture: {want}");
+    let table = || env.table("exp_lob");
+    let source = || ExportSource::Tables {
+        paths: vec![table()],
+    };
+
+    // SQL script.
+    let sql = dir.path().join("lob.sql");
+    run_export(
+        env.ctx(&env.src, Recorder::new()),
+        export_spec(
+            source(),
+            ExportContent::Both,
+            ExportFormat::Sql(sql_options_unqualified()),
+            &sql,
+        ),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("[{}] {e}", env.label));
+    let (dst, database) = env.destination("lob_sql").await;
+    run_import(
+        env.ctx(&dst, Recorder::new()),
+        ImportSpec {
+            connection_id: Uuid::nil(),
+            file: sql.to_string_lossy().into_owned(),
+            format: ImportFormat::Sql {
+                continue_on_error: false,
+            },
+            target: ImportTarget::Script {
+                database: database.clone(),
+            },
+            mapping: vec![],
+            on_conflict: None,
+            mode: ImportMode::Batches { rows: 100 },
+            max_errors: 0,
+        },
+    )
+    .await
+    .unwrap_or_else(|e| panic!("[{}] sql replay: {e}", env.label));
+    assert_eq!(
+        text_of(&*dst, database.as_deref(), agg).await,
+        want,
+        "[{}] sql",
+        env.label
+    );
+
+    // CSV and JSON into an existing table.
+    for (tag, format_out, format_in, file) in [
+        (
+            "lob_csv",
+            ExportFormat::Csv(CsvOptions::default()),
+            ImportFormat::Csv {
+                delimiter: ',',
+                quote: '"',
+                header: true,
+                encoding: TextEncoding::Utf8Bom,
+                null_text: None,
+            },
+            "lob.csv",
+        ),
+        (
+            "lob_json",
+            ExportFormat::Json(JsonOptions::default()),
+            ImportFormat::Json {
+                layout: JsonLayout::Array,
+            },
+            "lob.json",
+        ),
+    ] {
+        let dest = dir.path().join(file);
+        run_export(
+            env.ctx(&env.src, Recorder::new()),
+            export_spec(source(), ExportContent::Data, format_out, &dest),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("[{}] {tag}: {e}", env.label));
+        let (dst, database) = env.destination(tag).await;
+        let db2 = database.as_deref();
+        run(&*dst, db2, &ddl).await;
+        let db_name = dst_db_name(env, tag, &database);
+        let mut target = import_table_path(env, &db_name);
+        target.segments.last_mut().unwrap().name = "exp_lob".into();
+        let report = run_import(
+            env.ctx(&dst, Recorder::new()),
+            ImportSpec {
+                connection_id: Uuid::nil(),
+                file: dest.to_string_lossy().into_owned(),
+                format: format_in,
+                target: ImportTarget::Existing { table: target },
+                mapping: vec![],
+                on_conflict: None,
+                mode: ImportMode::Batches { rows: 1 },
+                max_errors: 0,
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("[{}] {tag} import: {e}", env.label));
+        assert_eq!(report.inserted, 2, "[{}] {tag}", env.label);
+        assert_eq!(
+            text_of(&*dst, db2, agg).await,
+            want,
+            "[{}] {tag}",
+            env.label
+        );
+    }
+    run(s, db, "DROP TABLE IF EXISTS exp_lob").await;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Big table (DBSTUDIO_IT_BIG=1)
 // ---------------------------------------------------------------------------------------------

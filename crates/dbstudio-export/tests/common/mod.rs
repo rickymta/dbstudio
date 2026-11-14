@@ -13,6 +13,12 @@ use dbstudio_core::{
 };
 use dbstudio_export::ExportContext;
 
+/// The statement names `name` quoted the way PostgreSQL (`"x"`) or MySQL / ClickHouse (`` `x` ``)
+/// quote identifiers.
+fn quoted_in(text: &str, name: &str) -> bool {
+    text.contains(&format!("\"{name}\"")) || text.contains(&format!("`{name}`"))
+}
+
 pub fn table_path(name: &str) -> ObjectPath {
     ObjectPath::root()
         .child(ObjectKind::Database, "app")
@@ -227,15 +233,12 @@ impl Session for FakeSession {
                 elapsed_ms: 0,
             })?;
         } else if upper.starts_with("SELECT")
-            && self
-                .tables
-                .iter()
-                .any(|t| text.contains(&format!("\"{}\"", t.name)))
+            && self.tables.iter().any(|t| quoted_in(&text, &t.name))
         {
             let table = self
                 .tables
                 .iter()
-                .find(|t| text.contains(&format!("\"{}\"", t.name)))
+                .find(|t| quoted_in(&text, &t.name))
                 .map(|t| t.name.clone())
                 .expect("checked above");
             sink.on_columns(self.columns_of(&table))?;
