@@ -17,10 +17,11 @@ use crate::{
     ImportReport, ImportSpec, ImportTarget, RowError, Transform,
 };
 
+mod document;
 mod insert;
 mod preview;
 mod script;
-mod source;
+pub(crate) mod source;
 
 use insert::{MAX_STATEMENT_ROWS, Savepoint, Target, insert_statement, savepoint};
 use source::RowSource;
@@ -35,6 +36,14 @@ pub async fn run_import(ctx: ExportContext, spec: ImportSpec) -> Result<ImportRe
     let cancel = ctx.reporter.cancel_token().clone();
     if cancel.is_cancelled() {
         return Err(Error::Cancelled);
+    }
+    if matches!(spec.target, ImportTarget::Keys { .. }) {
+        return crate::keys::import_keys(&ctx, &spec, &cancel).await;
+    }
+    if matches!(ctx.dialect, ScriptDialect::MongoShell)
+        && !matches!(spec.format, ImportFormat::Sql { .. })
+    {
+        return document::run(&ctx, &spec, &cancel).await;
     }
     match &spec.format {
         ImportFormat::Sql { continue_on_error } => {
@@ -267,7 +276,15 @@ impl Importer<'_> {
         Ok(sink.affected)
     }
 
+    /// Statements run inside a transaction of the lease (false: autocommit dialects).
+    fn in_tx(&self) -> bool {
+        self.has_lease() && has_transactions(self.dialect)
+    }
+
     async fn begin(&self) -> Result<()> {
+        if !has_transactions(self.dialect) {
+            return Ok(());
+        }
         match self.conn.lease() {
             Some(l) => l.begin(TxOptions::default()).await,
             None => Ok(()),
@@ -275,6 +292,9 @@ impl Importer<'_> {
     }
 
     async fn commit(&self) -> Result<()> {
+        if !has_transactions(self.dialect) {
+            return Ok(());
+        }
         match self.conn.lease() {
             Some(l) => l.commit().await,
             None => Ok(()),
@@ -282,6 +302,9 @@ impl Importer<'_> {
     }
 
     async fn rollback(&self) {
+        if !has_transactions(self.dialect) {
+            return;
+        }
         if let Some(l) = self.conn.lease() {
             let _ = l.rollback().await;
         }
@@ -314,6 +337,9 @@ impl Importer<'_> {
             } else {
                 self.bulk_supported = false;
             }
+        }
+        if matches!(self.dialect, ScriptDialect::Cql) {
+            return self.insert_rows_cql(rows).await;
         }
         let n = rows.len() as u64;
         let returning = matches!(self.dialect, ScriptDialect::Postgres)
@@ -359,6 +385,33 @@ impl Importer<'_> {
         })
     }
 
+    /// CQL has no multi-row `INSERT`: one statement per row. With `Skip` the lightweight
+    /// transaction answers `[applied]` per row.
+    async fn insert_rows_cql(&mut self, rows: &[Vec<EditValue>]) -> Result<Counts> {
+        let mut counts = Counts::default();
+        for row in rows {
+            let sql = insert_statement(
+                self.dialect,
+                &self.target,
+                std::slice::from_ref(row),
+                self.on_conflict,
+                false,
+            )?;
+            let mut sink = AffectedSink::default();
+            self.run_sink(sql, &mut sink).await?;
+            if self.on_conflict == OnConflict::Skip && sink.returned > 0 {
+                if sink.returned_inserted > 0 {
+                    counts.inserted += 1;
+                } else {
+                    counts.skipped += 1;
+                }
+            } else {
+                counts.inserted += 1;
+            }
+        }
+        Ok(counts)
+    }
+
     fn add(&mut self, c: Counts) {
         self.report.inserted += c.inserted;
         self.report.updated += c.updated;
@@ -386,18 +439,24 @@ impl Importer<'_> {
         if let Some(sp) = &sp {
             self.run_sql(sp.create.clone()).await?;
         }
-        let error = match self.insert_rows(&rows).await {
-            Ok(c) => {
-                if let Some(release) = sp.as_ref().and_then(|s| s.release.clone()) {
-                    self.run_sql(release).await?;
+        // CQL has no multi-row statement and no rollback: rows go one by one, each counted as it
+        // is written (a batch retried after a partial write would count rows twice).
+        let error = if matches!(self.dialect, ScriptDialect::Cql) {
+            Error::Other(String::new())
+        } else {
+            match self.insert_rows(&rows).await {
+                Ok(c) => {
+                    if let Some(release) = sp.as_ref().and_then(|s| s.release.clone()) {
+                        self.run_sql(release).await?;
+                    }
+                    self.add(c);
+                    return Ok(());
                 }
-                self.add(c);
-                return Ok(());
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(e) => e,
             }
-            Err(Error::Cancelled) => return Err(Error::Cancelled),
-            Err(e) => e,
         };
-        if self.has_lease() && sp.is_none() {
+        if self.in_tx() && sp.is_none() {
             // Nothing to roll back to: report the statement as a whole.
             let (a, b) = (
                 chunk.first().map_or(0, |m| m.line),
@@ -481,7 +540,15 @@ fn is_sql_dialect(d: ScriptDialect) -> bool {
             | ScriptDialect::MySql { .. }
             | ScriptDialect::MsSql
             | ScriptDialect::Oracle
+            | ScriptDialect::Cql
+            | ScriptDialect::ClickHouse
     )
+}
+
+/// Dialects whose servers have no multi-statement transactions (CQL, ClickHouse): the import
+/// commits as it goes and cannot undo a failed statement.
+fn has_transactions(d: ScriptDialect) -> bool {
+    !matches!(d, ScriptDialect::Cql | ScriptDialect::ClickHouse)
 }
 
 /// How a target column wants its cells coerced.
@@ -593,6 +660,12 @@ async fn run_rows(
     if !is_sql_dialect(ctx.dialect) {
         return Err(Error::Unsupported("import_dialect".into()));
     }
+    if matches!(spec.mode, ImportMode::SingleTransaction) && !has_transactions(ctx.dialect) {
+        return Err(Error::Invalid(
+            "this database has no transactions: import in batches instead of a single transaction"
+                .into(),
+        ));
+    }
     let path = PathBuf::from(&spec.file);
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     // Opening a workbook or scanning a JSON file for its keys must not block the runtime.
@@ -679,8 +752,12 @@ async fn run_rows(
                 "a table import needs an existing or a new table as target".into(),
             ));
         }
-        // Scaffold of the backlog contract v2: package X implements the Redis key import.
-        ImportTarget::Keys { .. } => return Err(Error::Unsupported("import_keys".into())),
+        // Redis keys are imported by `crate::keys` (see `run_import`).
+        ImportTarget::Keys { .. } => {
+            return Err(Error::Invalid(
+                "a table import needs an existing or a new table as target".into(),
+            ));
+        }
     };
 
     let mapping = resolve_mapping(&spec.mapping, src.columns(), &table_columns)?;
@@ -748,7 +825,10 @@ async fn import_table(
     src: &mut dyn RowSource,
     t: TableTarget,
 ) -> Result<ImportReport> {
-    if matches!(spec.mode, ImportMode::SingleTransaction) && conn.lease().is_none() {
+    if matches!(spec.mode, ImportMode::SingleTransaction)
+        && has_transactions(ctx.dialect)
+        && conn.lease().is_none()
+    {
         return Err(Error::Unsupported("leases".into()));
     }
     let dialect = ctx.dialect;

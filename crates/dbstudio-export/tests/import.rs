@@ -570,3 +570,71 @@ async fn a_key_that_first_appears_late_still_becomes_a_column() {
     let last = inserts(&session).pop().unwrap();
     assert!(last.contains("(1501, 'late')"), "{last}");
 }
+
+#[tokio::test]
+async fn single_transaction_is_refused_for_databases_without_transactions() {
+    use dbstudio_core::{DbKind, ScriptDialect};
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(dir.path(), "in.csv", "id;name\n1;a\n");
+    for (dialect, kind) in [
+        (ScriptDialect::Cql, DbKind::Cassandra),
+        (ScriptDialect::ClickHouse, DbKind::ClickHouse),
+    ] {
+        let session = FakeSession::with_tables(&[("orders", 0)]);
+        let mut ctx = context(session.clone(), Recorder::new());
+        ctx.dialect = dialect;
+        ctx.kind = kind;
+        let mut s = spec(&file, csv_format(), existing("orders"));
+        s.mode = ImportMode::SingleTransaction;
+        let err = run_import(ctx, s).await.unwrap_err();
+        assert_eq!(err.kind(), "invalid", "{dialect:?}: {err:?}");
+        assert!(inserts(&session).is_empty());
+    }
+}
+
+#[tokio::test]
+async fn mongo_single_transaction_refuses_skip_and_tolerated_errors() {
+    use dbstudio_core::{DbKind, ScriptDialect};
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(dir.path(), "in.ndjson", "{\"_id\":1}\n");
+    let json = ImportFormat::Json {
+        layout: dbstudio_export::JsonLayout::Ndjson,
+    };
+    for (on_conflict, max_errors) in [(Some(OnConflict::Skip), 0), (None, 5)] {
+        let session = FakeSession::with_tables(&[("orders", 0)]);
+        let mut ctx = context(session, Recorder::new());
+        ctx.dialect = ScriptDialect::MongoShell;
+        ctx.kind = DbKind::MongoDb;
+        let mut s = spec(&file, json.clone(), existing("orders"));
+        s.mode = ImportMode::SingleTransaction;
+        s.on_conflict = on_conflict;
+        s.max_errors = max_errors;
+        let err = run_import(ctx, s).await.unwrap_err();
+        assert_eq!(
+            err.kind(),
+            "invalid",
+            "{on_conflict:?}/{max_errors}: {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_null_text_with_the_delimiter_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(dir.path(), "in.csv", "id;name\n1;a\n");
+    let session = FakeSession::with_tables(&[("orders", 0)]);
+    let format = ImportFormat::Csv {
+        delimiter: ';',
+        quote: '"',
+        header: true,
+        encoding: TextEncoding::Utf8,
+        null_text: Some("N;A".into()),
+    };
+    let err = run_import(
+        context(session, Recorder::new()),
+        spec(&file, format, existing("orders")),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.kind(), "invalid", "{err:?}");
+}

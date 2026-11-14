@@ -167,6 +167,22 @@ pub(crate) fn insert_statement(
             }
             Ok(s)
         }
+        ScriptDialect::Cql => {
+            // One row per statement. `INSERT` is an upsert in CQL: `Error` and `Update` both
+            // overwrite; `Skip` only inserts rows whose key is free (lightweight transaction).
+            if rows.len() != 1 {
+                return Err(Error::Invalid("CQL inserts one row per statement".into()));
+            }
+            let mut s = format!(
+                "INSERT INTO {} ({cols}) VALUES {}",
+                target.table,
+                tuple(&rows[0])
+            );
+            if on_conflict == OnConflict::Skip {
+                s.push_str(" IF NOT EXISTS");
+            }
+            Ok(s)
+        }
         _ => {
             if on_conflict != OnConflict::Error {
                 return Err(unsupported("dialect"));
@@ -211,6 +227,39 @@ mod tests {
         c: OnConflict,
     ) -> Result<String> {
         insert_statement(d, t, rows, c, false)
+    }
+
+    #[test]
+    fn cql_inserts_one_row_and_skips_with_if_not_exists() {
+        let t = Target {
+            table: "ks.t".into(),
+            columns: vec!["id".into(), "name".into()],
+            conflict_columns: vec!["id".into()],
+        };
+        let one = vec![vec![
+            EditValue::Value(Value::Int(1)),
+            EditValue::Text("a".into()),
+        ]];
+        let sql = insert_statement(ScriptDialect::Cql, &t, &one, OnConflict::Error, false).unwrap();
+        assert!(sql.starts_with("INSERT INTO ks.t ("), "{sql}");
+        assert!(!sql.contains("IF NOT EXISTS"));
+        let skip = insert_statement(ScriptDialect::Cql, &t, &one, OnConflict::Skip, false).unwrap();
+        assert!(skip.ends_with(" IF NOT EXISTS"), "{skip}");
+        let two = vec![one[0].clone(), one[0].clone()];
+        assert!(insert_statement(ScriptDialect::Cql, &t, &two, OnConflict::Error, false).is_err());
+        // ClickHouse: multi-row insert, no conflict handling.
+        let ch = insert_statement(
+            ScriptDialect::ClickHouse,
+            &t,
+            &two,
+            OnConflict::Error,
+            false,
+        )
+        .unwrap();
+        assert!(ch.contains("VALUES\n("), "{ch}");
+        assert!(
+            insert_statement(ScriptDialect::ClickHouse, &t, &two, OnConflict::Skip, false).is_err()
+        );
     }
 
     #[test]

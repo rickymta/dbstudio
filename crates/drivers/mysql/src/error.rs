@@ -127,6 +127,12 @@ pub fn is_tls_unavailable(e: &MyError) -> bool {
     }
 }
 
+/// True when TiDB refused a statement because it only has a noop implementation of it (ERROR
+/// 1235, e.g. `SET SESSION TRANSACTION READ ONLY`).
+pub fn is_tidb_noop_error(e: &MyError) -> bool {
+    e.to_string().contains("only noop implementation in tidb")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +195,19 @@ mod tests {
             std::io::ErrorKind::TimedOut,
         )));
         assert!(matches!(map_connect_error(timeout, None), Error::Timeout));
+    }
+
+    #[test]
+    fn tidb_noop_error_is_recognised() {
+        let e = MyError::Server(ServerError {
+            code: 1235,
+            message: "function READ ONLY has only noop implementation in tidb now, use \
+                      tidb_enable_noop_functions to enable these functions"
+                .into(),
+            state: "42000".into(),
+        });
+        assert!(is_tidb_noop_error(&e));
+        assert!(!is_tidb_noop_error(&server(1045)));
     }
 
     #[test]

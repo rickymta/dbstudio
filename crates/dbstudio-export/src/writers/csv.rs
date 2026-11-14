@@ -53,6 +53,8 @@ pub(crate) fn push_field(buf: &mut String, value: Option<&str>, o: &CsvOptions) 
     let q = o.quote;
     let needs = o.quote_all
         || (s.is_empty() && o.null_text.is_empty())
+        // A real string equal to the NULL text is quoted so that it reads back as a string.
+        || (!o.null_text.is_empty() && s == o.null_text)
         || s.starts_with(' ')
         || s.ends_with(' ')
         || s.chars()
@@ -73,6 +75,7 @@ pub(crate) fn push_field(buf: &mut String, value: Option<&str>, o: &CsvOptions) 
 
 impl CsvWriter {
     pub fn create(cfg: &WriterConfig, opts: CsvOptions) -> Result<CsvWriter> {
+        crate::check_null_text(&opts.null_text, opts.delimiter, opts.quote)?;
         Ok(CsvWriter {
             out: Output::create(&cfg.dest, cfg.overwrite, cfg.zip)?,
             opts,

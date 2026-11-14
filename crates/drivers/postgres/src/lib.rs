@@ -11,6 +11,7 @@ mod browse;
 mod bulk;
 mod conn;
 mod ddl;
+mod ddl_crdb;
 mod ddl_gen;
 mod decode;
 mod details;
@@ -18,6 +19,7 @@ mod edit;
 mod error;
 mod exec;
 mod explain;
+mod flavor;
 mod lease;
 pub mod model;
 mod search;
@@ -69,9 +71,8 @@ impl Driver for PostgresDriver {
 
 /// Driver of a PostgreSQL-protocol flavour (CockroachDB, YugabyteDB YSQL).
 ///
-/// Contract scaffold of the backlog contract v2: package N1 replaces `connect` with the shared
-/// PostgreSQL implementation plus flavour detection. Until then it answers `Unsupported`, and
-/// the application does not register it (see [`register_flavors`]).
+/// It shares the PostgreSQL implementation: the server flavour is detected from `version()` on
+/// connect (whatever kind the profile names) and [`Session::capabilities`] answers per server.
 #[derive(Debug, Clone, Copy)]
 pub struct PostgresFlavorDriver {
     kind: DbKind,
@@ -96,15 +97,22 @@ impl Driver for PostgresFlavorDriver {
 
     async fn connect(
         &self,
-        _config: &ConnectionConfig,
-        _secret: Option<&Secret>,
+        config: &ConnectionConfig,
+        secret: Option<&Secret>,
     ) -> Result<Box<dyn Session>> {
-        Err(Error::Unsupported(self.kind.id().into()))
+        if config.kind != self.kind {
+            return Err(Error::Invalid(format!(
+                "connection kind {} does not match the driver {}",
+                config.kind.id(),
+                self.kind.id()
+            )));
+        }
+        let shared = conn::Shared::new(config, secret)?;
+        Ok(Box::new(PostgresSession::new(shared).await?))
     }
 }
 
-/// Register the CockroachDB and YugabyteDB drivers. Not called by the application until package
-/// N1 makes them real (a registered driver is shown as available).
+/// Register the CockroachDB and YugabyteDB drivers.
 pub fn register_flavors(registry: &mut DriverRegistry) {
     for kind in [DbKind::CockroachDb, DbKind::YugabyteDb] {
         registry.register(Arc::new(PostgresFlavorDriver::new(kind)));
@@ -116,15 +124,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn flavours_register_and_connect_is_unsupported() {
+    async fn flavours_register_and_reject_other_kind() {
         let mut registry = DriverRegistry::new();
         register_flavors(&mut registry);
         for kind in [DbKind::CockroachDb, DbKind::YugabyteDb] {
             let driver = registry.get(kind).expect("registered");
             assert_eq!(driver.descriptor().kind, kind);
-            let cfg = ConnectionConfig::new(kind, "t", "localhost");
+            let cfg = ConnectionConfig::new(DbKind::Postgres, "t", "localhost");
             let err = driver.connect(&cfg, None).await.err().unwrap();
-            assert!(matches!(err, Error::Unsupported(c) if c == kind.id()));
+            assert!(matches!(err, Error::Invalid(_)));
         }
     }
 

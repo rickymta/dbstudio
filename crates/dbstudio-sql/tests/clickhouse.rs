@@ -66,7 +66,7 @@ fn classification_table() {
         ("SELECT * FROM t WHERE id = {id:UInt64}", read),
         ("SELECT `weird name` FROM `my-db`.`t`", read),
         ("SELECT * FROM numbers(10)", read),
-        ("SELECT * FROM s3('https://x/y.csv', 'CSV')", read),
+        ("SELECT * FROM s3('https://x/y.csv', 'CSV')", adm),
         ("SELECT arrayJoin([1, 2, 3])", read),
         ("SELECT * FROM t ARRAY JOIN arr", read),
         ("SELECT * FROM t WHERE x IN (SELECT y FROM u)", read),
@@ -128,7 +128,14 @@ fn classification_table() {
         ("CREATE TABLE t AS SELECT 1", ddl),
         ("ALTER TABLE t ADD COLUMN c Int32", ddl),
         ("ALTER TABLE t MODIFY COLUMN c String", ddl),
-        ("ALTER TABLE t MODIFY TTL d + INTERVAL 1 DAY DELETE", ddl),
+        (
+            "ALTER TABLE t MODIFY TTL d + INTERVAL 1 DAY DELETE",
+            (C::Ddl, Some(D::AlterDrop)),
+        ),
+        (
+            "ALTER TABLE t MODIFY TTL d + INTERVAL 1 DAY TO DISK 'cold'",
+            ddl,
+        ),
         ("ALTER TABLE t COMMENT COLUMN c 'x'", ddl),
         ("ALTER TABLE t MODIFY SETTING a = 1", ddl),
         ("ALTER TABLE t ADD INDEX i a TYPE minmax GRANULARITY 1", ddl),
@@ -136,7 +143,10 @@ fn classification_table() {
         ("RENAME DATABASE a TO b", ddl),
         ("EXCHANGE TABLES a AND b", ddl),
         ("OPTIMIZE TABLE t", ddl),
-        ("OPTIMIZE TABLE t FINAL DEDUPLICATE", ddl),
+        (
+            "OPTIMIZE TABLE t FINAL DEDUPLICATE",
+            (C::Ddl, Some(D::DeleteWithoutWhere)),
+        ),
         ("ATTACH TABLE t", ddl),
         ("ATTACH DATABASE d", ddl),
         ("UNDROP TABLE t", ddl),
@@ -306,8 +316,9 @@ fn lexer_tokens() {
     assert_eq!(kinds("/* c */"), [(K::BlockComment, "/* c */".into())]);
     // `//` is an operator-ish punctuation, not a comment
     assert_eq!(kinds("//")[0].0, K::Punct);
+    // block comments nest
     let k = kinds("/* /* */ x */");
-    assert_eq!(k[0], (K::BlockComment, "/* /* */".into()));
+    assert_eq!(k, [(K::BlockComment, "/* /* */ x */".into())]);
     // double quotes are identifiers
     assert_eq!(kinds("\"x\"")[0].0, K::QuotedIdent);
     // query parameter: braces stay punctuation
@@ -348,8 +359,9 @@ fn parameters() {
     let p = find_params(H, "SELECT * FROM t WHERE a = :a AND b = :b AND c = :a");
     assert_eq!(p.len(), 2);
     assert_eq!(p[0].ranges.len(), 2);
-    let p = find_params(H, "SELECT * FROM t WHERE a = ? AND b = ?");
-    assert_eq!(p.len(), 2);
+    // `?` is the ternary operator in ClickHouse, never a parameter
+    assert!(find_params(H, "SELECT * FROM t WHERE a = ? AND b = ?").is_empty());
+    assert!(find_params(H, "SELECT x ? 1 : 2 FROM t").is_empty());
     // ClickHouse typed parameters are kept as they are
     assert!(find_params(H, "SELECT * FROM t WHERE id = {id:UInt64}").is_empty());
     assert!(find_params(H, "SELECT {a:String}, {b:Array(Int32)}").is_empty());
@@ -546,4 +558,215 @@ fn use_statement_tracks_the_database() {
     let a = analyze(H, sql);
     let dbs = dbstudio_sql::statement_databases(H, sql, &a);
     assert_eq!(dbs, [None, Some("db 2".into()), Some("db 2".into())]);
+}
+
+#[test]
+fn block_comments_nest() {
+    // The inner `*/` does not end the comment, so the quote below is code and opens a string
+    // that hides nothing: the DROP is a real statement start only after the comment.
+    let sql = "/* /* */ SELECT ' */ DROP TABLE t -- '";
+    let a = analyze(H, sql);
+    assert!(
+        !a.problems.is_empty() || a.statements[0].destructive.is_some(),
+        "{a:?}"
+    );
+    let sql = "/* /* */ DROP TABLE t */ SELECT 1";
+    assert_eq!(cls(sql), (C::Read, None));
+    assert_eq!(
+        kinds("/* /* */ x */"),
+        [(K::BlockComment, "/* /* */ x */".into())]
+    );
+    let unterminated = analyze(H, "/* /* */ SELECT 1");
+    assert!(!unterminated.problems.is_empty());
+    // the attack from the review: the server sees `DROP TABLE t` after the nested comment
+    let attack = "/* /* */ DROP TABLE t */ DROP TABLE u";
+    assert_eq!(cls(attack), (C::Ddl, Some(D::Drop)));
+    assert_eq!(
+        cls("/* /* */ TRUNCATE t */ TRUNCATE u"),
+        (C::Ddl, Some(D::Truncate))
+    );
+}
+
+#[test]
+fn alter_commands_are_judged_one_by_one() {
+    let wr = |d| (C::Write, Some(d));
+    for (sql, want) in [
+        (
+            "ALTER TABLE t DELETE WHERE 1 SETTINGS mutations_sync = 2",
+            wr(D::DeleteWithoutWhere),
+        ),
+        (
+            "DELETE FROM t WHERE 1 SETTINGS lightweight_deletes_sync = 2",
+            wr(D::DeleteWithoutWhere),
+        ),
+        (
+            "ALTER TABLE t DELETE WHERE 1 FORMAT Null",
+            wr(D::DeleteWithoutWhere),
+        ),
+        (
+            "ALTER TABLE t DELETE WHERE 1, MODIFY SETTING x = 1",
+            wr(D::DeleteWithoutWhere),
+        ),
+        (
+            "ALTER TABLE t UPDATE a = 1 WHERE 1, UPDATE b = 2 WHERE id = 3",
+            wr(D::UpdateWithoutWhere),
+        ),
+        (
+            "ALTER TABLE t UPDATE a = 1 WHERE id = 3, UPDATE b = 2 WHERE 1",
+            wr(D::UpdateWithoutWhere),
+        ),
+        (
+            "ALTER TABLE t UPDATE a = 1, b = 2 WHERE 1",
+            wr(D::UpdateWithoutWhere),
+        ),
+        (
+            "ALTER TABLE t UPDATE a = 1, b = 2 WHERE id = 5",
+            (C::Write, None),
+        ),
+        (
+            "ALTER TABLE t DELETE WHERE id = 1 SETTINGS mutations_sync = 2",
+            (C::Write, None),
+        ),
+        (
+            "ALTER TABLE t DELETE WHERE id = 1, DELETE WHERE 1",
+            wr(D::DeleteWithoutWhere),
+        ),
+        // a TTL action must not hide a later real DELETE
+        (
+            "ALTER TABLE t MODIFY TTL d DELETE, DELETE WHERE 1",
+            (C::Write, Some(D::AlterDrop)),
+        ),
+        (
+            "ALTER TABLE t MODIFY TTL d DELETE, DELETE WHERE id = 1",
+            (C::Write, Some(D::AlterDrop)),
+        ),
+        (
+            "ALTER TABLE t DELETE WHERE 1, MODIFY TTL d DELETE",
+            (C::Write, Some(D::AlterDrop)),
+        ),
+        (
+            "ALTER TABLE IF EXISTS db.t ON CLUSTER c DELETE WHERE 1",
+            wr(D::DeleteWithoutWhere),
+        ),
+        (
+            "ALTER TABLE `my db`.`t` DELETE WHERE 1",
+            wr(D::DeleteWithoutWhere),
+        ),
+        (
+            "ALTER TABLE t DROP COLUMN a, DELETE WHERE id = 1",
+            (C::Write, Some(D::AlterDrop)),
+        ),
+    ] {
+        assert_eq!(cls(sql), want, "{sql}");
+    }
+}
+
+#[test]
+fn destructive_alter_variants() {
+    let ad = (C::Ddl, Some(D::AlterDrop));
+    for sql in [
+        "ALTER TABLE t CLEAR COLUMN c IN PARTITION 1",
+        "ALTER TABLE t CLEAR INDEX i",
+        "ALTER TABLE t CLEAR PROJECTION p",
+        "ALTER TABLE t REPLACE PARTITION 1 FROM u",
+        "ALTER TABLE t MOVE PARTITION 1 TO TABLE u",
+        "ALTER TABLE t MATERIALIZE TTL",
+    ] {
+        let want = if sql.contains("MATERIALIZE") {
+            (C::Ddl, None)
+        } else {
+            ad
+        };
+        assert_eq!(cls(sql), want, "{sql}");
+    }
+    assert_eq!(
+        cls("ALTER TABLE t MOVE PARTITION 1 TO DISK 'cold'"),
+        (C::Ddl, None)
+    );
+    assert_eq!(
+        cls("ALTER TABLE t MOVE PART 'x' TO VOLUME 'v'"),
+        (C::Ddl, None)
+    );
+    assert_eq!(cls("ALTER TABLE t ADD COLUMN c Int32"), (C::Ddl, None));
+}
+
+#[test]
+fn replace_table_drops_the_old_one() {
+    let dr = (C::Ddl, Some(D::Drop));
+    assert_eq!(
+        cls("CREATE OR REPLACE TABLE t (a Int32) ENGINE = Memory"),
+        dr
+    );
+    assert_eq!(cls("create or replace table t as select 1"), dr);
+    assert_eq!(cls("REPLACE TABLE t ENGINE = Memory AS SELECT 1"), dr);
+    assert_eq!(
+        cls(
+            "CREATE OR REPLACE DICTIONARY d (id UInt64) PRIMARY KEY id SOURCE(NULL()) LAYOUT(FLAT()) LIFETIME(0)"
+        ),
+        dr
+    );
+    assert_eq!(cls("CREATE OR REPLACE VIEW v AS SELECT 1"), (C::Ddl, None));
+    assert_eq!(
+        cls("CREATE TABLE t (a Int32) ENGINE = Memory"),
+        (C::Ddl, None)
+    );
+}
+
+#[test]
+fn external_resource_functions_are_not_plain_reads() {
+    for f in [
+        "file('x.csv')",
+        "url('http://x')",
+        "urlCluster('c', 'http://x')",
+        "s3('u')",
+        "s3Cluster('c', 'u')",
+        "gcs('u')",
+        "azureBlobStorage('a')",
+        "hdfs('u')",
+        "remote('h', 'd', 't')",
+        "remoteSecure('h', 'd', 't')",
+        "cluster('c', 'd', 't')",
+        "mysql('h', 'd', 't', 'u', 'p')",
+        "postgresql('h', 'd', 't', 'u', 'p')",
+        "mongodb('h', 'd', 'c', 'u', 'p', 's')",
+        "redis('h', 'k', 's')",
+        "jdbc('u', 't')",
+        "odbc('d', 't')",
+        "sqlite('p', 't')",
+        "executable('s', 'TSV', 'a UInt8')",
+        "input('a UInt8')",
+    ] {
+        let sql = format!("SELECT * FROM {f}");
+        assert_eq!(cls(&sql), (C::Admin, None), "{sql}");
+        let lower = sql.to_lowercase();
+        assert_eq!(cls(&lower).0, C::Admin, "{lower}");
+    }
+    // writing keeps its own class; the name alone is not enough
+    assert_eq!(cls("INSERT INTO FUNCTION s3('u') SELECT 1").0, C::Write);
+    assert_eq!(cls("SELECT file FROM t").0, C::Read);
+    assert_eq!(cls("SELECT url, s3 FROM t").0, C::Read);
+    assert_eq!(cls("SELECT * FROM numbers(3)").0, C::Read);
+    assert_eq!(
+        cls("SELECT 1 FROM t WHERE x IN (SELECT a FROM url('http://x'))").0,
+        C::Admin
+    );
+}
+
+#[test]
+fn clickhouse_admin_and_session_extras() {
+    assert_eq!(cls("MOVE USER u TO local_directory"), (C::Admin, None));
+    assert_eq!(cls("SET allow_ddl = 1"), (C::Admin, None));
+    assert_eq!(
+        cls("SET allow_introspection_functions = 1"),
+        (C::Admin, None)
+    );
+    assert_eq!(cls("SET max_threads = 1"), (C::Session, None));
+}
+
+#[test]
+fn heredoc_tags_are_ascii() {
+    // `$é$` is not a heredoc opener in ClickHouse
+    let k = kinds("$é$ x $é$");
+    assert!(k.iter().all(|(kind, _)| *kind != K::String), "{k:?}");
+    assert_eq!(kinds("$abc_1$ x $abc_1$").len(), 1);
 }

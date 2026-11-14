@@ -118,7 +118,7 @@ pub async fn search(
                                       WHEN 'S' THEN 'sequence' ELSE 'table' END AS kind, \
                        CASE WHEN c.relkind = 'p' THEN 'partitioned' \
                             WHEN c.relkind = 'f' THEN 'foreign' \
-                            WHEN c.relispartition THEN 'partition' END AS info \
+                            WHEN COALESCE(c.relispartition, false) THEN 'partition' END AS info \
                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
                 WHERE c.relkind IN ('r', 'p', 'f', 'v', 'm', 'S') \
                   AND NOT (c.relkind = 'S' AND EXISTS ( \
@@ -135,12 +135,12 @@ pub async fn search(
              ) o \
              WHERE o.kind = ANY ($3::text[]) \
                AND CASE WHEN $1::text IS NULL \
-                        THEN NOT (o.sch IN ('pg_catalog', 'information_schema') \
-                                  OR starts_with(o.sch, 'pg_toast') OR starts_with(o.sch, 'pg_temp_')) \
+                        THEN NOT (o.sch IN ('pg_catalog', 'information_schema', 'crdb_internal', 'pg_extension') \
+                                  OR (left(o.sch::text, 8) = 'pg_toast') OR (left(o.sch::text, 8) = 'pg_temp_')) \
                         ELSE o.sch = $1::text END \
                AND position(lower($2::text) in lower(o.mname)) > 0 \
              ORDER BY CASE WHEN lower(o.mname) = lower($2::text) THEN 0 \
-                           WHEN starts_with(lower(o.mname), lower($2::text)) THEN 1 \
+                           WHEN position(lower($2::text) in lower(o.mname)) = 1 THEN 1 \
                            ELSE 2 END, \
                       o.mname, o.sch, o.name \
              LIMIT $4",

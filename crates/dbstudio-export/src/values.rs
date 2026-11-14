@@ -126,6 +126,22 @@ pub(crate) fn write_json(
                 json_string(out, &float_text(*f));
             }
         }
+        // Extended JSON keeps the type of values that plain JSON would flatten to strings.
+        Value::Decimal(s) if ext != ExtendedJson::Off => {
+            out.push_str("{\"$numberDecimal\":");
+            json_string(out, s);
+            out.push('}');
+        }
+        Value::Timestamp(s) if ext != ExtendedJson::Off => {
+            out.push_str("{\"$date\":");
+            json_string(out, s);
+            out.push('}');
+        }
+        Value::Bytes(b) if ext != ExtendedJson::Off => {
+            out.push_str("{\"$binary\":{\"base64\":");
+            json_string(out, &encode_binary(b, BinaryFormat::Base64));
+            out.push_str(",\"subType\":\"00\"}}");
+        }
         Value::Decimal(s)
         | Value::Text(s)
         | Value::Date(s)
@@ -351,5 +367,28 @@ mod tests {
         );
         assert_eq!(c, "{\"$numberLong\":\"5\"}");
         assert_eq!(json(&oid), "\"507f1f77bcf86cd799439011\"");
+        // Decimals, instants and binary values keep their type in Extended JSON only.
+        let ejson = |v: &Value| {
+            let mut s = String::new();
+            write_json(&mut s, v, BinaryFormat::Hex, ExtendedJson::Relaxed, None, 0);
+            s
+        };
+        assert_eq!(
+            ejson(&Value::Decimal("1.50".into())),
+            "{\"$numberDecimal\":\"1.50\"}"
+        );
+        assert_eq!(
+            ejson(&Value::Timestamp("2020-01-02T03:04:05.000Z".into())),
+            "{\"$date\":\"2020-01-02T03:04:05.000Z\"}"
+        );
+        assert_eq!(
+            ejson(&Value::Bytes(vec![1, 2, 3])),
+            "{\"$binary\":{\"base64\":\"AQID\",\"subType\":\"00\"}}"
+        );
+        assert_eq!(json(&Value::Decimal("1.50".into())), "\"1.50\"");
+        assert_eq!(
+            ejson(&Value::DateTime("2020-01-02 03:04:05".into())),
+            "\"2020-01-02 03:04:05\""
+        );
     }
 }

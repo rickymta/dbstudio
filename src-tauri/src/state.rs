@@ -94,8 +94,13 @@ pub fn build_registry() -> DriverRegistry {
     registry.register(DriverArc::new(
         dbstudio_driver_postgres::PostgresDriver::new(),
     ));
+    // CockroachDB and YugabyteDB YSQL: flavours of the PostgreSQL driver (package N1).
+    #[cfg(feature = "postgres")]
+    dbstudio_driver_postgres::register_flavors(&mut registry);
     #[cfg(feature = "mysql")]
     registry.register(DriverArc::new(dbstudio_driver_mysql::MySqlDriver::new()));
+    #[cfg(feature = "mysql")]
+    dbstudio_driver_mysql::register_flavors(&mut registry);
     #[cfg(feature = "mssql")]
     dbstudio_driver_mssql::register(&mut registry);
     #[cfg(feature = "oracle")]

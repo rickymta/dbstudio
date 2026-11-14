@@ -1,0 +1,205 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Expression",
+      "Node Id": "Expression_7",
+      "Description": "(Project names + Projection)",
+      "Expression": {
+        "Inputs": [
+          {
+            "Name": "sum(__table1.n)",
+            "Type": "UInt64"
+          },
+          {
+            "Name": "__table1.day",
+            "Type": "Date"
+          }
+        ],
+        "Actions": [
+          {
+            "Node Type": "INPUT",
+            "Result Type": "UInt64",
+            "Result Name": "sum(__table1.n)",
+            "Arguments": [
+              0
+            ],
+            "Removed Arguments": [],
+            "Result": 0
+          },
+          {
+            "Node Type": "INPUT",
+            "Result Type": "Date",
+            "Result Name": "__table1.day",
+            "Arguments": [
+              1
+            ],
+            "Removed Arguments": [],
+            "Result": 1
+          },
+          {
+            "Node Type": "ALIAS",
+            "Result Type": "UInt64",
+            "Result Name": "sum(n)",
+            "Arguments": [
+              0
+            ],
+            "Removed Arguments": [
+              0
+            ],
+            "Result": 2
+          },
+          {
+            "Node Type": "ALIAS",
+            "Result Type": "Date",
+            "Result Name": "day",
+            "Arguments": [
+              1
+            ],
+            "Removed Arguments": [
+              1
+            ],
+            "Result": 0
+          }
+        ],
+        "Outputs": [
+          {
+            "Name": "day",
+            "Type": "Date"
+          },
+          {
+            "Name": "sum(n)",
+            "Type": "UInt64"
+          }
+        ],
+        "Positions": [
+          0,
+          2
+        ]
+      },
+      "Plans": [
+        {
+          "Node Type": "Aggregating",
+          "Node Id": "Aggregating_3",
+          "Keys": [
+            "__table1.day"
+          ],
+          "Aggregates": [
+            {
+              "Name": "sum(__table1.n)",
+              "Function": {
+                "Name": "sum",
+                "Argument Types": [
+                  "UInt64"
+                ],
+                "Result Type": "UInt64"
+              },
+              "Arguments": [
+                "__table1.n"
+              ]
+            }
+          ],
+          "Skip merging": false,
+          "Plans": [
+            {
+              "Node Type": "Expression",
+              "Node Id": "Expression_6",
+              "Description": "(Before GROUP BY + Change column names to column identifiers)",
+              "Expression": {
+                "Inputs": [
+                  {
+                    "Name": "day",
+                    "Type": "Date"
+                  },
+                  {
+                    "Name": "n",
+                    "Type": "UInt64"
+                  }
+                ],
+                "Actions": [
+                  {
+                    "Node Type": "INPUT",
+                    "Result Type": "Date",
+                    "Result Name": "day",
+                    "Arguments": [
+                      0
+                    ],
+                    "Removed Arguments": [],
+                    "Result": 0
+                  },
+                  {
+                    "Node Type": "INPUT",
+                    "Result Type": "UInt64",
+                    "Result Name": "n",
+                    "Arguments": [
+                      1
+                    ],
+                    "Removed Arguments": [],
+                    "Result": 1
+                  },
+                  {
+                    "Node Type": "ALIAS",
+                    "Result Type": "Date",
+                    "Result Name": "__table1.day",
+                    "Arguments": [
+                      0
+                    ],
+                    "Removed Arguments": [
+                      0
+                    ],
+                    "Result": 2
+                  },
+                  {
+                    "Node Type": "ALIAS",
+                    "Result Type": "UInt64",
+                    "Result Name": "__table1.n",
+                    "Arguments": [
+                      1
+                    ],
+                    "Removed Arguments": [
+                      1
+                    ],
+                    "Result": 0
+                  }
+                ],
+                "Outputs": [
+                  {
+                    "Name": "__table1.day",
+                    "Type": "Date"
+                  },
+                  {
+                    "Name": "__table1.n",
+                    "Type": "UInt64"
+                  }
+                ],
+                "Positions": [
+                  2,
+                  0
+                ]
+              },
+              "Plans": [
+                {
+                  "Node Type": "ReadFromMergeTree",
+                  "Node Id": "ReadFromMergeTree_0",
+                  "Description": "plan_fx.daily",
+                  "Read Type": "Default",
+                  "Parts": 1,
+                  "Granules": 1,
+                  "Indexes": [
+                    {
+                      "Type": "PrimaryKey",
+                      "Condition": "true",
+                      "Initial Parts": 1,
+                      "Selected Parts": 1,
+                      "Initial Granules": 1,
+                      "Selected Granules": 1
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

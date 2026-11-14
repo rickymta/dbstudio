@@ -1,7 +1,8 @@
 //! Connection URI parsing (package K, CONN-13).
 //!
 //! `connection_parse_uri` turns `mongodb://`, `mongodb+srv://`, `redis://`, `rediss://`,
-//! `postgres(ql)://`, `mysql://`, `sqlserver://` and `oracle://` URIs into a connection profile.
+//! `postgres(ql)://`, `mysql://`, `sqlserver://`, `oracle://`, `cockroachdb://`, `yugabytedb://`,
+//! `tidb://`, `clickhouse[s]://`, `cassandra://` and `scylladb://` URIs into a connection profile.
 //! The password never goes to the frontend and is not kept in memory either: the command
 //! reports `hasPassword` and the UI asks the user to type the password again.
 
@@ -25,10 +26,7 @@ pub struct ParsedConnectionUri {
 
 fn invalid(msg: &str) -> Error {
     // Never echo the URI: it may contain the password.
-    Error::Query {
-        message: format!("invalid connection URI: {msg}"),
-        position: None,
-    }
+    Error::Invalid(format!("invalid connection URI: {msg}"))
 }
 
 fn pct_decode(s: &str) -> Result<String> {
@@ -292,6 +290,9 @@ fn parse_sql(p: &Parts) -> Result<ConnectionConfig> {
         "mysql" | "mariadb" => (DbKind::MySql, 3306),
         "sqlserver" | "mssql" => (DbKind::SqlServer, 1433),
         "oracle" => (DbKind::Oracle, 1521),
+        "cockroachdb" | "cockroach" => (DbKind::CockroachDb, 26257),
+        "yugabytedb" | "yugabyte" => (DbKind::YugabyteDb, 5433),
+        "tidb" => (DbKind::TiDb, 4000),
         _ => unreachable!("scheme checked by the caller"),
     };
     let db = p
@@ -334,7 +335,116 @@ fn parse_sql(p: &Parts) -> Result<ConnectionConfig> {
         .or_else(|| q(p, "ssl-key"))
         .map(str::to_string);
     if let Some(secs) = q(p, "connect_timeout").and_then(|v| v.parse::<u64>().ok()) {
-        cfg.connect_timeout_ms = Some(secs * 1000);
+        cfg.connect_timeout_ms = Some(secs.saturating_mul(1000));
+    }
+    // CockroachDB Cloud routes by cluster id (`options=--cluster=<id>` at startup).
+    if kind == DbKind::CockroachDb {
+        let cluster = q(p, "cluster").map(str::to_string).or_else(|| {
+            q(p, "options").and_then(|o| {
+                o.split_whitespace()
+                    .find_map(|w| w.strip_prefix("--cluster=").map(str::to_string))
+            })
+        });
+        if let Some(c) = cluster.filter(|c| !c.is_empty()) {
+            cfg.options.insert("cockroach.cluster".into(), c);
+        }
+    }
+    Ok(cfg)
+}
+
+/// `clickhouse://` (HTTP, 8123) and `clickhouses://` (HTTPS, 8443); `?secure=true` also
+/// turns TLS on, `?compress=` and `?editing=` are kept for the driver.
+fn parse_clickhouse(p: &Parts) -> Result<ConnectionConfig> {
+    let secure = p.scheme == "clickhouses"
+        || truthy(q(p, "secure"))
+            .or_else(|| truthy(q(p, "ssl")))
+            .or_else(|| truthy(q(p, "tls")))
+            .unwrap_or(false);
+    let db = p
+        .path
+        .clone()
+        .or_else(|| q(p, "database").map(str::to_string))
+        .filter(|d| !d.is_empty());
+    let mut cfg = ConnectionConfig::new(
+        DbKind::ClickHouse,
+        host_label(p, db.as_deref()),
+        p.hosts[0].0.clone(),
+    );
+    cfg.port = p.hosts[0].1.unwrap_or(if secure { 8443 } else { 8123 });
+    cfg.database = db;
+    cfg.username = p.user.clone().or_else(|| q(p, "user").map(str::to_string));
+    cfg.tls.mode = match (secure, q(p, "sslmode").and_then(tls_from_sslmode)) {
+        (_, Some(m)) => m,
+        (true, None) if truthy(q(p, "skip_verify")).unwrap_or(false) => TlsMode::Require,
+        (true, None) => TlsMode::VerifyFull,
+        (false, None) => TlsMode::Disable,
+    };
+    cfg.tls.ca_cert_path = q(p, "sslrootcert").map(str::to_string);
+    for (uri_key, opt_key) in [("compress", "compress"), ("editing", "editing")] {
+        if let Some(v) = q(p, uri_key).filter(|v| !v.is_empty()) {
+            cfg.options.insert(opt_key.into(), v.to_string());
+        }
+    }
+    if let Some(ms) = q(p, "connect_timeout").and_then(|v| v.parse::<u64>().ok()) {
+        cfg.connect_timeout_ms = Some(ms.saturating_mul(1000));
+    }
+    Ok(cfg)
+}
+
+/// `cassandra://` and `scylladb://` (native protocol, 9042); the path is the keyspace.
+fn parse_cassandra(p: &Parts) -> Result<ConnectionConfig> {
+    let kind = if p.scheme == "cassandra" {
+        DbKind::Cassandra
+    } else {
+        DbKind::ScyllaDb
+    };
+    let db = p
+        .path
+        .clone()
+        .or_else(|| q(p, "keyspace").map(str::to_string))
+        .filter(|d| !d.is_empty());
+    let mut cfg = ConnectionConfig::new(kind, host_label(p, db.as_deref()), p.hosts[0].0.clone());
+    cfg.port = p.hosts[0].1.unwrap_or(9042);
+    cfg.database = db;
+    cfg.username = p.user.clone().or_else(|| q(p, "user").map(str::to_string));
+    if p.hosts.len() > 1 {
+        let all: Vec<String> = p
+            .hosts
+            .iter()
+            .map(|(h, port)| {
+                let h = if h.contains(':') {
+                    format!("[{h}]")
+                } else {
+                    h.clone()
+                };
+                format!("{h}:{}", port.unwrap_or(9042))
+            })
+            .collect();
+        cfg.options.insert("hosts".into(), all.join(","));
+    }
+    for (uri_key, opt_key) in [
+        ("localdc", "localDc"),
+        ("local_dc", "localDc"),
+        ("consistency", "consistency"),
+        ("lwtediting", "lwtEdits"),
+        ("lwtedits", "lwtEdits"),
+    ] {
+        if let Some(v) = q(p, uri_key).filter(|v| !v.is_empty()) {
+            cfg.options.insert(opt_key.into(), v.to_string());
+        }
+    }
+    cfg.tls.mode = match (
+        q(p, "sslmode").and_then(tls_from_sslmode),
+        truthy(q(p, "ssl")).or_else(|| truthy(q(p, "tls"))),
+    ) {
+        (Some(m), _) => m,
+        (None, Some(true)) => TlsMode::VerifyFull,
+        (None, Some(false)) => TlsMode::Disable,
+        (None, None) => TlsMode::Prefer,
+    };
+    cfg.tls.ca_cert_path = q(p, "sslrootcert").map(str::to_string);
+    if let Some(ms) = q(p, "connect_timeout").and_then(|v| v.parse::<u64>().ok()) {
+        cfg.connect_timeout_ms = Some(ms.saturating_mul(1000));
     }
     Ok(cfg)
 }
@@ -345,9 +455,10 @@ pub fn parse_uri(uri: &str) -> Result<(ConnectionProfile, bool)> {
     let cfg = match parts.scheme.as_str() {
         "mongodb" | "mongodb+srv" => parse_mongo(&parts)?,
         "redis" | "rediss" => parse_redis(&parts)?,
-        "postgres" | "postgresql" | "mysql" | "mariadb" | "sqlserver" | "mssql" | "oracle" => {
-            parse_sql(&parts)?
-        }
+        "postgres" | "postgresql" | "mysql" | "mariadb" | "sqlserver" | "mssql" | "oracle"
+        | "cockroachdb" | "cockroach" | "yugabytedb" | "yugabyte" | "tidb" => parse_sql(&parts)?,
+        "clickhouse" | "clickhouses" => parse_clickhouse(&parts)?,
+        "cassandra" | "scylladb" | "scylla" => parse_cassandra(&parts)?,
         other => return Err(Error::Unsupported(format!("uri_scheme:{other}"))),
     };
     Ok((profile_of(cfg), parts.password.is_some()))
@@ -461,8 +572,8 @@ mod tests {
         let e = parse_uri("mongodb://u:topsecret@:bad/x").unwrap_err();
         assert!(!e.message().contains("topsecret"), "{e}");
         assert_eq!(parse_uri("ftp://h").unwrap_err().kind(), "unsupported");
-        assert_eq!(parse_uri("not a uri").unwrap_err().kind(), "query");
-        assert_eq!(parse_uri("mongodb://").unwrap_err().kind(), "query");
+        assert_eq!(parse_uri("not a uri").unwrap_err().kind(), "invalid");
+        assert_eq!(parse_uri("mongodb://").unwrap_err().kind(), "invalid");
         assert!(parse_uri("mongodb://u:p%zz@h").is_err());
     }
 
@@ -492,5 +603,99 @@ mod tests {
         );
         assert_eq!(p.config.database.as_deref(), Some("app"));
         assert_eq!(p.config.username.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn huge_timeouts_do_not_overflow() {
+        let (p, _) = parse_uri("postgres://u@h/d?connect_timeout=18446744073709551615").unwrap();
+        assert_eq!(p.config.connect_timeout_ms, Some(u64::MAX));
+        let (p, _) = parse_uri("clickhouse://u@h/d?connect_timeout=18446744073709551615").unwrap();
+        assert_eq!(p.config.connect_timeout_ms, Some(u64::MAX));
+        let (p, _) = parse_uri("cassandra://u@h/ks?connect_timeout=18446744073709551615").unwrap();
+        assert_eq!(p.config.connect_timeout_ms, Some(u64::MAX));
+    }
+
+    #[test]
+    fn newsql_uris_use_their_own_kinds_and_default_ports() {
+        let (p, s) = parse_uri(
+            "cockroachdb://root:pw@crdb.example.com/defaultdb?sslmode=verify-full&sslrootcert=/ca.crt&options=--cluster%3Dmy-cluster-123",
+        )
+        .unwrap();
+        let c = p.config;
+        assert_eq!((c.kind, c.port), (DbKind::CockroachDb, 26257));
+        assert_eq!(c.database.as_deref(), Some("defaultdb"));
+        assert_eq!(c.tls.mode, TlsMode::VerifyFull);
+        assert_eq!(c.options["cockroach.cluster"], "my-cluster-123");
+        assert!(s);
+        let (p, _) = parse_uri("cockroachdb://u@h/db?cluster=abc").unwrap();
+        assert_eq!(p.config.options["cockroach.cluster"], "abc");
+        let (p, _) = parse_uri("yugabytedb://yugabyte@yb:5433/yugabyte?sslmode=require").unwrap();
+        assert_eq!(
+            (p.config.kind, p.config.port, p.config.tls.mode),
+            (DbKind::YugabyteDb, 5433, TlsMode::Require)
+        );
+        let (p, _) = parse_uri("yugabyte://u@yb/db").unwrap();
+        assert_eq!(p.config.kind, DbKind::YugabyteDb);
+        let (p, s) = parse_uri("tidb://root@tidb.local/test?ssl-mode=REQUIRED").unwrap();
+        assert_eq!(
+            (p.config.kind, p.config.port, p.config.tls.mode),
+            (DbKind::TiDb, 4000, TlsMode::Require)
+        );
+        assert!(!s);
+    }
+
+    #[test]
+    fn clickhouse_uris_pick_http_or_https() {
+        let (p, s) = parse_uri("clickhouse://dbstudio:pw@ch.local/analytics?compress=lz4").unwrap();
+        let c = p.config;
+        assert_eq!(
+            (c.kind, c.port, c.tls.mode),
+            (DbKind::ClickHouse, 8123, TlsMode::Disable)
+        );
+        assert_eq!(c.database.as_deref(), Some("analytics"));
+        assert_eq!(c.options["compress"], "lz4");
+        assert!(s);
+        let (p, _) = parse_uri("clickhouses://u@ch.cloud/db").unwrap();
+        assert_eq!(
+            (p.config.port, p.config.tls.mode),
+            (8443, TlsMode::VerifyFull)
+        );
+        let (p, _) = parse_uri("clickhouse://u@h:9000/db?secure=true&skip_verify=true").unwrap();
+        assert_eq!((p.config.port, p.config.tls.mode), (9000, TlsMode::Require));
+        let (p, _) = parse_uri("clickhouse://u@h?database=d2").unwrap();
+        assert_eq!(p.config.database.as_deref(), Some("d2"));
+    }
+
+    #[test]
+    fn cassandra_and_scylla_uris_carry_keyspace_and_cluster_options() {
+        let (p, s) = parse_uri(
+            "cassandra://cass:pw@n1:9042,n2:9043/shop?localDc=dc1&consistency=LOCAL_QUORUM&ssl=true&lwtEdits=true",
+        )
+        .unwrap();
+        let c = p.config;
+        assert_eq!((c.kind, c.port), (DbKind::Cassandra, 9042));
+        assert_eq!(c.database.as_deref(), Some("shop"));
+        assert_eq!(c.options["hosts"], "n1:9042,n2:9043");
+        assert_eq!(c.options["localDc"], "dc1");
+        assert_eq!(c.options["consistency"], "LOCAL_QUORUM");
+        assert_eq!(c.options["lwtEdits"], "true");
+        assert_eq!(c.tls.mode, TlsMode::VerifyFull);
+        assert!(s);
+        let (p, _) = parse_uri("scylladb://h").unwrap();
+        assert_eq!(
+            (p.config.kind, p.config.port, p.config.tls.mode),
+            (DbKind::ScyllaDb, 9042, TlsMode::Prefer)
+        );
+        let (p, _) = parse_uri("scylla://h/ks").unwrap();
+        assert_eq!(p.config.kind, DbKind::ScyllaDb);
+        assert_eq!(p.config.database.as_deref(), Some("ks"));
+        // The password still never reaches the profile.
+        assert!(
+            parse_uri("cassandra://u:topsecret@:bad/x")
+                .unwrap_err()
+                .message()
+                .find("topsecret")
+                .is_none()
+        );
     }
 }

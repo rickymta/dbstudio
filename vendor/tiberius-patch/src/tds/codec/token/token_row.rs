@@ -12,6 +12,9 @@ pub use into_row::IntoRow;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TokenRow<'a> {
     data: Vec<ColumnData<'a>>,
+    // DBStudio patch: `(column index, full size in bytes)` of PLP values cut by the limit.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) truncated: Vec<(usize, u64)>,
 }
 
 impl<'a> IntoIterator for TokenRow<'a> {
@@ -50,13 +53,17 @@ impl<'a> Encode<BytesMutWithDataColumns<'a>> for TokenRow<'a> {
 impl<'a> TokenRow<'a> {
     /// Creates a new empty row.
     pub const fn new() -> Self {
-        Self { data: Vec::new() }
+        Self {
+            data: Vec::new(),
+            truncated: Vec::new(),
+        }
     }
 
     /// Creates a new empty row with allocated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             data: Vec::with_capacity(capacity),
+            truncated: Vec::new(),
         }
     }
 
@@ -105,12 +112,18 @@ impl TokenRow<'static> {
             crate::Error::Protocol("ROW token arrived before any COLMETADATA".into())
         })?;
 
+        // DBStudio patch: drop a stale truncation note left by a non-row value.
+        src.context_mut().take_plp_truncated();
         let mut row = Self {
             data: Vec::with_capacity(col_meta.columns.len()),
+            truncated: Vec::new(),
         };
 
-        for column in col_meta.columns.iter() {
+        for (i, column) in col_meta.columns.iter().enumerate() {
             let data = ColumnData::decode(src, &column.base.ty).await?;
+            if let Some(total) = src.context_mut().take_plp_truncated() {
+                row.truncated.push((i, total));
+            }
             row.data.push(data);
         }
 
@@ -128,15 +141,22 @@ impl TokenRow<'static> {
         })?;
         let row_bitmap = RowBitmap::decode(src, col_meta.columns.len()).await?;
 
+        // DBStudio patch: drop a stale truncation note left by a non-row value.
+        src.context_mut().take_plp_truncated();
         let mut row = Self {
             data: Vec::with_capacity(col_meta.columns.len()),
+            truncated: Vec::new(),
         };
 
         for (i, column) in col_meta.columns.iter().enumerate() {
             let data = if row_bitmap.is_null(i) {
                 column.base.null_value()
             } else {
-                ColumnData::decode(src, &column.base.ty).await?
+                let d = ColumnData::decode(src, &column.base.ty).await?;
+                if let Some(total) = src.context_mut().take_plp_truncated() {
+                    row.truncated.push((i, total));
+                }
+                d
             };
 
             row.data.push(data);

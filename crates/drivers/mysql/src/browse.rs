@@ -19,7 +19,14 @@ use crate::session::{cell, cell_named};
 use crate::sql::{quote_ident, quote_table};
 use crate::value::kind_from_data_type;
 
-const SYSTEM_DATABASES: [&str; 4] = ["information_schema", "mysql", "performance_schema", "sys"];
+/// Databases the server owns (`metrics_schema` is TiDB's).
+const SYSTEM_DATABASES: [&str; 5] = [
+    "information_schema",
+    "mysql",
+    "performance_schema",
+    "sys",
+    "metrics_schema",
+];
 
 fn is_system_db(name: &str) -> bool {
     SYSTEM_DATABASES
@@ -111,13 +118,14 @@ pub async fn list_children(
     conn: &mut mysql_async::Conn,
     parent: &ObjectPath,
     is_mariadb: bool,
+    is_tidb: bool,
 ) -> Result<Vec<ObjectNode>> {
     match resolve(parent)? {
         Place::Root => list_root(conn, parent).await,
         Place::Roles => list_roles(conn, parent).await,
-        Place::Database(db) => list_db_folders(conn, parent, &db, is_mariadb).await,
+        Place::Database(db) => list_db_folders(conn, parent, &db, is_mariadb || is_tidb).await,
         Place::DbFolder(db, f) => list_db_folder(conn, parent, &db, &f).await,
-        Place::Table(db, t, kind) => list_table_folders(conn, parent, &db, &t, kind).await,
+        Place::Table(db, t, kind) => list_table_folders(conn, parent, &db, &t, kind, is_tidb).await,
         Place::TableFolder(db, t, kind, f) => {
             list_table_folder(conn, parent, &db, &t, kind, &f).await
         }
@@ -383,7 +391,7 @@ async fn list_db_folders(
     conn: &mut mysql_async::Conn,
     parent: &ObjectPath,
     db: &str,
-    is_mariadb: bool,
+    has_sequences: bool,
 ) -> Result<Vec<ObjectNode>> {
     let t = rows(
         conn,
@@ -433,7 +441,7 @@ async fn list_db_folders(
     };
     push(folder::TABLES, tables);
     push(folder::VIEWS, views);
-    if is_mariadb {
+    if has_sequences {
         push(folder::SEQUENCES, sequences);
     }
     push(folder::FUNCTIONS, functions);
@@ -535,6 +543,7 @@ async fn list_table_folders(
     db: &str,
     t: &str,
     kind: ObjectKind,
+    is_tidb: bool,
 ) -> Result<Vec<ObjectNode>> {
     let ty = table_type(conn, db, t).await?;
     let mut out = vec![node(
@@ -559,6 +568,10 @@ async fn list_table_folders(
         .map(|r| (count_of(r, 0), count_of(r, 1)))
         .unwrap_or_default();
     for (key, n) in [(folder::INDEXES, idx), (folder::TRIGGERS, trg)] {
+        // TiDB has no triggers: the folder is hidden.
+        if is_tidb && key == folder::TRIGGERS {
+            continue;
+        }
         out.push(node(
             parent.child(ObjectKind::Folder, key),
             ObjectKind::Folder,
@@ -805,7 +818,11 @@ async fn show_create(
 }
 
 /// DDL of the object at `path`.
-pub async fn object_ddl(conn: &mut mysql_async::Conn, path: &ObjectPath) -> Result<String> {
+pub async fn object_ddl(
+    conn: &mut mysql_async::Conn,
+    path: &ObjectPath,
+    is_tidb: bool,
+) -> Result<String> {
     let segs: Vec<_> = path
         .segments
         .iter()
@@ -822,7 +839,34 @@ pub async fn object_ddl(conn: &mut mysql_async::Conn, path: &ObjectPath) -> Resu
         db.clone()
             .ok_or_else(|| Error::NotFound("database missing from path".into()))
     };
+    // TiDB has no stored routines or triggers: such paths never exist there.
+    if is_tidb
+        && matches!(
+            last.kind,
+            ObjectKind::Function | ObjectKind::Procedure | ObjectKind::Trigger
+        )
+    {
+        return Err(Error::NotFound(format!(
+            "{:?} `{}` (TiDB has no stored routines or triggers)",
+            last.kind, last.name
+        )));
+    }
     match last.kind {
+        ObjectKind::Sequence if segs.len() == 2 => {
+            // MariaDB names the column `Create Table`, TiDB `Create Sequence`.
+            let column = if is_tidb {
+                "Create Sequence"
+            } else {
+                "Create Table"
+            };
+            show_create(
+                conn,
+                "SEQUENCE",
+                quote_table(&need_db()?, &last.name),
+                column,
+            )
+            .await
+        }
         ObjectKind::Table | ObjectKind::View if segs.len() == 2 => {
             let db = need_db()?;
             let (what, col) = if last.kind == ObjectKind::Table {

@@ -2,8 +2,9 @@
 //! analysis (self cost/time, hot path, warnings).
 //!
 //! Supported sources: PostgreSQL JSON, MySQL JSON (v1 and v2) and tree text, MariaDB JSON,
-//! SQL Server showplan XML, Oracle plan rows (JSON) and MongoDB explain output. ClickHouse,
-//! CockroachDB, TiDB and CQL trace parsers are scaffolded (`PlanError::Unsupported`).
+//! SQL Server showplan XML, Oracle plan rows (JSON), MongoDB explain output and TiDB
+//! `FORMAT='row'` rows (JSON). ClickHouse, CockroachDB and CQL trace parsers are scaffolded
+//! (`PlanError::Unsupported`).
 
 mod analyze;
 mod build;
@@ -418,21 +419,6 @@ mod tests {
                 parse_and_analyze(&empty, &PlanRules::default()),
                 Err(PlanError::Invalid(_))
             ));
-        }
-    }
-
-    #[test]
-    fn scaffolded_formats_are_unsupported_until_their_package_lands() {
-        for format in [
-            PlanFormat::ClickHouseJson,
-            PlanFormat::CockroachText,
-            PlanFormat::TiDbRows,
-        ] {
-            assert_eq!(parse(&raw(format)), Err(PlanError::Unsupported(format)));
-            // Empty text is still reported as invalid before dispatch.
-            let mut empty = raw(format);
-            empty.text = " ".into();
-            assert!(matches!(parse(&empty), Err(PlanError::Invalid(_))));
         }
     }
 

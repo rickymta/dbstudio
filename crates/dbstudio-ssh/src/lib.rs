@@ -16,7 +16,8 @@ use std::time::Duration;
 use dbstudio_core::{Error, Result, Secret, SshAuth, SshConfig};
 use russh::client::{self, AuthResult, Handle};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
 
@@ -157,6 +158,43 @@ impl Tunnel {
         Ok(Tunnel { local_addr, task })
     }
 
+    /// Like [`Tunnel::open`], but the local listener speaks SOCKS5 (127.0.0.1, no authentication,
+    /// `CONNECT` only) and forwards each request through a `direct-tcpip` channel. Only the
+    /// destinations in `allowed` (`host`, `port`; host compared case-insensitively) are served,
+    /// anything else gets "connection not allowed". A client keeps the original host name, so
+    /// TLS checks the certificate against it (R6), and several hosts (a replica set) can share
+    /// one SSH session.
+    pub async fn open_socks5(
+        cfg: &SshConfig,
+        secret: Option<&Secret>,
+        allowed: Vec<(String, u16)>,
+        known: &dyn KnownHosts,
+    ) -> Result<Tunnel> {
+        let limit = Duration::from_millis(
+            cfg.connect_timeout_ms
+                .filter(|ms| *ms > 0)
+                .unwrap_or(DEFAULT_CONNECT_TIMEOUT_MS),
+        );
+        let handle = tokio::time::timeout(limit, establish(cfg, secret, known))
+            .await
+            .map_err(|_| Error::Timeout)??;
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .map_err(|e| Error::Connection(format!("ssh tunnel: cannot listen locally: {e}")))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|e| Error::Connection(format!("ssh tunnel: {e}")))?;
+        tracing::info!(
+            bastion = %cfg.host,
+            port = cfg.port,
+            targets = allowed.len(),
+            local = %local_addr,
+            "ssh socks5 proxy open"
+        );
+        let task = tokio::spawn(socks_accept_loop(listener, Arc::new(handle), allowed));
+        Ok(Tunnel { local_addr, task })
+    }
+
     /// Local address connections are forwarded from.
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
@@ -207,6 +245,167 @@ async fn accept_loop(
             Some(_) = set.join_next(), if !set.is_empty() => {}
         }
     }
+}
+
+async fn socks_accept_loop(
+    listener: TcpListener,
+    handle: Arc<Handle<ClientHandler>>,
+    allowed: Vec<(String, u16)>,
+) {
+    let allowed = Arc::new(allowed);
+    let permits = Arc::new(tokio::sync::Semaphore::new(SOCKS_MAX_CLIENTS));
+    let mut set: JoinSet<()> = JoinSet::new();
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (sock, peer) = match accepted {
+                    Ok(x) => x,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ssh socks5 accept failed");
+                        break;
+                    }
+                };
+                let handle = Arc::clone(&handle);
+                let allowed = Arc::clone(&allowed);
+                // Too many clients at once (a local process flooding the port): refuse.
+                let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+                    tracing::warn!("ssh socks5: too many connections, refusing one");
+                    continue;
+                };
+                set.spawn(async move {
+                    let _permit = permit;
+                    if let Err(e) = serve_socks5(sock, peer, &handle, &allowed).await {
+                        tracing::debug!(error = %e, "ssh socks5 request failed");
+                    }
+                });
+            }
+            Some(_) = set.join_next(), if !set.is_empty() => {}
+        }
+    }
+}
+
+/// Most concurrent SOCKS5 clients (a database pool opens tens of connections).
+const SOCKS_MAX_CLIENTS: usize = 128;
+/// Time a client has to finish the SOCKS5 handshake and for the SSH channel to open.
+const SOCKS_HANDSHAKE: Duration = Duration::from_secs(10);
+const SOCKS_CHANNEL_OPEN: Duration = Duration::from_secs(15);
+
+/// SOCKS5 reply code: succeeded / not allowed / host unreachable / command not supported /
+/// address type not supported.
+const REP_OK: u8 = 0;
+const REP_NOT_ALLOWED: u8 = 2;
+const REP_HOST_UNREACHABLE: u8 = 4;
+const REP_CMD_UNSUPPORTED: u8 = 7;
+const REP_ATYP_UNSUPPORTED: u8 = 8;
+
+async fn socks_reply(sock: &mut TcpStream, code: u8) -> std::io::Result<()> {
+    // Bound address 0.0.0.0:0.
+    sock.write_all(&[5, code, 0, 1, 0, 0, 0, 0, 0, 0]).await
+}
+
+/// Handshake of one SOCKS5 client (bounded by [`SOCKS_HANDSHAKE`]), then pipe it through a
+/// `direct-tcpip` channel. Established connections are not cut when idle: pooled database
+/// connections are legitimately quiet, and the SSH keepalive detects a dead bastion.
+async fn serve_socks5(
+    mut sock: TcpStream,
+    peer: SocketAddr,
+    handle: &Handle<ClientHandler>,
+    allowed: &[(String, u16)],
+) -> std::io::Result<()> {
+    let timed_out = || std::io::Error::new(std::io::ErrorKind::TimedOut, "socks5 timed out");
+    let (host, port) = tokio::time::timeout(SOCKS_HANDSHAKE, socks_request(&mut sock, allowed))
+        .await
+        .map_err(|_| timed_out())??;
+    let opened = tokio::time::timeout(
+        SOCKS_CHANNEL_OPEN,
+        handle.channel_open_direct_tcpip(
+            host,
+            u32::from(port),
+            peer.ip().to_string(),
+            u32::from(peer.port()),
+        ),
+    )
+    .await;
+    let channel = match opened {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
+            socks_reply(&mut sock, REP_HOST_UNREACHABLE).await?;
+            return Err(std::io::Error::other(e.to_string()));
+        }
+        Err(_) => {
+            socks_reply(&mut sock, REP_HOST_UNREACHABLE).await?;
+            return Err(timed_out());
+        }
+    };
+    socks_reply(&mut sock, REP_OK).await?;
+    let mut stream = channel.into_stream();
+    tokio::io::copy_bidirectional(&mut sock, &mut stream).await?;
+    Ok(())
+}
+
+/// Read greeting and CONNECT request; returns the allowed destination.
+async fn socks_request(
+    sock: &mut TcpStream,
+    allowed: &[(String, u16)],
+) -> std::io::Result<(String, u16)> {
+    let bad = |m: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, m.to_string());
+    // Greeting: VER NMETHODS METHODS...; we only offer "no authentication" (0).
+    let mut head = [0u8; 2];
+    sock.read_exact(&mut head).await?;
+    if head[0] != 5 {
+        return Err(bad("not a SOCKS5 client"));
+    }
+    let mut methods = vec![0u8; usize::from(head[1])];
+    sock.read_exact(&mut methods).await?;
+    if !methods.contains(&0) {
+        sock.write_all(&[5, 0xff]).await?;
+        return Err(bad("no acceptable authentication method"));
+    }
+    sock.write_all(&[5, 0]).await?;
+    // Request: VER CMD RSV ATYP ADDR PORT.
+    let mut req = [0u8; 4];
+    sock.read_exact(&mut req).await?;
+    if req[0] != 5 {
+        return Err(bad("bad request version"));
+    }
+    let host = match req[3] {
+        1 => {
+            let mut a = [0u8; 4];
+            sock.read_exact(&mut a).await?;
+            std::net::Ipv4Addr::from(a).to_string()
+        }
+        3 => {
+            let mut len = [0u8; 1];
+            sock.read_exact(&mut len).await?;
+            let mut name = vec![0u8; usize::from(len[0])];
+            sock.read_exact(&mut name).await?;
+            String::from_utf8(name).map_err(|_| bad("host name is not UTF-8"))?
+        }
+        4 => {
+            let mut a = [0u8; 16];
+            sock.read_exact(&mut a).await?;
+            std::net::Ipv6Addr::from(a).to_string()
+        }
+        _ => {
+            socks_reply(sock, REP_ATYP_UNSUPPORTED).await?;
+            return Err(bad("unsupported address type"));
+        }
+    };
+    let mut port = [0u8; 2];
+    sock.read_exact(&mut port).await?;
+    let port = u16::from_be_bytes(port);
+    if req[1] != 1 {
+        socks_reply(sock, REP_CMD_UNSUPPORTED).await?;
+        return Err(bad("only CONNECT is supported"));
+    }
+    if !allowed
+        .iter()
+        .any(|(h, p)| *p == port && h.eq_ignore_ascii_case(&host))
+    {
+        socks_reply(sock, REP_NOT_ALLOWED).await?;
+        return Err(bad("destination is not allowed"));
+    }
+    Ok((host, port))
 }
 
 fn conn_err(cfg: &SshConfig, what: &str, e: impl std::fmt::Display) -> Error {

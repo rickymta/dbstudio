@@ -143,6 +143,13 @@ async fn model_sakila() {
     for t in targets() {
         let tag = t.name;
         let root = root_session(t).await;
+        if t.tidb {
+            // The Sakila fixture needs FULLTEXT keys, stored routines and triggers, which TiDB
+            // lacks; `it_tidb.rs` covers the model and the DDL replay with a TiDB fixture.
+            println!("skip [tidb]: Sakila fixture uses FULLTEXT / routines / triggers");
+            continue;
+        }
+        let _drop_x_model = drop_guard(t, "erd_it_model");
         fixture_db(&*root, "erd_it_model").await;
         let m = root
             .schema_model(request(db_path("erd_it_model")))
@@ -255,6 +262,7 @@ async fn model_100_tables_in_four_queries() {
     for t in targets() {
         let tag = t.name;
         let root = root_session(t).await;
+        let _drop_x_100 = drop_guard(t, "erd_it_100");
         recreate_db(&*root, "erd_it_100").await;
         let mut script = String::new();
         for i in 1..=100 {
@@ -296,6 +304,14 @@ async fn ddl_replays_into_empty_database() {
     for t in targets() {
         let tag = t.name;
         let root = root_session(t).await;
+        if t.tidb {
+            // The Sakila fixture needs FULLTEXT keys, stored routines and triggers, which TiDB
+            // lacks; `it_tidb.rs` covers the model and the DDL replay with a TiDB fixture.
+            println!("skip [tidb]: Sakila fixture uses FULLTEXT / routines / triggers");
+            continue;
+        }
+        let _drop_x = drop_guard(t, "erd_it");
+        let _drop_x_copy = drop_guard(t, "erd_it_copy");
         fixture_db(&*root, "erd_it").await;
         let opts = DdlOptions {
             qualify_schema: false,
@@ -449,6 +465,13 @@ async fn ddl_options_and_selection() {
     for t in targets() {
         let tag = t.name;
         let root = root_session(t).await;
+        if t.tidb {
+            // The Sakila fixture needs FULLTEXT keys, stored routines and triggers, which TiDB
+            // lacks; `it_tidb.rs` covers the model and the DDL replay with a TiDB fixture.
+            println!("skip [tidb]: Sakila fixture uses FULLTEXT / routines / triggers");
+            continue;
+        }
+        let _drop_x_opts = drop_guard(t, "erd_it_opts");
         fixture_db(&*root, "erd_it_opts").await;
         let db = "erd_it_opts";
 

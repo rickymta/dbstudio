@@ -138,6 +138,6 @@ mod tests {
         cfg.username = Some("sa".into());
         cfg.options.insert("pool_max".into(), "0".into());
         let err = MssqlDriver::new().connect(&cfg, None).await.err().unwrap();
-        assert_eq!(err.kind(), "other");
+        assert_eq!(err.kind(), "invalid");
     }
 }

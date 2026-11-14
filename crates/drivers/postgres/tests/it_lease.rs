@@ -488,20 +488,107 @@ async fn busy_while_running_and_context(port: u16) {
     // A typed SET search_path updates the state too.
     run(&*lease, "SET search_path TO public").await;
     assert_eq!(lease.state().schema.as_deref(), Some("public"));
-    // Another database cannot be switched to on PostgreSQL.
-    let err = lease
-        .set_context(LeaseContext {
-            database: Some("dbs_it_other".into()),
-            schema: None,
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(err.kind(), "unsupported");
     exec(&*s, &format!("DROP SCHEMA {schema} CASCADE")).await;
     lease.ping().await.unwrap();
     lease.close().await.unwrap();
 }
 on_both!(busy_while_running_and_context, busy_16, busy_12);
+
+/// §2.17: the lease moves to another database on a new connection; an open transaction makes it
+/// `busy`.
+async fn switch_database(port: u16) {
+    let s = fixture(port).await;
+    let lease: Arc<dyn Lease> = Arc::from(open(&*s, true).await);
+    assert_eq!(lease.state().database.as_deref(), Some("dbstudio"));
+    // A session setting of the old connection does not follow, a search path does.
+    run(&*lease, "SET search_path TO public").await;
+    lease
+        .set_context(LeaseContext {
+            database: Some("dbs_it_other".into()),
+            schema: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(lease.state().database.as_deref(), Some("dbs_it_other"));
+    let cur = |r: Vec<dbstudio_core::StatementResult>| match &r[0].outcome {
+        StatementOutcome::Rows(rs) => rs.rows[0][0].clone(),
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(
+        cur(run(&*lease, "SELECT current_database()").await),
+        Value::Text("dbs_it_other".into())
+    );
+    assert_eq!(
+        cur(run(&*lease, "SELECT count(*) FROM other_t").await),
+        Value::Int(1)
+    );
+    // Same database again is a no-op; a missing one fails and leaves the lease usable.
+    lease
+        .set_context(LeaseContext {
+            database: Some("dbs_it_other".into()),
+            schema: None,
+        })
+        .await
+        .unwrap();
+    let err = lease
+        .set_context(LeaseContext {
+            database: Some("no_such_db_xyz".into()),
+            schema: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "query", "{err:?}");
+    assert_eq!(
+        cur(run(&*lease, "SELECT current_database()").await),
+        Value::Text("dbs_it_other".into())
+    );
+    // An open transaction blocks the switch.
+    lease.set_auto_commit(false).await.unwrap();
+    run(&*lease, "SELECT 1").await;
+    let err = lease
+        .set_context(LeaseContext {
+            database: Some("dbstudio".into()),
+            schema: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "busy");
+    lease.rollback().await.unwrap();
+    // A result that is still open is dropped by the switch (the lease drops it before any
+    // command), so the switch goes through.
+    lease.set_auto_commit(true).await.unwrap();
+    let mut req = QueryRequest::new("SELECT generate_series(1, 100)");
+    req.max_rows = Some(10);
+    lease
+        .execute(req, &mut CollectingSink::new())
+        .await
+        .unwrap();
+    lease
+        .set_context(LeaseContext {
+            database: Some("dbstudio".into()),
+            schema: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        cur(run(&*lease, "SELECT current_database()").await),
+        Value::Text("dbstudio".into())
+    );
+    // The new connection can be cancelled.
+    let req = QueryRequest::new("SELECT pg_sleep(30)");
+    let id = req.query_id;
+    let runner = {
+        let lease = lease.clone();
+        tokio::spawn(async move { lease.execute(req, &mut CollectingSink::new()).await })
+    };
+    while lease.state().running.is_none() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    lease.cancel(id).await.unwrap();
+    assert!(runner.await.unwrap().is_err());
+    lease.close().await.unwrap();
+}
+on_both!(switch_database, switch_db_16, switch_db_12);
 
 async fn lease_options_database_and_connection_loss(port: u16) {
     let s = connect(port).await;

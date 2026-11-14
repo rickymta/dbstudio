@@ -267,4 +267,63 @@ mod tests {
         );
         assert_eq!(text(effective_ssh_secret(None, None)), None);
     }
+
+    fn profile_with_label(label: Option<&str>) -> ConnectionProfile {
+        let mut config =
+            dbstudio_core::ConnectionConfig::new(dbstudio_core::DbKind::Postgres, "p", "localhost");
+        config.environment_label = label.map(str::to_string);
+        ConnectionProfile {
+            config,
+            group_id: None,
+            color: None,
+            save_password: false,
+            has_password: false,
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn environment_labels_are_limited_trimmed_and_survive_export_and_import() {
+        let (state, _) = crate::state::testing::test_state(dbstudio_core::DriverRegistry::new());
+        let too_long = "x".repeat(33);
+        let e = save_impl(
+            &state,
+            profile_with_label(Some(&too_long)),
+            SecretChange::Keep,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.kind(), "invalid", "{e:?}");
+        let saved = save_impl(
+            &state,
+            profile_with_label(Some("  Staging EU  ")),
+            SecretChange::Keep,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            saved.config.environment_label.as_deref(),
+            Some("Staging EU")
+        );
+        let blank = save_impl(&state, profile_with_label(Some("  ")), SecretChange::Keep)
+            .await
+            .unwrap();
+        assert_eq!(blank.config.environment_label, None);
+        // The label travels with exported profiles.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("profiles.json");
+        let path = file.to_string_lossy().into_owned();
+        export_impl(&state, path.clone(), Some(vec![saved.config.id]))
+            .await
+            .unwrap();
+        let (importer, _) = crate::state::testing::test_state(dbstudio_core::DriverRegistry::new());
+        let snap = import_impl(&importer, path).await.unwrap();
+        assert_eq!(snap.profiles.len(), 1);
+        assert_eq!(
+            snap.profiles[0].config.environment_label.as_deref(),
+            Some("Staging EU")
+        );
+    }
 }

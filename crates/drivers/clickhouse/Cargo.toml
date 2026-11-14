@@ -1,20 +1,34 @@
 [package]
 name = "dbstudio-driver-clickhouse"
-description = "ClickHouse driver for DBStudio."
+description = "ClickHouse driver for DBStudio (HTTP interface, RowBinary)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 
-# Contract scaffold: the driver is empty (connect -> Unsupported). Package C adds the real
-# dependencies (`clickhouse`, declared in the workspace) and the implementation.
 [dependencies]
 dbstudio-core.workspace = true
+dbstudio-sql.workspace = true
 async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "net"] }
+tracing.workspace = true
+uuid.workspace = true
+# The workspace entry alone does not compile (the crate needs a root-certificate feature).
+clickhouse = { workspace = true, features = ["rustls-tls-native-roots"] }
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
+hyper-rustls = { workspace = true, features = ["http1", "tls12"] }
+rustls = { workspace = true, features = ["ring", "std"] }
+rustls-native-certs.workspace = true
+tower-service = "0.3"
+bytes = "1"
+base64.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+dbstudio-plan.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

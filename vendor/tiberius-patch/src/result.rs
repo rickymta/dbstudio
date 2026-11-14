@@ -1,5 +1,6 @@
 pub use crate::tds::stream::{
     CommandItem, DoneInfo, DoneKind, QueryItem, ResultMetadata, ServerMessage,
+    Truncated,
 };
 use crate::{
     client::Connection,

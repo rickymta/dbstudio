@@ -1,0 +1,19 @@
+distribution: local
+vectorized: true
+
+• project
+│ columns: (count)
+│
+└── • group (streaming)
+    │ columns: (grp, count_rows)
+    │ estimated row count: 50
+    │ aggregate 0: count_rows()
+    │ group by: grp
+    │ ordered: +grp
+    │
+    └── • scan
+          columns: (grp)
+          ordering: +grp
+          estimated row count: 6,000 (100% of the table; stats collected 16 seconds ago)
+          table: big@big_grp_idx
+          spans: FULL SCAN

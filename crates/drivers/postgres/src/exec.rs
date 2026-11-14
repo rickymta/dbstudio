@@ -45,7 +45,7 @@ impl Running {
     pub async fn send_cancel(
         &self,
         shared: &crate::conn::Shared,
-        token: &tokio_postgres::CancelToken,
+        token: &crate::conn::CancelHandle,
     ) -> Result<()> {
         let finished = self.gate.lock().await;
         if *finished {
