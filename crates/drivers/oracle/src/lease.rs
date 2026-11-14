@@ -104,7 +104,14 @@ impl Inner {
     }
 
     fn note_error(&self, e: &Error) {
-        if matches!(e, Error::Connection(_)) {
+        // A call that ignored its interrupt still holds the connection: it cannot be reused.
+        let abandoned = self
+            .current
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|(_, ctl)| ctl.is_abandoned());
+        if abandoned || matches!(e, Error::Connection(_)) {
             self.lock_state().broken = true;
         }
     }
@@ -259,7 +266,7 @@ impl Lease for OracleLease {
             }
             Err(e) => {
                 self.inner.note_error(&e);
-                if !matches!(e, Error::Connection(_)) {
+                if !matches!(e, Error::Connection(_)) && !self.inner.lock_state().broken {
                     self.refresh_tx(Some(&req.text)).await;
                 }
                 Err(e)

@@ -19,6 +19,12 @@ use crate::target::Target;
 
 /// Largest number of physical connections of one session (leases are not counted).
 pub const POOL_SIZE: usize = 4;
+/// How long an interrupted call may take to stop before the caller gives up waiting for it.
+///
+/// `break_execution` is best effort: when the server cannot honour the break while it is inside
+/// a call (out-of-band data lost on the way, a non-interruptible wait such as a sleep), the
+/// break is only seen once that call returns. Cancel and timeout must still answer the user.
+pub const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 /// Pooled connections idle for longer than this are pinged before use.
 const PING_AFTER: Duration = Duration::from_secs(30);
 
@@ -27,11 +33,18 @@ const PING_AFTER: Duration = Duration::from_secs(30);
 pub struct Control {
     pub cancelled: AtomicBool,
     pub timed_out: AtomicBool,
+    /// The call did not stop after being interrupted and was given up on (its worker is still
+    /// blocked inside OCI): the connection must not be used again.
+    pub abandoned: AtomicBool,
 }
 
 impl Control {
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub fn is_abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::SeqCst)
     }
 }
 
@@ -359,8 +372,24 @@ where
     tokio::pin!(sleep);
     let mut timer_armed = timeout.is_some();
     let mut sink_error: Option<Error> = None;
+    let mut interrupted_at: Option<Instant> = None;
+    let mut watch = tokio::time::interval(Duration::from_millis(250));
+    watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut gave_up = false;
     loop {
         tokio::select! {
+            _ = watch.tick() => {
+                if ctl.cancelled.load(Ordering::SeqCst) || ctl.timed_out.load(Ordering::SeqCst) {
+                    let since = *interrupted_at.get_or_insert_with(Instant::now);
+                    if since.elapsed() >= INTERRUPT_GRACE {
+                        // The worker is still blocked in OCI: leave it to finish on its own.
+                        ctl.abandoned.store(true, Ordering::SeqCst);
+                        rx.close();
+                        gave_up = true;
+                        break;
+                    }
+                }
+            }
             event = rx.recv() => {
                 let Some(event) = event else { break };
                 if sink_error.is_some() {
@@ -385,6 +414,13 @@ where
                 let _ = tokio::task::spawn_blocking(move || c.break_execution()).await;
             }
         }
+    }
+    if gave_up {
+        return Err(if ctl.timed_out.load(Ordering::SeqCst) {
+            Error::Timeout
+        } else {
+            Error::Cancelled
+        });
     }
     let result = handle
         .await

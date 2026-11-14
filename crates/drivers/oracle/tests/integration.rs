@@ -953,7 +953,10 @@ it!(lobs_are_cut_at_the_limit, {
     let mut cfg = config("dbstudio");
     cfg.options.insert("max_lob_bytes".into(), "1000".into());
     let s = try_connect(&cfg, PASSWORD).await.unwrap();
-    let r = rows(&*s, "SELECT TO_CLOB(RPAD('x', 500, 'x')) AS SHORT_CLOB, TO_CLOB(RPAD('y', 20000, 'y')) || TO_CLOB(RPAD('z', 20000, 'z')) AS LONG_CLOB, UTL_RAW.CAST_TO_RAW(RPAD('b', 2000, 'b')) AS RAW_VAL, TO_BLOB(UTL_RAW.CAST_TO_RAW(RPAD('c', 2000, 'c'))) || TO_BLOB(UTL_RAW.CAST_TO_RAW(RPAD('c', 2000, 'c'))) || TO_BLOB(UTL_RAW.CAST_TO_RAW(RPAD('c', 1000, 'c'))) AS LONG_BLOB FROM dual").await;
+    // RPAD and RAW stop at 4000 / 2000 bytes in plain SQL, and `||` on BLOBs turns them into RAW:
+    // build the long CLOB by joining CLOBs and the long BLOB from one 2000 byte RAW (over the
+    // 1000 byte limit).
+    let r = rows(&*s, "SELECT TO_CLOB(RPAD('x', 500, 'x')) AS SHORT_CLOB, TO_CLOB(RPAD('y', 4000, 'y')) || TO_CLOB(RPAD('y', 4000, 'y')) AS LONG_CLOB, UTL_RAW.CAST_TO_RAW(RPAD('b', 2000, 'b')) AS RAW_VAL, TO_BLOB(UTL_RAW.CAST_TO_RAW(RPAD('c', 2000, 'c'))) AS LONG_BLOB FROM dual").await;
     assert_eq!(r[0][0], Value::Text("x".repeat(500)));
     match &r[0][1] {
         Value::Ext(e) => {
@@ -1213,10 +1216,15 @@ it!(json_and_special_columns_are_readable_through_fetch_table, {
 // Cancellation and timeouts
 // ------------------------------------------------------------------------------------------
 
+/// A statement that runs for minutes and that the server interrupts as soon as it is told to (a
+/// PL/SQL sleep is not a good stand-in: 23ai only notices the break once the sleep is over).
+const LONG_QUERY: &str =
+    "SELECT COUNT(*) FROM all_objects a, all_objects b, all_objects c, all_objects d";
+
 it!(cancel_and_timeout, {
     let s = app().await;
     // Cancel a running statement: it ends quickly, the session keeps working.
-    let q = QueryRequest::new("BEGIN DBMS_SESSION.SLEEP(60); END;");
+    let q = QueryRequest::new(LONG_QUERY);
     let id = q.query_id;
     let mut rec = Rec::default();
     let started = Instant::now();
@@ -1254,7 +1262,7 @@ it!(cancel_and_timeout, {
     assert_eq!(scalar(&*s, "SELECT 2 FROM dual").await, dec("2"));
 
     // The timeout takes the same road and reports Timeout.
-    let mut q = QueryRequest::new("BEGIN DBMS_SESSION.SLEEP(60); END;");
+    let mut q = QueryRequest::new(LONG_QUERY);
     q.timeout_ms = Some(1000);
     let mut rec = Rec::default();
     let started = Instant::now();
@@ -1604,7 +1612,7 @@ it!(lease_busy_cancel_and_fetch_more, {
     let s = app().await;
     let lease = std::sync::Arc::new(s.open_lease(LeaseOptions::default()).await.unwrap());
     // Cancel only hits the statement it names.
-    let q = QueryRequest::new("BEGIN DBMS_SESSION.SLEEP(60); END;");
+    let q = QueryRequest::new(LONG_QUERY);
     let id = q.query_id;
     let started = Instant::now();
     let l = lease.clone();
@@ -1642,7 +1650,7 @@ it!(lease_busy_cancel_and_fetch_more, {
     assert_eq!(lease.state().running, None);
 
     // Timeout.
-    let mut q = QueryRequest::new("BEGIN DBMS_SESSION.SLEEP(60); END;");
+    let mut q = QueryRequest::new(LONG_QUERY);
     q.timeout_ms = Some(800);
     let mut rec = Rec::default();
     assert!(matches!(
@@ -2751,10 +2759,17 @@ it!(generated_ddl_recreates_the_objects, {
     }
 });
 
-/// Split generated DDL the way a user script would be (the driver's own splitter runs inside
-/// `execute`, so a whole item can simply be sent as one script).
+/// Split an item of the generated script into the statements to run one by one. A script stops
+/// at its first failing statement, and the leading `DROP` of an item fails when the object is
+/// already gone (which the test tolerates), so it has to run on its own: otherwise the `CREATE`
+/// behind it would never run.
 fn dbstudio_split(sql: &str) -> Vec<String> {
-    vec![sql.to_string()]
+    match sql.split_once("\n\n") {
+        Some((first, rest)) if first.trim_start().to_uppercase().starts_with("DROP") => {
+            vec![first.to_string(), rest.to_string()]
+        }
+        _ => vec![sql.to_string()],
+    }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -2774,6 +2789,10 @@ it!(stream_table_and_bulk_insert_on_a_lease, {
          CREATE TABLE IT_BULK_DST (ID NUMBER(10) PRIMARY KEY, NAME VARCHAR2(30), NOTE VARCHAR2(10) DEFAULT 'dflt')",
     )
     .await;
+    // A READ ONLY transaction cannot read a table whose DDL is not older than its snapshot
+    // (ORA-01466, the snapshot clock ticks once a second): that is Oracle's rule, so let the
+    // tables age before the transaction starts.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
     let lease = s
         .open_lease(LeaseOptions {
             auto_commit: false,
