@@ -205,20 +205,106 @@ async fn keepalive_scenario(server: Server) {
     assert!(state.leases.needs_reopen(lease.lease_id).unwrap());
 }
 
+/// A TCP forwarder in front of the real server that can simulate an outage: `sever` closes
+/// every connection and refuses new ones, `resume` lets clients in again. (Killing backends is
+/// not an outage: the drivers' pools quietly replace a dead connection.)
+struct Proxy {
+    port: u16,
+    target: u16,
+    state: std::sync::Arc<std::sync::Mutex<ProxyState>>,
+}
+
+#[derive(Default)]
+struct ProxyState {
+    streams: Vec<std::net::TcpStream>,
+    stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl Proxy {
+    fn start(target: u16) -> Proxy {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let proxy = Proxy {
+            port,
+            target,
+            state: Default::default(),
+        };
+        proxy.serve(listener);
+        proxy
+    }
+
+    fn serve(&self, listener: std::net::TcpListener) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = Arc::new(AtomicBool::new(false));
+        self.state.lock().unwrap().stop = Some(stop.clone());
+        let state = self.state.clone();
+        let target = self.target;
+        listener.set_nonblocking(true).unwrap();
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((client, _)) => {
+                        client.set_nonblocking(false).unwrap();
+                        let Ok(server) = std::net::TcpStream::connect(("127.0.0.1", target)) else {
+                            continue;
+                        };
+                        {
+                            let mut st = state.lock().unwrap();
+                            st.streams.push(client.try_clone().unwrap());
+                            st.streams.push(server.try_clone().unwrap());
+                        }
+                        for (mut from, mut to) in [
+                            (client.try_clone().unwrap(), server.try_clone().unwrap()),
+                            (server, client),
+                        ] {
+                            std::thread::spawn(move || {
+                                let _ = std::io::copy(&mut from, &mut to);
+                                let _ = to.shutdown(std::net::Shutdown::Both);
+                                let _ = from.shutdown(std::net::Shutdown::Both);
+                            });
+                        }
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        });
+    }
+
+    /// Close every connection and refuse new ones.
+    fn sever(&self) {
+        let mut st = self.state.lock().unwrap();
+        if let Some(stop) = st.stop.take() {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        for stream in st.streams.drain(..) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// Accept connections again on the same port.
+    fn resume(&self) {
+        // The accept loop notices the stop flag within 10 ms and drops its listener.
+        for _ in 0..100 {
+            if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", self.port)) {
+                self.serve(listener);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("cannot rebind the proxy port");
+    }
+}
+
 async fn reconnect_scenario(server: Server) {
     let (state, _) = test_state(build_registry());
     let mut rx = state.events.subscribe();
-    let sid = open(&state, &server, "victim").await;
-    let admin_server = Server {
+    let proxy = Proxy::start(server.port);
+    let through_proxy = Server {
         kind: server.kind,
-        port: server.port,
-        options: if server.kind == DbKind::Postgres {
-            BTreeMap::from([("application_name".into(), "dbstudio-it-admin".into())])
-        } else {
-            server.options.clone()
-        },
+        port: proxy.port,
+        options: server.options.clone(),
     };
-    let admin = open(&state, &admin_server, "admin").await;
+    let sid = open(&state, &through_proxy, "victim").await;
     // The session's own connection is in use, and two leases exist: one idle, one inside a
     // transaction.
     scalar(&state, sid, "SELECT 1").await;
@@ -247,23 +333,19 @@ async fn reconnect_scenario(server: Server) {
         TxStatus::Active
     );
 
-    kill_all(
-        &state,
-        sid,
-        admin,
-        &server,
-        &[idle.lease_id, in_tx.lease_id],
-    )
-    .await;
+    // Outage: every connection is cut and the server cannot be reached for a while.
+    proxy.sever();
     assert!(state.sessions.get(sid).unwrap().ping().await.is_err());
-
-    // One health round finds the dead session and reconnects it by itself.
     let creds: Arc<dyn Credentials> = Arc::new(StateCredentials(state.clone()));
     let lost = state.sessions.health_pass(&creds, true).await;
-    assert!(lost.contains(&sid), "the victim is reported lost: {lost:?}");
+    assert_eq!(lost, vec![sid], "the health round finds the session lost");
     wait_state(&mut rx, "lost").await;
+    // The first attempt (after 1 s) still finds nobody; then the network comes back.
+    assert_eq!(wait_state(&mut rx, "reconnecting").await, 1);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    proxy.resume();
     let attempt = wait_state(&mut rx, "reconnected").await;
-    assert!(attempt >= 1);
+    assert!(attempt >= 2, "reconnected at attempt {attempt}");
 
     // Same session id, working again.
     assert_eq!(scalar(&state, sid, "SELECT 1").await, "Int(1)");
@@ -295,6 +377,7 @@ async fn reconnect_scenario(server: Server) {
         .ping()
         .await
         .unwrap();
+    proxy.sever();
 }
 
 #[cfg(feature = "postgres")]
@@ -307,7 +390,7 @@ async fn postgres_keepalive_detects_a_killed_lease() {
 
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn postgres_session_reconnects_after_its_connections_are_terminated() {
+async fn postgres_session_reconnects_after_an_outage() {
     if enabled() {
         reconnect_scenario(pg("dbstudio-it-reconnect")).await;
     }
@@ -323,7 +406,7 @@ async fn mysql_keepalive_detects_a_killed_lease() {
 
 #[cfg(feature = "mysql")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mysql_session_reconnects_after_its_connections_are_killed() {
+async fn mysql_session_reconnects_after_an_outage() {
     if enabled() {
         reconnect_scenario(mysql()).await;
     }
