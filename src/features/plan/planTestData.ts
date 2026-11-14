@@ -77,3 +77,28 @@ export function seedPlan(
   });
   return planId;
 }
+
+/** A deep, bushy plan of `count` operators (ids 0..count-1) for layout and viewport tests. */
+export function bigPlanTree(count = 44): PlanTree {
+  const base = structuredClone(TREES[SAMPLES.pg.file]!);
+  const template = structuredClone(base.root);
+  template.children = [];
+  const nodes = Array.from({ length: count }, (_, id) => ({
+    ...structuredClone(template),
+    id,
+    op: `Node ${id}`,
+  }));
+  // Every third node starts a side branch, the rest form a long spine.
+  nodes.forEach((n, id) => {
+    if (id === 0) return;
+    const parent = id % 3 === 0 ? Math.max(0, id - 3) : id - 1;
+    nodes[parent]!.children.push(n);
+  });
+  return {
+    ...base,
+    root: nodes[0]!,
+    nodeCount: count,
+    hotPath: [0],
+    warnings: [],
+  };
+}

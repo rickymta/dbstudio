@@ -1,11 +1,13 @@
 import {
   Background,
   Handle,
+  MiniMap,
   Panel,
   Position,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useStore,
   type Edge,
   type NodeProps,
 } from '@xyflow/react';
@@ -13,26 +15,53 @@ import '@xyflow/react/dist/style.css';
 import {
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  Columns3,
   FileCode2,
   Flame,
   ImageDown,
   Maximize,
+  Rows3,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconButton } from '@/components/ui/IconButton';
 import { toast } from '@/components/ui/toastStore';
 import { toIpcError } from '@/lib/ipc';
 import { cn } from '@/lib/cn';
 import type { PlanTree, Severity } from '@/lib/types';
-import { NODE_HEIGHT, NODE_WIDTH, layoutPlan, type PlanLayout } from './elkLayout';
+import {
+  NODE_HEIGHT,
+  NODE_WIDTH,
+  layoutPlan,
+  type LayoutDirection,
+  type PlanLayout,
+} from './elkLayout';
 import { buildGraph, initialCollapsed, type CardNode } from './graphModel';
 import { NodeFacts, SeverityIcon } from './PlanDetails';
 import { PlanNodeIcon } from './PlanNodeIcon';
 import { exportPlan, type ExportFormat } from './planExport';
+import { useGraphDirection } from './planPrefs';
 import { flatten, formatCount, formatPercent, objectLabel } from './planModel';
+import { initialViewport } from './viewport';
+
+/** The MiniMap only helps on plans too big to see at a glance. */
+const MINIMAP_MIN_NODES = 25;
+
+/** Layout direction, read by the cards to put their handles and collapse button on the right side. */
+const DirectionContext = createContext<LayoutDirection>('RIGHT');
 
 const BORDER: Record<Severity, string> = {
   info: 'border-border',
@@ -44,6 +73,7 @@ const BORDER: Record<Severity, string> = {
 const PlanNodeCard = memo(function PlanNodeCard({ data }: NodeProps<CardNode>) {
   const { t } = useTranslation('plan');
   const { node, selected, hot, severity, share, metricLabel, collapsed } = data;
+  const vertical = useContext(DirectionContext) === 'DOWN';
   const rows = node.actualRows ?? node.estRows;
   return (
     <div
@@ -72,7 +102,7 @@ const PlanNodeCard = memo(function PlanNodeCard({ data }: NodeProps<CardNode>) {
     >
       <Handle
         type="target"
-        position={Position.Left}
+        position={vertical ? Position.Top : Position.Left}
         className="!h-1.5 !w-1.5 !border-0 !bg-border"
       />
       <div className="flex items-center gap-1">
@@ -101,18 +131,33 @@ const PlanNodeCard = memo(function PlanNodeCard({ data }: NodeProps<CardNode>) {
           type="button"
           aria-label={collapsed ? t('node.expand') : t('node.collapse')}
           aria-expanded={!collapsed}
-          className="nodrag absolute -right-2.5 top-1/2 z-10 -translate-y-1/2 rounded-full border border-border bg-surface p-0.5 hover:bg-surface-muted"
+          className={cn(
+            'nodrag absolute z-10 rounded-full border border-border bg-surface p-0.5 hover:bg-surface-muted',
+            vertical
+              ? 'left-1/2 -bottom-2.5 -translate-x-1/2'
+              : '-right-2.5 top-1/2 -translate-y-1/2',
+          )}
           onClick={(e) => {
             e.stopPropagation();
             data.onToggle(node.id);
           }}
         >
-          {collapsed ? <ChevronRight size={10} /> : <ChevronLeft size={10} />}
+          {vertical ? (
+            collapsed ? (
+              <ChevronDown size={10} />
+            ) : (
+              <ChevronUp size={10} />
+            )
+          ) : collapsed ? (
+            <ChevronRight size={10} />
+          ) : (
+            <ChevronLeft size={10} />
+          )}
         </button>
       )}
       <Handle
         type="source"
-        position={Position.Right}
+        position={vertical ? Position.Bottom : Position.Right}
         className="!h-1.5 !w-1.5 !border-0 !bg-border"
       />
     </div>
@@ -121,7 +166,15 @@ const PlanNodeCard = memo(function PlanNodeCard({ data }: NodeProps<CardNode>) {
 
 const nodeTypes = { plan: PlanNodeCard };
 
-function ZoomControls({ tree }: { tree: PlanTree }) {
+function ZoomControls({
+  tree,
+  direction,
+  onDirection,
+}: {
+  tree: PlanTree;
+  direction: LayoutDirection;
+  onDirection: (d: LayoutDirection) => void;
+}) {
   const { t } = useTranslation('plan');
   const flow = useReactFlow();
   // The export always contains the whole plan, whatever is collapsed on screen.
@@ -151,6 +204,11 @@ function ZoomControls({ tree }: { tree: PlanTree }) {
         onClick={() => void flow.fitView({ padding: 0.15 })}
       />
       <IconButton
+        label={direction === 'RIGHT' ? t('toolbar.layoutVertical') : t('toolbar.layoutHorizontal')}
+        icon={direction === 'RIGHT' ? <Rows3 size={14} /> : <Columns3 size={14} />}
+        onClick={() => onDirection(direction === 'RIGHT' ? 'DOWN' : 'RIGHT')}
+      />
+      <IconButton
         label={t('toolbar.exportSvg')}
         icon={<FileCode2 size={14} />}
         onClick={() => save('svg')}
@@ -162,6 +220,33 @@ function ZoomControls({ tree }: { tree: PlanTree }) {
       />
     </Panel>
   );
+}
+
+/**
+ * Sets the first viewport once the layout and the container size are known (and again when the
+ * direction changes, signalled by `pending`): readable zoom, root top-left, instead of a fit.
+ */
+function InitialViewport({
+  layout,
+  rootId,
+  pendingRef,
+}: {
+  layout: PlanLayout;
+  rootId: number;
+  pendingRef: { current: boolean };
+}) {
+  const flow = useReactFlow();
+  const width = useStore((s) => s.width);
+  const height = useStore((s) => s.height);
+  useEffect(() => {
+    if (!pendingRef.current || width <= 0 || height <= 0) return;
+    pendingRef.current = false;
+    const root = layout.positions.get(rootId) ?? { x: 0, y: 0 };
+    void flow.setViewport(
+      initialViewport({ width: layout.width, height: layout.height }, { width, height }, root),
+    );
+  }, [layout, rootId, width, height, flow, pendingRef]);
+  return null;
 }
 
 /** Keeps the selected node in view, also when it was chosen in another view. */
@@ -199,10 +284,20 @@ function Graph({ tree, selectedId, onSelect }: PlanGraphProps) {
   const [layout, setLayout] = useState<PlanLayout | null>(null);
   const [layoutError, setLayoutError] = useState<string | null>(null);
   const [hover, setHover] = useState<{ id: number; x: number; y: number } | null>(null);
+  const [direction, setDirection] = useGraphDirection();
+  // The first layout (and the first one after a direction change) picks the viewport.
+  const pendingViewport = useRef(true);
+  const changeDirection = useCallback(
+    (d: LayoutDirection) => {
+      pendingViewport.current = true;
+      setDirection(d);
+    },
+    [setDirection],
+  );
 
   useEffect(() => {
     let alive = true;
-    layoutPlan(tree.root, collapsed)
+    layoutPlan(tree.root, collapsed, direction)
       .then((l) => {
         if (!alive) return;
         setLayout(l);
@@ -212,7 +307,7 @@ function Graph({ tree, selectedId, onSelect }: PlanGraphProps) {
     return () => {
       alive = false;
     };
-  }, [tree, collapsed]);
+  }, [tree, collapsed, direction]);
 
   const toggle = useCallback(
     (id: number) =>
@@ -252,23 +347,29 @@ function Graph({ tree, selectedId, onSelect }: PlanGraphProps) {
           {t('status.layoutFailed', { message: layoutError })}
         </p>
       )}
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        fitView
-        fitViewOptions={{ padding: 0.15 }}
-        minZoom={0.1}
-        maxZoom={2}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        elementsSelectable={false}
-        zoomOnDoubleClick={false}
-      >
-        <Background gap={20} />
-        <ZoomControls tree={tree} />
-        {layout && <FollowSelection selectedId={selectedId} layout={layout} />}
-      </ReactFlow>
+      <DirectionContext.Provider value={direction}>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          minZoom={0.1}
+          maxZoom={2}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+          zoomOnDoubleClick={false}
+        >
+          <Background gap={20} />
+          <ZoomControls tree={tree} direction={direction} onDirection={changeDirection} />
+          {tree.nodeCount > MINIMAP_MIN_NODES && (
+            <MiniMap pannable zoomable ariaLabel={t('toolbar.minimap')} />
+          )}
+          {layout && (
+            <InitialViewport layout={layout} rootId={tree.root.id} pendingRef={pendingViewport} />
+          )}
+          {layout && <FollowSelection selectedId={selectedId} layout={layout} />}
+        </ReactFlow>
+      </DirectionContext.Provider>
       {hovered && hover && (
         <div
           role="tooltip"

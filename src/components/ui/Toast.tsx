@@ -29,6 +29,18 @@ export function Toaster() {
           >
             <Icon size={16} className={cn('mt-px shrink-0', className)} />
             <p className="min-w-0 flex-1 select-text break-words">{item.message}</p>
+            {item.action && (
+              <button
+                type="button"
+                onClick={() => {
+                  dismiss(item.id);
+                  item.action?.onClick();
+                }}
+                className="shrink-0 rounded border border-border px-1.5 py-0.5 text-xs font-medium hover:bg-surface-muted"
+              >
+                {item.action.label}
+              </button>
+            )}
             <button
               type="button"
               aria-label={t('toast.dismiss')}

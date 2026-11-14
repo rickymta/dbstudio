@@ -47,6 +47,8 @@ export function PlanTable({ tree, selectedId, onSelect, collapsed, onToggle }: P
   const warnings = useMemo(() => warningsByNode(tree), [tree]);
   const hot = useMemo(() => new Set(tree.hotPath), [tree]);
   const metric = metricOf(tree);
+  // Without actual statistics there is nothing to show in these two columns.
+  const analyzed = tree.analyzed;
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -59,18 +61,28 @@ export function PlanTable({ tree, selectedId, onSelect, collapsed, onToggle }: P
 
   return (
     <div className="h-full overflow-auto" onKeyDown={onKeyDown}>
-      <table className="w-full min-w-[760px] border-collapse text-xs" data-testid="plan-table">
+      <table
+        className={cn(
+          'w-full border-collapse text-xs',
+          analyzed ? 'min-w-[680px]' : 'min-w-[560px]',
+        )}
+        data-testid="plan-table"
+      >
         <thead className="sticky top-0 z-10 bg-surface-muted text-left text-muted-foreground">
           <tr>
-            <th className="px-2 py-1 font-medium">{t('columns.operation')}</th>
-            <th className="px-2 py-1 font-medium">{t('columns.object')}</th>
+            <th className="sticky left-0 z-20 min-w-48 bg-surface-muted px-2 py-1 font-medium">
+              {t('columns.operation')}
+            </th>
             <th className="px-2 py-1 text-right font-medium">{t('columns.estRows')}</th>
-            <th className="px-2 py-1 text-right font-medium">{t('columns.actualRows')}</th>
-            <th className="px-2 py-1 text-right font-medium">{t('columns.loops')}</th>
+            {analyzed && (
+              <th className="px-2 py-1 text-right font-medium">{t('columns.actualRows')}</th>
+            )}
+            {analyzed && <th className="px-2 py-1 text-right font-medium">{t('columns.loops')}</th>}
             <th className="px-2 py-1 text-right font-medium">
               {metric === 'time' ? t('columns.selfTime') : t('columns.cost')}
             </th>
-            <th className="w-28 px-2 py-1 font-medium">{t('columns.share')}</th>
+            <th className="w-20 px-2 py-1 font-medium">{t('columns.share')}</th>
+            <th className="max-w-48 px-2 py-1 font-medium">{t('columns.object')}</th>
           </tr>
         </thead>
         <tbody>
@@ -88,12 +100,17 @@ export function PlanTable({ tree, selectedId, onSelect, collapsed, onToggle }: P
                 tabIndex={selected ? 0 : -1}
                 onClick={() => onSelect(node.id)}
                 className={cn(
-                  'cursor-pointer border-b border-border/60 hover:bg-surface-muted',
+                  'group cursor-pointer border-b border-border/60 hover:bg-surface-muted',
                   selected && 'bg-warning-soft hover:bg-warning-soft',
                   isHot && 'font-semibold',
                 )}
               >
-                <td className="px-2 py-1">
+                <td
+                  className={cn(
+                    'sticky left-0 z-[5] bg-surface px-2 py-1 group-hover:bg-surface-muted',
+                    selected && 'bg-warning-soft group-hover:bg-warning-soft',
+                  )}
+                >
                   <span className="flex items-center gap-1" style={{ paddingLeft: depth * 14 }}>
                     {node.children.length > 0 ? (
                       <button
@@ -123,14 +140,15 @@ export function PlanTable({ tree, selectedId, onSelect, collapsed, onToggle }: P
                     {severity && <SeverityIcon severity={severity} size={12} />}
                   </span>
                 </td>
-                <td className="max-w-56 truncate px-2 py-1 text-muted-foreground">
-                  {objectLabel(node)}
-                </td>
                 <td className="px-2 py-1 text-right tabular-nums">{formatCount(node.estRows)}</td>
-                <td className="px-2 py-1 text-right tabular-nums">
-                  {formatCount(node.actualRows)}
-                </td>
-                <td className="px-2 py-1 text-right tabular-nums">{formatCount(node.loops)}</td>
+                {analyzed && (
+                  <td className="px-2 py-1 text-right tabular-nums">
+                    {formatCount(node.actualRows)}
+                  </td>
+                )}
+                {analyzed && (
+                  <td className="px-2 py-1 text-right tabular-nums">{formatCount(node.loops)}</td>
+                )}
                 <td className="px-2 py-1 text-right tabular-nums">
                   {metric === 'time' ? formatDuration(node.selfTimeMs) : formatCost(node.selfCost)}
                 </td>
@@ -148,6 +166,12 @@ export function PlanTable({ tree, selectedId, onSelect, collapsed, onToggle }: P
                       </span>
                     </span>
                   )}
+                </td>
+                <td
+                  className="max-w-48 truncate px-2 py-1 text-muted-foreground"
+                  title={objectLabel(node) || undefined}
+                >
+                  {objectLabel(node)}
                 </td>
               </tr>
             );

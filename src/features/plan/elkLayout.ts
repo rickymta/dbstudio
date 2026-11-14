@@ -1,10 +1,12 @@
-// Tree layout of a plan with ELK (layered, root on the left, data flowing right to left).
+// Tree layout of a plan with ELK (layered; root on the left, or at the top when vertical).
 
 import type { ELK, ElkNode } from 'elkjs/lib/elk-api';
 import type { PlanNode } from '@/lib/types';
 
 export const NODE_WIDTH = 240;
 export const NODE_HEIGHT = 76;
+
+export type LayoutDirection = 'RIGHT' | 'DOWN';
 
 export interface PlanLayout {
   positions: Map<number, { x: number; y: number }>;
@@ -66,6 +68,7 @@ interface Item {
 export async function layoutPlan(
   root: PlanNode,
   collapsed: ReadonlySet<number>,
+  direction: LayoutDirection = 'RIGHT',
 ): Promise<PlanLayout> {
   const nodes: Item[] = [];
   const edges: { id: string; sources: string[]; targets: string[] }[] = [];
@@ -82,7 +85,7 @@ export async function layoutPlan(
     id: 'root',
     layoutOptions: {
       'elk.algorithm': 'layered',
-      'elk.direction': 'RIGHT',
+      'elk.direction': direction,
       'elk.layered.spacing.nodeNodeBetweenLayers': '70',
       'elk.spacing.nodeNode': '22',
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',

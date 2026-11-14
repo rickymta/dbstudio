@@ -24,8 +24,9 @@ import { useToastStore } from '@/components/ui/toastStore';
 import { useConnectionProfile } from '@/features/connections/queries';
 import { useHostKeyPrompt } from '@/features/connections/useHostKeyPrompt';
 import { ipc, toIpcError } from '@/lib/ipc';
-import type { ParamRef, ParamValue } from '@/lib/types';
+import type { ParamRef, ParamValue, ScriptAnalysis } from '@/lib/types';
 import { useIsOpening, useSession, useSessionsStore } from '@/stores/sessions';
+import { isSessionLost, reconnectSession } from '@/stores/sessionRecovery';
 import type { EditorTabPayload } from '@/stores/tabs';
 import { analyzeTab, cancelRun, fetchMore, registerEditorTab, runText } from './editorRunner';
 import {
@@ -123,6 +124,42 @@ function EditorBody({
     [errorMark, data.problems],
   );
 
+  /** Bring the lost session back (same session, or a fresh one when the backend forgot it). */
+  const reconnect = useCallback(
+    (lostSessionId: string) => {
+      if (!connectionId) return;
+      void runWithHostKey(() => reconnectSession(lostSessionId, connectionId))
+        .then(() => toast('success', t('connection.reconnected')))
+        .catch((e: unknown) =>
+          toast('error', t('connection.reconnectFailed', { message: toIpcError(e).message })),
+        );
+    },
+    [connectionId, runWithHostKey, t, toast],
+  );
+
+  /**
+   * Analyze the script before running it. A failure is reported, never swallowed: a lost session
+   * gets a toast with a reconnect button, anything else its own message. `null` = reported.
+   */
+  const analyzeForRun = useCallback(
+    async (sid: string, text: string): Promise<ScriptAnalysis | null> => {
+      try {
+        return await ipc.scriptAnalyze(sid, text);
+      } catch (e) {
+        if (isSessionLost(e)) {
+          toast('error', t('connection.sessionLost'), 15000, {
+            label: t('connection.reconnect'),
+            onClick: () => reconnect(sid),
+          });
+        } else {
+          toast('error', toIpcError(e).message);
+        }
+        return null;
+      }
+    },
+    [reconnect, t, toast],
+  );
+
   const start = useCallback(
     async (scope: RunScope) => {
       if (!sessionId) {
@@ -132,8 +169,9 @@ function EditorBody({
       editor.current?.flush();
       const d = useEditorStore.getState().tabs[id];
       if (!d) return;
-      const wholeAnalysis = await ipc.scriptAnalyze(sessionId, d.text).catch(() => null);
-      const input = selectRunText(d.text, scope, d.selection, wholeAnalysis?.statements ?? []);
+      const wholeAnalysis = await analyzeForRun(sessionId, d.text);
+      if (!wholeAnalysis) return;
+      const input = selectRunText(d.text, scope, d.selection, wholeAnalysis.statements);
       if (!input) {
         toast('info', t('run.nothing'));
         return;
@@ -150,7 +188,7 @@ function EditorBody({
         setParamsFor({ refs: analysis.params, run: (p) => void go(p) });
       else await go([]);
     },
-    [id, sessionId, t, toast],
+    [id, sessionId, t, toast, analyzeForRun],
   );
 
   /** Explain the selection or the statement at the cursor in a plan tab (no ANALYZE). */
@@ -162,13 +200,9 @@ function EditorBody({
     editor.current?.flush();
     const d = useEditorStore.getState().tabs[id];
     if (!d) return;
-    const whole = await ipc.scriptAnalyze(sessionId, d.text).catch(() => null);
-    const input = selectRunText(
-      d.text,
-      defaultScope(d.selection),
-      d.selection,
-      whole?.statements ?? [],
-    );
+    const whole = await analyzeForRun(sessionId, d.text);
+    if (!whole) return;
+    const input = selectRunText(d.text, defaultScope(d.selection), d.selection, whole.statements);
     if (!input) {
       toast('info', t('run.nothing'));
       return;
@@ -179,7 +213,7 @@ function EditorBody({
       database: d.leaseState?.database ?? d.database,
       leaseId: d.leaseId,
     });
-  }, [id, sessionId, connectionId, t, toast]);
+  }, [id, sessionId, connectionId, t, toast, analyzeForRun]);
 
   const format = () => {
     if (!isSqlDialect(dialect)) return;

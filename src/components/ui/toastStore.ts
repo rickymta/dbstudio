@@ -6,11 +6,18 @@ export interface ToastItem {
   id: number;
   tone: ToastTone;
   message: string;
+  /** Optional button next to the message; the toast closes when it is pressed. */
+  action?: ToastAction;
+}
+
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
 }
 
 interface ToastState {
   toasts: ToastItem[];
-  push: (tone: ToastTone, message: string, durationMs?: number) => number;
+  push: (tone: ToastTone, message: string, durationMs?: number, action?: ToastAction) => number;
   dismiss: (id: number) => void;
 }
 
@@ -18,9 +25,9 @@ let nextId = 1;
 
 export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
-  push: (tone, message, durationMs) => {
+  push: (tone, message, durationMs, action) => {
     const id = nextId++;
-    set((s) => ({ toasts: [...s.toasts, { id, tone, message }] }));
+    set((s) => ({ toasts: [...s.toasts, { id, tone, message, ...(action ? { action } : {}) }] }));
     const ms = durationMs ?? (tone === 'error' ? 8000 : 4000);
     if (ms > 0) setTimeout(() => get().dismiss(id), ms);
     return id;
