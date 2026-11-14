@@ -883,11 +883,19 @@ impl DebugManager {
         {
             Ok((entry, first)) => {
                 if entry.debug_id != provisional {
-                    state.leases.release_debug(lease_id, provisional);
-                    if let Err(e) = state.leases.claim_debug(lease_id, entry.debug_id) {
+                    if let Err(e) =
+                        state
+                            .leases
+                            .transfer_debug(lease_id, provisional, entry.debug_id)
+                    {
                         let _ = entry.control.stop(Some(DebugEndAction::Rollback)).await;
                         entry.proxy.close_all().await;
                         return Err(e);
+                    }
+                    // The session may have ended inside `launch` (its cleanup could not release
+                    // a lease still held under the provisional id): free it now.
+                    if entry.cleaned.load(Ordering::SeqCst) {
+                        state.leases.release_debug(lease_id, entry.debug_id);
                     }
                 }
                 Ok(first)
@@ -1106,9 +1114,28 @@ impl DebugManager {
                 ));
             }
         }
-        let report = entry.control.stop(end).await?;
-        self.inner.cleanup(&entry, Some(report));
+        let report = match entry.control.stop(end).await {
+            Ok(r) => r,
+            Err(e) => {
+                // The engine is gone (panic, dropped): nothing is left to wait for.
+                self.inner.cleanup(&entry, None);
+                return Err(e);
+            }
+        };
+        // `Ask` with an open transaction only moves the session to "awaiting the end decision":
+        // it lives on, still owning the lease and the transaction.
+        if self.session_ended(&entry).await {
+            self.inner.cleanup(&entry, Some(report));
+        }
         Ok(report)
+    }
+
+    /// True when the engine reports the session as terminated (or cannot answer any more).
+    async fn session_ended(&self, entry: &Arc<Entry>) -> bool {
+        match entry.control.snapshot().await {
+            Ok(s) => is_terminated(&s),
+            Err(_) => true,
+        }
     }
 
     /// Stop and start again on the same lease with the breakpoints, watches and options the
@@ -1128,7 +1155,28 @@ impl DebugManager {
             .clone();
         request.text = text;
         request.range = None;
+        // A session waiting for Commit / Rollback needs that answer first: restarting inside
+        // the old transaction would mix the two runs.
+        let awaiting = entry.control.snapshot().await.is_ok_and(|s| {
+            matches!(
+                s.status,
+                DebugStatus::Paused {
+                    reason: PauseReason::AwaitingEnd
+                }
+            )
+        });
+        if awaiting && matches!(end, None | Some(DebugEndAction::Ask)) {
+            return Err(Error::Invalid(
+                "the session waits for Commit or Rollback: restart with an explicit end action"
+                    .into(),
+            ));
+        }
         self.stop(debug_id, end).await?;
+        if !self.session_ended(&entry).await {
+            return Err(Error::Busy(
+                "the session has not ended: answer its end decision first".into(),
+            ));
+        }
         self.start(state, request).await
     }
 
@@ -1515,6 +1563,8 @@ mod tests {
         sink: Arc<dyn DebugSink>,
         seq: AtomicU64,
         stopped: AtomicBool,
+        ask_end: AtomicBool,
+        awaiting: AtomicBool,
     }
 
     impl FakeSession {
@@ -1568,6 +1618,21 @@ mod tests {
             self.debug_id
         }
         async fn snapshot(&self) -> Result<DebugState> {
+            if self.stopped.load(Ordering::SeqCst) {
+                return Ok(self.state(DebugStatus::Terminated {
+                    reason: TerminateReason::Finished,
+                    report: Some(DebugEndReport {
+                        steps_run: 0,
+                        committed: false,
+                        rolled_back: false,
+                    }),
+                }));
+            }
+            if self.awaiting.load(Ordering::SeqCst) {
+                return Ok(self.state(DebugStatus::Paused {
+                    reason: PauseReason::AwaitingEnd,
+                }));
+            }
             Ok(self.state(DebugStatus::Paused {
                 reason: PauseReason::Entry,
             }))
@@ -1614,12 +1679,24 @@ mod tests {
             };
             Ok(self.publish(DebugStatus::Paused { reason: status }))
         }
-        async fn stop(&self, _end: Option<DebugEndAction>) -> Result<DebugEndReport> {
+        async fn stop(&self, end: Option<DebugEndAction>) -> Result<DebugEndReport> {
             let report = DebugEndReport {
                 steps_run: 1,
                 committed: false,
                 rolled_back: true,
             };
+            if self.ask_end.load(Ordering::SeqCst)
+                && matches!(end, None | Some(DebugEndAction::Ask))
+                && !self.awaiting.swap(true, Ordering::SeqCst)
+            {
+                self.publish(DebugStatus::Paused {
+                    reason: PauseReason::AwaitingEnd,
+                });
+                return Ok(DebugEndReport {
+                    rolled_back: false,
+                    ..report
+                });
+            }
             if !self.stopped.swap(true, Ordering::SeqCst) {
                 self.publish(DebugStatus::Terminated {
                     reason: TerminateReason::Stopped,
@@ -1670,6 +1747,10 @@ mod tests {
     struct FakeBackend {
         requests: Mutex<Vec<DebugStartRequest>>,
         fail: AtomicBool,
+        /// The engine ends inside `start` (a script with nothing to run).
+        end_at_start: AtomicBool,
+        /// `stop(None | Ask)` moves the session to AwaitingEnd (open transaction, `Ask`).
+        ask_end: AtomicBool,
         sessions: Mutex<Vec<Arc<FakeSession>>>,
     }
 
@@ -1734,10 +1815,24 @@ mod tests {
                 sink: p.sink,
                 seq: AtomicU64::new(0),
                 stopped: AtomicBool::new(false),
+                ask_end: AtomicBool::new(self.ask_end.load(Ordering::SeqCst)),
+                awaiting: AtomicBool::new(false),
             });
-            fake.publish(DebugStatus::Paused {
-                reason: PauseReason::Entry,
-            });
+            if self.end_at_start.load(Ordering::SeqCst) {
+                fake.stopped.store(true, Ordering::SeqCst);
+                fake.publish(DebugStatus::Terminated {
+                    reason: TerminateReason::Finished,
+                    report: Some(DebugEndReport {
+                        steps_run: 0,
+                        committed: false,
+                        rolled_back: false,
+                    }),
+                });
+            } else {
+                fake.publish(DebugStatus::Paused {
+                    reason: PauseReason::Entry,
+                });
+            }
             self.sessions.lock().unwrap().push(Arc::clone(&fake));
             Ok(Arc::new(Shared(fake)))
         }
@@ -1893,6 +1988,52 @@ mod tests {
             .await
             .unwrap();
         assert!(report.rolled_back);
+        assert_eq!(m.state.debug.count(), 0);
+        assert_eq!(m.state.leases.debug_owner(m.lease), None);
+    }
+
+    #[tokio::test]
+    async fn a_session_that_ends_inside_start_does_not_keep_the_lease() {
+        let _c = use_keyword_classifier();
+        let m = rig().await;
+        m.backend.end_at_start.store(true, Ordering::SeqCst);
+        let first = cmd::debug_start_impl(&m.state, start_request(m.lease, "-- nothing"))
+            .await
+            .unwrap();
+        assert!(matches!(first.status, DebugStatus::Terminated { .. }));
+        assert_eq!(m.state.debug.count(), 0);
+        assert_eq!(m.state.leases.debug_owner(m.lease), None);
+        m.state.leases.ensure_not_debugging(m.lease).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_with_ask_keeps_the_session_and_the_lease_until_the_decision() {
+        let _c = use_keyword_classifier();
+        let m = rig().await;
+        m.backend.ask_end.store(true, Ordering::SeqCst);
+        let first = cmd::debug_start_impl(&m.state, start_request(m.lease, "select 1"))
+            .await
+            .unwrap();
+        cmd::debug_stop_impl(&m.state, first.debug_id, None)
+            .await
+            .unwrap();
+        // Still alive, still owning the lease (its transaction is open).
+        assert_eq!(m.state.debug.count(), 1);
+        assert_eq!(m.state.leases.debug_owner(m.lease), Some(first.debug_id));
+        let s = cmd::debug_snapshot_impl(&m.state, first.debug_id)
+            .await
+            .unwrap();
+        assert!(matches!(pause_of(&s), PauseReason::AwaitingEnd));
+        // A restart without an explicit end is refused and changes nothing.
+        let err = cmd::debug_restart_impl(&m.state, first.debug_id, "select 2".into(), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)), "{err:?}");
+        assert_eq!(m.state.debug.count(), 1);
+        // The decision ends it.
+        cmd::debug_stop_impl(&m.state, first.debug_id, Some(DebugEndAction::Rollback))
+            .await
+            .unwrap();
         assert_eq!(m.state.debug.count(), 0);
         assert_eq!(m.state.leases.debug_owner(m.lease), None);
     }
@@ -2333,6 +2474,8 @@ mod tests {
             sink: Arc::new(NoSink),
             seq: AtomicU64::new(seq - 1),
             stopped: AtomicBool::new(false),
+            ask_end: AtomicBool::new(false),
+            awaiting: AtomicBool::new(false),
         }
         .state(status)
     }

@@ -181,6 +181,21 @@ impl LeaseManager {
         }
     }
 
+    /// Hand the lease from the provisional session id `from` to the real one `to` in one step
+    /// (`Busy` when `from` does not hold it any more).
+    pub fn transfer_debug(&self, lease_id: Uuid, from: Uuid, to: Uuid) -> Result<()> {
+        let mut map = self.lock();
+        let entry = map
+            .get_mut(&lease_id)
+            .ok_or_else(|| Error::NotFound(format!("lease {lease_id}")))?;
+        if entry.debug == Some(from) {
+            entry.debug = Some(to);
+            Ok(())
+        } else {
+            Err(Error::Busy("debugging".into()))
+        }
+    }
+
     /// Release the lease from `debug_id` (no-op when it is not the holder).
     pub fn release_debug(&self, lease_id: Uuid, debug_id: Uuid) {
         if let Some(entry) = self.lock().get_mut(&lease_id) {
