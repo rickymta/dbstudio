@@ -64,13 +64,8 @@ export const VariablesPanel: FC<{ tabId: string }> = ({ tabId }) => {
   useEffect(() => {
     const open = [...expandedRef.current];
     for (const reference of open) {
-      loadChildren(tabId, reference).catch(() => {
-        setExpanded((prev) => {
-          const next = new Set(prev);
-          next.delete(reference);
-          return next;
-        });
-      });
+      // A failed reload (e.g. a step in flight) keeps the group open: only the user collapses.
+      loadChildren(tabId, reference).catch(() => undefined);
     }
   }, [tabId, seq]);
 

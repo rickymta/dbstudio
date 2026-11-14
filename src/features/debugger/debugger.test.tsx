@@ -5,7 +5,7 @@ import { Providers } from '@/app/providers';
 import { polyfillLayoutApis } from '@/features/data/testUtils';
 import { EditorHost } from '@/features/editor/EditorHost';
 import { EditorTab } from '@/features/editor/EditorTab';
-import { getTabData } from '@/features/editor/editorStore';
+import { getTabData, patchTabData } from '@/features/editor/editorStore';
 import { openEditor } from '@/features/editor/open';
 import { openSession, resetEditorWorld } from '@/features/editor/testUtils';
 import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
@@ -14,6 +14,7 @@ import { ipc } from '@/lib/ipc';
 import { mockEmit } from '@/lib/mock/events';
 import { resetMockDebug } from '@/lib/mock/debug';
 import type { DebugOutputEvent, DebugState } from '@/lib/types';
+import { useSessionsStore } from '@/stores/sessions';
 import { editorTabId, useTabsStore } from '@/stores/tabs';
 import { viewOf } from './cm/viewRegistry';
 import { debugStateOf, applyDebugState } from '@/features/editor/persistHooks';
@@ -602,6 +603,29 @@ describe('routine source tab', () => {
     await waitFor(() => expect(rows()[0]).toHaveAttribute('aria-expanded', 'false'));
   });
 
+  it('keeps the Routine group open over consecutive steps, even when a children reload fails', async () => {
+    const { id, source } = await intoRoutine();
+    render(
+      <Providers>
+        <DebugSourceTab {...source.payload} />
+      </Providers>,
+    );
+    const windows = await screen.findAllByTestId('debug-tool-window');
+    const grid = await within(windows[windows.length - 1]!).findByRole('treegrid', {
+      name: 'Variables',
+    });
+    const head = () => within(grid).getAllByRole('row')[0]!;
+    await waitFor(() => expect(head()).toHaveAttribute('aria-expanded', 'true'));
+    vi.spyOn(ipc, 'debugVariableChildren').mockRejectedValue({ kind: 'busy', message: 'busy' });
+    for (let i = 0; i < 3; i++) {
+      // a step hands over a brand-new variables array each time
+      emitState(id, { variables: sessionOf(id)!.state.variables.map((v) => ({ ...v })) });
+      await act(async () => {});
+      expect(head().textContent).toMatch(/^Routine/);
+      expect(head()).toHaveAttribute('aria-expanded', 'true');
+    }
+  });
+
   it('Enter in the Variables prompt evaluates inline, Shift+Enter adds a watch', async () => {
     const { id } = await mountEditor();
     await startSession(id);
@@ -659,5 +683,39 @@ describe('breakpoints follow the text and the tab state', () => {
       saved.breakpoints,
     );
     expect(useDebugStore.getState().muted[id]).toBe(true);
+  });
+});
+
+describe('start from a restored tab', () => {
+  it('opens a lease on the live session first, then calls debug_start (Ctrl+D path)', async () => {
+    const { id } = await mountEditor();
+    const live =
+      useSessionsStore.getState().sessionsByConnection[
+        (
+          useTabsStore.getState().tabs.find((t) => t.id === editorTabId(id)) as {
+            payload: { connectionId: string };
+          }
+        ).payload.connectionId
+      ]!.sessionId;
+    // what a reloaded tab carries: a lease of a session that is gone
+    patchTabData(id, { leaseId: null, leaseSessionId: 'gone-session' });
+    const order: string[] = [];
+    const open = vi.spyOn(ipc, 'leaseOpen');
+    open.mockImplementationOnce(async (...a) => {
+      order.push('lease_open');
+      open.mockRestore();
+      return ipc.leaseOpen(...a);
+    });
+    const start = vi.spyOn(ipc, 'debugStart');
+    start.mockImplementationOnce(async (...a) => {
+      order.push('debug_start');
+      start.mockRestore();
+      return ipc.debugStart(...a);
+    });
+    act(() => runCommand(id, 'debug'));
+    await waitFor(() => expect(sessionOf(id)).toBeTruthy());
+    expect(order).toEqual(['lease_open', 'debug_start']);
+    expect(getTabData(id)!.leaseSessionId).toBe(live);
+    expect(useDebugStore.getState().starting[id]).toBeFalsy();
   });
 });

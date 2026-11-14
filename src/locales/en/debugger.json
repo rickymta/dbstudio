@@ -240,7 +240,8 @@
     "backToScript": "Back to script"
   },
   "toast": {
-    "closedRollback": "Debug session ended with the tab; its transaction was rolled back."
+    "closedRollback": "Debug session ended with the tab; its transaction was rolled back.",
+    "noSession": "No open connection to debug on."
   },
   "actions": {
     "close": "Close",

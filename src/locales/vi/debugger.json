@@ -240,7 +240,8 @@
     "backToScript": "Về script"
   },
   "toast": {
-    "closedRollback": "Phiên debug kết thúc cùng tab; transaction đã được rollback."
+    "closedRollback": "Phiên debug kết thúc cùng tab; transaction đã được rollback.",
+    "noSession": "Chưa có kết nối đang mở để debug."
   },
   "actions": {
     "close": "Đóng",

@@ -26,6 +26,7 @@ import {
   type TabDebugState,
   type WatchSpec,
 } from '@/lib/types';
+import { useSessionsStore } from '@/stores/sessions';
 import { useTabsStore } from '@/stores/tabs';
 import { cursorLine, docText, insertAtCursor, revealDocLine, viewOf } from './cm/viewRegistry';
 import type { OutputItem } from './consoleModel';
@@ -478,12 +479,12 @@ export async function startDebug(
 ): Promise<void> {
   const store = useDebugStore.getState();
   if (store.starting[tabId] || (sessionOf(tabId) && isLive(sessionOf(tabId)))) return;
-  const data = getTabData(tabId);
-  if (!data) return;
-  ensureScriptScope(tabId);
-  await ensureDebugEvents();
   store.setStarting(tabId, true);
   try {
+    const data = getTabData(tabId);
+    if (!data) throw { kind: 'notFound', message: `editor ${tabId}` };
+    ensureScriptScope(tabId);
+    await ensureDebugEvents();
     if (sessionOf(tabId)) closeToolWindow(tabId);
     const leaseId = await ensureLease(tabId, sessionId);
     const text = scriptText(tabId);
@@ -588,7 +589,8 @@ export async function restartDebug(
   if (!session || !data) return;
   if (!isLive(session)) {
     closeToolWindow(tabId);
-    if (data.leaseSessionId) await startDebug(tabId, data.leaseSessionId);
+    const sessionId = liveSessionId(tabId);
+    if (sessionId) await startDebug(tabId, sessionId);
     return;
   }
   try {
@@ -694,8 +696,9 @@ export function runCommand(tabId: string, command: DebugCommand, ctx: CommandCon
   const session = sessionOf(tabId);
   switch (command) {
     case 'debug': {
-      const sessionId = getTabData(tabId)?.leaseSessionId ?? editorSessionId(tabId);
+      const sessionId = liveSessionId(tabId);
       if (sessionId) void startDebug(tabId, sessionId);
+      else toast.error(t('debugger:toast.noSession'));
       return;
     }
     case 'toggleBreakpoint': {
@@ -754,11 +757,20 @@ export function runCommand(tabId: string, command: DebugCommand, ctx: CommandCon
   }
 }
 
-function editorSessionId(tabId: string): string | null {
+/**
+ * The session the editor runs on now. A restored tab keeps the id of a session that no longer
+ * exists in its lease, so the connection's live session wins over `leaseSessionId`.
+ */
+function liveSessionId(tabId: string): string | null {
   const tab = useTabsStore
     .getState()
     .tabs.find((x) => x.kind === 'editor' && x.payload.tabStateId === tabId);
-  return tab?.kind === 'editor' ? tab.payload.sessionId : null;
+  if (tab?.kind !== 'editor') return null;
+  const connectionId = tab.payload.connectionId;
+  const live = connectionId
+    ? useSessionsStore.getState().sessionsByConnection[connectionId]
+    : undefined;
+  return live?.sessionId ?? tab.payload.sessionId ?? null;
 }
 
 /** Cursor line of an editor: the mounted view, else the persisted selection of the tab. */
