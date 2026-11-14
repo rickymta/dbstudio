@@ -1,6 +1,7 @@
 // Export / import (dbstudio-export) and file dialogs (`files` commands).
 
 import type { ObjectPath, Uuid, Value, ValueKind } from './core';
+import type { PutMode } from './edit';
 import type { ScriptDialect, StatementInfo } from './script';
 import type { DdlOptions, OnConflict } from './model';
 
@@ -80,7 +81,15 @@ export interface ExportSpec {
 }
 
 export type ImportFormat =
-  | { kind: 'csv'; delimiter: string; quote: string; header: boolean; encoding: TextEncoding }
+  | {
+      kind: 'csv';
+      delimiter: string;
+      quote: string;
+      header: boolean;
+      encoding: TextEncoding;
+      /** Text standing for NULL: an unquoted cell equal to it is NULL; `null` keeps the old rule (empty = NULL). */
+      nullText?: string | null;
+    }
   | { kind: 'xlsx'; sheet: string; header: boolean }
   | { kind: 'json'; layout: JsonLayout }
   | { kind: 'sql'; continueOnError: boolean };
@@ -95,7 +104,9 @@ export interface NewColumn {
 export type ImportTarget =
   | { kind: 'existing'; table: ObjectPath }
   | { kind: 'new'; parent: ObjectPath; name: string; columns: NewColumn[] }
-  | { kind: 'script'; database?: string | null };
+  | { kind: 'script'; database?: string | null }
+  /** Redis keys: every record has the shape of `KeyRecord`. */
+  | { kind: 'keys'; database: ObjectPath; mode?: PutMode };
 
 export type Transform = 'none' | 'trim' | 'emptyAsNull' | 'trimEmptyAsNull';
 
@@ -139,6 +150,8 @@ export interface ImportPreview {
   suggestedKinds: ValueKind[];
   estimatedRows: number | null;
   statementsPreview: StatementInfo[];
+  /** The dialect was guessed from the connection kind (no live or remembered session). */
+  dialectGuessed?: boolean;
 }
 
 export interface RowError {

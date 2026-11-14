@@ -10,7 +10,11 @@ export type PlanFormat =
   | 'mariaDbJson'
   | 'msSqlShowplanXml'
   | 'oraclePlanRows'
-  | 'mongoExplain';
+  | 'mongoExplain'
+  | 'clickHouseJson'
+  | 'cockroachText'
+  | 'tiDbRows'
+  | 'cqlTrace';
 
 export interface ExplainOptions {
   buffers?: boolean;

@@ -1,4 +1,4 @@
-import type { JobEvent, LeaseStateEvent } from '../types';
+import type { JobEvent, LeaseStateEvent, SessionStateEvent } from '../types';
 import { onEvent } from './core';
 
 /** Names of the events the backend emits. */
@@ -6,6 +6,7 @@ export const EVENTS = {
   jobProgress: 'job://progress',
   leaseState: 'lease://state',
   backupChanged: 'backup://changed',
+  sessionState: 'session://state',
 } as const;
 
 /** Typed payloads of `EVENTS`. */
@@ -13,6 +14,7 @@ export interface EventPayloads {
   'job://progress': JobEvent;
   'lease://state': LeaseStateEvent;
   'backup://changed': null;
+  'session://state': SessionStateEvent;
 }
 
 export const eventsApi = {

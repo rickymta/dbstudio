@@ -1,6 +1,6 @@
 // Backup / restore (dbstudio-backup) and background behavior.
 
-import type { CloseBehavior, ObjectPath, Uuid } from './core';
+import type { CloseBehavior, ObjectKind, ObjectPath, Uuid } from './core';
 import type { JobError } from './jobs';
 import type { ExportContent } from './export';
 import type { DdlOptions } from './model';
@@ -19,7 +19,11 @@ export type NativeTool =
   | 'expdp'
   | 'impdp'
   | 'redisCli'
-  | 'msSqlServerBackup';
+  | 'msSqlServerBackup'
+  | 'clickHouseServerBackup'
+  | 'cockroachServerBackup'
+  | 'ysqlDump'
+  | 'ysqlsh';
 
 export type Compression =
   { kind: 'none' } | { kind: 'gzip'; level: number } | { kind: 'zstd'; level: number };
@@ -169,6 +173,22 @@ export interface BackupInspection {
   preamble: BackupPreamble | null;
   encrypted: boolean;
   native: NativeTool | null;
+  /** Objects of a logical backup (`formatVersion >= 3`); empty for older files. */
+  objects?: BackupInspectionObject[];
+}
+
+export type BackupPhase = 'pre' | 'data' | 'post';
+
+/**
+ * One object listed by `backup_inspect` for a logical backup (partial restore). Rust name:
+ * `BackupObject`; the TS name differs because `BackupObject` already names the preamble entry.
+ */
+export interface BackupInspectionObject {
+  kind: ObjectKind;
+  schema: string | null;
+  name: string;
+  phases: BackupPhase[];
+  rows: number | null;
 }
 
 export type ToolSource = 'configured' | 'path' | 'knownDir';

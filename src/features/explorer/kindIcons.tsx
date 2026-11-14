@@ -42,6 +42,7 @@ const KIND_ICONS: Record<ObjectKind, LucideIcon> = {
   synonym: Link2,
   package: Package,
   type: Shapes,
+  dictionary: Shapes,
 };
 
 /** Icon of an object kind; unknown kinds from a newer backend get a generic box. */

@@ -24,9 +24,12 @@ const DIALECTS: Record<DbKind, ScriptDialect> = {
   oracle: { name: 'oracle' },
   mongodb: { name: 'mongoShell' },
   redis: { name: 'redisCli' },
-  cassandra: { name: 'opaque' },
-  scylladb: { name: 'opaque' },
-  clickhouse: { name: 'opaque' },
+  cassandra: { name: 'cql' },
+  scylladb: { name: 'cql' },
+  clickhouse: { name: 'clickHouse' },
+  cockroachdb: { name: 'postgres' },
+  yugabytedb: { name: 'postgres' },
+  tidb: { name: 'mySql', mariadb: false, backslashEscapes: true },
 };
 
 /** Script dialect of the database behind `sessionId`; throws `notFound` for unknown sessions. */
@@ -53,6 +56,26 @@ export async function sessionOpen(
     serverInfo: mockServerInfo(profile.kind),
     descriptor: mockDriverFor(profile.kind),
     dialect: DIALECTS[profile.kind],
+  };
+}
+
+/** The mock connection never drops: reconnecting returns the same session info. */
+export async function sessionReconnect(
+  sessionId: Uuid,
+  secret: string | null,
+): Promise<SessionInfo> {
+  void secret;
+  await sleep();
+  const s = sessions.get(sessionId);
+  if (!s) throw ipcError('notFound', `session ${sessionId}`);
+  const profile = findMockProfile(s.connectionId);
+  if (!profile) throw ipcError('notFound', `connection ${s.connectionId}`);
+  return {
+    sessionId,
+    connectionId: s.connectionId,
+    serverInfo: mockServerInfo(s.kind),
+    descriptor: mockDriverFor(s.kind),
+    dialect: DIALECTS[s.kind],
   };
 }
 

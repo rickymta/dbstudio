@@ -1,6 +1,7 @@
 // Query history, saved queries, editor tab state, ERD layouts (dbstudio-store).
 
 import type { DbKind, ObjectPath, Uuid } from './core';
+import type { PlanFormat, RawPlan } from './plan';
 
 export type HistoryStatus = 'running' | 'ok' | 'error' | 'cancelled';
 export type HistoryKind = 'query' | 'explain' | 'script' | 'changes';
@@ -69,6 +70,28 @@ export interface EditorTabState {
   filePath: string | null;
   cursor: number;
   autoCommit: boolean;
+  /** Text differs from `filePath` on disk (or the tab was never saved). Optional on input. */
+  dirty?: boolean;
+}
+
+/** One plan history row without the raw plan (`plan_history_list`). */
+export interface PlanHistoryEntry {
+  id: Uuid;
+  connectionId: Uuid | null;
+  createdAt: string;
+  database: string | null;
+  /** Redacted statement. */
+  statement: string;
+  analyze: boolean;
+  format: PlanFormat;
+  totalCost: number | null;
+  totalMs: number | null;
+  warnings: number;
+}
+
+/** `plan_history_get`: the entry plus the same content as a `.dbplan.json` file. */
+export interface PlanHistoryRecord extends PlanHistoryEntry {
+  rawPlan: RawPlan;
 }
 
 export interface SqlFile {

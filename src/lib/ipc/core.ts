@@ -43,6 +43,7 @@ export const ERROR_KINDS: ReadonlySet<string> = new Set([
   'storage',
   'io',
   'other',
+  'invalid',
   'readOnly',
   'confirmationRequired',
   'busy',
@@ -493,6 +494,12 @@ export const coreApi = {
     call('session_open', () => mock.sessionOpen(connectionId, password ?? null), {
       connectionId,
       password: password ?? null,
+    }),
+  /** Reconnect a lost session; the session id is kept. */
+  sessionReconnect: (sessionId: Uuid, secret?: string | null): Promise<SessionInfo> =>
+    call('session_reconnect', () => mock.sessionReconnect(sessionId, secret ?? null), {
+      sessionId,
+      secret: secret ?? null,
     }),
   sessionClose: (sessionId: Uuid): Promise<void> =>
     call('session_close', () => mock.sessionClose(sessionId), { sessionId }),

@@ -9,12 +9,16 @@ import type {
   LeaseContext,
   LeaseInfo,
   LeaseOptions,
+  LeaseReopened,
   LeaseState,
+  ObjectPath,
   QueryEvent,
   SavedFolder,
   SavedQueriesSnapshot,
   SavedQuery,
   ScriptAnalysis,
+  ScriptGenerated,
+  ScriptTemplate,
   SqlFile,
   TxOptions,
   Uuid,
@@ -99,6 +103,21 @@ export const editorApi = {
     call('lease_set_context', () => mock.leaseSetContext(leaseId, context), { leaseId, context }),
   leaseState: (leaseId: Uuid): Promise<LeaseState> =>
     call('lease_state', () => mock.leaseState(leaseId), { leaseId }),
+
+  /** Reopen a lease that broke with its session; it keeps its id. */
+  leaseReopen: (leaseId: Uuid): Promise<LeaseReopened> =>
+    call('lease_reopen', () => mock.leaseReopen(leaseId), { leaseId }),
+  /** SELECT / INSERT / UPDATE / DELETE template of a table. */
+  scriptGenerate: (
+    sessionId: Uuid,
+    path: ObjectPath,
+    template: ScriptTemplate,
+  ): Promise<ScriptGenerated> =>
+    call('script_generate', () => mock.scriptGenerate(sessionId, path, template), {
+      sessionId,
+      path,
+      template,
+    }),
 
   historyList: (query: HistoryQuery): Promise<HistoryEntry[]> =>
     call('history_list', () => mock.historyList(query), { query }),

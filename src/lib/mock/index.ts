@@ -9,7 +9,7 @@ import { jobsMock, resetMockJobs } from './jobs';
 import { resetMockRedis } from './catalogRedis';
 import { keyvalueMock } from './keyvalue';
 import { leasesMock, resetMockLeases } from './leases';
-import { planMock } from './plan';
+import { planMock, resetMockPlanHistory } from './plan';
 import * as connections from './connections';
 import * as data from './data';
 import { mockObjectSearch } from './search';
@@ -34,6 +34,7 @@ export function resetMockPhase2(): void {
   resetMockExport();
   resetMockBackup();
   resetMockRedis();
+  resetMockPlanHistory();
 }
 
 type Path = Parameters<typeof mockChildren>[1];
@@ -60,6 +61,7 @@ export const mock = {
   connectionsImport: connections.connectionsImport,
   sessionOpen: sessions.sessionOpen,
   sessionClose: sessions.sessionClose,
+  sessionReconnect: sessions.sessionReconnect,
   tableFetch: data.tableFetch,
   tableCount: data.tableCount,
   queryCancel: data.queryCancel,
@@ -69,7 +71,7 @@ export const mock = {
   saveCellValue: settings.saveCellValue,
   connectionParseUri: mockParseMongoUri,
   async driverDiagnostics(kind: DbKind): Promise<DriverDiagnostics> {
-    return { status: mockDriverFor(kind).status, message: '', helpUrl: null };
+    return { status: mockDriverFor(kind).status, message: '', helpUrl: null, checks: [] };
   },
   async sshTrustHost(host: string, port: number, keyType: string, fingerprint: string) {
     void [host, port, keyType, fingerprint];

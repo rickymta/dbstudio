@@ -11,6 +11,9 @@ export const DATABASE_FIELD: Record<DbKind, 'database' | 'serviceName' | 'dbInde
   cassandra: 'keyspace',
   scylladb: 'keyspace',
   clickhouse: 'database',
+  cockroachdb: 'database',
+  yugabytedb: 'database',
+  tidb: 'database',
 };
 
 /** Short badge shown in the sidebar for each kind. */
@@ -24,6 +27,9 @@ export const KIND_BADGE: Record<DbKind, string> = {
   cassandra: 'CA',
   scylladb: 'SC',
   clickhouse: 'CH',
+  cockroachdb: 'CR',
+  yugabytedb: 'YB',
+  tidb: 'TI',
 };
 
 export const TLS_MODES: TlsMode[] = ['disable', 'prefer', 'require', 'verifyCa', 'verifyFull'];
