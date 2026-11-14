@@ -57,6 +57,7 @@
       "message": "connection refused"
     },
     "leasesBroken": ["00000000-0000-0000-0000-000000000003"],
+    "leasesReopened": ["00000000-0000-0000-0000-000000000004"],
     "sessionId": "00000000-0000-0000-0000-000000000001",
     "state": "reconnecting"
   }

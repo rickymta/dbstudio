@@ -140,7 +140,7 @@ fn native_tools_of(kind: DbKind) -> &'static [dbstudio_backup::NativeTool] {
 }
 
 /// One `nativeTool:<tool>` check per tool of `kind`: path and version when found, the problem
-/// otherwise. Runs the tools' `--version`, so it blocks briefly.
+/// otherwise. Runs the tools' `--version` (stdin closed, killed after 3 s), so it blocks briefly.
 fn native_tool_checks(state: &AppState, kind: DbKind) -> Vec<DiagnosticCheck> {
     let tools = native_tools_of(kind);
     if tools.is_empty() {
@@ -158,9 +158,8 @@ fn native_tool_checks(state: &AppState, kind: DbKind) -> Vec<DiagnosticCheck> {
                 .map(|tool| (tool, v))
         })
         .collect();
-    dbstudio_backup::detect_tools(&overrides)
+    dbstudio_backup::detect_selected(tools, &overrides, std::time::Duration::from_secs(3))
         .into_iter()
-        .filter(|info| tools.contains(&info.tool))
         .map(|info| {
             let key = serde_json::to_value(info.tool)
                 .ok()

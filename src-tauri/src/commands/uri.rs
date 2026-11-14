@@ -335,7 +335,7 @@ fn parse_sql(p: &Parts) -> Result<ConnectionConfig> {
         .or_else(|| q(p, "ssl-key"))
         .map(str::to_string);
     if let Some(secs) = q(p, "connect_timeout").and_then(|v| v.parse::<u64>().ok()) {
-        cfg.connect_timeout_ms = Some(secs * 1000);
+        cfg.connect_timeout_ms = Some(secs.saturating_mul(1000));
     }
     // CockroachDB Cloud routes by cluster id (`options=--cluster=<id>` at startup).
     if kind == DbKind::CockroachDb {
@@ -386,7 +386,7 @@ fn parse_clickhouse(p: &Parts) -> Result<ConnectionConfig> {
         }
     }
     if let Some(ms) = q(p, "connect_timeout").and_then(|v| v.parse::<u64>().ok()) {
-        cfg.connect_timeout_ms = Some(ms * 1000);
+        cfg.connect_timeout_ms = Some(ms.saturating_mul(1000));
     }
     Ok(cfg)
 }
@@ -444,7 +444,7 @@ fn parse_cassandra(p: &Parts) -> Result<ConnectionConfig> {
     };
     cfg.tls.ca_cert_path = q(p, "sslrootcert").map(str::to_string);
     if let Some(ms) = q(p, "connect_timeout").and_then(|v| v.parse::<u64>().ok()) {
-        cfg.connect_timeout_ms = Some(ms * 1000);
+        cfg.connect_timeout_ms = Some(ms.saturating_mul(1000));
     }
     Ok(cfg)
 }
@@ -603,6 +603,16 @@ mod tests {
         );
         assert_eq!(p.config.database.as_deref(), Some("app"));
         assert_eq!(p.config.username.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn huge_timeouts_do_not_overflow() {
+        let (p, _) = parse_uri("postgres://u@h/d?connect_timeout=18446744073709551615").unwrap();
+        assert_eq!(p.config.connect_timeout_ms, Some(u64::MAX));
+        let (p, _) = parse_uri("clickhouse://u@h/d?connect_timeout=18446744073709551615").unwrap();
+        assert_eq!(p.config.connect_timeout_ms, Some(u64::MAX));
+        let (p, _) = parse_uri("cassandra://u@h/ks?connect_timeout=18446744073709551615").unwrap();
+        assert_eq!(p.config.connect_timeout_ms, Some(u64::MAX));
     }
 
     #[test]

@@ -99,7 +99,18 @@ fn options_of(state: &LeaseState) -> LeaseOptions {
 pub struct LeaseManager {
     events: Arc<dyn EventEmitter>,
     leases: Mutex<HashMap<Uuid, Entry>>,
+    /// One gate per lease being reopened: concurrent `lease_reopen` calls queue up and the
+    /// later ones get the result of the first.
+    gates: Mutex<HashMap<Uuid, ReopenGate>>,
 }
+
+/// Serialises the reopening of one lease and remembers its outcome.
+pub type ReopenGate = Arc<tokio::sync::Mutex<Option<LeaseReopened>>>;
+
+/// Longest a keepalive ping may take before the lease counts as dead.
+pub const KEEPALIVE_PING_TIMEOUT: Duration = Duration::from_secs(10);
+/// Most keepalive pings in flight at once.
+const KEEPALIVE_PARALLEL: usize = 8;
 
 impl std::fmt::Debug for LeaseManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -115,6 +126,7 @@ impl LeaseManager {
         LeaseManager {
             events,
             leases: Mutex::new(HashMap::new()),
+            gates: Mutex::new(HashMap::new()),
         }
     }
 
@@ -162,6 +174,18 @@ impl LeaseManager {
         let entry = map
             .get_mut(&lease_id)
             .ok_or_else(|| Error::NotFound(format!("lease {lease_id}")))?;
+        // A lease whose connection is gone must not run anything (a COMMIT would hit the
+        // old connection or, worse, a new one): the tab has to `lease_reopen` first.
+        if let Some(lost) = &entry.lost {
+            return Err(Error::Connection(format!(
+                "the lease lost its connection{}; reopen it first",
+                if lost.last_state.transaction == TxStatus::Idle {
+                    ""
+                } else {
+                    " and its open transaction (transactionLost)"
+                }
+            )));
+        }
         // Every command goes through here, so this is the lease's activity clock.
         entry.last_activity = Instant::now();
         Ok((entry.session_id, Arc::clone(&entry.lease)))
@@ -195,7 +219,46 @@ impl LeaseManager {
 
     /// Forget a lease without closing it; returns it when it existed.
     pub fn remove(&self, lease_id: Uuid) -> Option<Arc<dyn Lease>> {
+        self.gates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&lease_id);
         self.lock().remove(&lease_id).map(|e| e.lease)
+    }
+
+    /// The gate that serialises reopening `lease_id`.
+    pub fn reopen_gate(&self, lease_id: Uuid) -> ReopenGate {
+        Arc::clone(
+            self.gates
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(lease_id)
+                .or_default(),
+        )
+    }
+
+    /// `Some(true)` when the lease answers a ping (a running statement counts), `Some(false)`
+    /// when it is lost or does not answer within `timeout`, `None` when it does not exist.
+    pub async fn probe(&self, lease_id: Uuid, timeout: Duration) -> Option<bool> {
+        let lease = {
+            let map = self.lock();
+            let entry = map.get(&lease_id)?;
+            if entry.lost.is_some() {
+                return Some(false);
+            }
+            Arc::clone(&entry.lease)
+        };
+        let state = lease.state();
+        if state.broken {
+            return Some(false);
+        }
+        if state.running.is_some() || state.pending_result.is_some() {
+            return Some(true);
+        }
+        Some(matches!(
+            tokio::time::timeout(timeout, lease.ping()).await,
+            Ok(Ok(()))
+        ))
     }
 
     /// Remove and close a lease. Closing an unknown (already closed) lease reports nothing rolled
@@ -296,6 +359,18 @@ impl LeaseManager {
                 });
             }
         }
+        // A new loss makes the outcome of an earlier reopen obsolete.
+        let gate = self
+            .gates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&lease_id)
+            .cloned();
+        if let Some(gate) = gate {
+            if let Ok(mut last) = gate.try_lock() {
+                *last = None;
+            }
+        }
         self.notify_state(lease_id);
     }
 
@@ -336,10 +411,21 @@ impl LeaseManager {
         Ok((entry.session_id, options_of(&state)))
     }
 
-    /// One keepalive round: ping every lease that is not running a statement and whose last
-    /// command is at least `interval` old. A failing ping marks the lease lost. Returns the
-    /// leases that were pinged.
+    /// One keepalive round: ping every lease that is not running a statement, holds no open
+    /// result set and whose last command is at least `interval` old. Pings run in parallel
+    /// (at most 8 at once) and each one has a time limit, so a half-open connection cannot
+    /// stall the round. A failing ping marks the lease lost. Returns the leases pinged.
     pub async fn keepalive_tick(&self, interval: Duration) -> Vec<Uuid> {
+        self.keepalive_tick_with(interval, KEEPALIVE_PING_TIMEOUT)
+            .await
+    }
+
+    /// [`LeaseManager::keepalive_tick`] with an explicit ping time limit.
+    pub async fn keepalive_tick_with(
+        &self,
+        interval: Duration,
+        ping_timeout: Duration,
+    ) -> Vec<Uuid> {
         let now = Instant::now();
         let due: Vec<(Uuid, Arc<dyn Lease>)> = self
             .lock()
@@ -349,20 +435,34 @@ impl LeaseManager {
                     && now.saturating_duration_since(e.last_activity.max(e.last_ping)) >= interval
                     && {
                         let state = e.lease.state();
-                        state.running.is_none() && !state.broken
+                        state.running.is_none() && state.pending_result.is_none() && !state.broken
                     }
             })
             .map(|(id, e)| (*id, Arc::clone(&e.lease)))
             .collect();
         let mut pinged = Vec::with_capacity(due.len());
-        for (id, lease) in due {
-            pinged.push(id);
-            if let Some(entry) = self.lock().get_mut(&id) {
-                entry.last_ping = Instant::now();
+        for batch in due.chunks(KEEPALIVE_PARALLEL) {
+            let mut pings = tokio::task::JoinSet::new();
+            for (id, lease) in batch {
+                let (id, lease) = (*id, Arc::clone(lease));
+                pinged.push(id);
+                if let Some(entry) = self.lock().get_mut(&id) {
+                    entry.last_ping = Instant::now();
+                }
+                pings.spawn(async move {
+                    let result = tokio::time::timeout(ping_timeout, lease.ping()).await;
+                    (id, result)
+                });
             }
-            if let Err(e) = lease.ping().await {
-                tracing::info!(lease = %id, error = %e, "lease keepalive failed");
-                self.mark_lost(id);
+            while let Some(done) = pings.join_next().await {
+                match done {
+                    Ok((_, Ok(Ok(())))) => {}
+                    Ok((id, outcome)) => {
+                        tracing::info!(lease = %id, ?outcome, "lease keepalive failed");
+                        self.mark_lost(id);
+                    }
+                    Err(e) => tracing::warn!(error = %e, "keepalive task failed"),
+                }
             }
         }
         pinged
@@ -401,6 +501,7 @@ pub(crate) mod testing {
     //! A lease that records what happened to it.
 
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use async_trait::async_trait;
     use dbstudio_core::{
@@ -421,6 +522,8 @@ pub(crate) mod testing {
         pub fail: std::sync::atomic::AtomicBool,
         pub running: std::sync::atomic::AtomicBool,
         pub in_transaction: std::sync::atomic::AtomicBool,
+        pub pending: std::sync::atomic::AtomicBool,
+        pub hang: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait]
@@ -470,10 +573,16 @@ pub(crate) mod testing {
             if self.in_transaction.load(Ordering::SeqCst) {
                 state.transaction = dbstudio_core::TxStatus::Active;
             }
+            if self.pending.load(Ordering::SeqCst) {
+                state.pending_result = Some(Uuid::nil());
+            }
             state
         }
         async fn ping(&self) -> Result<()> {
             self.pings.fetch_add(1, Ordering::SeqCst);
+            if self.hang.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
             if self.fail.load(Ordering::SeqCst) {
                 return Err(Error::Connection("gone".into()));
             }
@@ -774,5 +883,68 @@ mod tests {
         let after_off = probe.pings.load(AtomicOrdering::SeqCst);
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(probe.pings.load(AtomicOrdering::SeqCst), after_off);
+    }
+
+    #[tokio::test]
+    async fn keepalive_leaves_open_result_sets_alone() {
+        let (leases, _) = manager();
+        let (probe, lease) = pinging();
+        leases.register(Uuid::new_v4(), lease).unwrap();
+        probe.pending.store(true, AtomicOrdering::SeqCst);
+        tokio::time::sleep(TICK + Duration::from_millis(20)).await;
+        assert!(leases.keepalive_tick(TICK).await.is_empty());
+        assert_eq!(probe.pings.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_lost_lease_refuses_commands_until_it_is_reopened() {
+        let (leases, _) = manager();
+        let (probe, lease) = pinging();
+        let info = leases.register(Uuid::new_v4(), lease).unwrap();
+        probe.in_transaction.store(true, AtomicOrdering::SeqCst);
+        leases.mark_lost(info.lease_id);
+        let err = leases.get(info.lease_id).err().expect("refused");
+        assert_eq!(err.kind(), "connection");
+        assert!(err.to_string().contains("transactionLost"), "{err}");
+        assert!(leases.get_with_session(info.lease_id).is_err());
+        // Closing and asking for the state still work.
+        assert!(leases.state_of(info.lease_id).unwrap().broken);
+        let (_, fresh) = pinging();
+        assert!(leases.replace(info.lease_id, fresh).await.unwrap());
+        assert!(leases.get(info.lease_id).is_ok());
+        leases.close(info.lease_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_half_open_connection_does_not_stall_the_keepalive_round() {
+        let (leases, _) = manager();
+        let (hung, lease) = pinging();
+        let stuck = leases.register(Uuid::new_v4(), lease).unwrap();
+        hung.hang.store(true, AtomicOrdering::SeqCst);
+        let mut healthy = Vec::new();
+        for _ in 0..20 {
+            let (probe, lease) = pinging();
+            leases.register(Uuid::new_v4(), lease).unwrap();
+            healthy.push(probe);
+        }
+        tokio::time::sleep(TICK + Duration::from_millis(20)).await;
+        let started = std::time::Instant::now();
+        let pinged = leases
+            .keepalive_tick_with(TICK, Duration::from_millis(150))
+            .await;
+        assert_eq!(pinged.len(), 21);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            healthy
+                .iter()
+                .all(|p| p.pings.load(AtomicOrdering::SeqCst) == 1)
+        );
+        // Only the lease that did not answer is lost.
+        assert!(leases.state_of(stuck.lease_id).unwrap().broken);
+        assert!(leases.needs_reopen(stuck.lease_id).unwrap());
     }
 }

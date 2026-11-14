@@ -34,6 +34,7 @@ fn app_contract_fixtures() {
         attempt: 2,
         error: Some(json!({"kind": "connection", "message": "connection refused"})),
         leases_broken: vec![Uuid::from_u128(3)],
+        leases_reopened: vec![Uuid::from_u128(4)],
     };
     let checks = vec![
         DiagnosticCheck {

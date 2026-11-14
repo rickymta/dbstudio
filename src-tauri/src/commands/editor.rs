@@ -208,9 +208,16 @@ pub(crate) async fn lease_open_impl(
 /// Reopen a lease whose connection broke (lost session, failed keepalive, idle limit); the lease
 /// keeps its id, database, schema and auto-commit mode. `transaction_lost` tells the tab that a
 /// transaction was open when the connection broke. A healthy lease is returned unchanged.
+/// Concurrent calls for one lease are serialised: the later ones get the first one's result
+/// (a second reopen would throw away the connection the first just made).
 pub(crate) async fn lease_reopen_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseReopened> {
     let (session_id, options) = state.leases.reopen_options(lease_id)?;
+    let gate = state.leases.reopen_gate(lease_id);
+    let mut last = gate.lock().await;
     if !state.leases.needs_reopen(lease_id)? {
+        if let Some(done) = last.as_ref() {
+            return Ok(done.clone());
+        }
         return Ok(LeaseReopened {
             lease: LeaseInfo {
                 lease_id,
@@ -223,14 +230,16 @@ pub(crate) async fn lease_reopen_impl(state: &AppState, lease_id: Uuid) -> Resul
     let session = state.sessions.get(session_id)?;
     let fresh = session.open_lease(options).await?;
     let transaction_lost = state.leases.replace(lease_id, fresh).await?;
-    Ok(LeaseReopened {
+    let done = LeaseReopened {
         lease: LeaseInfo {
             lease_id,
             session_id,
             state: state.leases.state_of(lease_id)?,
         },
         transaction_lost,
-    })
+    };
+    *last = Some(done.clone());
+    Ok(done)
 }
 
 /// Result of `script_generate`.
@@ -1473,10 +1482,53 @@ mod tests {
         let back = lease_reopen_impl(&m.state, in_tx.lease_id).await.unwrap();
         assert!(back.transaction_lost, "the open transaction was lost");
         assert_eq!(back.lease.state.transaction, dbstudio_core::TxStatus::Idle);
-        // Once reopened the lease is healthy: asking again changes nothing.
+        // Once reopened the lease is healthy: asking again changes nothing and reports the
+        // first outcome.
         let again = lease_reopen_impl(&m.state, in_tx.lease_id).await.unwrap();
-        assert!(!again.transaction_lost);
+        assert!(again.transaction_lost);
         assert_eq!(m.state.leases.count_for_session(sid), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_reopens_of_one_lease_share_one_new_connection() {
+        let m = mock();
+        m.probe
+            .rich
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let sid = open(&m.state, profile(DbKind::Postgres, false, None, "app")).await;
+        let lease = lease_open_impl(&m.state, sid, LeaseOptions::default())
+            .await
+            .unwrap();
+        m.state
+            .leases
+            .get(lease.lease_id)
+            .unwrap()
+            .begin(TxOptions::default())
+            .await
+            .unwrap();
+        m.probe.kill_all();
+        m.state.leases.keepalive_tick(Duration::ZERO).await;
+        let before = m
+            .probe
+            .lease_opens
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let (a, b, c) = tokio::join!(
+            lease_reopen_impl(&m.state, lease.lease_id),
+            lease_reopen_impl(&m.state, lease.lease_id),
+            lease_reopen_impl(&m.state, lease.lease_id)
+        );
+        let after = m
+            .probe
+            .lease_opens
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(after, before + 1, "one new connection, not three");
+        for done in [a.unwrap(), b.unwrap(), c.unwrap()] {
+            assert!(
+                done.transaction_lost,
+                "every caller learns the transaction is gone"
+            );
+            assert!(!done.lease.state.broken);
+        }
     }
 
     #[tokio::test]
@@ -1513,6 +1565,60 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e.kind(), "unsupported");
+    }
+
+    #[tokio::test]
+    async fn only_a_password_the_user_typed_stays_in_memory() {
+        let m = mock();
+        // Stored in the keychain: read again on reconnect, not kept in the session.
+        let mut stored = profile(DbKind::Postgres, false, None, "app");
+        stored.save_password = true;
+        let saved = connections::save_impl(
+            &m.state,
+            stored,
+            SecretChange::Set {
+                value: Secret::new("keychain-pw"),
+            },
+        )
+        .await
+        .unwrap();
+        let info = sessions::open_impl(&m.state, saved.config.id, None)
+            .await
+            .unwrap();
+        assert!(
+            m.state
+                .sessions
+                .remembered_secret(info.session_id)
+                .is_none()
+        );
+        // Typed at the prompt: kept for the life of the session.
+        let saved = connections::save_impl(
+            &m.state,
+            profile(DbKind::Postgres, false, None, "app"),
+            SecretChange::Keep,
+        )
+        .await
+        .unwrap();
+        let info = sessions::open_impl(&m.state, saved.config.id, Some(Secret::new("typed")))
+            .await
+            .unwrap();
+        assert_eq!(
+            m.state
+                .sessions
+                .remembered_secret(info.session_id)
+                .unwrap()
+                .expose(),
+            "typed"
+        );
+        // A manual reconnect re-reads the profile and the keychain.
+        let again = sessions::reconnect_impl(&m.state, info.session_id, None)
+            .await
+            .unwrap();
+        assert_eq!(again.session_id, info.session_id);
+        assert_eq!(
+            m.probe.last_secret.lock().unwrap().clone(),
+            Some(Some("typed".to_string()))
+        );
     }
 
     #[tokio::test]

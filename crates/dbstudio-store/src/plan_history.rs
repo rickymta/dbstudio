@@ -11,6 +11,10 @@ use crate::db::{Store, db_err, from_text, invalid, now_iso, opt_uuid, parse_uuid
 /// Largest `raw_plan` JSON (bytes) kept in the history; bigger plans are not stored.
 pub const PLAN_HISTORY_MAX_RAW_BYTES: usize = 8 * 1024 * 1024;
 
+/// Most bytes (raw plans + statements) the history keeps per connection; the oldest entries go
+/// first, the newest one always stays.
+pub const PLAN_HISTORY_MAX_BYTES_PER_CONNECTION: u64 = 200 * 1024 * 1024;
+
 /// One plan history row without the raw plan (list view).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +106,16 @@ impl Store {
     /// whose JSON exceeds [`PLAN_HISTORY_MAX_RAW_BYTES`] is refused with `Invalid` (the caller
     /// skips recording it).
     pub fn plan_history_add(&self, entry: &NewPlanHistory, keep: u32) -> Result<PlanHistoryEntry> {
+        self.plan_history_add_capped(entry, keep, PLAN_HISTORY_MAX_BYTES_PER_CONNECTION)
+    }
+
+    /// [`Store::plan_history_add`] with an explicit byte budget per connection.
+    pub fn plan_history_add_capped(
+        &self,
+        entry: &NewPlanHistory,
+        keep: u32,
+        max_bytes: u64,
+    ) -> Result<PlanHistoryEntry> {
         let raw = serde_json::to_string(&entry.raw_plan).map_err(invalid)?;
         if raw.len() > PLAN_HISTORY_MAX_RAW_BYTES {
             return Err(Error::Invalid(format!(
@@ -151,6 +165,26 @@ impl Store {
             params![conn_id, i64::from(keep.max(1))],
         )
         .map_err(db_err)?;
+        // Byte budget: drop the oldest entries until the connection fits (the newest stays).
+        loop {
+            let (bytes, rows): (i64, i64) = tx
+                .query_row(
+                    "SELECT COALESCE(SUM(LENGTH(raw_plan) + LENGTH(statement)), 0), COUNT(*)
+                     FROM plan_history WHERE connection_id IS ?1",
+                    params![conn_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(db_err)?;
+            if rows <= 1 || u64::try_from(bytes).unwrap_or(0) <= max_bytes {
+                break;
+            }
+            tx.execute(
+                "DELETE FROM plan_history WHERE rowid =
+                     (SELECT MIN(rowid) FROM plan_history WHERE connection_id IS ?1)",
+                params![conn_id],
+            )
+            .map_err(db_err)?;
+        }
         tx.commit().map_err(db_err)?;
         Ok(stored)
     }
@@ -170,8 +204,9 @@ impl Store {
         let before_rowid: Option<i64> = match before {
             Some(at) => conn
                 .query_row(
-                    "SELECT MIN(rowid) FROM plan_history WHERE created_at = ?1",
-                    params![at],
+                    "SELECT MIN(rowid) FROM plan_history
+                     WHERE created_at = ?1 AND (?2 IS NULL OR connection_id = ?2)",
+                    params![at, connection_id.map(|c| c.to_string())],
                     |r| r.get(0),
                 )
                 .map_err(db_err)?,
@@ -422,5 +457,48 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM plan_history", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn each_connection_has_a_byte_budget_and_paging_stays_inside_one_connection() {
+        let s = Store::open_in_memory().unwrap();
+        let (a, b) = (connection(&s, "a"), connection(&s, "b"));
+        let sized = |conn, name: &str, kb: usize| {
+            let mut p = new_plan(Some(conn), name);
+            p.raw_plan.text = "x".repeat(kb * 1024);
+            p
+        };
+        // Budget of 25 KB: three 10 KB plans do not fit, two do.
+        for i in 0..3 {
+            s.plan_history_add_capped(&sized(a, &format!("a{i}"), 10), 100, 25 * 1024)
+                .unwrap();
+        }
+        s.plan_history_add_capped(&sized(b, "b0", 10), 100, 25 * 1024)
+            .unwrap();
+        let texts = |c| {
+            s.plan_history_list(Some(c), 10, None)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.statement)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            texts(a),
+            ["a2", "a1"],
+            "the oldest went, the other connection is untouched"
+        );
+        assert_eq!(texts(b), ["b0"]);
+        // One entry bigger than the budget still stays (the newest is never dropped).
+        s.plan_history_add_capped(&sized(b, "b1", 40), 100, 25 * 1024)
+            .unwrap();
+        assert_eq!(texts(b), ["b1"]);
+
+        // `before` is looked up inside the connection being paged.
+        let first = s.plan_history_list(Some(a), 1, None).unwrap();
+        let rest = s
+            .plan_history_list(Some(a), 5, Some(&first[0].created_at))
+            .unwrap();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].statement, "a1");
     }
 }

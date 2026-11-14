@@ -712,8 +712,9 @@ impl<B: LeaseBackend> Lease for ActorLease<B> {
             if g.closed {
                 return Err(closed_error());
             }
-            // A running statement proves the connection is alive.
-            if g.busy {
+            // A running statement proves the connection is alive; an open result set must
+            // not be disturbed (the pending-result timeout covers a dead connection).
+            if g.busy || g.state.pending_result.is_some() {
                 return Ok(());
             }
         }
@@ -818,8 +819,9 @@ async fn run_actor<B: LeaseBackend>(
         }
 
         // Every command except a fetch drops the pending result first.
-        let is_fetch = matches!(cmd, Cmd::Fetch { .. });
-        if !is_fetch && pending_deadline.take().is_some() {
+        // A fetch continues it and a keepalive ping must not destroy it.
+        let keeps_pending = matches!(cmd, Cmd::Fetch { .. } | Cmd::Ping(_));
+        if !keeps_pending && pending_deadline.take().is_some() {
             let _ = backend.discard_result().await;
             shared.lock().state.pending_result = None;
         }
@@ -1187,6 +1189,25 @@ mod tests {
             StatementOutcome::Rows(rs) => (rs.rows.len() as u64, rs.truncated),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_keepalive_ping_keeps_the_pending_result() {
+        let (lease, discards, _) = lease(10);
+        let req = request("select", Some(3));
+        let id = req.query_id;
+        lease
+            .execute(req, &mut CollectingSink::new())
+            .await
+            .unwrap();
+        assert_eq!(lease.state().pending_result, Some(id));
+        lease.ping().await.unwrap();
+        assert_eq!(lease.state().pending_result, Some(id));
+        assert_eq!(discards.load(Ordering::SeqCst), 0);
+        // The result is still fetchable after the ping.
+        let mut sink = CollectingSink::new();
+        lease.fetch_more(id, 3, None, &mut sink).await.unwrap();
+        assert_eq!(row_count(sink), (3, true));
     }
 
     #[tokio::test]

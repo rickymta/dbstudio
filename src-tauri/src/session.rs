@@ -85,19 +85,30 @@ where
 /// A boxed future (the health monitor needs a dyn-compatible async callback).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Resolves what a reconnect needs besides the profile: the password (stored one, else the one
-/// remembered from opening) and the SSH environment.
+/// What a reconnect connects with.
+pub struct Resolved {
+    /// The profile as it is saved now (the user may have edited host, port or TLS since the
+    /// session was opened); `None` keeps the profile the session was opened with.
+    pub config: Option<ConnectionConfig>,
+    /// Password to use (the keychain is read again, so a changed stored password wins).
+    pub secret: Option<Secret>,
+    /// SSH tunnel environment.
+    pub ssh: Option<SshEnv>,
+}
+
+/// Resolves what a reconnect needs besides the session: the current profile, the password
+/// (stored one, else the one the user typed at open time) and the SSH environment.
 pub trait Credentials: Send + Sync {
     /// Credentials for reconnecting a session of `config`; `remembered` is the password the
-    /// session was opened with, if the user typed it.
+    /// user typed when opening, if the profile does not store one.
     fn resolve<'a>(
         &'a self,
         config: &'a ConnectionConfig,
         remembered: Option<Secret>,
-    ) -> BoxFuture<'a, Result<(Option<Secret>, Option<SshEnv>)>>;
+    ) -> BoxFuture<'a, Result<Resolved>>;
 }
 
-/// [`Credentials`] over the application state (keychain and SSH host keys).
+/// [`Credentials`] over the application state (keychain, saved profile and SSH host keys).
 pub struct StateCredentials(pub crate::state::AppState);
 
 impl Credentials for StateCredentials {
@@ -105,31 +116,60 @@ impl Credentials for StateCredentials {
         &'a self,
         config: &'a ConnectionConfig,
         remembered: Option<Secret>,
-    ) -> BoxFuture<'a, Result<(Option<Secret>, Option<SshEnv>)>> {
+    ) -> BoxFuture<'a, Result<Resolved>> {
         Box::pin(async move {
             let state = &self.0;
             let svc = state.connections.clone();
             let id = config.id;
             let fallback = remembered.clone();
-            let secret = crate::commands::blocking(move || {
+            let (fresh, secret) = crate::commands::blocking(move || {
                 match svc.session_credentials(id, remembered) {
-                    Ok((_, secret)) => Ok(secret),
-                    // The profile was deleted meanwhile: keep going with what we remember.
-                    Err(Error::NotFound(_)) => Ok(fallback),
+                    Ok((profile, secret)) => Ok((Some(profile.config), secret)),
+                    // The profile was deleted meanwhile: keep going with what we have.
+                    Err(Error::NotFound(_)) => Ok((None, fallback)),
                     Err(e) => Err(e),
                 }
             })
             .await?;
-            let ssh = crate::commands::ssh::ssh_env(state, config).await?;
-            Ok((secret, ssh))
+            let ssh =
+                crate::commands::ssh::ssh_env(state, fresh.as_ref().unwrap_or(config)).await?;
+            Ok(Resolved {
+                config: fresh,
+                secret,
+                ssh,
+            })
         })
     }
 }
 
-/// Errors that mean "the connection is gone" (as opposed to a bad statement).
-pub(crate) fn is_connection_loss(error: &Error) -> bool {
-    matches!(error, Error::Connection(_) | Error::Timeout | Error::Tls(_))
+/// Arguments of [`SessionManager::reconnect`].
+#[derive(Default)]
+pub struct Reconnect {
+    /// Profile to connect with instead of the one the session was opened with.
+    pub config: Option<ConnectionConfig>,
+    /// Password to connect with.
+    pub secret: Option<Secret>,
+    /// SSH environment.
+    pub ssh: Option<SshEnv>,
+    /// Keep `secret` in memory for later reconnects (the user typed it; a keychain password is
+    /// read again every time instead).
+    pub remember: bool,
 }
+
+/// Errors that mean "the connection is gone" (as opposed to a bad statement).
+///
+/// A `Timeout` is not one: a busy pool or a slow server also answers late. The health monitor
+/// counts consecutive timeouts instead ([`TIMEOUT_STRIKES`]).
+pub(crate) fn is_connection_loss(error: &Error) -> bool {
+    matches!(error, Error::Connection(_) | Error::Tls(_))
+}
+
+/// Consecutive health-check timeouts that make a session count as lost.
+pub const TIMEOUT_STRIKES: u32 = 3;
+/// A parked (given up) session is probed once every this many health rounds.
+const PARKED_EVERY: u32 = 4;
+/// Time a lease gets to answer when a reconnect decides whether to keep it.
+const LEASE_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Pings that take longer than this count as a lost connection.
 const HEALTH_PING_TIMEOUT: Duration = Duration::from_secs(10);
@@ -188,6 +228,11 @@ pub struct SessionManager {
     unhealthy: Mutex<HashSet<Uuid>>,
     /// Sessions with a reconnect in flight.
     reconnecting: Mutex<HashSet<Uuid>>,
+    /// Lost sessions nobody is retrying (gave up, or auto-reconnect off) with the number of
+    /// health rounds since they were parked; probed sparsely so they can come back.
+    parked: Mutex<HashMap<Uuid, u32>>,
+    /// Consecutive health-check timeouts per session.
+    timeouts: Mutex<HashMap<Uuid, u32>>,
     /// Waits between automatic reconnect attempts.
     backoff: Vec<Duration>,
 }
@@ -217,6 +262,8 @@ impl SessionManager {
             last_dialect: Mutex::new(HashMap::new()),
             unhealthy: Mutex::new(HashSet::new()),
             reconnecting: Mutex::new(HashSet::new()),
+            parked: Mutex::new(HashMap::new()),
+            timeouts: Mutex::new(HashMap::new()),
             backoff: RECONNECT_BACKOFF.to_vec(),
         }
     }
@@ -255,7 +302,7 @@ impl SessionManager {
         state: SessionHealth,
         attempt: u32,
         error: Option<&Error>,
-        leases_broken: Vec<Uuid>,
+        leases: (Vec<Uuid>, Vec<Uuid>),
     ) {
         crate::events::emit_json(
             &*self.leases.emitter(),
@@ -266,7 +313,8 @@ impl SessionManager {
                 state,
                 attempt,
                 error: error.and_then(|e| serde_json::to_value(e).ok()),
-                leases_broken,
+                leases_broken: leases.0,
+                leases_reopened: leases.1,
             },
         );
     }
@@ -376,6 +424,18 @@ impl SessionManager {
         secret: Option<&Secret>,
         ssh: Option<&SshEnv>,
     ) -> Result<SessionInfo> {
+        self.open_remembering(config, secret, ssh, true).await
+    }
+
+    /// Like [`SessionManager::open_with_ssh`]; `remember` keeps the password in memory for
+    /// reconnects (pass false when it came from the keychain: it is read again instead).
+    pub async fn open_remembering(
+        &self,
+        config: &ConnectionConfig,
+        secret: Option<&Secret>,
+        ssh: Option<&SshEnv>,
+        remember: bool,
+    ) -> Result<SessionInfo> {
         let Connected {
             session,
             server_info,
@@ -392,7 +452,7 @@ impl SessionManager {
                 config: config.clone(),
                 session,
                 tunnel,
-                secret: secret.cloned(),
+                secret: secret.filter(|_| remember).cloned(),
             },
         );
         tracing::info!(
@@ -481,22 +541,18 @@ impl SessionManager {
     }
 
     /// Open a new connection for an existing session and swap it in; the session id stays.
-    /// `secret` (and `ssh`) are what the new connection uses, `remembered` is kept for later
-    /// reconnects. Leases of the session: idle ones are reopened on the new connection (same
-    /// ids), those with a transaction in flight are marked lost and wait for `lease_reopen`.
-    pub async fn reconnect(
-        &self,
-        session_id: Uuid,
-        secret: Option<Secret>,
-        ssh: Option<&SshEnv>,
-    ) -> Result<Reconnected> {
-        let (config, connection_id) = {
+    /// Leases of the session: those that still answer a ping are left alone, idle
+    /// auto-commit ones are reopened on the new connection (same ids), the others (a
+    /// transaction in flight, auto-commit off) are marked lost and wait for `lease_reopen`.
+    pub async fn reconnect(&self, session_id: Uuid, args: Reconnect) -> Result<Reconnected> {
+        let (current, connection_id) = {
             let map = self.lock();
             let entry = map
                 .get(&session_id)
                 .ok_or_else(|| Error::NotFound(format!("session {session_id}")))?;
             (entry.config.clone(), entry.connection_id)
         };
+        let config = args.config.unwrap_or(current);
         if !self
             .reconnecting
             .lock()
@@ -509,13 +565,16 @@ impl SessionManager {
             set: &self.reconnecting,
             id: session_id,
         };
+        let secret = args.secret;
         let Connected {
             session,
             server_info,
             descriptor,
             dialect,
             tunnel,
-        } = self.connect(&config, secret.as_ref(), ssh).await?;
+        } = self
+            .connect(&config, secret.as_ref(), args.ssh.as_ref())
+            .await?;
         // The session may have been closed while we were connecting.
         let old = {
             let mut map = self.lock();
@@ -523,7 +582,8 @@ impl SessionManager {
                 Some(entry) => {
                     let old_session = std::mem::replace(&mut entry.session, Arc::clone(&session));
                     let old_tunnel = std::mem::replace(&mut entry.tunnel, tunnel);
-                    if secret.is_some() {
+                    entry.config = config.clone();
+                    if args.remember && secret.is_some() {
                         entry.secret = secret.clone();
                     }
                     Some((old_session, old_tunnel))
@@ -541,6 +601,8 @@ impl SessionManager {
         drop(old_tunnel);
         let leases = self.recover_leases(session_id, &session).await;
         self.unhealthy().remove(&session_id);
+        self.parked_map().remove(&session_id);
+        self.timeouts_map().remove(&session_id);
         tracing::info!(session = %session_id, connection = %connection_id, "session reconnected");
         Ok(Reconnected {
             info: SessionInfo {
@@ -554,20 +616,49 @@ impl SessionManager {
         })
     }
 
-    /// Reopen the idle leases of `session_id` on `session`; mark the others lost.
+    fn parked_map(&self) -> MutexGuard<'_, HashMap<Uuid, u32>> {
+        self.parked.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn timeouts_map(&self) -> MutexGuard<'_, HashMap<Uuid, u32>> {
+        self.timeouts.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Decide what happens to each lease of `session_id` after its session got a new
+    /// connection: keep the ones that still answer, reopen idle auto-commit ones on `session`
+    /// (their `SET`s, temp tables and `search_path` are gone: `reopened` lets the UI say so),
+    /// mark the rest lost.
     async fn recover_leases(
         &self,
         session_id: Uuid,
         session: &Arc<dyn Session>,
     ) -> crate::lease::ReopenReport {
         let mut report = crate::lease::ReopenReport::default();
-        for survey in self.leases.survey_session(session_id) {
-            let idle = survey.state.transaction == dbstudio_core::TxStatus::Idle;
-            if idle {
+        let surveys = self.leases.survey_session(session_id);
+        // Which leases are still alive? Ask them all at once.
+        let mut probes = tokio::task::JoinSet::new();
+        for survey in &surveys {
+            let leases = Arc::clone(&self.leases);
+            let id = survey.lease_id;
+            probes.spawn(async move { (id, leases.probe(id, LEASE_PROBE_TIMEOUT).await) });
+        }
+        let mut alive = HashSet::new();
+        while let Some(done) = probes.join_next().await {
+            if let Ok((id, Some(true))) = done {
+                alive.insert(id);
+            }
+        }
+        for survey in surveys {
+            if alive.contains(&survey.lease_id) {
+                continue;
+            }
+            let reopenable = survey.state.auto_commit
+                && survey.state.transaction == dbstudio_core::TxStatus::Idle;
+            if reopenable {
                 let options = dbstudio_core::LeaseOptions {
                     database: survey.state.database.clone(),
                     schema: survey.state.schema.clone(),
-                    auto_commit: survey.state.auto_commit,
+                    auto_commit: true,
                 };
                 match session.open_lease(options).await {
                     Ok(lease) => match self.leases.replace(survey.lease_id, lease).await {
@@ -594,57 +685,110 @@ impl SessionManager {
 
     /// Manual reconnect (the user asked): same as [`SessionManager::reconnect`] and publishes
     /// `Connected` with the leases that need attention.
-    pub async fn reconnect_manual(
-        &self,
-        session_id: Uuid,
-        secret: Option<Secret>,
-        ssh: Option<&SshEnv>,
-    ) -> Result<Reconnected> {
-        let done = self.reconnect(session_id, secret, ssh).await?;
+    pub async fn reconnect_manual(&self, session_id: Uuid, args: Reconnect) -> Result<Reconnected> {
+        let done = self.reconnect(session_id, args).await?;
         self.publish(
             (session_id, done.info.connection_id),
             SessionHealth::Connected,
             0,
             None,
-            done.leases.broken.clone(),
+            (done.leases.broken.clone(), done.leases.reopened.clone()),
         );
         Ok(done)
     }
 
-    /// One round of the health monitor: ping every session that is not already being
-    /// recovered; for each lost one publish `Lost` and, with `auto`, start the reconnect task.
-    /// Returns the sessions found lost.
+    /// One round of the health monitor: ping every session that is not being recovered; for
+    /// each lost one publish `Lost` and, with `auto`, start the reconnect task. Parked
+    /// sessions (gave up, or `auto` off) are probed once every few rounds and announced
+    /// `Connected` when they answer again. Returns the sessions found lost.
     pub async fn health_pass(
         self: &Arc<Self>,
         creds: &Arc<dyn Credentials>,
         auto: bool,
     ) -> Vec<Uuid> {
-        let targets: Vec<(Uuid, Uuid, Arc<dyn Session>)> = {
+        let targets: Vec<(Uuid, Uuid, Arc<dyn Session>, bool)> = {
             let unhealthy = self.unhealthy();
+            let mut parked = self.parked_map();
             self.lock()
                 .iter()
-                .filter(|(id, _)| !unhealthy.contains(id))
-                .map(|(id, e)| (*id, e.connection_id, Arc::clone(&e.session)))
+                .filter_map(|(id, e)| {
+                    let is_parked = parked.contains_key(id);
+                    if unhealthy.contains(id) {
+                        if !is_parked {
+                            // A reconnect task is working on it.
+                            return None;
+                        }
+                        let rounds = parked.entry(*id).or_insert(0);
+                        *rounds += 1;
+                        if *rounds % PARKED_EVERY != 0 {
+                            return None;
+                        }
+                    }
+                    Some((*id, e.connection_id, Arc::clone(&e.session), is_parked))
+                })
                 .collect()
         };
         let mut pings = tokio::task::JoinSet::new();
-        for (id, connection_id, session) in targets {
+        for (id, connection_id, session, was_parked) in targets {
             pings.spawn(async move {
                 let result = match tokio::time::timeout(HEALTH_PING_TIMEOUT, session.ping()).await {
                     Ok(r) => r,
                     Err(_) => Err(Error::Timeout),
                 };
-                (id, connection_id, result)
+                (id, connection_id, session, was_parked, result)
             });
         }
         let mut lost = Vec::new();
         while let Some(done) = pings.join_next().await {
-            let Ok((id, connection_id, Err(error))) = done else {
+            let Ok((id, connection_id, pinged, was_parked, result)) = done else {
                 continue;
             };
-            if !is_connection_loss(&error) {
+            // The session may have been reconnected (or replaced) while we pinged it: an
+            // error of the old connection says nothing about the current one.
+            let current = self
+                .lock()
+                .get(&id)
+                .is_some_and(|e| Arc::ptr_eq(&e.session, &pinged));
+            if !current {
                 continue;
             }
+            let error = match result {
+                Ok(()) => {
+                    self.timeouts_map().remove(&id);
+                    if was_parked {
+                        self.unhealthy().remove(&id);
+                        self.parked_map().remove(&id);
+                        tracing::info!(session = %id, "parked session answers again");
+                        self.publish(
+                            (id, connection_id),
+                            SessionHealth::Connected,
+                            0,
+                            None,
+                            (vec![], vec![]),
+                        );
+                    }
+                    continue;
+                }
+                Err(e) => e,
+            };
+            if was_parked {
+                continue;
+            }
+            if matches!(error, Error::Timeout) {
+                // A slow answer is not a dead connection: only repeated ones are.
+                let strikes = {
+                    let mut map = self.timeouts_map();
+                    let n = map.entry(id).or_insert(0);
+                    *n += 1;
+                    *n
+                };
+                if strikes < TIMEOUT_STRIKES {
+                    continue;
+                }
+            } else if !is_connection_loss(&error) {
+                continue;
+            }
+            self.timeouts_map().remove(&id);
             lost.push(id);
             let manager = Arc::clone(self);
             let creds = Arc::clone(creds);
@@ -657,7 +801,9 @@ impl SessionManager {
         lost
     }
 
-    /// React to a lost session: publish `Lost`, then (when `auto`) retry with backoff.
+    /// React to a lost session: publish `Lost`, then (when `auto`) retry with backoff. Every
+    /// attempt first checks that the session is still lost: when somebody (the user, by hand)
+    /// got it back, this task has nothing left to do.
     async fn handle_lost(
         self: &Arc<Self>,
         session_id: Uuid,
@@ -671,13 +817,18 @@ impl SessionManager {
         }
         let ids = (session_id, connection_id);
         tracing::warn!(session = %session_id, error = %error, "session lost");
-        self.publish(ids, SessionHealth::Lost, 0, Some(&error), vec![]);
+        self.publish(ids, SessionHealth::Lost, 0, Some(&error), (vec![], vec![]));
         if !auto {
+            self.parked_map().insert(session_id, 0);
             return;
         }
         let mut last = error;
         for (attempt, wait) in self.backoff.iter().enumerate() {
             tokio::time::sleep(*wait).await;
+            if !self.unhealthy().contains(&session_id) {
+                // Recovered by hand (or closed) while we waited.
+                return;
+            }
             let attempt = u32::try_from(attempt + 1).unwrap_or(u32::MAX);
             let Some((config, remembered)) = self
                 .lock()
@@ -688,9 +839,26 @@ impl SessionManager {
                 self.unhealthy().remove(&session_id);
                 return;
             };
-            self.publish(ids, SessionHealth::Reconnecting, attempt, None, vec![]);
+            self.publish(
+                ids,
+                SessionHealth::Reconnecting,
+                attempt,
+                None,
+                (vec![], vec![]),
+            );
             let outcome = match creds.resolve(&config, remembered).await {
-                Ok((secret, ssh)) => self.reconnect(session_id, secret, ssh.as_ref()).await,
+                Ok(resolved) => {
+                    self.reconnect(
+                        session_id,
+                        Reconnect {
+                            config: resolved.config,
+                            secret: resolved.secret,
+                            ssh: resolved.ssh,
+                            remember: false,
+                        },
+                    )
+                    .await
+                }
                 Err(e) => Err(e),
             };
             match outcome {
@@ -700,10 +868,12 @@ impl SessionManager {
                         SessionHealth::Reconnected,
                         attempt,
                         None,
-                        done.leases.broken,
+                        (done.leases.broken, done.leases.reopened),
                     );
                     return;
                 }
+                // Somebody else is reconnecting it right now: look again after the next wait.
+                Err(Error::Busy(_)) => continue,
                 Err(e) => {
                     tracing::info!(session = %session_id, attempt, error = %e, "reconnect failed");
                     // A refused password or an unknown SSH host key will not fix itself.
@@ -718,12 +888,16 @@ impl SessionManager {
                 }
             }
         }
+        if !self.unhealthy().contains(&session_id) {
+            return;
+        }
+        self.parked_map().insert(session_id, 0);
         self.publish(
             ids,
             SessionHealth::GaveUp,
             u32::try_from(self.backoff.len()).unwrap_or(u32::MAX),
             Some(&last),
-            vec![],
+            (vec![], vec![]),
         );
     }
 
@@ -767,6 +941,8 @@ impl SessionManager {
     pub async fn close(&self, session_id: Uuid) -> Result<()> {
         let entry = self.lock().remove(&session_id);
         self.unhealthy().remove(&session_id);
+        self.parked_map().remove(&session_id);
+        self.timeouts_map().remove(&session_id);
         match entry {
             Some(entry) => {
                 self.leases.close_all_for_session(session_id).await;
@@ -847,6 +1023,8 @@ pub(crate) mod testing {
         /// Every connection (session or lease) opened up to this birth number is dead: its
         /// `ping` fails with a connection error.
         pub killed_through: AtomicUsize,
+        /// The next this-many session pings answer `Timeout`.
+        pub ping_timeouts: AtomicUsize,
         /// The next this-many `connect` calls fail with a connection error.
         pub connect_failures: AtomicUsize,
         /// Leases opened on mock sessions.
@@ -955,6 +1133,14 @@ pub(crate) mod testing {
     #[async_trait]
     impl Session for MockSession {
         async fn ping(&self) -> Result<()> {
+            if self
+                .probe
+                .ping_timeouts
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return Err(Error::Timeout);
+            }
             if self.birth <= self.probe.killed_through.load(Ordering::SeqCst) {
                 return Err(Error::Connection("server closed the connection".into()));
             }
@@ -1401,8 +1587,14 @@ mod tests {
             &'a self,
             _: &'a ConnectionConfig,
             remembered: Option<Secret>,
-        ) -> BoxFuture<'a, Result<(Option<Secret>, Option<SshEnv>)>> {
-            Box::pin(async move { Ok((remembered, None)) })
+        ) -> BoxFuture<'a, Result<Resolved>> {
+            Box::pin(async move {
+                Ok(Resolved {
+                    config: None,
+                    secret: remembered,
+                    ssh: None,
+                })
+            })
         }
     }
 
@@ -1524,7 +1716,14 @@ mod tests {
         let remembered = r.mgr.remembered_secret(info.session_id);
         let done = r
             .mgr
-            .reconnect(info.session_id, remembered, None)
+            .reconnect(
+                info.session_id,
+                Reconnect {
+                    secret: remembered,
+                    remember: true,
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert_eq!(done.info.session_id, info.session_id);
@@ -1563,7 +1762,7 @@ mod tests {
             Some(Some("typed-pw".to_string()))
         );
         assert!(matches!(
-            r.mgr.reconnect(Uuid::new_v4(), None, None).await,
+            r.mgr.reconnect(Uuid::new_v4(), Reconnect::default()).await,
             Err(Error::NotFound(_))
         ));
     }
@@ -1623,7 +1822,14 @@ mod tests {
         r.probe.connect_failures.store(0, Ordering::SeqCst);
         let done = r
             .mgr
-            .reconnect_manual(info.session_id, Some(Secret::new("new-pw")), None)
+            .reconnect_manual(
+                info.session_id,
+                Reconnect {
+                    secret: Some(Secret::new("new-pw")),
+                    remember: true,
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert_eq!(done.info.session_id, info.session_id);
@@ -1645,9 +1851,248 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_manual_reconnect_stops_the_automatic_one_and_spares_the_new_transaction() {
+        let r = rig(&[80, 80, 80]);
+        let mut rx = r.hub.subscribe();
+        let info = r.mgr.open(&r.cfg, None).await.unwrap();
+        let creds: Arc<dyn Credentials> = Arc::new(NoCreds);
+        r.probe.kill_all();
+        assert_eq!(r.mgr.health_pass(&creds, true).await, vec![info.session_id]);
+        assert_eq!(next_state(&mut rx).await.0, "lost");
+        // The user reconnects by hand before the first automatic attempt...
+        r.mgr
+            .reconnect_manual(info.session_id, Reconnect::default())
+            .await
+            .unwrap();
+        assert_eq!(next_state(&mut rx).await.0, "connected");
+        // ...and starts a transaction on a lease of the healthy session.
+        let session = r.mgr.get(info.session_id).unwrap();
+        let lease = r
+            .leases
+            .register(
+                info.session_id,
+                session
+                    .open_lease(dbstudio_core::LeaseOptions::default())
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+        r.leases
+            .get(lease.lease_id)
+            .unwrap()
+            .begin(dbstudio_core::TxOptions::default())
+            .await
+            .unwrap();
+        // The backoff task wakes up, sees the session is fine and does nothing.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(rx.try_recv().is_err(), "no further session event");
+        assert!(!r.leases.state_of(lease.lease_id).unwrap().broken);
+        assert_eq!(
+            r.leases.state_of(lease.lease_id).unwrap().transaction,
+            dbstudio_core::TxStatus::Active
+        );
+        assert_eq!(r.probe.connects.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_late_ping_is_only_a_loss_after_three_strikes() {
+        let r = rig(&[1]);
+        let info = r.mgr.open(&r.cfg, None).await.unwrap();
+        let creds: Arc<dyn Credentials> = Arc::new(NoCreds);
+        r.probe.ping_timeouts.store(2, Ordering::SeqCst);
+        assert!(r.mgr.health_pass(&creds, false).await.is_empty());
+        assert!(r.mgr.health_pass(&creds, false).await.is_empty());
+        // An answer in between resets the count.
+        assert!(r.mgr.health_pass(&creds, false).await.is_empty());
+        r.probe.ping_timeouts.store(3, Ordering::SeqCst);
+        for _ in 0..2 {
+            assert!(r.mgr.health_pass(&creds, false).await.is_empty());
+        }
+        assert_eq!(
+            r.mgr.health_pass(&creds, false).await,
+            vec![info.session_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_keeps_leases_that_still_answer_and_reports_what_it_reopened() {
+        let r = rig(&[]);
+        let mut rx = r.hub.subscribe();
+        let info = r.mgr.open(&r.cfg, None).await.unwrap();
+        let session = r.mgr.get(info.session_id).unwrap();
+        let open = |auto_commit: bool| {
+            let session = session.clone();
+            async move {
+                session
+                    .open_lease(dbstudio_core::LeaseOptions {
+                        database: None,
+                        schema: None,
+                        auto_commit,
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+        let survivor = r
+            .leases
+            .register(info.session_id, open(true).await)
+            .unwrap();
+        // Everything opened so far dies, then one new lease is born healthy.
+        r.probe.kill_all();
+        let fresh = r
+            .leases
+            .register(info.session_id, open(true).await)
+            .unwrap();
+        let manual = r
+            .leases
+            .register(info.session_id, open(false).await)
+            .unwrap();
+        // `manual` is born after the kill as well (healthy), but is not auto-commit; kill only
+        // the first lease by marking it lost the way a failed keepalive would.
+        r.leases.mark_lost(survivor.lease_id);
+        let opens_before = r.probe.lease_opens.load(Ordering::SeqCst);
+        let done = r
+            .mgr
+            .reconnect_manual(info.session_id, Reconnect::default())
+            .await
+            .unwrap();
+        // The lost auto-commit lease is reopened; the healthy ones are left alone.
+        assert_eq!(done.leases.reopened, vec![survivor.lease_id]);
+        assert!(done.leases.broken.is_empty());
+        assert_eq!(r.probe.lease_opens.load(Ordering::SeqCst), opens_before + 1);
+        assert!(!r.leases.state_of(fresh.lease_id).unwrap().broken);
+        assert!(!r.leases.state_of(manual.lease_id).unwrap().broken);
+        let mut payload = None;
+        while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+            if ev.name == "session://state" {
+                payload = Some(ev.payload);
+            }
+        }
+        let payload = payload.expect("a session event");
+        assert_eq!(
+            payload["leasesReopened"],
+            serde_json::json!([survivor.lease_id.to_string()])
+        );
+
+        // A lost lease without auto-commit is never reopened behind the user's back.
+        r.leases.mark_lost(manual.lease_id);
+        let done = r
+            .mgr
+            .reconnect_manual(info.session_id, Reconnect::default())
+            .await
+            .unwrap();
+        assert_eq!(done.leases.broken, vec![manual.lease_id]);
+        assert!(r.leases.needs_reopen(manual.lease_id).unwrap());
+    }
+
+    #[tokio::test]
+    async fn parked_sessions_are_probed_now_and_then_and_come_back_by_themselves() {
+        let r = rig(&[1]);
+        let mut rx = r.hub.subscribe();
+        let info = r.mgr.open(&r.cfg, None).await.unwrap();
+        let creds: Arc<dyn Credentials> = Arc::new(NoCreds);
+        r.probe.kill_all();
+        r.probe.connect_failures.store(100, Ordering::SeqCst);
+        r.mgr.health_pass(&creds, true).await;
+        let mut states = Vec::new();
+        for _ in 0..3 {
+            states.push(next_state(&mut rx).await.0);
+        }
+        assert_eq!(states, ["lost", "reconnecting", "gaveUp"]);
+        // The server comes back on its own: the old connection answers again.
+        r.probe.killed_through.store(0, Ordering::SeqCst);
+        for round in 1..PARKED_EVERY {
+            assert!(
+                r.mgr.health_pass(&creds, true).await.is_empty(),
+                "round {round}: parked sessions are only probed every {PARKED_EVERY}th round"
+            );
+            assert!(rx.try_recv().is_err());
+        }
+        r.mgr.health_pass(&creds, true).await;
+        assert_eq!(next_state(&mut rx).await.0, "connected");
+        // Healthy again: pinged every round, no more parking.
+        r.probe.kill_all();
+        assert_eq!(
+            r.mgr.health_pass(&creds, false).await,
+            vec![info.session_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_reconnect_off_still_parks_and_recovers() {
+        let r = rig(&[1]);
+        let mut rx = r.hub.subscribe();
+        r.mgr.open(&r.cfg, None).await.unwrap();
+        let creds: Arc<dyn Credentials> = Arc::new(NoCreds);
+        r.probe.kill_all();
+        r.mgr.health_pass(&creds, false).await;
+        assert_eq!(next_state(&mut rx).await.0, "lost");
+        r.probe.killed_through.store(0, Ordering::SeqCst);
+        for _ in 0..PARKED_EVERY {
+            r.mgr.health_pass(&creds, false).await;
+        }
+        assert_eq!(next_state(&mut rx).await.0, "connected");
+    }
+
+    #[tokio::test]
+    async fn only_typed_passwords_stay_in_memory() {
+        let r = rig(&[]);
+        let cfg = &r.cfg;
+        let typed = r
+            .mgr
+            .open_remembering(cfg, Some(&Secret::new("typed")), None, true)
+            .await
+            .unwrap();
+        let stored = r
+            .mgr
+            .open_remembering(cfg, Some(&Secret::new("from-keychain")), None, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            r.mgr.remembered_secret(typed.session_id).unwrap().expose(),
+            "typed"
+        );
+        assert!(r.mgr.remembered_secret(stored.session_id).is_none());
+        // A reconnect with a keychain password does not start remembering it.
+        r.mgr
+            .reconnect(
+                stored.session_id,
+                Reconnect {
+                    secret: Some(Secret::new("from-keychain")),
+                    remember: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(r.mgr.remembered_secret(stored.session_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn reconnect_connects_with_the_current_profile() {
+        let r = rig(&[]);
+        let info = r.mgr.open(&r.cfg, None).await.unwrap();
+        let mut edited = r.cfg.clone();
+        edited.host = "db2.internal".into();
+        r.mgr
+            .reconnect(
+                info.session_id,
+                Reconnect {
+                    config: Some(edited),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let (_, kept) = r.mgr.get_with_config(info.session_id).unwrap();
+        assert_eq!(kept.host, "db2.internal");
+    }
+
+    #[tokio::test]
     async fn statement_errors_are_not_a_lost_connection() {
         assert!(is_connection_loss(&Error::Connection("x".into())));
-        assert!(is_connection_loss(&Error::Timeout));
+        // A late answer alone is not a lost connection.
+        assert!(!is_connection_loss(&Error::Timeout));
         assert!(is_connection_loss(&Error::Tls("x".into())));
         assert!(!is_connection_loss(&Error::Busy("x".into())));
         assert!(!is_connection_loss(&Error::Authentication("x".into())));
