@@ -197,6 +197,14 @@ impl Keyspace {
         }
     }
 
+    /// Take over a keyspace created by the test (dropped with the guard).
+    pub fn adopt(server: Server, name: &str) -> Keyspace {
+        Keyspace {
+            name: name.to_string(),
+            server,
+        }
+    }
+
     pub fn path(&self) -> ObjectPath {
         ObjectPath::root().child(ObjectKind::Database, &self.name)
     }

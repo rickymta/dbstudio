@@ -21,7 +21,6 @@ use crate::convert::to_value;
 use crate::error;
 use crate::rows::query_rows;
 use crate::schema::SchemaCache;
-use crate::split::split;
 use crate::types::CqlType;
 
 /// Default rows per streamed batch / server page.
@@ -119,6 +118,15 @@ impl Drop for CancelGuard<'_> {
     }
 }
 
+/// Character ranges of the statements of a script: the same splitter the guard analyses, so what
+/// is confirmed is what runs.
+pub(crate) fn statement_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    dbstudio_sql::split(dbstudio_core::ScriptDialect::Cql, text)
+        .into_iter()
+        .map(|r| r.start as usize..r.end as usize)
+        .collect()
+}
+
 /// First words of a statement (comments skipped), lowercase, at most `n`.
 pub(crate) fn first_words(text: &str, n: usize) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
@@ -164,6 +172,8 @@ pub(crate) enum Kind {
     Tracing(Option<bool>),
     Describe,
     Unsupported(&'static str),
+    /// A shell command with a malformed argument.
+    Invalid(&'static str),
     /// Read-only server statement that is not a SELECT (`LIST ...`).
     Other,
     Write,
@@ -176,6 +186,15 @@ fn unquote_ident(s: &str) -> String {
     } else {
         t.to_ascii_lowercase()
     }
+}
+
+/// `name` or `"quoted ""name"""`, nothing else.
+fn single_identifier(s: &str) -> bool {
+    let t = s.trim();
+    if let Some(inner) = t.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
+        return !inner.is_empty() && !inner.replace("\"\"", "").contains('"');
+    }
+    !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Everything after the first `n` words of `text` (raw).
@@ -194,7 +213,14 @@ pub(crate) fn classify(text: &str) -> Kind {
     let first = w.first().map(String::as_str).unwrap_or("");
     match first {
         "select" => Kind::Select,
-        "use" => Kind::Use(unquote_ident(&after_words(text, 1))),
+        "use" => {
+            let arg = after_words(text, 1);
+            if single_identifier(&arg) {
+                Kind::Use(unquote_ident(&arg))
+            } else {
+                Kind::Invalid("USE takes exactly one keyspace name")
+            }
+        }
         "consistency" => {
             let arg = after_words(text, 1);
             Kind::Consistency((!arg.is_empty()).then_some(arg))
@@ -311,7 +337,7 @@ impl Core {
         let started = Instant::now();
         let guard = self.register(req.query_id);
         let chars: Vec<char> = req.text.chars().collect();
-        let ranges = split(&req.text);
+        let ranges = statement_ranges(&req.text);
         let mut executed = 0u32;
         for (index, range) in ranges.iter().enumerate() {
             let text: String = chars[range.clone()].iter().collect();
@@ -373,6 +399,7 @@ impl Core {
         };
         match kind {
             Kind::Unsupported(msg) => Err(Error::Unsupported(msg.into())),
+            Kind::Invalid(msg) => Err(Error::Invalid(msg.into())),
             Kind::Use(ks) => {
                 // Fails when the keyspace does not exist.
                 self.pool.session(Some(&ks)).await?;
@@ -460,10 +487,9 @@ impl Core {
                 Ok(None)
             }
             Kind::Select | Kind::Other | Kind::Write => {
-                let session = self
-                    .pool
-                    .session(req.database.as_deref().or(state.keyspace.as_deref()))
-                    .await?;
+                // `state.keyspace` starts from `req.database` and follows every `USE`, so a
+                // `USE ks2; DROP TABLE t` runs in ks2, as the guard assumes.
+                let session = self.pool.session(state.keyspace.as_deref()).await?;
                 let batch = req
                     .batch_size
                     .map(|b| b.max(1) as usize)
@@ -695,6 +721,9 @@ mod tests {
         assert_eq!(classify("  -- c\n select 1"), Kind::Select);
         assert_eq!(classify("USE \"MyKs\";"), Kind::Use("MyKs".into()));
         assert_eq!(classify("use Shop"), Kind::Use("shop".into()));
+        assert!(matches!(classify("USE ks DROP TABLE t"), Kind::Invalid(_)));
+        assert!(matches!(classify("USE ks /* x */ DROP"), Kind::Invalid(_)));
+        assert_eq!(classify("USE \"a b\""), Kind::Use("a b".into()));
         assert_eq!(
             classify("CONSISTENCY LOCAL_QUORUM"),
             Kind::Consistency(Some("LOCAL_QUORUM".into()))
@@ -714,6 +743,72 @@ mod tests {
         assert_eq!(classify("LIST ROLES"), Kind::Other);
         assert!(!allowed_read_only(&Kind::Write));
         assert!(allowed_read_only(&Kind::Select));
+    }
+
+    /// The statements the driver runs are exactly the ones the guard classified.
+    fn same_as_guard(text: &str) {
+        let driver = statement_ranges(text);
+        let chars: Vec<char> = text.chars().collect();
+        // Statements the guard sees but the driver does not run may only be comments.
+        let guard: Vec<_> = dbstudio_sql::analyze(dbstudio_core::ScriptDialect::Cql, text)
+            .statements
+            .iter()
+            .map(|s| s.range.start as usize..s.range.end as usize)
+            .filter(|r| {
+                let slice: String = chars[r.clone()].iter().collect();
+                dbstudio_sql::lexer::tokenize(dbstudio_core::ScriptDialect::Cql, &slice)
+                    .iter()
+                    .any(|t| {
+                        !t.kind.is_trivia()
+                            && !(slice.chars().nth(t.range.start as usize) == Some(';'))
+                    })
+            })
+            .collect();
+        assert_eq!(driver, guard, "{text:?}");
+    }
+
+    #[test]
+    fn splitting_matches_the_guard_on_known_inputs() {
+        for text in [
+            "DESCRIBE TABLES\nDROP TABLE t;",
+            "CONSISTENCY ALL\nTRUNCATE t;",
+            "TRACING ON\nDROP TABLE t",
+            "USE ks\nDROP TABLE t;",
+            "PAGING OFF\nDROP TABLE t;",
+            "SERIAL CONSISTENCY SERIAL\nDROP TABLE t;",
+            "// x\r/* \nDROP TABLE ks.t; */ SELECT 1",
+            "-- x\rDROP TABLE t; SELECT 1",
+            "USE ks\r\nDROP TABLE t;",
+            "BEGIN BATCH\nINSERT INTO t (a) VALUES (1);\nAPPLY BATCH;\nSELECT 1",
+        ] {
+            same_as_guard(text);
+        }
+        let n = statement_ranges("DESCRIBE TABLES\nDROP TABLE t;").len();
+        assert_eq!(n, 2);
+        assert_eq!(
+            statement_ranges("// x\r/* \nDROP TABLE ks.t; */ SELECT 1").len(),
+            1
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn splitting_matches_the_guard(
+            parts in proptest::collection::vec(
+                (proptest::sample::select(vec![
+                    "SELECT 1", "DESCRIBE TABLES", "CONSISTENCY ALL", "USE ks", "TRACING ON",
+                    "PAGING OFF", "SERIAL CONSISTENCY SERIAL", "DROP TABLE t", "TRUNCATE t",
+                    "BEGIN UNLOGGED BATCH", "APPLY BATCH", "INSERT INTO t (a) VALUES (1)",
+                    "-- c", "// c", "/* c */", "/* a\nb */", "'x;y'", "$$a;b$$", "\"q;\"", ";",
+                    "desc keyspaces", "COPY t TO 'f'",
+                ]),
+                proptest::sample::select(vec![" ", "\n", "\r", "\r\n", "; ", "\t", ";\n", ""])),
+                0..14,
+            )
+        ) {
+            let text: String = parts.iter().map(|(a, b)| format!("{a}{b}")).collect();
+            same_as_guard(&text);
+        }
     }
 
     #[test]

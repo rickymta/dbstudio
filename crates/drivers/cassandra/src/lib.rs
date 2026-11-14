@@ -31,7 +31,6 @@ mod lease;
 mod rows;
 mod schema;
 mod session;
-mod split;
 mod tree;
 mod types;
 

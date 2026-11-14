@@ -1,6 +1,12 @@
 //! Identifier quoting and string literals of CQL.
 
 const RESERVED: &[&str] = &[
+    "default",
+    "is",
+    "materialized",
+    "mbean",
+    "mbeans",
+    "unset",
     "add",
     "allow",
     "alter",
@@ -93,6 +99,9 @@ mod tests {
         assert_eq!(quote_ident("users"), "users");
         assert_eq!(quote_ident("Users"), "\"Users\"");
         assert_eq!(quote_ident("select"), "\"select\"");
+        for w in ["default", "is", "materialized", "mbean", "mbeans", "unset"] {
+            assert_eq!(quote_ident(w), format!("\"{w}\""));
+        }
         assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
         assert_eq!(quote_ident("1abc"), "\"1abc\"");
         assert_eq!(qualified("ks", "t t"), "ks.\"t t\"");

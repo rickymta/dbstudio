@@ -128,6 +128,19 @@ pub(crate) fn statement_for(
 }
 
 impl Core {
+    /// Whether edits of `ks` use lightweight transactions: the profile allows it and the keyspace
+    /// is not a ScyllaDB tablets keyspace (conditional writes are restricted there, R14).
+    ///
+    /// Limit: updates and deletes are `IF EXISTS` only. They do not compare the cells the user
+    /// saw, so a concurrent edit of the same row is overwritten (last write wins).
+    fn lwt_for(&self, snap: &crate::schema::Snapshot, ks: &str) -> bool {
+        self.pool.settings.lwt_edits
+            && snap
+                .keyspaces
+                .get(ks)
+                .is_none_or(|k| k.tablets != Some(true))
+    }
+
     pub(crate) async fn editability_of(&self, path: &ObjectPath) -> Result<Editability> {
         let snap = self.snapshot().await?;
         let node = parse_path(path)?;
@@ -151,7 +164,7 @@ impl Core {
             read_only_columns: keys,
             reason,
             atomic: false,
-            notes: vec![if self.pool.settings.lwt_edits {
+            notes: vec![if self.lwt_for(&snap, ks) {
                 EditNote::ConditionalWrites
             } else {
                 EditNote::UpsertSemantics
@@ -171,9 +184,10 @@ impl Core {
                 "editing a view, virtual table or counter table".into(),
             ));
         }
+        let lwt = self.lwt_for(&snap, ks);
         set.changes
             .iter()
-            .map(|c| statement_for(ks, t, &set.key_columns, c, self.pool.settings.lwt_edits))
+            .map(|c| statement_for(ks, t, &set.key_columns, c, lwt))
             .collect()
     }
 
@@ -195,7 +209,10 @@ impl Core {
             });
         }
         let statements = self.row_statements(&set).await?;
-        let lwt = self.pool.settings.lwt_edits;
+        // Statements carry the condition they were built with.
+        let lwt = statements
+            .first()
+            .is_some_and(|s| s.ends_with(" IF EXISTS") || s.ends_with(" IF NOT EXISTS"));
         let session = self.pool.base();
         let mut affected = Vec::with_capacity(statements.len());
         for (i, text) in statements.iter().enumerate() {

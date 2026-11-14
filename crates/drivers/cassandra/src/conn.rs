@@ -157,9 +157,10 @@ impl ServerCertVerifier for NameVerifier {
             ocsp_response,
             now,
         ) {
-            Err(e) if !self.check_name && format!("{e:?}").contains("NotValidForName") => {
-                Ok(ServerCertVerified::assertion())
-            }
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForName
+                | rustls::CertificateError::NotValidForNameContext { .. },
+            )) if !self.check_name => Ok(ServerCertVerified::assertion()),
             other => other,
         }
     }

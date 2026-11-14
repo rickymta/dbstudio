@@ -342,48 +342,157 @@ fn is_duration_text(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | ':' | '.' | 'µ'))
+        && !s.contains("--")
 }
 
-/// A balanced literal typed by a user for a collection/UDT cell (quotes and brackets close).
-fn is_balanced_literal(s: &str) -> bool {
-    let mut depth = Vec::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' => loop {
-                match chars.next() {
-                    Some('\'') => {
-                        if chars.peek() == Some(&'\'') {
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                    Some(_) => {}
-                    None => return false,
-                }
-            },
-            '[' | '{' | '(' => depth.push(c),
-            ']' => {
-                if depth.pop() != Some('[') {
-                    return false;
-                }
-            }
-            '}' => {
-                if depth.pop() != Some('{') {
-                    return false;
-                }
-            }
-            ')' => {
-                if depth.pop() != Some('(') {
-                    return false;
-                }
-            }
-            ';' => return false,
-            _ => {}
+/// Whether `s` is exactly one well-formed CQL collection / tuple / UDT literal made of scalars
+/// (strings, numbers, hex blobs, uuids, booleans, null, durations). Comments, `$$` strings,
+/// quoted identifiers, `;` and any trailing text are refused, so a typed cell value can never
+/// change the statement around it.
+pub(crate) fn is_safe_literal(s: &str) -> bool {
+    let chars: Vec<char> = s.chars().collect();
+    let mut p = LiteralParser { c: &chars, i: 0 };
+    p.value(0) && {
+        p.ws();
+        p.i == chars.len()
+    }
+}
+
+struct LiteralParser<'a> {
+    c: &'a [char],
+    i: usize,
+}
+
+impl LiteralParser<'_> {
+    fn ws(&mut self) {
+        while self.c.get(self.i).is_some_and(|c| c.is_whitespace()) {
+            self.i += 1;
         }
     }
-    depth.is_empty()
+
+    fn eat(&mut self, ch: char) -> bool {
+        self.ws();
+        if self.c.get(self.i) == Some(&ch) {
+            self.i += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn peek(&mut self) -> Option<char> {
+        self.ws();
+        self.c.get(self.i).copied()
+    }
+
+    fn string(&mut self) -> bool {
+        // at the opening quote
+        self.i += 1;
+        while let Some(&c) = self.c.get(self.i) {
+            self.i += 1;
+            if c == '\'' {
+                if self.c.get(self.i) == Some(&'\'') {
+                    self.i += 1;
+                } else {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn word(&mut self) -> bool {
+        let start = self.i;
+        while self
+            .c
+            .get(self.i)
+            .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '+' | '-' | 'µ'))
+        {
+            self.i += 1;
+        }
+        let w: String = self.c[start..self.i].iter().collect();
+        !w.is_empty() && !w.contains("--")
+    }
+
+    /// A value; `depth` bounds the nesting.
+    fn value(&mut self, depth: u32) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        match self.peek() {
+            Some('\'') => self.string(),
+            Some(open @ ('[' | '(' | '{')) => {
+                self.i += 1;
+                let close = match open {
+                    '[' => ']',
+                    '(' => ')',
+                    _ => '}',
+                };
+                if self.eat(close) {
+                    return true;
+                }
+                loop {
+                    // An element, or `key: value` (map, UDT field).
+                    let first_is_name =
+                        open == '{' && self.peek().is_some_and(|c| c.is_alphabetic() || c == '_');
+                    if first_is_name {
+                        // Either a UDT field name or a scalar word of a set/map: both are words.
+                        if !self.word() {
+                            return false;
+                        }
+                        if self.eat(':') && !self.value(depth + 1) {
+                            return false;
+                        }
+                    } else {
+                        if !self.value(depth + 1) {
+                            return false;
+                        }
+                        if open == '{' && self.eat(':') && !self.value(depth + 1) {
+                            return false;
+                        }
+                    }
+                    if self.eat(',') {
+                        continue;
+                    }
+                    return self.eat(close);
+                }
+            }
+            Some(c) if c.is_alphanumeric() || matches!(c, '-' | '+' | '.') => self.word(),
+            _ => false,
+        }
+    }
+}
+
+/// A timestamp text with at most millisecond precision (CQL timestamps have no more) and, for
+/// zone-less values when `assume_utc`, a `Z` zone.
+pub(crate) fn normalize_timestamp(s: &str, assume_utc: bool) -> String {
+    let t = s.trim();
+    let Some(sep) = t.find(['T', ' ']) else {
+        return t.to_string();
+    };
+    let (date, time) = t.split_at(sep + 1);
+    if !time.contains(':') {
+        return t.to_string();
+    }
+    // time = HH:MM[:SS[.fraction]][zone]
+    let (clock, zone) = match time.find(['Z', 'z', '+']).or_else(|| time.rfind('-')) {
+        Some(z) => time.split_at(z),
+        None => (time, ""),
+    };
+    let clock = match clock.split_once('.') {
+        Some((hms, frac)) => {
+            let digits: String = frac.chars().take_while(char::is_ascii_digit).collect();
+            let milli = format!("{digits:0<3}");
+            format!("{hms}.{}", &milli[..3])
+        }
+        None => clock.to_string(),
+    };
+    let zone = if zone.is_empty() && assume_utc {
+        "Z"
+    } else {
+        zone
+    };
+    format!("{date}{clock}{zone}")
 }
 
 fn float_literal(f: f64) -> String {
@@ -425,9 +534,11 @@ pub(crate) fn literal(v: &Value, ty: &CqlType) -> Result<String> {
         ),
         CqlType::Timestamp => match v {
             Value::Int(i) => Ok(i.to_string()),
-            _ => Ok(quote_text(
+            Value::DateTime(s) => Ok(quote_text(&normalize_timestamp(s, true))),
+            _ => Ok(quote_text(&normalize_timestamp(
                 &scalar_text(v).ok_or_else(|| invalid(ty, "this value"))?,
-            )),
+                false,
+            ))),
         },
         CqlType::Boolean => match v {
             Value::Bool(b) => Ok(b.to_string()),
@@ -592,7 +703,7 @@ fn typed_text_literal(v: &Value, ty: &CqlType) -> Result<String> {
     match v {
         Value::Text(s) | Value::Json(s) => {
             let t = s.trim();
-            if t.starts_with(['[', '{', '(']) && is_balanced_literal(t) {
+            if t.starts_with(['[', '{', '(']) && is_safe_literal(t) {
                 Ok(t.to_string())
             } else {
                 Err(invalid(
@@ -613,16 +724,19 @@ fn untyped_literal(v: &Value) -> Result<String> {
         Value::Int(i) => i.to_string(),
         Value::UInt(u) => u.to_string(),
         Value::Float(f) => float_literal(*f),
-        Value::Decimal(s) => s.clone(),
+        Value::Decimal(s) if is_decimal_text(s) => s.clone(),
+        Value::Decimal(s) => quote_text(s),
         Value::Bytes(b) => hex(b),
-        Value::Uuid(s) => s.clone(),
+        Value::Uuid(s) if is_uuid_text(s) => s.clone(),
+        Value::Uuid(s) => quote_text(s),
         Value::Text(s)
         | Value::Date(s)
         | Value::Time(s)
         | Value::DateTime(s)
         | Value::Timestamp(s)
         | Value::Json(s) => quote_text(s),
-        Value::Ext(e) => e.text.clone(),
+        Value::Ext(e) if is_duration_text(&e.text) => e.text.clone(),
+        Value::Ext(e) => quote_text(&e.text),
         Value::Array(items) => format!(
             "[{}]",
             items
@@ -874,6 +988,83 @@ mod tests {
             ("City".into(), Value::Text("x".into())),
         ]);
         assert_eq!(literal(&v, &ty).unwrap(), "{zip: 1, \"City\": 'x'}");
+    }
+
+    #[test]
+    fn timestamps_are_cut_to_milliseconds() {
+        assert_eq!(
+            normalize_timestamp("2024-05-31T13:30:45.123456Z", false),
+            "2024-05-31T13:30:45.123Z"
+        );
+        assert_eq!(
+            normalize_timestamp("2024-05-31 13:30:45.1", true),
+            "2024-05-31 13:30:45.100Z"
+        );
+        assert_eq!(
+            normalize_timestamp("2024-05-31T13:30:45", true),
+            "2024-05-31T13:30:45Z"
+        );
+        assert_eq!(
+            normalize_timestamp("2024-05-31T13:30:45.987654321+02:00", false),
+            "2024-05-31T13:30:45.987+02:00"
+        );
+        assert_eq!(normalize_timestamp("2024-05-31", true), "2024-05-31");
+        assert_eq!(
+            literal(
+                &Value::DateTime("2024-05-31T13:30:45.123456".into()),
+                &CqlType::Timestamp
+            )
+            .unwrap(),
+            "'2024-05-31T13:30:45.123Z'"
+        );
+    }
+
+    #[test]
+    fn typed_literals_cannot_change_the_statement() {
+        let list = CqlType::parse("list<int>");
+        let bad = [
+            "[1] WHERE id=2 AND ck='b' --",
+            "[1] -- x",
+            "[1, 2] // x",
+            "[1, /* x */ 2]",
+            "[$$x$$]",
+            "[\"a\"]",
+            "[1]; DROP TABLE t",
+            "[1] [2]",
+            "[1 AND 2]",
+            "[1,--]",
+            "[1] x",
+            "[",
+        ];
+        for b in bad {
+            assert!(
+                literal(&Value::Text(b.into()), &list).is_err(),
+                "must refuse {b}"
+            );
+            assert!(literal_from_text(b, &list).is_err(), "must refuse {b}");
+        }
+        for ok in [
+            "[1, 2]",
+            "[]",
+            "[-1, +2, 3.5e2]",
+            "{'a': 1, 'b': 2}",
+            "{street: 'it''s ; -- ok', zip: 1, loc: {lat: 1.5}}",
+            "(1, 'x', null)",
+            "{0x01ab, 123e4567-e89b-12d3-a456-426614174000}",
+            "{1h30m, P1Y}",
+        ] {
+            assert!(is_safe_literal(ok), "must accept {ok}");
+        }
+        // Untyped fallbacks quote what is not a plain literal.
+        assert_eq!(
+            untyped_literal(&Value::Decimal("1 -- x".into())).unwrap(),
+            "'1 -- x'"
+        );
+        assert_eq!(
+            untyped_literal(&Value::Ext(ExtValue::new("x", "1; DROP"))).unwrap(),
+            "'1; DROP'"
+        );
+        assert!(!is_duration_text("1h--"));
     }
 
     #[test]

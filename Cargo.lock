@@ -1803,6 +1803,7 @@ dependencies = [
  "dbstudio-plan",
  "dbstudio-sql",
  "futures",
+ "proptest",
  "rustls",
  "rustls-native-certs",
  "scylla",

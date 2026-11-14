@@ -442,15 +442,7 @@ impl Core {
             }
         }
         let lwt = !matches!(req.on_conflict, OnConflict::Update);
-        let head = format!(
-            "INSERT INTO {} ({}) VALUES (",
-            qualified(&ks, &name),
-            req.columns
-                .iter()
-                .map(|c| quote_ident(c))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let table_name = qualified(&ks, &name);
         let mut statements = Vec::with_capacity(req.rows.len());
         for (i, row) in req.rows.iter().enumerate() {
             if row.len() != cols.len() {
@@ -460,18 +452,30 @@ impl Core {
                     cols.len()
                 )));
             }
-            let lits = row
-                .iter()
-                .zip(&cols)
-                .map(|(v, c)| match v {
+            // `DEFAULT` leaves the column out (writing null would create a tombstone).
+            let mut names = Vec::new();
+            let mut lits = Vec::new();
+            for (v, c) in row.iter().zip(&cols) {
+                let lit = match v {
                     EditValue::Value(v) => literal(v, &c.ty),
                     EditValue::Text(s) => literal_from_text(s, &c.ty),
-                    EditValue::Default => Ok("null".to_string()),
-                })
-                .collect::<Result<Vec<_>>>()
+                    EditValue::Default => {
+                        if c.is_key() {
+                            return Err(Error::Invalid(format!(
+                                "row {i}: the primary key column `{}` needs a value",
+                                c.name
+                            )));
+                        }
+                        continue;
+                    }
+                }
                 .map_err(|e| Error::Invalid(format!("row {i}: {e}")))?;
+                names.push(quote_ident(&c.name));
+                lits.push(lit);
+            }
             statements.push(format!(
-                "{head}{}){}",
+                "INSERT INTO {table_name} ({}) VALUES ({}){}",
+                names.join(", "),
                 lits.join(", "),
                 if lwt { " IF NOT EXISTS" } else { "" }
             ));

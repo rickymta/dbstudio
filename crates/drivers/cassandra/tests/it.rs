@@ -1977,6 +1977,187 @@ async fn t_explain(c: &Ctx) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// what runs is what was confirmed; typed values stay values
+// ---------------------------------------------------------------------------------------------
+
+async fn t_safety(c: &Ctx) {
+    let s = c.session.as_ref();
+    let one = c.keyspace("safe1").await;
+    let two = c.keyspace("safe2").await;
+    for ks in [&one, &two] {
+        run(
+            s,
+            Some(&ks.name),
+            "CREATE TABLE t (id int, ck text, name text, l list<int>, ts timestamp, PRIMARY KEY (id, ck))",
+        )
+        .await;
+    }
+    // `USE ks2` inside a script moves the rest of the script to ks2, on the session and a lease.
+    run(
+        s,
+        Some(&one.name),
+        &format!("USE {}; INSERT INTO t (id, ck) VALUES (9, 'x')", two.name),
+    )
+    .await;
+    assert!(select(s, &one.name, "SELECT * FROM t").await.is_empty());
+    assert_eq!(select(s, &two.name, "SELECT * FROM t").await.len(), 1);
+    let lease = c.lease(Some(&one.name)).await;
+    lease_run(
+        lease.as_ref(),
+        &format!("USE {}\nINSERT INTO t (id, ck) VALUES (8, 'y')", two.name),
+    )
+    .await
+    .unwrap();
+    assert!(select(s, &one.name, "SELECT * FROM t").await.is_empty());
+    assert_eq!(select(s, &two.name, "SELECT * FROM t").await.len(), 2);
+    assert_eq!(lease.state().database.as_deref(), Some(two.name.as_str()));
+    // A cqlsh command ends at its line: two statements, both run.
+    let r = lease_run(lease.as_ref(), "CONSISTENCY ONE\nSELECT * FROM t")
+        .await
+        .unwrap();
+    assert_eq!(r.len(), 2);
+    assert_eq!(
+        lease_run(lease.as_ref(), "USE x DROP TABLE t")
+            .await
+            .unwrap_err()
+            .kind(),
+        "invalid"
+    );
+    assert_eq!(select(s, &two.name, "SELECT * FROM t").await.len(), 2);
+    lease.close().await.unwrap();
+
+    // Typed text of a collection cell cannot add clauses (edit, import, filter).
+    let table = one.table("t");
+    let seed = ChangeSet::Rows(RowChangeSet {
+        table: table.clone(),
+        key_columns: vec!["id".into(), "ck".into()],
+        changes: vec![
+            RowChange::Insert {
+                values: vec![
+                    cell("id", int(1)),
+                    cell("ck", EditValue::Text("a".into())),
+                    cell("name", EditValue::Text("keep".into())),
+                ],
+            },
+            RowChange::Insert {
+                values: vec![cell("id", int(2)), cell("ck", EditValue::Text("b".into()))],
+            },
+        ],
+    });
+    s.apply_changes(seed).await.unwrap();
+    let evil = "[1] WHERE id=2 AND ck='b' --";
+    let update = ChangeSet::Rows(RowChangeSet {
+        table: table.clone(),
+        key_columns: vec!["id".into(), "ck".into()],
+        changes: vec![RowChange::Update {
+            key: vec![Value::Int(1), text("a")],
+            set: vec![cell("l", EditValue::Text(evil.into()))],
+        }],
+    });
+    assert_eq!(s.apply_changes(update).await.unwrap_err().kind(), "invalid");
+    let lease = c.lease(Some(&one.name)).await;
+    let import = BulkInsertRequest {
+        table: table.clone(),
+        columns: vec!["id".into(), "ck".into(), "l".into()],
+        rows: vec![vec![
+            int(2),
+            EditValue::Text("b".into()),
+            EditValue::Text(evil.into()),
+        ]],
+        on_conflict: OnConflict::Update,
+        conflict_columns: vec![],
+    };
+    assert_eq!(
+        lease.bulk_insert(import).await.unwrap_err().kind(),
+        "invalid"
+    );
+    let mut req = grid_req(&table, 0, 10);
+    req.filters = vec![ColumnFilter {
+        column: "l".into(),
+        op: FilterOp::Eq,
+        values: vec![evil.into()],
+    }];
+    let mut sink = CollectingSink::new();
+    assert_eq!(
+        s.fetch_table(req, &mut sink).await.unwrap_err().kind(),
+        "invalid"
+    );
+    assert!(
+        select(s, &one.name, "SELECT l FROM t WHERE id = 2 AND ck = 'b'").await[0][0]
+            == Value::Null
+    );
+
+    // DEFAULT leaves the column out; microsecond timestamps are cut to milliseconds.
+    let upsert = BulkInsertRequest {
+        table: table.clone(),
+        columns: vec!["id".into(), "ck".into(), "name".into(), "ts".into()],
+        rows: vec![vec![
+            int(1),
+            EditValue::Text("a".into()),
+            EditValue::Default,
+            EditValue::Value(Value::Timestamp("2024-05-31T13:30:45.123456Z".into())),
+        ]],
+        on_conflict: OnConflict::Update,
+        conflict_columns: vec![],
+    };
+    assert_eq!(lease.bulk_insert(upsert).await.unwrap().inserted, 1);
+    let rows = select(
+        s,
+        &one.name,
+        "SELECT name, ts FROM t WHERE id = 1 AND ck = 'a'",
+    )
+    .await;
+    assert_eq!(rows[0][0], text("keep"));
+    assert_eq!(
+        rows[0][1],
+        Value::Timestamp("2024-05-31T13:30:45.123Z".into())
+    );
+    let no_key = BulkInsertRequest {
+        table: table.clone(),
+        columns: vec!["id".into(), "ck".into()],
+        rows: vec![vec![int(3), EditValue::Default]],
+        on_conflict: OnConflict::Update,
+        conflict_columns: vec![],
+    };
+    assert_eq!(
+        lease.bulk_insert(no_key).await.unwrap_err().kind(),
+        "invalid"
+    );
+    lease.close().await.unwrap();
+
+    // ScyllaDB tablets keyspaces: no conditional edits (upsert semantics, with the note).
+    if c.server.scylla {
+        let name = "it_scylla_tablets";
+        run(s, None, &format!("DROP KEYSPACE IF EXISTS {name}")).await;
+        if try_run(
+            s,
+            None,
+            &format!("CREATE KEYSPACE {name} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}} AND tablets = {{'enabled': true}}"),
+        )
+        .await
+        .is_ok()
+        {
+            let ks = Keyspace::adopt(c.server, name);
+            run(s, Some(name), "CREATE TABLE t (id int PRIMARY KEY, v text)").await;
+            let ed = s.editability(&ks.table("t")).await.unwrap();
+            assert_eq!(ed.notes, vec![EditNote::UpsertSemantics]);
+            let ins = |v: &str| ChangeSet::Rows(RowChangeSet {
+                table: ks.table("t"),
+                key_columns: vec!["id".into()],
+                changes: vec![RowChange::Insert {
+                    values: vec![cell("id", int(1)), cell("v", EditValue::Text(v.into()))],
+                }],
+            });
+            s.apply_changes(ins("a")).await.unwrap();
+            s.apply_changes(ins("b")).await.unwrap();
+            assert_eq!(select(s, name, "SELECT v FROM t").await[0][0], text("b"));
+            let p = s.preview_changes(&ins("c")).await.unwrap();
+            assert!(!p[0].contains("IF NOT EXISTS"));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // the suite for each server
 // ---------------------------------------------------------------------------------------------
 
@@ -2009,6 +2190,7 @@ macro_rules! suite {
             it!(edit, t_edit);
             it!(export_import, t_export_import);
             it!(explain, t_explain);
+            it!(safety, t_safety);
         }
     };
 }
