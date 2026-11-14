@@ -1,0 +1,50 @@
+postgres/basic: CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_customer_id_created_at ON public.orders (customer_id, created_at);
+postgres/include: CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_customer_id ON public.orders (customer_id) INCLUDE (total, status);
+postgres/longName: CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_order_line_items_archive_cccccccccccccccccccccccccccc_5e6315 ON public.order_line_items_archive (cccccccccccccccccccccccccccccccccccccccc, dddddddddddddddddddddddddddddddddddddddd);
+postgres/quote: CREATE INDEX CONCURRENTLY IF NOT EXISTS "ix_Weird_Table_Order_Id_user" ON public."Weird Table" ("Order Id", "user");
+postgres/duplicateName: CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_customer_id_2 ON public.orders (customer_id);
+yugabyte/basic: CREATE INDEX IF NOT EXISTS ix_orders_customer_id_created_at ON public.orders (customer_id, created_at);
+yugabyte/include: CREATE INDEX IF NOT EXISTS ix_orders_customer_id ON public.orders (customer_id) INCLUDE (total, status);
+yugabyte/longName: CREATE INDEX IF NOT EXISTS ix_order_line_items_archive_cccccccccccccccccccccccccccc_5e6315 ON public.order_line_items_archive (cccccccccccccccccccccccccccccccccccccccc, dddddddddddddddddddddddddddddddddddddddd);
+yugabyte/quote: CREATE INDEX IF NOT EXISTS "ix_Weird_Table_Order_Id_user" ON public."Weird Table" ("Order Id", "user");
+yugabyte/duplicateName: CREATE INDEX IF NOT EXISTS ix_orders_customer_id_2 ON public.orders (customer_id);
+cockroach/basic: CREATE INDEX IF NOT EXISTS ix_orders_customer_id_created_at ON orders (customer_id, created_at);
+cockroach/include: CREATE INDEX IF NOT EXISTS ix_orders_customer_id ON orders (customer_id) STORING (total, status);
+cockroach/longName: CREATE INDEX IF NOT EXISTS ix_order_line_items_archive_cccccccccccccccccccccccccccc_5e6315 ON order_line_items_archive (cccccccccccccccccccccccccccccccccccccccc, dddddddddddddddddddddddddddddddddddddddd);
+cockroach/quote: CREATE INDEX IF NOT EXISTS "ix_Weird_Table_Order_Id_user" ON "Weird Table" ("Order Id", "user");
+cockroach/duplicateName: CREATE INDEX IF NOT EXISTS ix_orders_customer_id_2 ON orders (customer_id);
+mysql/basic: ALTER TABLE `shop`.`orders` ADD INDEX `ix_orders_customer_id_created_at` (`customer_id`, `created_at`), ALGORITHM=INPLACE, LOCK=NONE;
+mysql/include: ALTER TABLE `shop`.`orders` ADD INDEX `ix_orders_customer_id_total_status` (`customer_id`, `total`, `status`), ALGORITHM=INPLACE, LOCK=NONE;
+mysql/longName: ALTER TABLE `shop`.`order_line_items_archive` ADD INDEX `ix_order_line_items_archive_ccccccccccccccccccccccccccccc_5e6315` (`cccccccccccccccccccccccccccccccccccccccc`, `dddddddddddddddddddddddddddddddddddddddd`), ALGORITHM=INPLACE, LOCK=NONE;
+mysql/quote: ALTER TABLE `shop`.`Weird Table` ADD INDEX `ix_Weird_Table_Order_Id_user` (`Order Id`, `user`), ALGORITHM=INPLACE, LOCK=NONE;
+mysql/duplicateName: ALTER TABLE `shop`.`orders` ADD INDEX `ix_orders_customer_id_2` (`customer_id`), ALGORITHM=INPLACE, LOCK=NONE;
+mariadb/basic: ALTER TABLE `shop`.`orders` ADD INDEX `ix_orders_customer_id_created_at` (`customer_id`, `created_at`), ALGORITHM=INPLACE, LOCK=NONE;
+mariadb/include: ALTER TABLE `shop`.`orders` ADD INDEX `ix_orders_customer_id_total_status` (`customer_id`, `total`, `status`), ALGORITHM=INPLACE, LOCK=NONE;
+mariadb/longName: ALTER TABLE `shop`.`order_line_items_archive` ADD INDEX `ix_order_line_items_archive_ccccccccccccccccccccccccccccc_5e6315` (`cccccccccccccccccccccccccccccccccccccccc`, `dddddddddddddddddddddddddddddddddddddddd`), ALGORITHM=INPLACE, LOCK=NONE;
+mariadb/quote: ALTER TABLE `shop`.`Weird Table` ADD INDEX `ix_Weird_Table_Order_Id_user` (`Order Id`, `user`), ALGORITHM=INPLACE, LOCK=NONE;
+mariadb/duplicateName: ALTER TABLE `shop`.`orders` ADD INDEX `ix_orders_customer_id_2` (`customer_id`), ALGORITHM=INPLACE, LOCK=NONE;
+tidb/basic: CREATE INDEX `ix_orders_customer_id_created_at` ON `shop`.`orders` (`customer_id`, `created_at`);
+tidb/include: CREATE INDEX `ix_orders_customer_id_total_status` ON `shop`.`orders` (`customer_id`, `total`, `status`);
+tidb/longName: CREATE INDEX `ix_order_line_items_archive_ccccccccccccccccccccccccccccc_5e6315` ON `shop`.`order_line_items_archive` (`cccccccccccccccccccccccccccccccccccccccc`, `dddddddddddddddddddddddddddddddddddddddd`);
+tidb/quote: CREATE INDEX `ix_Weird_Table_Order_Id_user` ON `shop`.`Weird Table` (`Order Id`, `user`);
+tidb/duplicateName: CREATE INDEX `ix_orders_customer_id_2` ON `shop`.`orders` (`customer_id`);
+mssql/basic: CREATE NONCLUSTERED INDEX [IX_orders_customer_id_created_at] ON [dbo].[orders] ([customer_id], [created_at]) WITH (ONLINE = ON);
+mssql/include: CREATE NONCLUSTERED INDEX [IX_orders_customer_id] ON [dbo].[orders] ([customer_id]) INCLUDE ([total], [status]) WITH (ONLINE = ON);
+mssql/longName: CREATE NONCLUSTERED INDEX [IX_order_line_items_archive_cccccccccccccccccccccccccccccccccccccccc_dddddddddddddddddddddddddddddddddddddddd] ON [dbo].[order_line_items_archive] ([cccccccccccccccccccccccccccccccccccccccc], [dddddddddddddddddddddddddddddddddddddddd]) WITH (ONLINE = ON);
+mssql/quote: CREATE NONCLUSTERED INDEX [IX_Weird_Table_Order_Id_user] ON [dbo].[Weird Table] ([Order Id], [user]) WITH (ONLINE = ON);
+mssql/duplicateName: CREATE NONCLUSTERED INDEX [IX_orders_customer_id_2] ON [dbo].[orders] ([customer_id]) WITH (ONLINE = ON);
+oracle/basic: CREATE INDEX IX_ORDERS_CUSTOMER_ID_CREATED_AT ON SHOP.ORDERS (CUSTOMER_ID, CREATED_AT);
+oracle/include: CREATE INDEX IX_ORDERS_CUSTOMER_ID ON SHOP.ORDERS (CUSTOMER_ID);
+oracle/longName: CREATE INDEX IX_ORDER_LINE_ITEMS_ARCHIVE_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD ON SHOP.ORDER_LINE_ITEMS_ARCHIVE (CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC, DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD);
+oracle/quote: CREATE INDEX "IX_Weird__Table__Order_Id_user" ON SHOP."Weird ""Table""" ("Order Id", "user");
+oracle/duplicateName: CREATE INDEX IX_ORDERS_CUSTOMER_ID_2 ON SHOP.ORDERS (CUSTOMER_ID);
+mongo/basic: db.getSiblingDB("shop").orders.createIndex({ customer_id: 1, created_at: 1 }, { name: "customer_id_1_created_at_1" })
+mongo/include: db.getSiblingDB("shop").orders.createIndex({ customer_id: 1 }, { name: "customer_id_1" })
+mongo/longName: db.getSiblingDB("shop").order_line_items_archive.createIndex({ cccccccccccccccccccccccccccccccccccccccc: 1, dddddddddddddddddddddddddddddddddddddddd: 1 }, { name: "cccccccccccccccccccccccccccccccccccccccc_1_dddddddddddddddddddddddddddddddddddddddd_1" })
+mongo/quote: db.getSiblingDB("shop").getCollection("Weird Table").createIndex({ "Order Id": 1, user: 1 }, { name: "Order Id_1_user_1" })
+mongo/duplicateName: db.getSiblingDB("shop").orders.createIndex({ customer_id: 1 }, { name: "customer_id_1_2" })
+clickhouse/basic: ALTER TABLE `shop`.`orders` ADD INDEX IF NOT EXISTS `ix_customer_id` `customer_id` TYPE bloom_filter GRANULARITY 4;
+clickhouse/include: ALTER TABLE `shop`.`orders` ADD INDEX IF NOT EXISTS `ix_customer_id` `customer_id` TYPE bloom_filter GRANULARITY 4;
+clickhouse/longName: ALTER TABLE `shop`.`order_line_items_archive` ADD INDEX IF NOT EXISTS `ix_cccccccccccccccccccccccccccccccccccccccc` `cccccccccccccccccccccccccccccccccccccccc` TYPE bloom_filter GRANULARITY 4;
+clickhouse/quote: ALTER TABLE `shop`.`Weird Table` ADD INDEX IF NOT EXISTS `ix_Order_Id` `Order Id` TYPE bloom_filter GRANULARITY 4;
+clickhouse/duplicateName: ALTER TABLE `shop`.`orders` ADD INDEX IF NOT EXISTS `ix_customer_id_2` `customer_id` TYPE bloom_filter GRANULARITY 4;

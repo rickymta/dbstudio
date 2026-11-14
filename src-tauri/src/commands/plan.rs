@@ -1,17 +1,24 @@
 //! Query plan commands (package E): EXPLAIN, parsing and `.dbplan.json` files.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use dbstudio_core::{
     ConfirmationGrant, ConfirmationRequest, ConnectionConfig, DestructiveStatement, Error,
-    ExplainRequest, RawPlan, ScriptDialect, StatementClass, TextRange,
+    ExplainRequest, ObjectSearchRequest, RawPlan, ScriptDialect, StatementClass, TextRange,
+    TxStatus,
 };
+use dbstudio_plan::advice::{Flavor, Resolution, resolve_table, search_kind, search_scope};
 use dbstudio_plan::{
-    AdviceMetadata, AdviceReport, AdvisorContext, MetadataState, PlanError, PlanRules, PlanTree,
+    AdviceMetadata, AdviceReport, AdvisorContext, Caveat, MetadataState, PlanError, PlanRules,
+    PlanTree, TableFailure, TableKey, TableMeta, TableRef,
 };
 use dbstudio_store::NewPlanHistory;
 use serde::Serialize;
 use tauri::State;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use super::app::write_atomic;
@@ -334,9 +341,116 @@ pub(crate) fn parse_impl(
     dbstudio_plan::parse_and_analyze(&raw, &effective_rules(state, rules)).map_err(plan_error)
 }
 
-/// Query Advisor, tier 2 entry point. The contract (arguments and result) is final; for now the
-/// report holds the tier 1 advice (plan and statement only) and `metadata.state` is `disabled`.
-/// Package R2 reads the catalog here (design section 5.5 and 7).
+/// Limits of the catalog lookup behind `plan_advise` (design section 5.5).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AdviseLimits {
+    /// Most tables read; the rest count as skipped.
+    pub max_tables: usize,
+    /// Time allowed for one table (search and details).
+    pub per_table: Duration,
+    /// Time allowed for the whole lookup.
+    pub total: Duration,
+    /// Tables read at the same time.
+    pub parallel: usize,
+}
+
+impl Default for AdviseLimits {
+    fn default() -> Self {
+        AdviseLimits {
+            max_tables: 6,
+            per_table: Duration::from_secs(3),
+            total: Duration::from_secs(8),
+            parallel: 3,
+        }
+    }
+}
+
+/// Why one table could not be read.
+enum LookupFailure {
+    Timeout,
+    NotFound,
+    Ambiguous,
+    Unsupported(String),
+    Failed(String),
+}
+
+impl LookupFailure {
+    fn from_error(e: Error) -> Self {
+        match e {
+            Error::NotFound(_) => LookupFailure::NotFound,
+            Error::Timeout => LookupFailure::Timeout,
+            Error::Unsupported(m) => LookupFailure::Unsupported(m),
+            other => LookupFailure::Failed(other.to_string()),
+        }
+    }
+
+    fn reason(&self) -> &'static str {
+        match self {
+            LookupFailure::Timeout => "timeout",
+            LookupFailure::NotFound => "notFound",
+            LookupFailure::Ambiguous => "ambiguous",
+            LookupFailure::Unsupported(_) => "unsupported",
+            LookupFailure::Failed(_) => "error",
+        }
+    }
+
+    fn message(&self) -> String {
+        match self {
+            LookupFailure::Unsupported(m) | LookupFailure::Failed(m) => {
+                m.chars().take(200).collect()
+            }
+            _ => String::new(),
+        }
+    }
+}
+
+/// Find `table` in the catalog and read its columns and indexes.
+async fn lookup_table(
+    session: Arc<dyn dbstudio_core::Session>,
+    flavor: Flavor,
+    table: TableRef,
+    request_database: Option<String>,
+    default_schema: Option<String>,
+) -> std::result::Result<TableMeta, LookupFailure> {
+    let found = session
+        .search_objects(ObjectSearchRequest {
+            query: table.name.clone(),
+            scope: search_scope(flavor, &table, request_database.as_deref()),
+            kinds: vec![search_kind(flavor)],
+            limit: 50,
+        })
+        .await
+        .map_err(LookupFailure::from_error)?;
+    let path = match resolve_table(flavor, &table, default_schema.as_deref(), &found) {
+        Resolution::Found(path) => path,
+        Resolution::Ambiguous => return Err(LookupFailure::Ambiguous),
+        Resolution::NotFound => return Err(LookupFailure::NotFound),
+    };
+    let details = session
+        .table_details(&path)
+        .await
+        .map_err(LookupFailure::from_error)?;
+    Ok(TableMeta {
+        path,
+        estimated_rows: details.estimated_rows,
+        columns: details.columns,
+        indexes: details.indexes,
+    })
+}
+
+fn add_caveat(advice: &mut dbstudio_plan::PlanAdvice, key: &str, verify: bool) {
+    if !advice.caveats.iter().any(|c| c.key == key) {
+        advice.caveats.push(Caveat {
+            key: key.into(),
+            verify,
+            params: Default::default(),
+        });
+    }
+}
+
+/// Query Advisor, tier 2 entry point (design sections 5.5 and 7): advice from the plan and the
+/// statement, then again with what the catalog says about the tables the first pass named.
+/// A table that cannot be read lowers the confidence of its advice; it never fails the call.
 pub(crate) async fn advise_impl(
     state: &AppState,
     session_id: Uuid,
@@ -345,26 +459,193 @@ pub(crate) async fn advise_impl(
     database: Option<String>,
     rules: Option<PlanRules>,
 ) -> Result<AdviceReport> {
-    let _ = database;
+    let enabled = state
+        .connections
+        .settings()
+        .map_or(true, |s| s.plan_advisor_metadata);
+    advise_with(
+        state,
+        session_id,
+        lease_id,
+        raw,
+        database,
+        rules,
+        enabled,
+        AdviseLimits::default(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn advise_with(
+    state: &AppState,
+    session_id: Uuid,
+    lease_id: Option<Uuid>,
+    raw: RawPlan,
+    database: Option<String>,
+    rules: Option<PlanRules>,
+    metadata_enabled: bool,
+    limits: AdviseLimits,
+) -> Result<AdviceReport> {
+    let started = Instant::now();
     let (session, _config) = state.sessions.get_with_config(session_id)?;
-    let dialect = match lease_id {
-        Some(id) => state
-            .leases
-            .get(id)?
-            .script_dialect()
-            .unwrap_or_else(|| session.script_dialect()),
-        None => session.script_dialect(),
+    let (dialect, in_transaction) = match lease_id {
+        Some(id) => {
+            let lease = state.leases.get(id)?;
+            (
+                lease
+                    .script_dialect()
+                    .unwrap_or_else(|| session.script_dialect()),
+                lease.state().transaction == TxStatus::Active,
+            )
+        }
+        None => (session.script_dialect(), false),
     };
     let rules = effective_rules(state, rules);
     let mut ctx = AdvisorContext::basic(&raw, &rules);
     ctx.dialect = dialect;
-    let tree = dbstudio_plan::parse_analyze_advise(&raw, &rules, &ctx).map_err(plan_error)?;
+    ctx.server.in_transaction = in_transaction;
+    let mut tree = dbstudio_plan::parse_analyze_advise(&raw, &rules, &ctx).map_err(plan_error)?;
+    let mut metadata = AdviceMetadata {
+        state: MetadataState::NotRequested,
+        ..AdviceMetadata::default()
+    };
+    if !metadata_enabled {
+        metadata.state = MetadataState::Disabled;
+        return Ok(AdviceReport {
+            advice: tree.advice,
+            metadata,
+        });
+    }
+    // Tables the first pass wants to know about, most important advice first.
+    let mut wanted: Vec<(TableKey, TableRef)> = Vec::new();
+    for a in &tree.advice {
+        if let Some(t) = &a.table {
+            let key = TableKey::new(t.schema.as_deref(), &t.name);
+            if !wanted.iter().any(|(k, _)| *k == key) {
+                wanted.push((key, t.clone()));
+            }
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(AdviceReport {
+            advice: tree.advice,
+            metadata,
+        });
+    }
+    metadata.skipped =
+        u32::try_from(wanted.len().saturating_sub(limits.max_tables)).unwrap_or(u32::MAX);
+    wanted.truncate(limits.max_tables);
+    let deadline = started + limits.total;
+    let flavor = ctx.flavor();
+    // Edition and default schema (one `server_info` call, SQL Server and Oracle only).
+    let mut default_schema = match flavor {
+        Flavor::Postgres | Flavor::Yugabyte | Flavor::Cockroach => Some("public".to_string()),
+        Flavor::MsSql => Some("dbo".to_string()),
+        _ => None,
+    };
+    if matches!(flavor, Flavor::MsSql | Flavor::Oracle) {
+        let wait = limits
+            .per_table
+            .min(deadline.saturating_duration_since(Instant::now()));
+        if let Ok(Ok(info)) = tokio::time::timeout(wait, session.server_info()).await {
+            ctx.server.edition = info
+                .extra
+                .get("edition")
+                .or_else(|| info.extra.get("banner"))
+                .cloned();
+            ctx.server.engine_edition =
+                info.extra.get("engineEdition").and_then(|e| e.parse().ok());
+            if flavor == Flavor::Oracle {
+                default_schema = info.extra.get("user").cloned();
+            }
+        }
+    }
+    // Read the tables, a few at a time.
+    let gate = Arc::new(Semaphore::new(limits.parallel.max(1)));
+    let mut tasks: JoinSet<(usize, std::result::Result<TableMeta, LookupFailure>)> = JoinSet::new();
+    for (i, (_, table)) in wanted.iter().enumerate() {
+        let session = Arc::clone(&session);
+        let gate = Arc::clone(&gate);
+        let table = table.clone();
+        let database = database.clone();
+        let default_schema = default_schema.clone();
+        let per_table = limits.per_table;
+        tasks.spawn(async move {
+            let _permit = gate.acquire_owned().await;
+            let left = deadline.saturating_duration_since(Instant::now());
+            let wait = per_table.min(left);
+            let outcome = if wait.is_zero() {
+                Err(LookupFailure::Timeout)
+            } else {
+                match tokio::time::timeout(
+                    wait,
+                    lookup_table(session, flavor, table, database, default_schema),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Err(LookupFailure::Timeout),
+                }
+            };
+            (i, outcome)
+        });
+    }
+    let mut outcomes: Vec<Option<std::result::Result<TableMeta, LookupFailure>>> =
+        (0..wanted.len()).map(|_| None).collect();
+    while let Some(done) = tasks.join_next().await {
+        match done {
+            Ok((i, outcome)) => outcomes[i] = Some(outcome),
+            Err(e) => tracing::debug!(error = %e, "plan metadata task failed"),
+        }
+    }
+    let mut failures: Vec<(TableKey, LookupFailure)> = Vec::new();
+    for ((key, table), outcome) in wanted.iter().zip(outcomes) {
+        match outcome.unwrap_or(Err(LookupFailure::Failed("lookup aborted".into()))) {
+            Ok(meta) => {
+                let mut checked = table.clone();
+                checked.path = Some(meta.path.clone());
+                metadata.checked.push(checked);
+                ctx.tables.insert(key.clone(), meta);
+            }
+            Err(f) => {
+                metadata.failed.push(TableFailure {
+                    table: table.name.clone(),
+                    reason: f.reason().into(),
+                    message: f.message(),
+                });
+                failures.push((key.clone(), f));
+            }
+        }
+    }
+    metadata.state = if metadata.checked.is_empty() {
+        MetadataState::Unavailable
+    } else if metadata.failed.is_empty() && metadata.skipped == 0 {
+        MetadataState::Checked
+    } else {
+        MetadataState::Partial
+    };
+    ctx.metadata = metadata.state;
+    tree.advice = dbstudio_plan::advise(&tree, &raw.statement, &ctx);
+    for a in &mut tree.advice {
+        let Some(t) = a.table.as_mut() else { continue };
+        let key = TableKey::new(t.schema.as_deref(), &t.name);
+        if let Some(meta) = ctx.table_meta(t.schema.as_deref(), &t.name) {
+            t.path = Some(meta.path.clone());
+        }
+        let failure = failures.iter().find(|(k, _)| *k == key).map(|(_, f)| f);
+        match failure {
+            Some(LookupFailure::Ambiguous) => add_caveat(a, "ambiguousTable", true),
+            Some(LookupFailure::NotFound) if lease_id.is_some() => {
+                add_caveat(a, "leaseObjectsInvisible", true);
+            }
+            _ => {}
+        }
+    }
+    metadata.elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     Ok(AdviceReport {
         advice: tree.advice,
-        metadata: AdviceMetadata {
-            state: MetadataState::Disabled,
-            ..AdviceMetadata::default()
-        },
+        metadata,
     })
 }
 
@@ -548,45 +829,6 @@ mod tests {
             captured_at: "2025-01-01T00:00:00Z".into(),
             extra: BTreeMap::new(),
         }
-    }
-
-    #[tokio::test]
-    async fn advise_stub_reports_tier_one_and_a_lost_session() {
-        let (state, sid, _) = state_with_session(false, false).await;
-        let report = advise_impl(
-            &state,
-            sid,
-            None,
-            raw(PlanFormat::PostgresJson, PG_SPILL),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(report.metadata.state, MetadataState::Disabled);
-        assert!(report.metadata.checked.is_empty());
-        let lost = advise_impl(
-            &state,
-            Uuid::new_v4(),
-            None,
-            raw(PlanFormat::PostgresJson, PG_SPILL),
-            None,
-            None,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(lost.kind(), "notFound");
-        let bad = advise_impl(
-            &state,
-            sid,
-            None,
-            raw(PlanFormat::PostgresJson, "nope"),
-            None,
-            None,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(bad.kind(), "invalid");
     }
 
     #[test]
@@ -1083,5 +1325,486 @@ mod tests {
             c.statements[0].reason,
             dbstudio_core::DestructiveReason::Write
         );
+    }
+}
+
+#[cfg(test)]
+mod advise_tests {
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use dbstudio_core::{
+        Capabilities, ColumnDetail, DbKind, Driver, DriverDescriptor, DriverRegistry, DriverStatus,
+        ExecSummary, IndexDetail, ObjectKind, ObjectNode, ObjectPath, PlanFormat, QueryRequest,
+        ResultSink, Secret, ServerInfo, Session, TableDetails, ValueKind,
+    };
+
+    use super::*;
+    use crate::state::testing::test_state_with_host;
+
+    /// Two sequential scans under a join, each reading 200 000 (100 000) rows to keep 10.
+    const JOIN_PLAN: &str = r#"[{"Plan":{"Node Type":"Hash Join","Join Type":"Inner",
+        "Startup Cost":0.0,"Total Cost":9000.0,"Plan Rows":10,"Actual Startup Time":1.0,
+        "Actual Total Time":200.0,"Actual Rows":10,"Actual Loops":1,
+        "Hash Cond":"(o.customer_id = c.id)","Plans":[
+        {"Node Type":"Seq Scan","Parent Relationship":"Outer","Relation Name":"orders",
+         "Alias":"o","Startup Cost":0.0,"Total Cost":4000.0,"Plan Rows":10,
+         "Actual Startup Time":0.1,"Actual Total Time":100.0,"Actual Rows":10,"Actual Loops":1,
+         "Filter":"(status = 'x'::text)","Rows Removed by Filter":199990},
+        {"Node Type":"Seq Scan","Parent Relationship":"Inner","Relation Name":"customers",
+         "Alias":"c","Startup Cost":0.0,"Total Cost":3000.0,"Plan Rows":10,
+         "Actual Startup Time":0.1,"Actual Total Time":80.0,"Actual Rows":10,"Actual Loops":1,
+         "Filter":"(region = 'eu'::text)","Rows Removed by Filter":99990}]},
+        "Execution Time":200.5}]"#;
+
+    /// The same join as an estimate-only plan: the advice depends on the table sizes.
+    const ESTIMATE_PLAN: &str = r#"[{"Plan":{"Node Type":"Hash Join","Join Type":"Inner",
+        "Startup Cost":0.0,"Total Cost":9000.0,"Plan Rows":10,
+        "Hash Cond":"(o.customer_id = c.id)","Plans":[
+        {"Node Type":"Seq Scan","Parent Relationship":"Outer","Relation Name":"orders",
+         "Alias":"o","Startup Cost":0.0,"Total Cost":4000.0,"Plan Rows":50000,
+         "Filter":"(status = 'x'::text)"},
+        {"Node Type":"Seq Scan","Parent Relationship":"Inner","Relation Name":"customers",
+         "Alias":"c","Startup Cost":0.0,"Total Cost":3000.0,"Plan Rows":50000,
+         "Filter":"(region = 'eu'::text)"}]}}]"#;
+
+    /// Counts what the advisor asks the catalog.
+    #[derive(Default)]
+    struct Calls {
+        searches: AtomicUsize,
+        details: AtomicUsize,
+    }
+
+    /// A catalog of `(schema, table)` pairs; tables named in `slow` take five seconds.
+    struct Catalog {
+        tables: Vec<(String, String)>,
+        slow: Vec<String>,
+        indexes: HashMap<String, Vec<IndexDetail>>,
+        calls: Arc<Calls>,
+        lost_details: Mutex<bool>,
+    }
+
+    struct FakeDriver(Arc<Catalog>);
+
+    struct FakeSession(Arc<Catalog>);
+
+    fn path_of(schema: &str, table: &str) -> ObjectPath {
+        ObjectPath::root()
+            .child(ObjectKind::Database, "shop")
+            .child(ObjectKind::Folder, "schemas")
+            .child(ObjectKind::Schema, schema)
+            .child(ObjectKind::Folder, "tables")
+            .child(ObjectKind::Table, table)
+    }
+
+    #[async_trait]
+    impl Driver for FakeDriver {
+        fn descriptor(&self) -> DriverDescriptor {
+            DriverDescriptor::new(
+                DbKind::Postgres,
+                Capabilities::planned_for(DbKind::Postgres),
+                DriverStatus::Available,
+            )
+        }
+
+        async fn connect(
+            &self,
+            _config: &ConnectionConfig,
+            _secret: Option<&Secret>,
+        ) -> Result<Box<dyn Session>> {
+            Ok(Box::new(FakeSession(self.0.clone())))
+        }
+    }
+
+    #[async_trait]
+    impl Session for FakeSession {
+        async fn ping(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn server_info(&self) -> Result<ServerInfo> {
+            Ok(ServerInfo::default())
+        }
+        async fn execute(&self, _: QueryRequest, _: &mut dyn ResultSink) -> Result<ExecSummary> {
+            Err(Error::Unsupported("execute".into()))
+        }
+        async fn list_children(&self, _: &ObjectPath) -> Result<Vec<ObjectNode>> {
+            Ok(vec![])
+        }
+        fn script_dialect(&self) -> ScriptDialect {
+            ScriptDialect::Postgres
+        }
+        async fn search_objects(&self, req: ObjectSearchRequest) -> Result<Vec<ObjectNode>> {
+            self.0.calls.searches.fetch_add(1, Ordering::SeqCst);
+            Ok(self
+                .0
+                .tables
+                .iter()
+                .filter(|(_, t)| t.contains(&req.query.to_lowercase()))
+                .map(|(s, t)| ObjectNode {
+                    path: path_of(s, t),
+                    kind: ObjectKind::Table,
+                    name: t.clone(),
+                    has_children: true,
+                    detail: Some(s.clone()),
+                })
+                .collect())
+        }
+        async fn table_details(&self, path: &ObjectPath) -> Result<TableDetails> {
+            self.0.calls.details.fetch_add(1, Ordering::SeqCst);
+            let name = path.last().map(|s| s.name.clone()).unwrap_or_default();
+            if self.0.slow.contains(&name) {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+            if *self.0.lost_details.lock().unwrap() {
+                return Err(Error::Connection("gone".into()));
+            }
+            let column = |n: &str| ColumnDetail {
+                name: n.into(),
+                ordinal: 1,
+                type_name: "text".into(),
+                value_kind: ValueKind::Text,
+                nullable: true,
+                default: None,
+                comment: None,
+                primary_key: false,
+                extra: None,
+            };
+            Ok(TableDetails {
+                path: path.clone(),
+                kind: ObjectKind::Table,
+                comment: None,
+                columns: vec![column("status"), column("region")],
+                indexes: self.0.indexes.get(&name).cloned().unwrap_or_default(),
+                foreign_keys: vec![],
+                estimated_rows: Some(1_000_000),
+                size_bytes: None,
+            })
+        }
+        async fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn catalog(tables: &[(&str, &str)]) -> Catalog {
+        Catalog {
+            tables: tables
+                .iter()
+                .map(|(s, t)| (s.to_string(), t.to_string()))
+                .collect(),
+            slow: vec![],
+            indexes: HashMap::new(),
+            calls: Arc::new(Calls::default()),
+            lost_details: Mutex::new(false),
+        }
+    }
+
+    async fn open(cat: Catalog) -> (AppState, Uuid, Arc<Calls>) {
+        let calls = cat.calls.clone();
+        let mut registry = DriverRegistry::new();
+        registry.register(Arc::new(FakeDriver(Arc::new(cat))));
+        let (state, _, _) = test_state_with_host(registry);
+        let mut cfg = ConnectionConfig::new(DbKind::Postgres, "shop", "localhost");
+        cfg.database = Some("shop".into());
+        let profile = dbstudio_store::ConnectionProfile {
+            config: cfg,
+            group_id: None,
+            color: None,
+            save_password: false,
+            has_password: false,
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let saved = crate::commands::connections::save_impl(
+            &state,
+            profile,
+            dbstudio_store::SecretChange::Keep,
+        )
+        .await
+        .unwrap();
+        let sid = crate::commands::sessions::open_impl(&state, saved.config.id, None)
+            .await
+            .unwrap()
+            .session_id;
+        (state, sid, calls)
+    }
+
+    fn raw(text: &str) -> RawPlan {
+        RawPlan {
+            format: PlanFormat::PostgresJson,
+            text: text.into(),
+            statement: "select * from orders o join customers c on o.customer_id = c.id".into(),
+            analyzed: true,
+            rolled_back: true,
+            server_version: "16.2".into(),
+            captured_at: "2025-01-01T00:00:00Z".into(),
+            extra: BTreeMap::new(),
+        }
+    }
+
+    fn quick() -> AdviseLimits {
+        AdviseLimits {
+            per_table: Duration::from_millis(300),
+            total: Duration::from_secs(2),
+            ..AdviseLimits::default()
+        }
+    }
+
+    async fn run(
+        state: &AppState,
+        sid: Uuid,
+        enabled: bool,
+        limits: AdviseLimits,
+    ) -> Result<AdviceReport> {
+        advise_with(
+            state,
+            sid,
+            None,
+            raw(JOIN_PLAN),
+            None,
+            None,
+            enabled,
+            limits,
+        )
+        .await
+    }
+
+    async fn run_estimate(state: &AppState, sid: Uuid, limits: AdviseLimits) -> AdviceReport {
+        let mut r = raw(ESTIMATE_PLAN);
+        r.analyzed = false;
+        advise_with(state, sid, None, r, None, None, true, limits)
+            .await
+            .unwrap()
+    }
+
+    fn advice_for<'a>(r: &'a AdviceReport, table: &str) -> Vec<&'a dbstudio_plan::PlanAdvice> {
+        r.advice
+            .iter()
+            .filter(|a| a.table.as_ref().is_some_and(|t| t.name == table))
+            .collect()
+    }
+
+    fn has_caveat(a: &dbstudio_plan::PlanAdvice, key: &str) -> bool {
+        a.caveats.iter().any(|c| c.key == key)
+    }
+
+    #[tokio::test]
+    async fn full_metadata_is_checked_and_resolves_paths() {
+        let (state, sid, calls) =
+            open(catalog(&[("public", "orders"), ("public", "customers")])).await;
+        let report = run(&state, sid, true, quick()).await.unwrap();
+        assert_eq!(report.metadata.state, MetadataState::Checked);
+        assert_eq!(report.metadata.checked.len(), 2);
+        assert!(report.metadata.failed.is_empty());
+        assert_eq!(calls.details.load(Ordering::SeqCst), 2);
+        let orders = advice_for(&report, "orders");
+        assert!(!orders.is_empty());
+        for a in &orders {
+            let path = a.table.as_ref().unwrap().path.clone().expect("path");
+            assert_eq!(path, path_of("public", "orders"));
+            assert!(!has_caveat(a, "metadataUnavailable"), "{:?}", a.caveats);
+        }
+        assert!(report.metadata.elapsed_ms < 2_000);
+    }
+
+    #[tokio::test]
+    async fn a_slow_table_makes_the_report_partial_and_lowers_confidence() {
+        let mut cat = catalog(&[("public", "orders"), ("public", "customers")]);
+        cat.slow = vec!["customers".into()];
+        let (state, sid, _) = open(cat).await;
+        let report = run_estimate(&state, sid, quick()).await;
+        assert_eq!(report.metadata.state, MetadataState::Partial);
+        assert_eq!(report.metadata.checked.len(), 1);
+        assert_eq!(report.metadata.failed.len(), 1);
+        assert_eq!(report.metadata.failed[0].table, "customers");
+        assert_eq!(report.metadata.failed[0].reason, "timeout");
+        let customers = advice_for(&report, "customers");
+        assert!(!customers.is_empty());
+        for a in customers {
+            assert!(has_caveat(a, "metadataUnavailable"), "{:?}", a.caveats);
+            assert_eq!(a.confidence, dbstudio_plan::Confidence::Low);
+            assert!(a.table.as_ref().unwrap().path.is_none());
+        }
+        let orders = advice_for(&report, "orders");
+        assert!(!orders.is_empty());
+        for a in orders {
+            assert!(!has_caveat(a, "metadataUnavailable"), "{:?}", a.caveats);
+            assert!(a.table.as_ref().unwrap().path.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_total_budget_stops_slow_lookups() {
+        let mut cat = catalog(&[("public", "orders"), ("public", "customers")]);
+        cat.slow = vec!["orders".into(), "customers".into()];
+        let (state, sid, _) = open(cat).await;
+        let limits = AdviseLimits {
+            per_table: Duration::from_secs(3),
+            total: Duration::from_millis(200),
+            parallel: 1,
+            ..AdviseLimits::default()
+        };
+        let started = Instant::now();
+        let report = run(&state, sid, true, limits).await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(report.metadata.state, MetadataState::Unavailable);
+        assert!(report.metadata.failed.iter().all(|f| f.reason == "timeout"));
+        assert_eq!(report.metadata.failed.len(), 2);
+        assert!(!report.advice.is_empty(), "tier 1 advice stays");
+    }
+
+    #[tokio::test]
+    async fn too_many_tables_are_skipped() {
+        let (state, sid, calls) =
+            open(catalog(&[("public", "orders"), ("public", "customers")])).await;
+        let limits = AdviseLimits {
+            max_tables: 1,
+            ..quick()
+        };
+        let report = run(&state, sid, true, limits).await.unwrap();
+        assert_eq!(report.metadata.skipped, 1);
+        assert_eq!(report.metadata.state, MetadataState::Partial);
+        assert_eq!(calls.details.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn the_setting_off_never_touches_the_catalog() {
+        let (state, sid, calls) =
+            open(catalog(&[("public", "orders"), ("public", "customers")])).await;
+        let report = run(&state, sid, false, quick()).await.unwrap();
+        assert_eq!(report.metadata.state, MetadataState::Disabled);
+        assert!(report.metadata.checked.is_empty());
+        assert!(!report.advice.is_empty());
+        assert_eq!(calls.searches.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.details.load(Ordering::SeqCst), 0);
+        // The real entry point reads the setting (on by default).
+        let on = advise_impl(&state, sid, None, raw(JOIN_PLAN), None, None)
+            .await
+            .unwrap();
+        assert_eq!(on.metadata.state, MetadataState::Checked);
+    }
+
+    #[tokio::test]
+    async fn a_lost_session_is_not_found_and_a_bad_plan_is_invalid() {
+        let (state, sid, _) = open(catalog(&[])).await;
+        let lost = advise_impl(&state, Uuid::new_v4(), None, raw(JOIN_PLAN), None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(lost.kind(), "notFound");
+        let bad = advise_impl(&state, sid, None, raw("nope"), None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(bad.kind(), "invalid");
+        // A lease that is gone is not found either.
+        let gone = advise_impl(
+            &state,
+            sid,
+            Some(Uuid::new_v4()),
+            raw(JOIN_PLAN),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(gone.kind(), "notFound");
+    }
+
+    #[tokio::test]
+    async fn same_name_in_two_schemas_is_ambiguous_unless_the_default_schema_has_it() {
+        let (state, sid, _) = open(catalog(&[
+            ("sales", "orders"),
+            ("archive", "orders"),
+            ("public", "customers"),
+        ]))
+        .await;
+        let report = run(&state, sid, true, quick()).await.unwrap();
+        let failure = report
+            .metadata
+            .failed
+            .iter()
+            .find(|f| f.table == "orders")
+            .expect("orders fails");
+        assert_eq!(failure.reason, "ambiguous");
+        assert_eq!(report.metadata.state, MetadataState::Partial);
+        for a in advice_for(&report, "orders") {
+            assert!(has_caveat(a, "ambiguousTable"));
+            assert!(a.table.as_ref().unwrap().path.is_none());
+        }
+        // `public` wins when it holds exactly one of them.
+        let (state, sid, _) = open(catalog(&[
+            ("public", "orders"),
+            ("archive", "orders"),
+            ("public", "customers"),
+        ]))
+        .await;
+        let report = run(&state, sid, true, quick()).await.unwrap();
+        assert_eq!(report.metadata.state, MetadataState::Checked);
+    }
+
+    #[tokio::test]
+    async fn missing_tables_and_failing_details_are_reported_not_fatal() {
+        let (state, sid, _) = open(catalog(&[("public", "customers")])).await;
+        let report = run(&state, sid, true, quick()).await.unwrap();
+        assert_eq!(report.metadata.state, MetadataState::Partial);
+        assert!(
+            report
+                .metadata
+                .failed
+                .iter()
+                .any(|f| f.table == "orders" && f.reason == "notFound")
+        );
+        let cat = catalog(&[("public", "orders"), ("public", "customers")]);
+        *cat.lost_details.lock().unwrap() = true;
+        let (state, sid, _) = open(cat).await;
+        let report = run(&state, sid, true, quick()).await.unwrap();
+        assert_eq!(report.metadata.state, MetadataState::Unavailable);
+        assert!(report.metadata.failed.iter().all(|f| f.reason == "error"));
+    }
+
+    #[tokio::test]
+    async fn an_existing_index_turns_the_suggestion_into_a_statistics_hint() {
+        let mut cat = catalog(&[("public", "orders"), ("public", "customers")]);
+        cat.indexes.insert(
+            "orders".into(),
+            vec![IndexDetail {
+                name: "ix_orders_status".into(),
+                columns: vec!["status".into()],
+                unique: false,
+                primary: false,
+                method: Some("btree".into()),
+                definition: None,
+                partial: false,
+            }],
+        );
+        let (state, sid, _) = open(cat).await;
+        let report = run(&state, sid, true, quick()).await.unwrap();
+        let orders = advice_for(&report, "orders");
+        assert!(
+            orders
+                .iter()
+                .any(|a| a.rule == dbstudio_plan::AdviceRule::ExistingIndexUnused),
+            "{:?}",
+            orders.iter().map(|a| a.rule).collect::<Vec<_>>()
+        );
+        assert!(orders.iter().all(|a| {
+            a.actions
+                .iter()
+                .all(|x| x.kind != dbstudio_plan::ActionKind::CreateIndex)
+        }));
+    }
+
+    #[tokio::test]
+    async fn a_plan_without_tables_asks_nothing() {
+        let (state, sid, calls) = open(catalog(&[])).await;
+        let plan = r#"[{"Plan":{"Node Type":"Result","Startup Cost":0.0,"Total Cost":0.01,
+            "Plan Rows":1,"Actual Startup Time":0.0,"Actual Total Time":0.0,"Actual Rows":1,
+            "Actual Loops":1},"Execution Time":0.1}]"#;
+        let report = advise_with(&state, sid, None, raw(plan), None, None, true, quick())
+            .await
+            .unwrap();
+        assert_eq!(report.metadata.state, MetadataState::NotRequested);
+        assert_eq!(calls.searches.load(Ordering::SeqCst), 0);
     }
 }

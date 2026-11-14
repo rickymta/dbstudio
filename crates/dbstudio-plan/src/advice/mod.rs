@@ -26,7 +26,10 @@ use std::collections::BTreeMap;
 
 use dbstudio_core::{PlanFormat, TextRange};
 
-pub use context::{AdvisorContext, ServerFacts, TableKey, TableMeta, dialect_of_format};
+pub use context::{
+    AdvisorContext, Flavor, Resolution, ServerFacts, TableKey, TableMeta, dialect_of_format,
+    resolve_table, search_kind, search_scope,
+};
 pub use model::{
     ActionKind, ActionScope, AdviceAction, AdviceMetadata, AdviceReport, AdviceRule, Caveat,
     Confidence, Evidence, EvidenceUnit, Impact, ImpactBasis, LockRisk, MetadataState,
@@ -367,8 +370,12 @@ fn finalize(cx: &Cx<'_>, drafts: Vec<Draft>) -> Vec<PlanAdvice> {
                     action,
                     caveats: extra,
                     name,
+                    follow_up,
                 } => {
                     actions.insert(0, *action);
+                    for (i, a) in follow_up.into_iter().enumerate() {
+                        actions.insert(1 + i, a);
+                    }
                     for e in extra {
                         add_caveat(&mut caveats, e);
                     }

@@ -3,10 +3,13 @@
 
 use std::collections::BTreeMap;
 
-use dbstudio_core::{ColumnDetail, IndexDetail, ObjectPath, PlanFormat, RawPlan, ScriptDialect};
+use dbstudio_core::{
+    ColumnDetail, IndexDetail, ObjectKind, ObjectNode, ObjectPath, PlanFormat, RawPlan,
+    ScriptDialect,
+};
 use serde::{Deserialize, Serialize};
 
-use super::model::MetadataState;
+use super::model::{MetadataState, TableRef};
 use crate::PlanRules;
 
 /// Facts about the server that change what is advisable.
@@ -60,6 +63,8 @@ pub struct AdvisorContext<'a> {
     pub rules: &'a PlanRules,
     /// Language of the connection (SQL flavour or mongo shell).
     pub dialect: ScriptDialect,
+    /// Format of the plan; tells apart products that share a dialect (CockroachDB, TiDB).
+    pub format: PlanFormat,
     /// `RawPlan.server_version`.
     pub server_version: &'a str,
     /// Server facts.
@@ -80,12 +85,56 @@ impl<'a> AdvisorContext<'a> {
         AdvisorContext {
             rules,
             dialect: dialect_of_format(raw.format, &raw.server_version),
+            format: raw.format,
             server_version: &raw.server_version,
             server: ServerFacts::default(),
             tables: BTreeMap::new(),
             metadata: MetadataState::NotRequested,
             captured_at: &raw.captured_at,
             now: "",
+        }
+    }
+
+    /// Database product behind the plan, for DDL syntax and naming limits.
+    pub fn flavor(&self) -> Flavor {
+        match self.dialect {
+            ScriptDialect::Postgres => {
+                if self.format == PlanFormat::CockroachText {
+                    Flavor::Cockroach
+                } else if self.is_yugabyte() {
+                    Flavor::Yugabyte
+                } else {
+                    Flavor::Postgres
+                }
+            }
+            ScriptDialect::MySql { mariadb, .. } => {
+                if self.format == PlanFormat::TiDbRows {
+                    Flavor::TiDb
+                } else if mariadb {
+                    Flavor::MariaDb
+                } else {
+                    Flavor::MySql
+                }
+            }
+            ScriptDialect::MsSql => Flavor::MsSql,
+            ScriptDialect::Oracle => Flavor::Oracle,
+            ScriptDialect::MongoShell => Flavor::Mongo,
+            ScriptDialect::ClickHouse => Flavor::ClickHouse,
+            _ => Flavor::Other,
+        }
+    }
+
+    /// Server version is known and older than `major.minor` (`12.1.0.2` < `12.2`).
+    pub fn version_before(&self, major: u32, minor: u32) -> bool {
+        let mut nums = self
+            .server_version
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|p| !p.is_empty())
+            .map(|p| p.parse::<u32>().unwrap_or(0));
+        match (nums.next(), nums.next()) {
+            (Some(a), Some(b)) => (a, b) < (major, minor),
+            (Some(a), None) => a < major,
+            _ => true,
         }
     }
 
@@ -118,6 +167,145 @@ impl<'a> AdvisorContext<'a> {
     }
 }
 
+/// Database product, finer than [`ScriptDialect`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flavor {
+    /// PostgreSQL.
+    Postgres,
+    /// YugabyteDB (PostgreSQL wire and syntax).
+    Yugabyte,
+    /// CockroachDB.
+    Cockroach,
+    /// MySQL.
+    MySql,
+    /// MariaDB.
+    MariaDb,
+    /// TiDB.
+    TiDb,
+    /// SQL Server.
+    MsSql,
+    /// Oracle.
+    Oracle,
+    /// MongoDB.
+    Mongo,
+    /// ClickHouse.
+    ClickHouse,
+    /// No index DDL known.
+    Other,
+}
+
+/// Result of matching a plan table against the objects a catalog search returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// Exactly one table.
+    Found(ObjectPath),
+    /// Several tables share the name (and the schema, when the plan gave none).
+    Ambiguous,
+    /// No such table.
+    NotFound,
+}
+
+/// Database node a catalog search for `table` should be limited to: the plan's database, the
+/// schema of products where a schema is a database (MySQL, MongoDB, ClickHouse), else the
+/// database of the explain request; the root when none is known.
+pub fn search_scope(
+    flavor: Flavor,
+    table: &TableRef,
+    request_database: Option<&str>,
+) -> ObjectPath {
+    let by_schema = matches!(
+        flavor,
+        Flavor::MySql | Flavor::MariaDb | Flavor::TiDb | Flavor::Mongo | Flavor::ClickHouse
+    );
+    let db = table
+        .database
+        .as_deref()
+        .or(if by_schema {
+            table.schema.as_deref()
+        } else {
+            None
+        })
+        .or(request_database)
+        .filter(|d| !d.is_empty());
+    match db {
+        Some(d) => ObjectPath::root().child(ObjectKind::Database, d),
+        None => ObjectPath::root(),
+    }
+}
+
+/// Kind of object to search for.
+pub fn search_kind(flavor: Flavor) -> ObjectKind {
+    if flavor == Flavor::Mongo {
+        ObjectKind::Collection
+    } else {
+        ObjectKind::Table
+    }
+}
+
+/// Pick the table `table` names among `found` (design section 5.5): exact name first, then
+/// case-insensitive; the plan's schema filters; without one the default schema wins when it
+/// holds exactly one match.
+pub fn resolve_table(
+    flavor: Flavor,
+    table: &TableRef,
+    default_schema: Option<&str>,
+    found: &[ObjectNode],
+) -> Resolution {
+    let kind = search_kind(flavor);
+    let of_kind: Vec<&ObjectNode> = found.iter().filter(|n| n.kind == kind).collect();
+    let mut named: Vec<&ObjectNode> = of_kind
+        .iter()
+        .copied()
+        .filter(|n| n.name == table.name)
+        .collect();
+    if named.is_empty() {
+        named = of_kind
+            .iter()
+            .copied()
+            .filter(|n| n.name.eq_ignore_ascii_case(&table.name))
+            .collect();
+    }
+    let schema_kinds_only = matches!(
+        flavor,
+        Flavor::Postgres | Flavor::Yugabyte | Flavor::Cockroach | Flavor::MsSql | Flavor::Oracle
+    );
+    let schema_of = |n: &ObjectNode| -> Vec<String> {
+        n.path
+            .segments
+            .iter()
+            .filter(|s| {
+                s.kind == ObjectKind::Schema
+                    || (!schema_kinds_only && s.kind == ObjectKind::Database)
+            })
+            .map(|s| s.name.to_lowercase())
+            .collect()
+    };
+    let mut cands = named;
+    if let Some(schema) = table.schema.as_deref().filter(|s| !s.is_empty()) {
+        let want = schema.to_lowercase();
+        cands.retain(|n| schema_of(n).contains(&want));
+    } else if cands.len() > 1 {
+        if let Some(d) = default_schema {
+            let want = d.to_lowercase();
+            let in_default: Vec<&ObjectNode> = cands
+                .iter()
+                .copied()
+                .filter(|n| schema_of(n).contains(&want))
+                .collect();
+            if in_default.len() == 1 {
+                cands = in_default;
+            }
+        }
+    }
+    let mut paths: Vec<&ObjectPath> = cands.iter().map(|n| &n.path).collect();
+    paths.dedup();
+    match paths.as_slice() {
+        [] => Resolution::NotFound,
+        [one] => Resolution::Found((*one).clone()),
+        _ => Resolution::Ambiguous,
+    }
+}
+
 /// Script dialect a plan format belongs to.
 pub fn dialect_of_format(format: PlanFormat, server_version: &str) -> ScriptDialect {
     let mysql = |mariadb| ScriptDialect::MySql {
@@ -137,5 +325,153 @@ pub fn dialect_of_format(format: PlanFormat, server_version: &str) -> ScriptDial
         PlanFormat::MongoExplain => ScriptDialect::MongoShell,
         PlanFormat::ClickHouseJson => ScriptDialect::ClickHouse,
         PlanFormat::CqlTrace => ScriptDialect::Cql,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(kind: ObjectKind, schema: &str, name: &str) -> ObjectNode {
+        ObjectNode {
+            path: ObjectPath::root()
+                .child(ObjectKind::Database, "shop")
+                .child(ObjectKind::Schema, schema)
+                .child(kind, name),
+            kind,
+            name: name.into(),
+            has_children: false,
+            detail: None,
+        }
+    }
+
+    fn table(schema: Option<&str>, name: &str) -> TableRef {
+        TableRef {
+            database: None,
+            schema: schema.map(str::to_string),
+            name: name.into(),
+            alias: None,
+            path: None,
+        }
+    }
+
+    #[test]
+    fn scope_follows_the_product() {
+        let t = table(Some("shop"), "orders");
+        assert_eq!(
+            search_scope(Flavor::MySql, &t, Some("other")),
+            ObjectPath::root().child(ObjectKind::Database, "shop")
+        );
+        // PostgreSQL: the schema is not a database; the request database is.
+        assert_eq!(
+            search_scope(Flavor::Postgres, &t, Some("other")),
+            ObjectPath::root().child(ObjectKind::Database, "other")
+        );
+        assert_eq!(search_scope(Flavor::Postgres, &t, None), ObjectPath::root());
+        let mut with_db = t.clone();
+        with_db.database = Some("db2".into());
+        assert_eq!(
+            search_scope(Flavor::MsSql, &with_db, Some("other")),
+            ObjectPath::root().child(ObjectKind::Database, "db2")
+        );
+        assert_eq!(search_kind(Flavor::Mongo), ObjectKind::Collection);
+        assert_eq!(search_kind(Flavor::Oracle), ObjectKind::Table);
+    }
+
+    #[test]
+    fn resolution_rules() {
+        let found = vec![
+            node(ObjectKind::Table, "sales", "orders"),
+            node(ObjectKind::Table, "archive", "orders"),
+            node(ObjectKind::Table, "public", "orders_old"),
+            node(ObjectKind::View, "sales", "orders"),
+        ];
+        // A schema in the plan decides.
+        let r = resolve_table(
+            Flavor::Postgres,
+            &table(Some("SALES"), "orders"),
+            None,
+            &found,
+        );
+        assert!(matches!(r, Resolution::Found(p) if p.segments[1].name == "sales"));
+        // None given: two candidates are ambiguous...
+        assert_eq!(
+            resolve_table(
+                Flavor::Postgres,
+                &table(None, "orders"),
+                Some("public"),
+                &found
+            ),
+            Resolution::Ambiguous
+        );
+        // ... unless exactly one is in the default schema.
+        let r = resolve_table(
+            Flavor::Postgres,
+            &table(None, "orders"),
+            Some("archive"),
+            &found,
+        );
+        assert!(matches!(r, Resolution::Found(p) if p.segments[1].name == "archive"));
+        // Only exact names count (`orders_old` is a substring match of the search).
+        assert_eq!(
+            resolve_table(
+                Flavor::Postgres,
+                &table(Some("public"), "orders"),
+                None,
+                &found
+            ),
+            Resolution::NotFound
+        );
+        // Case-insensitive fallback.
+        let r = resolve_table(
+            Flavor::Oracle,
+            &table(Some("sales"), "ORDERS"),
+            None,
+            &found,
+        );
+        assert!(matches!(r, Resolution::Found(_)));
+        // Views are not tables.
+        let only_view = vec![node(ObjectKind::View, "sales", "v")];
+        assert_eq!(
+            resolve_table(Flavor::Postgres, &table(None, "v"), None, &only_view),
+            Resolution::NotFound
+        );
+    }
+
+    #[test]
+    fn flavor_tells_products_of_one_dialect_apart() {
+        let rules = PlanRules::default();
+        let raw = |format, version: &str| RawPlan {
+            format,
+            text: String::new(),
+            statement: String::new(),
+            analyzed: false,
+            rolled_back: false,
+            server_version: version.into(),
+            captured_at: String::new(),
+            extra: BTreeMap::new(),
+        };
+        let flavor = |format, version: &str| {
+            let r = raw(format, version);
+            AdvisorContext::basic(&r, &rules).flavor()
+        };
+        assert_eq!(flavor(PlanFormat::PostgresJson, "16"), Flavor::Postgres);
+        assert_eq!(
+            flavor(PlanFormat::PostgresJson, "11.2-YB-2.20"),
+            Flavor::Yugabyte
+        );
+        assert_eq!(flavor(PlanFormat::CockroachText, "v23"), Flavor::Cockroach);
+        assert_eq!(flavor(PlanFormat::MySqlJson, "8.0"), Flavor::MySql);
+        assert_eq!(
+            flavor(PlanFormat::MySqlTree, "10.6.1-MariaDB"),
+            Flavor::MariaDb
+        );
+        assert_eq!(flavor(PlanFormat::TiDbRows, "8.0.11-TiDB"), Flavor::TiDb);
+        assert_eq!(flavor(PlanFormat::CqlTrace, "4"), Flavor::Other);
+        let r = raw(PlanFormat::OraclePlanRows, "12.1.0.2.0");
+        let ctx = AdvisorContext::basic(&r, &rules);
+        assert!(ctx.version_before(12, 2));
+        assert!(!ctx.version_before(12, 1));
+        assert!(!ctx.version_before(11, 5));
     }
 }
