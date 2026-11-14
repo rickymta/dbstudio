@@ -7,7 +7,14 @@ log=$1
 title=${2:-failure}
 [ -f "$log" ] || exit 0
 awk '
-  function flush() { if (b != "") print b; b = ""; n = 0; rustc = 0 }
+  # A compiler block counts only when it points at code or is the final "could not compile" (a
+  # passing test that prints "error: ..." from a child process is not a failure).
+  function flush() {
+    if (b != "" && (!rustc || b ~ /-->|could not compile|test failed/)) print b
+    b = ""; n = 0; rustc = 0
+  }
+  # CARGO_TERM_COLOR=always: drop ANSI colours; Windows: drop CR.
+  { gsub(/\033\[[0-9;]*[A-Za-z]/, ""); sub(/\r$/, "") }
   /^---- .* stdout ----$/ { flush(); b = $0; n = 1; next }
   /^error(\[E[0-9]+\])?: / { flush(); b = $0; n = 1; rustc = 1; next }
   b != "" && rustc && /^$/ { flush(); next }

@@ -66,8 +66,10 @@ async fn huge_varchar_max_is_cut_without_filling_memory() {
     )
     .await;
     let after = rss_kib();
+    // RSS is process-wide and other tests of this binary run in parallel, so the bound only has
+    // to tell "capped" apart from "buffered the whole 50 MB value" (~50-100 MB).
     assert!(
-        after.saturating_sub(before) < 20 * 1024,
+        after.saturating_sub(before) < 40 * 1024,
         "RSS grew by {} KiB",
         after.saturating_sub(before)
     );
