@@ -1,0 +1,142 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_users_lower_email ON users ((lower(email)));",
+        "template": false
+      },
+      {
+        "kind": "rewrite",
+        "label": "moveFunctionToConstant",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [
+      "writeOverhead"
+    ],
+    "confidence": "high",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 1000000.0
+      },
+      {
+        "actual": true,
+        "key": "rowsKept",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 1.0
+      },
+      {
+        "actual": true,
+        "key": "selfTime",
+        "nodeId": 0,
+        "text": null,
+        "unit": "ms",
+        "value": 241.73
+      },
+      {
+        "actual": false,
+        "key": "expression",
+        "nodeId": 0,
+        "text": "lower(email)",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "column": "email",
+      "columns": "(lower(email))",
+      "examined": "1000000",
+      "function": "lower(email)",
+      "index": "ix_users_lower_email",
+      "table": "users"
+    },
+    "rule": "pgFunctionOnColumn",
+    "severity": "critical",
+    "share": 1.0,
+    "statementRange": {
+      "end": 38,
+      "start": 26
+    },
+    "table": "users"
+  },
+  {
+    "actions": [
+      {
+        "kind": "statistics",
+        "label": "refreshStatistics",
+        "lock": "none",
+        "scope": "object",
+        "sql": "ANALYZE users;",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [
+      "estimateFromExpression"
+    ],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "estimatedRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 5000.0
+      },
+      {
+        "actual": true,
+        "key": "actualRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 1.0
+      },
+      {
+        "actual": true,
+        "key": "misestimateFactor",
+        "nodeId": 0,
+        "text": null,
+        "unit": "ratio",
+        "value": 5000.0
+      }
+    ],
+    "fromWarnings": [
+      "misestimate"
+    ],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "actual": "1",
+      "direction": "over",
+      "estimated": "5000",
+      "factor": "5000",
+      "table": "users"
+    },
+    "rule": "staleStatistics",
+    "severity": "critical",
+    "share": 1.0,
+    "statementRange": null,
+    "table": "users"
+  }
+]

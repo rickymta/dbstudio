@@ -1,0 +1,42 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewFilter",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 4,
+        "text": null,
+        "unit": "rows",
+        "value": 240000.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      4
+    ],
+    "params": {
+      "rows": "240000",
+      "table": "items"
+    },
+    "rule": "fullScanReview",
+    "severity": "warning",
+    "share": 0.655,
+    "statementRange": null,
+    "table": "items"
+  }
+]

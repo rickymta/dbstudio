@@ -358,6 +358,18 @@ const EXPECTED: &[Expectation] = &[
         Some(4235.46),
         &["4:fullScanLargeTable:warning"],
     ),
+    // Added with the Query Advisor: one plan per advisor rule that needs figures the older
+    // fixtures lack.
+    ("pg_12_index_residual.json", true, 1, Some(3812.55), &[]),
+    ("pg_13_heap_fetches.json", true, 2, Some(8120.41), &[]),
+    ("pg_14_bitmap_lossy.json", true, 2, Some(212480.9), &[]),
+    (
+        "pg_15_function_filter.json",
+        true,
+        1,
+        Some(28850.0),
+        &["0:misestimate:critical"],
+    ),
 ];
 
 #[test]

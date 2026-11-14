@@ -1,0 +1,62 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_customer_id_status ON orders (customer_id, status);",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [
+      "writeOverhead"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 50000.0
+      },
+      {
+        "actual": true,
+        "key": "rowsKept",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 10.0
+      },
+      {
+        "actual": true,
+        "key": "rowsRemovedByFilter",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 49990.0
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "columns": "customer_id, status",
+      "examined": "50000",
+      "index": "ix_orders_customer_id_status",
+      "kept": "10",
+      "table": "orders",
+      "usedIndex": "ix_orders_customer_id"
+    },
+    "rule": "indexResidualFilter",
+    "severity": "warning",
+    "share": 0.996,
+    "statementRange": null,
+    "table": "orders"
+  }
+]

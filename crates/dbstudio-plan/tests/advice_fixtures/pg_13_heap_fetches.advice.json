@@ -1,0 +1,59 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "maintenance",
+        "label": "vacuumTable",
+        "lock": "none",
+        "scope": "object",
+        "sql": "VACUUM (ANALYZE) orders;",
+        "template": false
+      },
+      {
+        "kind": "maintenance",
+        "label": "tuneAutovacuum",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.02);",
+        "template": true
+      }
+    ],
+    "basis": "time",
+    "caveats": [
+      "vacuumIo",
+      "heapFetchesReplica"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "heapFetches",
+        "nodeId": 1,
+        "text": null,
+        "unit": "count",
+        "value": 180000.0
+      },
+      {
+        "actual": true,
+        "key": "rowsKept",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 200000.0
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "fetches": "180000",
+      "table": "orders"
+    },
+    "rule": "pgHeapFetches",
+    "severity": "warning",
+    "share": 0.855,
+    "statementRange": null,
+    "table": "orders"
+  }
+]

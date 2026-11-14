@@ -1,0 +1,46 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_status ON orders (status);",
+        "template": false
+      }
+    ],
+    "basis": "cost",
+    "caveats": [
+      "writeOverhead",
+      "estimatedOnly",
+      "metadataUnavailable"
+    ],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "rowsKept",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 38196.0
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "columns": "status",
+      "index": "ix_orders_status",
+      "kept": "38196",
+      "table": "orders"
+    },
+    "rule": "indexForFilter",
+    "severity": "warning",
+    "share": 1.0,
+    "statementRange": null,
+    "table": "orders"
+  }
+]

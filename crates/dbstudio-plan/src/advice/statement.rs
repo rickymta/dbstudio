@@ -92,8 +92,6 @@ const KEYWORDS: &[&str] = &[
     "true",
     "false",
     "interval",
-    "date",
-    "timestamp",
     "asc",
     "desc",
     "using",
@@ -349,7 +347,11 @@ fn non_sargable(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
                 let args = &sigs[i + 2..close];
                 // First bare column among the arguments, ignoring `AS type` tails.
                 let mut col: Option<(Option<String>, String)> = None;
-                let mut j = 0;
+                // `extract(year FROM col)`: the column follows FROM.
+                let mut j = args
+                    .iter()
+                    .position(|a| a.is_word("from") && a.depth == s.depth + 1)
+                    .map_or(0, |p| p + 1);
                 while j < args.len() {
                     let a = &args[j];
                     if a.is_word("as") {
@@ -922,11 +924,17 @@ fn large_offset(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
             .collect();
         let cmp = if order[0].1 { "<" } else { ">" };
         Some(format!(
-            "WHERE ({}) {cmp} ({})\nORDER BY {}{}\nLIMIT {page}",
+            "WHERE ({}) {cmp} ({})\nORDER BY {}\nLIMIT {page}",
             cols.join(", "),
             params.join(", "),
-            cols.join(", "),
-            if order[0].1 { " DESC" } else { "" }
+            cols.iter()
+                .map(|c| if order[0].1 {
+                    format!("{c} DESC")
+                } else {
+                    (*c).to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
         ))
     } else {
         None
@@ -1068,5 +1076,312 @@ fn not_in_subquery(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
         ));
         d.caveats.push(caveat("semanticsDiffer", true));
         drafts.push(d);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use dbstudio_core::ScriptDialect;
+
+    use super::super::AdviceRule;
+    use super::super::testing::{HEAP_PLAN, pg, pg_as, rules, seq_scan};
+
+    fn fires(statement: &str, rule: AdviceRule) -> bool {
+        // A seq scan whose filter mentions OR so the plan "confirms" OR suspicions too.
+        let plan = seq_scan("((a = 1) OR (b = 2))");
+        rules(&pg(&plan, statement)).contains(&rule)
+    }
+
+    fn fires_on_heap(statement: &str, rule: AdviceRule) -> bool {
+        rules(&pg(HEAP_PLAN, statement)).contains(&rule)
+    }
+
+    use AdviceRule::*;
+
+    #[test]
+    fn non_sargable_positive() {
+        for s in [
+            "select * from users where lower(email) = 'a'",
+            "select * from users where upper(u.name) like 'A%'",
+            "select * from t where abs(balance) > 5",
+            "select * from t where date(created_at) = '2024-05-01'",
+            "select * from t where coalesce(qty, 0) = 5",
+            "select * from t where qty + 1 = 5",
+            "select * from t where cast(created as date) = '2024-05-01'",
+            "select * from t where extract(year from created_at) = 2024",
+            "select * from t join u on lower(t.k) = u.k",
+        ] {
+            assert!(fires(s, NonSargablePredicate), "{s}");
+        }
+    }
+
+    #[test]
+    fn non_sargable_negative() {
+        for s in [
+            "select * from t where col = lower('X')",
+            "select * from t where note = 'lower(email) = 1'",
+            "select lower(email) from t where id = 5",
+            "select * from t where a = lower(b)",
+            "select * from t /* where lower(email) = 1 */ where id = 5",
+            "select * from t where lower('x') = 'x'",
+        ] {
+            assert!(!fires(s, NonSargablePredicate), "{s}");
+        }
+    }
+
+    #[test]
+    fn non_sargable_range_and_confirmation() {
+        let a = pg(
+            &seq_scan("(lower((email)::text) = 'a'::text)"),
+            "select * from orders where lower(email) = 'a'",
+        );
+        // The plan already explains it (pgFunctionOnColumn): the statement only gets a range.
+        let f = a.iter().find(|x| x.rule == PgFunctionOnColumn).unwrap();
+        assert_eq!(f.statement_range.map(|r| (r.start, r.end)), Some((27, 39)));
+        assert!(!rules(&a).contains(&NonSargablePredicate));
+        // With a plan that did not see it the static rule speaks, at low confidence.
+        let b = pg(HEAP_PLAN, "select * from t where lower(email) = 'a'");
+        let n = b.iter().find(|x| x.rule == NonSargablePredicate).unwrap();
+        assert_eq!(n.confidence, super::Confidence::Low);
+        assert_eq!(n.severity, crate::Severity::Info);
+        assert!(n.actions.iter().any(|x| x.template));
+    }
+
+    #[test]
+    fn leading_wildcard_positive() {
+        for s in [
+            "select * from t where name like '%abc'",
+            "select * from t where name ilike '%x%'",
+            "select * from t where name not like '%x'",
+            "select * from t where t.name like '_x'",
+            "select * from t where a = 1 and name like '%'",
+        ] {
+            assert!(fires(s, LeadingWildcardLike), "{s}");
+        }
+    }
+
+    #[test]
+    fn leading_wildcard_negative() {
+        for s in [
+            "select * from t where name like 'abc%'",
+            "select * from t where note = 'like ''%x'''",
+            "select * from t where name like $1",
+            "select * from t -- where name like '%x'\n where id = 1",
+        ] {
+            assert!(!fires(s, LeadingWildcardLike), "{s}");
+        }
+    }
+
+    #[test]
+    fn leading_wildcard_gives_trigram_index_for_postgres() {
+        let a = pg(
+            &seq_scan("(name ~~ '%abc'::text)"),
+            "select * from orders where name like '%abc'",
+        );
+        let l = a.iter().find(|x| x.rule == LeadingWildcardLike).unwrap();
+        let idx = l
+            .actions
+            .iter()
+            .find(|x| x.label_key == "createTrigramIndex")
+            .unwrap();
+        assert!(
+            idx.sql
+                .as_deref()
+                .unwrap()
+                .contains("USING gin (name gin_trgm_ops)")
+        );
+        assert!(
+            l.caveats
+                .iter()
+                .any(|c| c.key == "requiresExtension" && c.verify)
+        );
+        // The extension itself is never SQL of database scope.
+        assert!(l.actions.iter().all(|x| {
+            x.sql
+                .as_deref()
+                .is_none_or(|q| !q.contains("CREATE EXTENSION"))
+        }));
+    }
+
+    #[test]
+    fn or_across_columns_positive() {
+        for s in [
+            "select * from orders where a = 1 or b = 2",
+            "select * from orders where x.a = 1 or x.b = 2",
+            "select * from orders where (a = 1) or (b = 2)",
+            "select * from orders where a = 1 or b = 2 or c = 3",
+            "select * from orders where a = 1 or b = 2 order by id",
+        ] {
+            assert!(fires(s, OrAcrossColumns), "{s}");
+        }
+    }
+
+    #[test]
+    fn or_across_columns_negative() {
+        for s in [
+            "select * from orders where a = 1 or a = 2",
+            "select * from orders where note = 'a or b'",
+            "select * from orders where a = 1 and b = 2",
+            "select * from orders where c = 3 and (a = 1 or b = 2)",
+        ] {
+            assert!(!fires(s, OrAcrossColumns), "{s}");
+        }
+        // A plan that never scanned fully has no use for the rewrite.
+        assert!(
+            !rules(&pg(HEAP_PLAN, "select * from orders where a = 1 or b = 2"))
+                .contains(&OrAcrossColumns)
+        );
+    }
+
+    #[test]
+    fn or_rewrite_is_a_union_all_template() {
+        let a = pg(
+            &seq_scan("((a = 1) OR (b = 2))"),
+            "select * from orders where a = 1 or b = 2",
+        );
+        let o = a.iter().find(|x| x.rule == OrAcrossColumns).unwrap();
+        let sql = o.actions[0].sql.as_deref().unwrap();
+        assert!(o.actions[0].template);
+        assert!(sql.contains("WHERE a = 1\nUNION ALL\nSELECT /* columns */ FROM /* table */ WHERE b = 2 AND NOT (a = 1)"), "{sql}");
+    }
+
+    #[test]
+    fn select_star_positive_only_with_a_plan_sign() {
+        for s in [
+            "select * from t",
+            "select t.* from t",
+            "select distinct * from t",
+            "select * from t where id = 1",
+            "SELECT * FROM t ORDER BY id",
+        ] {
+            assert!(fires_on_heap(s, SelectStar), "{s}");
+        }
+    }
+
+    #[test]
+    fn select_star_negative() {
+        assert!(!fires("select * from t", SelectStar), "no sign in the plan");
+        for s in [
+            "select count(*) from t",
+            "select a, b from t",
+            "select id from t where note = 'select * from t'",
+        ] {
+            assert!(!fires_on_heap(s, SelectStar), "{s}");
+        }
+    }
+
+    #[test]
+    fn large_offset_positive() {
+        for s in [
+            "select * from t order by id offset 50000",
+            "select * from t order by id limit 10 offset 10000",
+            "select * from t offset 20000 rows fetch next 10 rows only",
+            "select * from t order by created desc, id desc limit 20 offset 99999",
+            "select * from t order by id offset 123456",
+        ] {
+            assert!(fires(s, LargeOffset), "{s}");
+        }
+        let mysql = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+            ansi_quotes: false,
+        };
+        let a = pg_as(
+            mysql,
+            &seq_scan("(a = 1)"),
+            "select * from t order by id limit 20000, 10",
+        );
+        assert!(rules(&a).contains(&LargeOffset));
+    }
+
+    #[test]
+    fn large_offset_negative() {
+        for s in [
+            "select * from t order by id offset 100",
+            "select * from t order by id offset 9999",
+            "select * from t where note = 'offset 50000'",
+            "select * from t limit 10",
+        ] {
+            assert!(!fires(s, LargeOffset), "{s}");
+        }
+    }
+
+    #[test]
+    fn large_offset_builds_keyset_sql() {
+        let a = pg(
+            &seq_scan("(a = 1)"),
+            "select * from t order by created desc, id desc limit 20 offset 50000",
+        );
+        let l = a.iter().find(|x| x.rule == LargeOffset).unwrap();
+        assert_eq!(
+            l.actions[0].sql.as_deref(),
+            Some(
+                "WHERE (created, id) < (:last_created, :last_id)\nORDER BY created DESC, id DESC\nLIMIT 20"
+            )
+        );
+        assert_eq!(l.statement_range.map(|r| r.end - r.start), Some(12));
+        // Mixed directions: no ready-made SQL.
+        let mixed = pg(
+            &seq_scan("(a = 1)"),
+            "select * from t order by created desc, id limit 20 offset 50000",
+        );
+        let l = mixed.iter().find(|x| x.rule == LargeOffset).unwrap();
+        assert!(l.actions[0].sql.is_none());
+    }
+
+    #[test]
+    fn not_in_subquery_positive() {
+        for s in [
+            "select * from t where id not in (select id from banned)",
+            "select * from t where t.id not in (select b.id from banned b)",
+            "select * from t where id not in (select id from banned where active)",
+            "select * from t where id not in (select user_id from banned) and x = 1",
+            "select * from t where id NOT IN ( SELECT id FROM banned )",
+        ] {
+            assert!(fires(s, NotInSubquery), "{s}");
+        }
+    }
+
+    #[test]
+    fn not_in_subquery_negative() {
+        for s in [
+            "select * from t where id not in (1, 2, 3)",
+            "select * from t where id not in (select a + b from u)",
+            "select * from t where id in (select id from banned)",
+            "select * from t where note = 'not in (select id from x)'",
+        ] {
+            assert!(!fires(s, NotInSubquery), "{s}");
+        }
+    }
+
+    #[test]
+    fn not_in_subquery_text_and_nullability() {
+        let a = pg(
+            &seq_scan("(a = 1)"),
+            "select * from t where id not in (select user_id from banned where active)",
+        );
+        let n = a.iter().find(|x| x.rule == NotInSubquery).unwrap();
+        assert_eq!(
+            n.actions[0].sql.as_deref(),
+            Some("NOT EXISTS (SELECT 1 FROM banned WHERE user_id = id AND (active))")
+        );
+        assert!(
+            n.caveats
+                .iter()
+                .any(|c| c.key == "semanticsDiffer" && c.verify)
+        );
+        assert_eq!(n.confidence, super::Confidence::Low);
+    }
+
+    #[test]
+    fn empty_or_non_sql_statements_are_ignored() {
+        assert!(!fires("", NonSargablePredicate));
+        assert!(!fires("   ", LargeOffset));
+        let a = pg_as(
+            ScriptDialect::MongoShell,
+            &seq_scan("(a = 1)"),
+            "db.t.find({}).skip(50000)",
+        );
+        assert!(a.iter().all(|x| x.statement_range.is_none()));
     }
 }

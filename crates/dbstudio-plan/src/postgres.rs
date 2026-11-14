@@ -4,7 +4,10 @@ use dbstudio_core::PlanFormat;
 
 use crate::build::{finish, flatten_scalars, join_conditions};
 use crate::json::{self, Js};
-use crate::{PlanError, PlanNode, PlanNodeKind, PlanObject, PlanTotals, PlanTree};
+use crate::{
+    NodePredicate, PlanError, PlanNode, PlanNodeKind, PlanObject, PlanTotals, PlanTree,
+    PredicateRole,
+};
 
 /// Members consumed explicitly (not copied to `extra`).
 const CONSUMED: &[&str] = &[
@@ -21,7 +24,25 @@ const CONSUMED: &[&str] = &[
     "Actual Total Time",
     "Actual Startup Time",
     "Plans",
-    "Plan Width",
+];
+
+/// Condition member and the role its text plays.
+const PREDICATE_ROLES: &[(&str, PredicateRole)] = &[
+    ("Index Cond", PredicateRole::IndexCond),
+    ("Recheck Cond", PredicateRole::Recheck),
+    ("Hash Cond", PredicateRole::JoinCond),
+    ("Merge Cond", PredicateRole::JoinCond),
+    ("Join Filter", PredicateRole::JoinFilter),
+    ("Filter", PredicateRole::Filter),
+    ("One-Time Filter", PredicateRole::Filter),
+    ("TID Cond", PredicateRole::IndexCond),
+];
+
+/// Array members whose elements are expressions with a role (one predicate per element).
+const KEY_ROLES: &[(&str, PredicateRole)] = &[
+    ("Sort Key", PredicateRole::SortKey),
+    ("Presorted Key", PredicateRole::SortKey),
+    ("Group Key", PredicateRole::GroupKey),
 ];
 
 const CONDITIONS: &[&str] = &[
@@ -45,7 +66,16 @@ pub(crate) fn parse(text: &str) -> Result<PlanTree, PlanError> {
     let plan = top
         .get("Plan")
         .ok_or_else(|| PlanError::Invalid("no \"Plan\" member in the PostgreSQL plan".into()))?;
-    let root = node(plan, 1.0);
+    let mut root = node(plan, 1.0);
+    // JIT is reported once for the whole statement (PostgreSQL 11+).
+    if let Some(jit) = top.get("JIT") {
+        if let Some(total) = jit.get("Timing").and_then(|t| t.num("Total")) {
+            root.put("JIT Total", crate::json::fmt_num(total));
+        }
+        if let Some(f) = jit.num("Functions") {
+            root.put("JIT Functions", crate::json::fmt_num(f));
+        }
+    }
     let analyzed = top.get("Execution Time").is_some() || any_actual(&root);
     let totals = PlanTotals {
         total_cost: root.est_cost,
@@ -135,6 +165,22 @@ fn node(p: &Js, factor: f64) -> PlanNode {
             .filter_map(|k| p.text(k).map(|v| format!("{k}: {v}")))
             .collect(),
     );
+    for (key, role) in PREDICATE_ROLES {
+        if let Some(text) = p.text(key) {
+            n.predicates.push(NodePredicate {
+                role: *role,
+                text: text.to_string(),
+            });
+        }
+    }
+    for (key, role) in KEY_ROLES {
+        for item in p.get(key).map(Js::items).unwrap_or_default() {
+            n.predicates.push(NodePredicate {
+                role: *role,
+                text: item.display(),
+            });
+        }
+    }
     n.est_startup_cost = p.num("Startup Cost");
     n.est_cost = p.num("Total Cost");
     n.est_rows = p.num("Plan Rows");
@@ -221,5 +267,67 @@ mod tests {
         assert_eq!(t.root.actual_time_ms, Some(2.0));
         assert_eq!(t.root.actual_rows_total, Some(12.0));
         assert_eq!(t.totals.execution_time_ms, Some(2.5));
+    }
+
+    #[test]
+    fn conditions_keep_their_roles_and_keys_become_predicates() {
+        let t = parse(
+            r#"[{"Plan":{"Node Type":"Sort","Total Cost":9.0,"Plan Rows":1,"Plan Width":24,
+            "Sort Key":["o.created DESC","o.id"],
+            "Plans":[{"Node Type":"Hash Join","Total Cost":8.0,"Plan Rows":1,
+              "Hash Cond":"(o.customer_id = c.id)","Join Filter":"(o.x > c.y)",
+              "Plans":[{"Node Type":"Index Scan","Relation Name":"orders","Alias":"o",
+                "Index Name":"ix","Total Cost":3.0,"Plan Rows":1,"Output":["o.id","o.created"],
+                "Index Cond":"(o.customer_id = 5)","Filter":"(o.status = 'x'::text)"}]}]},
+            "JIT":{"Functions":4,"Timing":{"Generation":1.5,"Total":42.25}},
+            "Execution Time":1.0}]"#,
+        )
+        .unwrap();
+        use crate::PredicateRole::*;
+        let roles = |n: &PlanNode| -> Vec<(crate::PredicateRole, String)> {
+            n.predicates
+                .iter()
+                .map(|p| (p.role, p.text.clone()))
+                .collect()
+        };
+        assert_eq!(
+            roles(&t.root),
+            vec![(SortKey, "o.created DESC".into()), (SortKey, "o.id".into())]
+        );
+        let join = &t.root.children[0];
+        assert_eq!(
+            roles(join),
+            vec![
+                (JoinCond, "(o.customer_id = c.id)".into()),
+                (JoinFilter, "(o.x > c.y)".into())
+            ]
+        );
+        let scan = &join.children[0];
+        assert_eq!(
+            roles(scan),
+            vec![
+                (IndexCond, "(o.customer_id = 5)".into()),
+                (Filter, "(o.status = 'x'::text)".into())
+            ]
+        );
+        // The joined `condition` text is unchanged, `Plan Width` and `Output` are kept.
+        assert!(scan.condition.as_deref().unwrap().contains("Index Cond"));
+        assert_eq!(scan.extra.get("Plan Width"), None);
+        assert_eq!(
+            scan.extra.get("Output").map(String::as_str),
+            Some("o.id, o.created")
+        );
+        assert_eq!(
+            t.root.extra.get("Plan Width").map(String::as_str),
+            Some("24")
+        );
+        assert_eq!(
+            t.root.extra.get("JIT Total").map(String::as_str),
+            Some("42.25")
+        );
+        assert_eq!(
+            t.root.extra.get("JIT Functions").map(String::as_str),
+            Some("4")
+        );
     }
 }

@@ -1,0 +1,113 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "rewrite",
+        "label": "keysetPagination",
+        "lock": null,
+        "scope": "query",
+        "sql": "WHERE (created) > (:last_created)\nORDER BY created\nLIMIT 20",
+        "template": true
+      }
+    ],
+    "basis": "none",
+    "caveats": [
+      "keysetNeedsUniqueOrder"
+    ],
+    "confidence": "high",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "offset",
+        "nodeId": null,
+        "text": null,
+        "unit": "rows",
+        "value": 50000.0
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [],
+    "params": {
+      "offset": "50000"
+    },
+    "rule": "largeOffset",
+    "severity": "warning",
+    "share": null,
+    "statementRange": {
+      "end": 108,
+      "start": 96
+    },
+    "table": null
+  },
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewFilter",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "cost",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "rowsRead",
+        "nodeId": 2,
+        "text": null,
+        "unit": "rows",
+        "value": 152867.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      2
+    ],
+    "params": {
+      "rows": "152867",
+      "table": "orders"
+    },
+    "rule": "fullScanReview",
+    "severity": "info",
+    "share": 0.02,
+    "statementRange": null,
+    "table": "orders"
+  },
+  {
+    "actions": [
+      {
+        "kind": "rewrite",
+        "label": "rewriteNotExists",
+        "lock": null,
+        "scope": "query",
+        "sql": "NOT EXISTS (SELECT 1 FROM banned WHERE id = customer_id)",
+        "template": true
+      }
+    ],
+    "basis": "none",
+    "caveats": [
+      "semanticsDiffer"
+    ],
+    "confidence": "low",
+    "evidence": [],
+    "fromWarnings": [],
+    "nodeIds": [],
+    "params": {
+      "column": "customer_id"
+    },
+    "rule": "notInSubquery",
+    "severity": "info",
+    "share": null,
+    "statementRange": {
+      "end": 69,
+      "start": 39
+    },
+    "table": null
+  }
+]

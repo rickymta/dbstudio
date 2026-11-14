@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 
 use dbstudio_core::{PlanFormat, TextRange};
 
-pub use context::{AdvisorContext, ServerFacts, TableKey, TableMeta};
+pub use context::{AdvisorContext, ServerFacts, TableKey, TableMeta, dialect_of_format};
 pub use model::{
     ActionKind, ActionScope, AdviceAction, AdviceMetadata, AdviceReport, AdviceRule, Caveat,
     Confidence, Evidence, EvidenceUnit, Impact, ImpactBasis, LockRisk, MetadataState,
@@ -35,9 +35,6 @@ pub use model::{
 
 use crate::{PlanNode, PlanRule, PlanTree, Severity};
 use index::{IndexCandidate, IndexOutcome};
-
-/// Package "Bước 0" ships the contract with the rules switched off; package R1 turns them on.
-const RULES_ENABLED: bool = false;
 
 /// Read access to the plan for rule modules.
 pub(crate) struct Cx<'a> {
@@ -170,9 +167,6 @@ impl Draft {
 
 /// Advice for `tree` (already analysed) and the statement that produced it, best first.
 pub fn advise(tree: &PlanTree, statement: &str, ctx: &AdvisorContext<'_>) -> Vec<PlanAdvice> {
-    if !RULES_ENABLED {
-        return Vec::new();
-    }
     let cx = Cx::new(tree, statement, ctx);
     let mut drafts: Vec<Draft> = Vec::new();
     for node in &cx.nodes {
@@ -606,4 +600,167 @@ fn rank(list: Vec<Finished>, max: usize, warnings: &[crate::PlanWarning]) -> Vec
         }
     }
     kept
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    //! Helpers for rule unit tests: run the whole engine on an inline plan.
+
+    use dbstudio_core::{PlanFormat, RawPlan, ScriptDialect};
+
+    use super::*;
+    use crate::{PlanRules, parse_and_analyze};
+
+    /// A raw PostgreSQL plan with `statement`.
+    pub fn pg_raw(plan_json: &str, statement: &str) -> RawPlan {
+        RawPlan {
+            format: PlanFormat::PostgresJson,
+            text: plan_json.into(),
+            statement: statement.into(),
+            analyzed: true,
+            rolled_back: false,
+            server_version: "16.2".into(),
+            captured_at: "2025-01-01T00:00:00Z".into(),
+            extra: BTreeMap::new(),
+        }
+    }
+
+    /// Advice for an inline PostgreSQL plan.
+    pub fn pg(plan_json: &str, statement: &str) -> Vec<PlanAdvice> {
+        parse_and_analyze(&pg_raw(plan_json, statement), &PlanRules::default())
+            .expect("plan parses")
+            .advice
+    }
+
+    /// Advice for an inline plan, pretending the connection speaks `dialect`.
+    pub fn pg_as(dialect: ScriptDialect, plan_json: &str, statement: &str) -> Vec<PlanAdvice> {
+        let raw = pg_raw(plan_json, statement);
+        let rules = PlanRules::default();
+        let mut ctx = AdvisorContext::basic(&raw, &rules);
+        ctx.dialect = dialect;
+        let mut tree = crate::parse(&raw).expect("plan parses");
+        crate::analyze(&mut tree, &rules);
+        advise(&tree, statement, &ctx)
+    }
+
+    /// A seq scan of `orders` that keeps 10 of 200 000 rows through `filter`.
+    pub fn seq_scan(filter: &str) -> String {
+        format!(
+            r#"[{{"Plan":{{"Node Type":"Seq Scan","Relation Name":"orders","Alias":"orders",
+            "Startup Cost":0.0,"Total Cost":4000.0,"Plan Rows":10,"Actual Startup Time":0.1,
+            "Actual Total Time":100.0,"Actual Rows":10,"Actual Loops":1,"Filter":"{filter}",
+            "Rows Removed by Filter":199990}},"Execution Time":100.5}}]"#
+        )
+    }
+
+    /// An index only scan with many heap fetches (a plan sign for `SELECT *`).
+    pub const HEAP_PLAN: &str = r#"[{"Plan":{"Node Type":"Index Only Scan","Relation Name":"orders",
+        "Alias":"orders","Index Name":"ix","Startup Cost":0.0,"Total Cost":500.0,"Plan Rows":9000,
+        "Actual Startup Time":0.1,"Actual Total Time":50.0,"Actual Rows":9000,"Actual Loops":1,
+        "Heap Fetches":5000},"Execution Time":50.5}]"#;
+
+    pub fn rules(advice: &[PlanAdvice]) -> Vec<AdviceRule> {
+        advice.iter().map(|a| a.rule).collect()
+    }
+
+    #[test]
+    fn epoch_seconds_and_staleness() {
+        assert_eq!(epoch_secs("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(epoch_secs("2025-01-01T00:00:00Z"), Some(1_735_689_600));
+        assert_eq!(epoch_secs("nope"), None);
+        assert_eq!(epoch_secs("2025-13-01T00:00:00Z"), None);
+        let raw = pg_raw(&seq_scan("(status = 'x'::text)"), "");
+        let rules = PlanRules::default();
+        let mut ctx = AdvisorContext::basic(&raw, &rules);
+        let mut tree = crate::parse(&raw).unwrap();
+        crate::analyze(&mut tree, &rules);
+        let fresh = advise(&tree, "", &ctx);
+        assert!(
+            fresh
+                .iter()
+                .all(|a| a.caveats.iter().all(|c| c.key != "planMayBeStale"))
+        );
+        ctx.now = "2025-01-03T00:00:00Z";
+        let old = advise(&tree, "", &ctx);
+        assert!(!old.is_empty());
+        assert!(
+            old.iter()
+                .all(|a| a.caveats.iter().any(|c| c.key == "planMayBeStale"))
+        );
+    }
+
+    #[test]
+    fn existing_index_turns_into_existing_index_unused() {
+        let raw = pg_raw(&seq_scan("(status = 'x'::text)"), "");
+        let rules = PlanRules::default();
+        let mut ctx = AdvisorContext::basic(&raw, &rules);
+        ctx.tables.insert(
+            TableKey::new(None, "orders"),
+            TableMeta {
+                path: dbstudio_core::ObjectPath::root(),
+                estimated_rows: Some(200_000),
+                columns: vec![],
+                indexes: vec![dbstudio_core::IndexDetail {
+                    name: "ix_status".into(),
+                    columns: vec!["status".into()],
+                    unique: false,
+                    primary: false,
+                    method: Some("btree".into()),
+                    definition: None,
+                    partial: false,
+                }],
+            },
+        );
+        ctx.metadata = MetadataState::Checked;
+        let mut tree = crate::parse(&raw).unwrap();
+        crate::analyze(&mut tree, &rules);
+        let advice = advise(&tree, "", &ctx);
+        let a = advice
+            .iter()
+            .find(|a| a.rule == AdviceRule::ExistingIndexUnused)
+            .expect("existing index");
+        assert_eq!(a.params.get("index").map(String::as_str), Some("ix_status"));
+        assert!(a.actions.iter().all(|x| x.kind != ActionKind::CreateIndex));
+        assert!(a.actions.iter().any(|x| x.kind == ActionKind::Statistics));
+        // With the catalog read, the missing-metadata caveat is gone.
+        assert!(a.caveats.iter().all(|c| c.key != "metadataUnavailable"));
+    }
+
+    #[test]
+    fn prefix_index_advice_is_folded_into_the_longer_one() {
+        // Two scans of the same table: one filters on status, the other on status + customer.
+        let plan = r#"[{"Plan":{"Node Type":"Append","Startup Cost":0.0,"Total Cost":9000.0,
+            "Plan Rows":20,"Actual Startup Time":0.1,"Actual Total Time":200.0,"Actual Rows":20,
+            "Actual Loops":1,"Plans":[
+            {"Node Type":"Seq Scan","Relation Name":"orders","Alias":"a","Startup Cost":0.0,
+             "Total Cost":4000.0,"Plan Rows":10,"Actual Startup Time":0.1,"Actual Total Time":100.0,
+             "Actual Rows":10,"Actual Loops":1,"Filter":"(a.status = 'x'::text)",
+             "Rows Removed by Filter":199990},
+            {"Node Type":"Seq Scan","Relation Name":"orders","Alias":"b","Startup Cost":0.0,
+             "Total Cost":4000.0,"Plan Rows":10,"Actual Startup Time":0.1,"Actual Total Time":100.0,
+             "Actual Rows":10,"Actual Loops":1,
+             "Filter":"((b.status = 'y'::text) AND (b.customer_id = 5))",
+             "Rows Removed by Filter":199990}]},"Execution Time":200.5}]"#;
+        let advice = pg(plan, "");
+        let idx: Vec<_> = advice
+            .iter()
+            .filter(|a| a.rule == AdviceRule::IndexForFilter)
+            .collect();
+        assert_eq!(idx.len(), 1, "{advice:#?}");
+        assert_eq!(idx[0].node_ids.len(), 2);
+        assert!(idx[0].caveats.iter().any(|c| c.key == "coversOtherAdvice"));
+        let sql = idx[0].actions[0].sql.as_deref().unwrap();
+        assert!(sql.contains("(status, customer_id)"), "{sql}");
+    }
+
+    #[test]
+    fn max_advice_cuts_but_keeps_warning_answers() {
+        let raw = pg_raw(&seq_scan("(status = 'x'::text)"), "");
+        let rules = PlanRules {
+            max_advice: 1,
+            ..PlanRules::default()
+        };
+        let tree = parse_and_analyze(&raw, &rules).unwrap();
+        assert!(tree.advice.len() <= 2);
+    }
 }

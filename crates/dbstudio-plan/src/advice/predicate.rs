@@ -528,14 +528,19 @@ fn parse_atom(toks: &[Tok], i: usize) -> (Operand, usize) {
                     first_lit = Some(t.clone());
                 }
                 let nargs = depth_args.len();
-                for a in depth_args {
+                // T-SQL `CONVERT(type, expr [, style])`: the first argument is a type name.
+                let skip = usize::from(matches!(
+                    lw.as_str(),
+                    "convert" | "try_convert" | "convert_implicit"
+                ));
+                for a in depth_args.into_iter().skip(skip) {
                     // `CAST(col AS type)`: drop the `AS type` tail.
                     let a = match top_level(a, |t| is_word(t, "as")).first() {
                         Some(p) => &a[..*p],
                         None => a,
                     };
                     let operand = parse_expr(a);
-                    if nargs == 1 && matches!(operand, Operand::Col(_)) {
+                    if nargs - skip == 1 && matches!(operand, Operand::Col(_)) {
                         simple = true;
                     }
                     cols.extend(cols_of(&operand));
@@ -1480,6 +1485,66 @@ mod tests {
     fn mongo_dotted_field() {
         let v = parse_mongo_filter(r#"{"address.city":"Hue"}"#);
         assert_eq!(col(&v[0]), "address.city");
+    }
+
+    // ---- one table of many small cases ---------------------------------------------------
+    #[test]
+    fn case_table() {
+        use CondKind::*;
+        let cases: &[(ScriptDialect, &str, CondKind, &str)] = &[
+            (PG, "(a = 1)", Eq, "a"),
+            (PG, "(t.a = 1)", Eq, "a"),
+            (PG, "(a = 'x'::character varying)", Eq, "a"),
+            (PG, "(a = ANY ('{1,2}'::integer[]))", Eq, "a"),
+            (PG, "(a >= 5)", Range, "a"),
+            (PG, "(a < 5)", Range, "a"),
+            (PG, "(a BETWEEN 1 AND 2)", Range, "a"),
+            (PG, "(a IS NULL)", Eq, "a"),
+            (PG, "(a IS NOT NULL)", Other, ""),
+            (PG, "(a <> 1)", Other, ""),
+            (PG, "(a NOT IN (1))", Other, ""),
+            (PG, "(upper(a) = 'X')", NonSargable, "a"),
+            (PG, "(trim(a) = 'X')", NonSargable, "a"),
+            (PG, "(length(a) > 3)", NonSargable, "a"),
+            (PG, "((a * 2) > 3)", NonSargable, "a"),
+            (PG, "((a - 1) = 3)", NonSargable, "a"),
+            (PG, "(a ~~ 'x%')", Range, "a"),
+            (PG, "(a ~~ '%x')", NonSargable, "a"),
+            (PG, "(t.a = u.b)", Join, "a"),
+            (PG, "(a = u.b)", Join, "a"),
+            (PG, "(a = b)", Other, ""),
+            (PG, "(u.a = 1)", Other, ""),
+            (PG, "(a = (SELECT 1))", Eq, "a"),
+            (PG, "(a = $2)", Eq, "a"),
+            (PG, "(a = '2024-01-01'::date)", Eq, "a"),
+            (PG, "((a)::date >= '2024-01-01'::date)", NonSargable, "a"),
+            (PG, "((a)::numeric = 1)", NonSargable, "a"),
+            (PG, "((a)::int4 = 1)", Eq, "a"),
+            (PG, "(a = ANY (ARRAY[1,2]))", Eq, "a"),
+            (MSSQL, "[t].[a]=(1)", Eq, "a"),
+            (MSSQL, "[a]>='2024-01-01'", Range, "a"),
+            (MSSQL, "[a] IS NULL", Eq, "a"),
+            (MSSQL, "[t].[a]=[u].[b]", Join, "a"),
+            (MSSQL, "CONVERT(int,[t].[a],0)=(5)", NonSargable, "a"),
+            (MSSQL, "len([a])>(3)", NonSargable, "a"),
+            (MYSQL, "(`t`.`a` between 1 and 5)", Range, "a"),
+            (MYSQL, "(`t`.`a` like 'x%')", Range, "a"),
+            (MYSQL, "(`t`.`a` like '%x')", NonSargable, "a"),
+            (MYSQL, "(`t`.`a` is null)", Eq, "a"),
+            (MYSQL, "(lower(`t`.`a`) = 'x')", NonSargable, "a"),
+            (ORACLE, "\"T\".\"A\">5", Range, "A"),
+            (ORACLE, "\"T\".\"A\"=\"U\".\"B\"", Join, "A"),
+            (ORACLE, "UPPER(\"T\".\"A\")='X'", NonSargable, "A"),
+            (ORACLE, "\"A\" IS NULL", Eq, "A"),
+        ];
+        for (d, text, kind, column) in cases {
+            let names = ["t", "T"];
+            let c = one(*d, text, &names);
+            assert_eq!(c.kind, *kind, "{text}: {c:?}");
+            if !column.is_empty() {
+                assert_eq!(col(&c), *column, "{text}: {c:?}");
+            }
+        }
     }
 
     // ---- cast table ----------------------------------------------------------------------

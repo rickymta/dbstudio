@@ -1,0 +1,29 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Index Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Scan Direction": "Forward",
+      "Index Name": "ix_orders_customer_id",
+      "Relation Name": "orders",
+      "Alias": "orders",
+      "Startup Cost": 0.42,
+      "Total Cost": 3812.55,
+      "Plan Rows": 12,
+      "Plan Width": 64,
+      "Actual Startup Time": 0.035,
+      "Actual Total Time": 14.812,
+      "Actual Rows": 10,
+      "Actual Loops": 1,
+      "Index Cond": "(customer_id = 42)",
+      "Rows Removed by Index Recheck": 0,
+      "Filter": "(status = 'void'::text)",
+      "Rows Removed by Filter": 49990
+    },
+    "Planning Time": 0.120,
+    "Triggers": [
+    ],
+    "Execution Time": 14.870
+  }
+]

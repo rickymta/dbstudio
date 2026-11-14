@@ -1,0 +1,70 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "statistics",
+        "label": "refreshStatistics",
+        "lock": "none",
+        "scope": "object",
+        "sql": "ANALYZE skew;",
+        "template": false
+      },
+      {
+        "kind": "statistics",
+        "label": "raiseStatisticsTarget",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "ALTER TABLE skew ALTER COLUMN grp SET STATISTICS 1000;\nANALYZE skew;",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "estimatedRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 1064.0
+      },
+      {
+        "actual": true,
+        "key": "actualRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 59994.0
+      },
+      {
+        "actual": true,
+        "key": "misestimateFactor",
+        "nodeId": 0,
+        "text": null,
+        "unit": "ratio",
+        "value": 56.4
+      }
+    ],
+    "fromWarnings": [
+      "misestimate"
+    ],
+    "nodeIds": [
+      0,
+      1
+    ],
+    "params": {
+      "actual": "59994",
+      "direction": "under",
+      "estimated": "1064",
+      "factor": "56.4",
+      "table": "skew"
+    },
+    "rule": "staleStatistics",
+    "severity": "warning",
+    "share": 0.887,
+    "statementRange": null,
+    "table": "skew"
+  }
+]

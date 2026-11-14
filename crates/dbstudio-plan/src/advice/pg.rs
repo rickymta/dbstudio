@@ -782,3 +782,201 @@ fn cold_cache(cx: &Cx<'_>, out: &mut Vec<Draft>) {
     d.fingerprint_key = "cache".into();
     out.push(d);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::testing::{pg, rules, seq_scan};
+    use super::*;
+
+    fn find(advice: &[super::super::PlanAdvice], rule: AdviceRule) -> &super::super::PlanAdvice {
+        advice
+            .iter()
+            .find(|a| a.rule == rule)
+            .unwrap_or_else(|| panic!("{rule:?} not in {:?}", rules(advice)))
+    }
+
+    #[test]
+    fn jit_overhead_fires_above_the_thresholds() {
+        let plan = |jit: f64| {
+            format!(
+                r#"[{{"Plan":{{"Node Type":"Result","Startup Cost":0,"Total Cost":1,"Plan Rows":1,
+                "Actual Startup Time":0,"Actual Total Time":300,"Actual Rows":1,"Actual Loops":1}},
+                "JIT":{{"Functions":12,"Timing":{{"Generation":3,"Total":{jit}}}}},
+                "Execution Time":400}}]"#
+            )
+        };
+        let a = pg(&plan(120.0), "");
+        let jit = find(&a, AdviceRule::PgJitOverhead);
+        assert_eq!(jit.actions[0].sql.as_deref(), Some("SET jit = off;"));
+        assert_eq!(jit.actions[0].scope, ActionScope::Session);
+        // The server wide knob is described, never given as SQL.
+        assert!(
+            jit.actions
+                .iter()
+                .any(|x| x.scope == ActionScope::Server && x.sql.is_none())
+        );
+        // Under 50 ms, or under 20% of the run: silent.
+        assert!(
+            pg(&plan(30.0), "")
+                .iter()
+                .all(|a| a.rule != AdviceRule::PgJitOverhead)
+        );
+        assert!(
+            pg(&plan(60.0), "")
+                .iter()
+                .all(|a| a.rule != AdviceRule::PgJitOverhead)
+        );
+    }
+
+    #[test]
+    fn cold_cache_is_info_only() {
+        let plan = r#"[{"Plan":{"Node Type":"Result","Startup Cost":0,"Total Cost":1,"Plan Rows":1,
+            "Actual Startup Time":0,"Actual Total Time":3,"Actual Rows":1,"Actual Loops":1,
+            "Shared Hit Blocks":100,"Shared Read Blocks":50000},"Execution Time":4}]"#;
+        let a = pg(plan, "");
+        let c = find(&a, AdviceRule::PgColdCache);
+        assert_eq!(c.severity, Severity::Info);
+        assert!(c.actions.iter().all(|x| x.sql.is_none()));
+    }
+
+    #[test]
+    fn parallel_workers_not_launched() {
+        let plan = r#"[{"Plan":{"Node Type":"Gather","Startup Cost":0,"Total Cost":10,"Plan Rows":10,
+            "Actual Startup Time":0,"Actual Total Time":3,"Actual Rows":10,"Actual Loops":1,
+            "Workers Planned":4,"Workers Launched":1,"Plans":[
+            {"Node Type":"Seq Scan","Parallel Aware":true,"Relation Name":"t","Alias":"t",
+             "Startup Cost":0,"Total Cost":9,"Plan Rows":10,"Actual Startup Time":0,
+             "Actual Total Time":2,"Actual Rows":5,"Actual Loops":2}]},"Execution Time":4}]"#;
+        let a = pg(plan, "");
+        let p = find(&a, AdviceRule::PgParallelNotLaunched);
+        let act = &p.actions[0];
+        assert_eq!(act.kind, ActionKind::Check);
+        assert_eq!(act.scope, ActionScope::Server);
+        assert!(act.sql.as_deref().unwrap().contains("max_parallel_workers"));
+    }
+
+    #[test]
+    fn not_in_subplan_proposes_not_exists() {
+        let plan = r#"[{"Plan":{"Node Type":"Seq Scan","Relation Name":"orders","Alias":"orders",
+            "Startup Cost":0,"Total Cost":99999,"Plan Rows":100,"Actual Startup Time":0,
+            "Actual Total Time":9000,"Actual Rows":100,"Actual Loops":1,
+            "Filter":"(NOT (SubPlan 1))","Rows Removed by Filter":10}, "Execution Time":9001}]"#;
+        let a = pg(
+            plan,
+            "select * from orders where id not in (select order_id from refunds)",
+        );
+        let n = find(&a, AdviceRule::PgNotInSubplan);
+        assert!(
+            n.caveats
+                .iter()
+                .any(|c| c.key == "semanticsDiffer" && c.verify)
+        );
+        let sql = n.actions[0].sql.as_deref().unwrap();
+        assert!(
+            sql.contains("NOT EXISTS (SELECT 1 FROM refunds WHERE order_id = id)"),
+            "{sql}"
+        );
+        assert!(n.statement_range.is_some());
+        // A hashed subplan is fine.
+        let hashed = plan.replace("(NOT (SubPlan 1))", "(NOT (hashed SubPlan 1))");
+        assert!(
+            pg(&hashed, "")
+                .iter()
+                .all(|a| a.rule != AdviceRule::PgNotInSubplan)
+        );
+    }
+
+    #[test]
+    fn hash_batches_ask_for_more_work_mem() {
+        let plan = r#"[{"Plan":{"Node Type":"Hash Join","Startup Cost":0,"Total Cost":100,
+            "Plan Rows":10,"Actual Startup Time":0,"Actual Total Time":500,"Actual Rows":10,
+            "Actual Loops":1,"Hash Cond":"(a.x = b.x)","Plans":[
+            {"Node Type":"Seq Scan","Relation Name":"a","Alias":"a","Startup Cost":0,"Total Cost":10,
+             "Plan Rows":10,"Actual Startup Time":0,"Actual Total Time":1,"Actual Rows":10,"Actual Loops":1},
+            {"Node Type":"Hash","Startup Cost":0,"Total Cost":50,"Plan Rows":10,
+             "Actual Startup Time":0,"Actual Total Time":400,"Actual Rows":10,"Actual Loops":1,
+             "Hash Batches":8,"Original Hash Batches":1,"Peak Memory Usage":4096}]},
+            "Execution Time":501}]"#;
+        let a = pg(plan, "");
+        let h = find(&a, AdviceRule::HashSpill);
+        assert_eq!(
+            h.actions[0].sql.as_deref(),
+            Some("SET work_mem = '32768kB';")
+        );
+        assert!(
+            h.actions
+                .iter()
+                .any(|x| x.sql.as_deref() == Some("SET hash_mem_multiplier = 2;"))
+        );
+        assert_eq!(h.from_warnings, vec![PlanRule::SpillToDisk]);
+    }
+
+    #[test]
+    fn implicit_conversion_on_an_id_column() {
+        let a = pg(
+            &seq_scan("((customer_id)::text = '5'::text)"),
+            "select * from orders where customer_id::text = '5'",
+        );
+        let c = find(&a, AdviceRule::ImplicitConversion);
+        assert_eq!(c.params.get("cast").map(String::as_str), Some("text"));
+        // Without the catalog the confidence is lowered and says so.
+        assert!(
+            c.caveats
+                .iter()
+                .any(|x| x.key == "metadataUnavailable" && x.verify)
+        );
+        // A varchar column cast to text is harmless and silent.
+        let quiet = pg(&seq_scan("((status)::text = 'x'::text)"), "");
+        assert!(
+            quiet
+                .iter()
+                .all(|a| a.rule != AdviceRule::ImplicitConversion)
+        );
+    }
+
+    #[test]
+    fn date_cast_gets_a_range_rewrite_and_an_immutability_caveat() {
+        let a = pg(&seq_scan("((created)::date = '2024-05-01'::date)"), "");
+        let f = find(&a, AdviceRule::PgFunctionOnColumn);
+        assert!(
+            f.actions
+                .iter()
+                .any(|x| x.template && x.label_key == "rewriteAsRange")
+        );
+        assert!(
+            f.caveats
+                .iter()
+                .any(|c| c.key == "expressionMustBeImmutable" && c.verify)
+        );
+        // The index on the expression is offered as well.
+        let idx = f
+            .actions
+            .iter()
+            .find(|x| x.kind == ActionKind::CreateIndex)
+            .unwrap();
+        assert!(
+            idx.sql.as_deref().unwrap().contains("(((created)::date))"),
+            "{idx:?}"
+        );
+    }
+
+    #[test]
+    fn heap_fetches_stay_quiet_below_the_ratio() {
+        let plan = r#"[{"Plan":{"Node Type":"Index Only Scan","Relation Name":"t","Alias":"t",
+            "Index Name":"ix","Startup Cost":0,"Total Cost":1,"Plan Rows":1000000,
+            "Actual Startup Time":0,"Actual Total Time":1,"Actual Rows":1000000,"Actual Loops":1,
+            "Heap Fetches":2000},"Execution Time":2}]"#;
+        assert!(
+            pg(plan, "")
+                .iter()
+                .all(|a| a.rule != AdviceRule::PgHeapFetches)
+        );
+    }
+
+    #[test]
+    fn work_mem_helper_rounds_to_powers_of_two() {
+        assert_eq!(pow2_at_least(1.0), 1);
+        assert_eq!(pow2_at_least(17.3), 32);
+        assert_eq!(pow2_at_least(64.0), 64);
+    }
+}

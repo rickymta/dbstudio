@@ -1,0 +1,186 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_items_sku_qty ON items (sku, qty);",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [
+      "indexForSortSpill",
+      "writeOverhead"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "sortRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 300000.0
+      },
+      {
+        "actual": false,
+        "key": "sortKey",
+        "nodeId": 0,
+        "text": "sku, qty",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [
+      "spillToDisk"
+    ],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "columns": "sku, qty",
+      "index": "ix_items_sku_qty",
+      "rows": "300000",
+      "table": "items"
+    },
+    "rule": "indexForSort",
+    "severity": "warning",
+    "share": 0.907,
+    "statementRange": null,
+    "table": "items"
+  },
+  {
+    "actions": [
+      {
+        "kind": "sessionSetting",
+        "label": "raiseWorkMem",
+        "lock": "none",
+        "scope": "session",
+        "sql": "SET work_mem = '32MB';",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [
+      "workMemMultiplies",
+      "spillEstimate"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "sortSpaceKb",
+        "nodeId": 0,
+        "text": null,
+        "unit": "kb",
+        "value": 8864.0
+      },
+      {
+        "actual": false,
+        "key": "sortMethod",
+        "nodeId": 0,
+        "text": "external merge",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [
+      "spillToDisk"
+    ],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "spaceKb": "8864",
+      "workMem": "32MB"
+    },
+    "rule": "sortSpill",
+    "severity": "warning",
+    "share": 0.907,
+    "statementRange": null,
+    "table": null
+  },
+  {
+    "actions": [
+      {
+        "kind": "rewrite",
+        "label": "listColumns",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "planSign",
+        "nodeId": 0,
+        "text": "spill",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "sign": "spill"
+    },
+    "rule": "selectStar",
+    "severity": "info",
+    "share": 0.907,
+    "statementRange": {
+      "end": 8,
+      "start": 7
+    },
+    "table": null
+  },
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewFilter",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 300000.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "rows": "300000",
+      "table": "items"
+    },
+    "rule": "fullScanReview",
+    "severity": "warning",
+    "share": 0.065,
+    "statementRange": null,
+    "table": "items"
+  }
+]

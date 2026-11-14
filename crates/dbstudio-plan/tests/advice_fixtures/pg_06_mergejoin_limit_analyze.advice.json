@@ -1,0 +1,118 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "statistics",
+        "label": "refreshStatistics",
+        "lock": "none",
+        "scope": "object",
+        "sql": "ANALYZE plan_fx.orders;",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "estimatedRows",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 152867.0
+      },
+      {
+        "actual": true,
+        "key": "actualRows",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 10.0
+      },
+      {
+        "actual": true,
+        "key": "misestimateFactor",
+        "nodeId": 1,
+        "text": null,
+        "unit": "ratio",
+        "value": 15286.7
+      }
+    ],
+    "fromWarnings": [
+      "misestimate"
+    ],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "actual": "10",
+      "direction": "over",
+      "estimated": "152867",
+      "factor": "15286.7",
+      "table": "plan_fx.orders"
+    },
+    "rule": "staleStatistics",
+    "severity": "critical",
+    "share": 1.0,
+    "statementRange": null,
+    "table": "plan_fx.orders"
+  },
+  {
+    "actions": [
+      {
+        "kind": "maintenance",
+        "label": "vacuumTable",
+        "lock": "none",
+        "scope": "object",
+        "sql": "VACUUM (ANALYZE) plan_fx.orders;",
+        "template": false
+      },
+      {
+        "kind": "maintenance",
+        "label": "tuneAutovacuum",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "ALTER TABLE plan_fx.orders SET (autovacuum_vacuum_scale_factor = 0.02);",
+        "template": true
+      }
+    ],
+    "basis": "time",
+    "caveats": [
+      "vacuumIo",
+      "heapFetchesReplica"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "heapFetches",
+        "nodeId": 4,
+        "text": null,
+        "unit": "count",
+        "value": 152065.0
+      },
+      {
+        "actual": true,
+        "key": "rowsKept",
+        "nodeId": 4,
+        "text": null,
+        "unit": "rows",
+        "value": 149999.0
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      4
+    ],
+    "params": {
+      "fetches": "152065",
+      "table": "plan_fx.orders"
+    },
+    "rule": "pgHeapFetches",
+    "severity": "warning",
+    "share": 0.135,
+    "statementRange": null,
+    "table": "plan_fx.orders"
+  }
+]

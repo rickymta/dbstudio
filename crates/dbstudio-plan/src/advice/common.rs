@@ -678,6 +678,7 @@ fn nested_loop(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
             if mw.params.get("direction").map(String::as_str) == Some("under") {
                 let mut d = stale_statistics(cx, o, mw);
                 d.from_warnings.push(PlanRule::NestedLoopManyRows);
+                d.node_ids.push(node.id);
                 out.push(d);
                 return;
             }
@@ -704,9 +705,6 @@ fn nested_loop(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
     }
     if let Some(i) = inner.and_then(first_scan) {
         let table = table_ref(i);
-        if let Some(t) = &table {
-            d.params.insert("table".into(), t.name.clone());
-        }
         if let Some(t) = i.self_time_ms {
             d.evidence
                 .push(ev("innerTime", Some(i.id), t, EvidenceUnit::Ms, true));
@@ -763,10 +761,17 @@ pub(crate) fn stale_statistics(cx: &Cx<'_>, node: &PlanNode, w: &PlanWarning) ->
             .find(|s| table_ref(s).is_some() && !matches!(s.op.as_str(), "Bitmap Index Scan"))
     };
     let table = scan.and_then(table_ref);
-    let expression_node = matches!(
-        node.op.as_str(),
-        "Function Scan" | "CTE Scan" | "Subquery Scan" | "Values Scan" | "WorkTable Scan"
-    );
+    // Statistics cannot describe a function of a column or the result of a CTE / function.
+    let function_filter = scan.is_some_and(|s| {
+        conjuncts(cx, s, &[PredicateRole::Filter])
+            .iter()
+            .any(|c| c.kind == CondKind::NonSargable && c.func.as_deref() != Some("like"))
+    });
+    let expression_node = function_filter
+        || matches!(
+            node.op.as_str(),
+            "Function Scan" | "CTE Scan" | "Subquery Scan" | "Values Scan" | "WorkTable Scan"
+        );
     let mut d = Draft::new(
         AdviceRule::StaleStatistics,
         w.severity,

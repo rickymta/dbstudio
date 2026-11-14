@@ -1,0 +1,61 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "sessionSetting",
+        "label": "raiseWorkMem",
+        "lock": "none",
+        "scope": "session",
+        "sql": "SET work_mem = '16MB';",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [
+      "workMemEstimate",
+      "workMemMultiplies"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "lossyHeapBlocks",
+        "nodeId": 0,
+        "text": null,
+        "unit": "blocks",
+        "value": 18000.0
+      },
+      {
+        "actual": true,
+        "key": "exactHeapBlocks",
+        "nodeId": 0,
+        "text": null,
+        "unit": "blocks",
+        "value": 3000.0
+      },
+      {
+        "actual": true,
+        "key": "rowsRemovedByRecheck",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 1500000.0
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "lossy": "18000",
+      "recheck": "1500000",
+      "table": "events",
+      "workMem": "16MB"
+    },
+    "rule": "pgBitmapLossy",
+    "severity": "critical",
+    "share": 0.817,
+    "statementRange": null,
+    "table": "events"
+  }
+]
