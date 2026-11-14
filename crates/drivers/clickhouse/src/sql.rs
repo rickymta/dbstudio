@@ -311,7 +311,7 @@ pub(crate) fn literal(t: &CType, v: &Value) -> Result<String> {
         | CType::UInt8 | CType::UInt16 | CType::UInt32 | CType::UInt64 | CType::UInt128
         | CType::UInt256 => {
             let n = numeric_text(v)?;
-            if n.contains('.') {
+            let n = if n.contains('.') {
                 let (int, frac) = n.split_once('.').unwrap_or((&n, ""));
                 if frac.chars().any(|c| c != '0') {
                     return Err(bad(format!("`{n}` is not a whole number")));
@@ -319,7 +319,26 @@ pub(crate) fn literal(t: &CType, v: &Value) -> Result<String> {
                 int.to_string()
             } else {
                 n
+            };
+            // The VALUES parser wraps around instead of failing: check the range here.
+            let bounds: Option<(i128, i128)> = match t.inner() {
+                CType::Int8 => Some((i8::MIN.into(), i8::MAX.into())),
+                CType::Int16 => Some((i16::MIN.into(), i16::MAX.into())),
+                CType::Int32 => Some((i32::MIN.into(), i32::MAX.into())),
+                CType::Int64 => Some((i64::MIN.into(), i64::MAX.into())),
+                CType::UInt8 => Some((0, u8::MAX.into())),
+                CType::UInt16 => Some((0, u16::MAX.into())),
+                CType::UInt32 => Some((0, u32::MAX.into())),
+                CType::UInt64 => Some((0, u64::MAX.into())),
+                _ => None,
+            };
+            if let Some((lo, hi)) = bounds {
+                match n.parse::<i128>() {
+                    Ok(x) if (lo..=hi).contains(&x) => {}
+                    _ => return Err(bad(format!("`{n}` is out of range for this column"))),
+                }
             }
+            n
         }
         CType::Float32 | CType::Float64 | CType::BFloat16 => match v {
             Value::Float(f) if f.is_nan() => "nan".into(),
@@ -525,6 +544,9 @@ mod tests {
     fn typed_literals() {
         let t = |s: &str| CType::parse(s).unwrap();
         assert_eq!(literal(&t("UInt8"), &Value::Int(5)).unwrap(), "5");
+        assert!(literal(&t("UInt8"), &Value::Int(256)).is_err());
+        assert!(literal(&t("Int8"), &Value::Int(-129)).is_err());
+        assert!(literal(&t("UInt64"), &Value::Int(-1)).is_err());
         assert!(literal(&t("UInt8"), &Value::Text("abc".into())).is_err());
         assert_eq!(literal(&t("Nullable(String)"), &Value::Null).unwrap(), "NULL");
         assert_eq!(
