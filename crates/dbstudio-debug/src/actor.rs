@@ -40,6 +40,17 @@ use crate::{
 
 type Reply<T> = oneshot::Sender<Result<T>>;
 
+/// Longest the end of the debug transaction (commit / rollback) may take: a hung server must
+/// not keep the session actor, and with it the tab, stuck for ever.
+const END_TX_TIMEOUT: Duration = Duration::from_secs(20);
+
+async fn bounded(f: impl Future<Output = Result<()>>) -> Result<()> {
+    match tokio::time::timeout(END_TX_TIMEOUT, f).await {
+        Ok(r) => r,
+        Err(_) => Err(Error::Timeout),
+    }
+}
+
 const TX_ENDED: &str = "the debug transaction ended (commit, rollback or an error): the rest of the script runs in autocommit. Resume continues, Stop ends the session";
 
 enum Cmd {
@@ -106,6 +117,11 @@ impl ActorHandle {
     /// Lease the session holds.
     pub fn lease_id(&self) -> Uuid {
         self.lease_id
+    }
+
+    /// False once the actor task is gone (it ended, or panicked).
+    pub fn is_alive(&self) -> bool {
+        !self.tx.is_closed()
     }
 
     /// Latest state snapshot (also answers while a statement runs).
@@ -1018,7 +1034,7 @@ impl Core {
             .filter(|p| p.group == "Session")
             .collect();
         for p in probes {
-            if let Ok(rs) = self.evaluator(skip.as_deref()).rows(&p.sql).await {
+            if let Ok(rs) = self.evaluator(skip.as_deref()).probe_rows(&p.sql).await {
                 let Some(row) = rs.rows.first() else { continue };
                 if rs.columns.len() == 1 && self.dialect == ScriptDialect::RedisCli {
                     // CLIENT INFO: one text of `key=value` pairs
@@ -1078,7 +1094,7 @@ impl Core {
             .collect();
         let mut out = vec![];
         for p in probes {
-            match self.evaluator(skip.as_deref()).rows(&p.sql).await {
+            match self.evaluator(skip.as_deref()).probe_rows(&p.sql).await {
                 Ok(rs) => {
                     for row in rs.rows {
                         let name = row.first().map(value_plain).unwrap_or_default();
@@ -1868,7 +1884,7 @@ impl Core {
             return;
         }
         match end {
-            DebugEndAction::Commit => match self.lease.commit().await {
+            DebugEndAction::Commit => match bounded(self.lease.commit()).await {
                 Ok(()) => {
                     self.committed = true;
                     self.info("debug transaction committed");
@@ -1878,7 +1894,7 @@ impl Core {
                         step: None,
                         error: error_json(&e),
                     });
-                    let _ = self.lease.rollback().await;
+                    let _ = bounded(self.lease.rollback()).await;
                     self.rolled_back = true;
                 }
             },
@@ -1888,7 +1904,7 @@ impl Core {
                 return;
             }
             _ => {
-                if self.lease.rollback().await.is_ok() {
+                if bounded(self.lease.rollback()).await.is_ok() {
                     self.rolled_back = true;
                     self.info("debug transaction rolled back");
                 }

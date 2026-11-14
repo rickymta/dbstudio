@@ -227,6 +227,8 @@ pub(crate) async fn lease_reopen_impl(state: &AppState, lease_id: Uuid) -> Resul
             transaction_lost: false,
         });
     }
+    // A debug session on the broken connection ends before the connection is replaced.
+    state.debug.stop_for_lease(lease_id).await;
     let session = state.sessions.get(session_id)?;
     let fresh = session.open_lease(options).await?;
     let transaction_lost = state.leases.replace(lease_id, fresh).await?;

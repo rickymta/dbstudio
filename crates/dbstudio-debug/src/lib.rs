@@ -328,6 +328,11 @@ impl DebugHandle {
         self.inner.lease_id()
     }
 
+    /// False once the session actor is gone (it ended, or panicked).
+    pub fn is_alive(&self) -> bool {
+        self.inner.is_alive()
+    }
+
     /// Latest state snapshot.
     pub async fn snapshot(&self) -> Result<DebugState> {
         self.inner.snapshot().await

@@ -237,6 +237,12 @@ impl Evaluator<'_> {
     /// Run the read statement `text` inside the read-only frame; the closing statements of the
     /// frame run even when the statement failed.
     pub async fn framed(&self, text: &str) -> Framed {
+        self.framed_with(text, false).await
+    }
+
+    /// `trusted`: the text is a probe of the dialect kit (a constant, e.g. Redis `CLIENT INFO`
+    /// that the read-only guard of the host does not know as a read): no guard, no denylist.
+    async fn framed_with(&self, text: &str, trusted: bool) -> Framed {
         if let Some(reason) = self.skip {
             return Framed::Skipped(reason.to_string());
         }
@@ -251,15 +257,23 @@ impl Evaluator<'_> {
         if let Some(reason) = frame.skip {
             return Framed::Skipped(reason);
         }
-        if let Some(name) = side_effect_call(self.dialect, text) {
+        if let Some(name) = side_effect_call(self.dialect, text).filter(|_| !trusted) {
             return Framed::Failed(Error::ReadOnlyViolation {
                 message: format!("`{name}` has side effects and is not evaluated by the debugger"),
                 position: None,
             });
         }
-        let gated = match self.gate.check_read_only(self.dialect, text) {
-            Ok(g) => g,
-            Err(e) => return Framed::Failed(e),
+        let gated = if trusted {
+            crate::GatedText {
+                text: text.to_string(),
+                map: dbstudio_sql::OffsetMap::identity(),
+                analysis: dbstudio_sql::analyze(self.dialect, text),
+            }
+        } else {
+            match self.gate.check_read_only(self.dialect, text) {
+                Ok(g) => g,
+                Err(e) => return Framed::Failed(e),
+            }
         };
         let mut outcome: Result<Vec<dbstudio_core::StatementResult>> = Ok(vec![]);
         let mut opened = 0;
@@ -307,7 +321,23 @@ impl Evaluator<'_> {
 
     /// Rows of the last result set of the read statement `text` (probes).
     pub async fn rows(&self, text: &str) -> std::result::Result<dbstudio_core::ResultSet, String> {
-        match self.framed(text).await {
+        self.rows_with(text, false).await
+    }
+
+    /// Rows of a probe of the dialect kit (constant text, not checked by the host guard).
+    pub async fn probe_rows(
+        &self,
+        text: &str,
+    ) -> std::result::Result<dbstudio_core::ResultSet, String> {
+        self.rows_with(text, true).await
+    }
+
+    async fn rows_with(
+        &self,
+        text: &str,
+        trusted: bool,
+    ) -> std::result::Result<dbstudio_core::ResultSet, String> {
+        match self.framed_with(text, trusted).await {
             Framed::Skipped(r) => Err(r),
             Framed::Failed(e) => Err(e.message()),
             Framed::Done(results) => match results.into_iter().next_back().map(|r| r.outcome) {

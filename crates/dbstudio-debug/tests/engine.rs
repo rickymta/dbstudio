@@ -1359,3 +1359,47 @@ async fn a_breakpoint_condition_is_not_evaluated_while_multi_is_open() {
             .any(|(m, _)| m.contains("condition failed"))
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_hung_rollback_does_not_keep_the_session_stuck() {
+    let lease = FakeLease::new(true);
+    let rig = begin_with(
+        PG,
+        request("SELECT 1;"),
+        lease,
+        DebugSettings::default(),
+        None,
+    )
+    .await;
+    rig.paused().await;
+    rig.lease.hang_end();
+    let report = rig.h.stop(Some(DebugEndAction::Rollback)).await.unwrap();
+    assert!(!report.rolled_back);
+    let s = rig.h.snapshot().await.unwrap();
+    assert!(terminated(&s).is_some());
+}
+
+#[tokio::test]
+async fn a_probe_of_the_dialect_kit_does_not_go_through_the_read_only_guard() {
+    // The guard of the host does not know `CLIENT INFO` as a read statement.
+    let mut req = request("SET a 1");
+    req.options.stop_on_entry = Some(true);
+    let lease = FakeLease::new(true);
+    lease.on(
+        "CLIENT INFO",
+        vec![Reply::Rows(
+            vec!["info"],
+            vec![vec![Value::Text("id=3".into())]],
+        )],
+    );
+    let rig = begin_with(
+        ScriptDialect::RedisCli,
+        req,
+        lease,
+        DebugSettings::default(),
+        None,
+    )
+    .await;
+    rig.paused().await;
+    assert_eq!(rig.lease.ran("CLIENT INFO"), 1, "{:?}", rig.lease.log());
+}

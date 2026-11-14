@@ -51,6 +51,7 @@ pub struct FakeLease {
     cancelled: Notify,
     pub dialect: Mutex<Option<ScriptDialect>>,
     fail_begin: std::sync::atomic::AtomicBool,
+    hang_end: std::sync::atomic::AtomicBool,
 }
 
 impl FakeLease {
@@ -71,7 +72,14 @@ impl FakeLease {
             cancelled: Notify::new(),
             dialect: Mutex::new(None),
             fail_begin: std::sync::atomic::AtomicBool::new(false),
+            hang_end: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// `commit` and `rollback` never answer from now on.
+    pub fn hang_end(&self) {
+        self.hang_end
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// `begin` fails from now on.
@@ -232,12 +240,18 @@ impl Lease for FakeLease {
 
     async fn commit(&self) -> Result<()> {
         self.log.lock().unwrap().push("<commit>".into());
+        if self.hang_end.load(std::sync::atomic::Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         self.state.lock().unwrap().transaction = TxStatus::Idle;
         Ok(())
     }
 
     async fn rollback(&self) -> Result<()> {
         self.log.lock().unwrap().push("<rollback>".into());
+        if self.hang_end.load(std::sync::atomic::Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         self.state.lock().unwrap().transaction = TxStatus::Idle;
         Ok(())
     }

@@ -69,6 +69,10 @@ const UNBOUND_KEPT: usize = 64;
 pub trait SessionControl: Send + Sync {
     /// Id of the session.
     fn debug_id(&self) -> Uuid;
+    /// False once the engine task is gone without ending the session (a panic).
+    fn alive(&self) -> bool {
+        true
+    }
     /// Latest state.
     async fn snapshot(&self) -> Result<DebugState>;
     /// Resume / step / run to cursor / jump / pause.
@@ -145,6 +149,9 @@ struct HandleControl(DebugHandle);
 impl SessionControl for HandleControl {
     fn debug_id(&self) -> Uuid {
         self.0.debug_id()
+    }
+    fn alive(&self) -> bool {
+        self.0.is_alive()
     }
     async fn snapshot(&self) -> Result<DebugState> {
         self.0.snapshot().await
@@ -1021,6 +1028,11 @@ impl DebugManager {
                 if entry.cleaned.load(Ordering::SeqCst) {
                     return;
                 }
+                // An actor that vanished without a final state (a panic) leaves the lease claimed.
+                if !entry.control.alive() {
+                    inner.terminate(&entry, TerminateReason::Error).await;
+                    return;
+                }
                 if let Some(reason) =
                     lost_reason(&sessions, &leases, entry.session_id, entry.lease_id)
                 {
@@ -1565,6 +1577,7 @@ mod tests {
         stopped: AtomicBool,
         ask_end: AtomicBool,
         awaiting: AtomicBool,
+        dead: AtomicBool,
     }
 
     impl FakeSession {
@@ -1761,6 +1774,9 @@ mod tests {
         fn debug_id(&self) -> Uuid {
             self.0.debug_id()
         }
+        fn alive(&self) -> bool {
+            !self.0.dead.load(Ordering::SeqCst)
+        }
         async fn snapshot(&self) -> Result<DebugState> {
             self.0.snapshot().await
         }
@@ -1817,6 +1833,7 @@ mod tests {
                 stopped: AtomicBool::new(false),
                 ask_end: AtomicBool::new(self.ask_end.load(Ordering::SeqCst)),
                 awaiting: AtomicBool::new(false),
+                dead: AtomicBool::new(false),
             });
             if self.end_at_start.load(Ordering::SeqCst) {
                 fake.stopped.store(true, Ordering::SeqCst);
@@ -2211,6 +2228,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_dead_engine_frees_the_lease() {
+        let m = rig().await;
+        m.state.debug.set_poll(Duration::from_millis(10));
+        let mut events = m.state.events.subscribe();
+        cmd::debug_start_impl(&m.state, start_request(m.lease, "select 1"))
+            .await
+            .unwrap();
+        m.backend.sessions.lock().unwrap()[0]
+            .dead
+            .store(true, Ordering::SeqCst);
+        let ended = wait_for(|| last_terminated(drain(&mut events))).await;
+        assert_eq!(ended["reason"], "error");
+        assert_eq!(m.state.debug.count(), 0);
+        assert_eq!(m.state.leases.debug_owner(m.lease), None);
+    }
+
+    #[tokio::test]
+    async fn reopening_a_lease_ends_its_debug_session_first() {
+        let m = rig().await;
+        cmd::debug_start_impl(&m.state, start_request(m.lease, "select 1"))
+            .await
+            .unwrap();
+        m.probe.kill_all();
+        m.state.leases.keepalive_tick(Duration::ZERO).await;
+        editor::lease_reopen_impl(&m.state, m.lease).await.unwrap();
+        assert_eq!(m.state.debug.count(), 0);
+        assert_eq!(m.state.leases.debug_owner(m.lease), None);
+    }
+
+    #[tokio::test]
     async fn a_broken_lease_ends_the_session() {
         let m = rig().await;
         m.state.debug.set_poll(Duration::from_millis(10));
@@ -2476,6 +2523,7 @@ mod tests {
             stopped: AtomicBool::new(false),
             ask_end: AtomicBool::new(false),
             awaiting: AtomicBool::new(false),
+            dead: AtomicBool::new(false),
         }
         .state(status)
     }
