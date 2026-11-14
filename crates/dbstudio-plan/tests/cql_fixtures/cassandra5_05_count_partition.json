@@ -1,0 +1,95 @@
+{
+  "command": "QUERY",
+  "coordinator": "172.28.0.7",
+  "durationUs": 7318,
+  "events": [
+    {
+      "activity": "Parsing SELECT count(*) FROM nums WHERE p = 1",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 342,
+      "thread": "Native-Transport-Requests-1"
+    },
+    {
+      "activity": "Preparing statement",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 537,
+      "thread": "Native-Transport-Requests-1"
+    },
+    {
+      "activity": "Executing single-partition query on roles",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 1169,
+      "thread": "ReadStage-2"
+    },
+    {
+      "activity": "Acquiring sstable references",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 1227,
+      "thread": "ReadStage-2"
+    },
+    {
+      "activity": "Skipped 0/1 non-slice-intersecting sstables, included 0 due to tombstones",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 1297,
+      "thread": "ReadStage-2"
+    },
+    {
+      "activity": "Key cache hit for sstable 1, size = 0",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 1360,
+      "thread": "ReadStage-2"
+    },
+    {
+      "activity": "Merged data from memtables and 1 sstables",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 2441,
+      "thread": "ReadStage-2"
+    },
+    {
+      "activity": "Read 1 live rows and 0 tombstone cells",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 2562,
+      "thread": "ReadStage-2"
+    },
+    {
+      "activity": "Executing single-partition query on nums",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 4051,
+      "thread": "ReadStage-3"
+    },
+    {
+      "activity": "Acquiring sstable references",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 4252,
+      "thread": "ReadStage-3"
+    },
+    {
+      "activity": "Skipped 0/0 non-slice-intersecting sstables, included 0 due to tombstones",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 4392,
+      "thread": "ReadStage-3"
+    },
+    {
+      "activity": "Merged data from memtables and 0 sstables",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 4921,
+      "thread": "ReadStage-3"
+    },
+    {
+      "activity": "Read 80 live rows and 0 tombstone cells",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 5017,
+      "thread": "ReadStage-3"
+    }
+  ],
+  "parameters": {
+    "consistency_level": "LOCAL_ONE",
+    "page_size": "1000",
+    "query": "SELECT count(*) FROM nums WHERE p = 1",
+    "serial_consistency_level": "SERIAL"
+  },
+  "request": "Execute CQL3 query",
+  "rows": 1,
+  "sessionId": "ca6669d0-dfda-11f1-8407-d9e3705a30bf",
+  "startedAt": "2026-11-14T03:23:41.677Z"
+}

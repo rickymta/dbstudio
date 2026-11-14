@@ -382,11 +382,16 @@ impl HostFilter for FirstNodeOnly {
 
 /// Resolve `host:port` to the first socket address.
 async fn resolve(host: &str, port: u16) -> Result<SocketAddr> {
-    let mut addrs = tokio::net::lookup_host((host, port))
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
         .await
-        .map_err(|e| Error::Connection(format!("cannot resolve {host}: {e}")))?;
+        .map_err(|e| Error::Connection(format!("cannot resolve {host}: {e}")))?
+        .collect();
+    // Prefer IPv4: tunnels and published container ports usually listen there only.
     addrs
-        .next()
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or(addrs.first())
+        .copied()
         .ok_or_else(|| Error::Connection(format!("cannot resolve {host}")))
 }
 

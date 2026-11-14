@@ -78,7 +78,11 @@ pub fn probe(s: Server, port: u16) -> bool {
 }
 
 pub fn kind_of(s: Server) -> DbKind {
-    if s.scylla { DbKind::ScyllaDb } else { DbKind::Cassandra }
+    if s.scylla {
+        DbKind::ScyllaDb
+    } else {
+        DbKind::Cassandra
+    }
 }
 
 pub fn config(s: Server, user: &str) -> ConnectionConfig {
@@ -87,6 +91,9 @@ pub fn config(s: Server, user: &str) -> ConnectionConfig {
     cfg.username = Some(user.into());
     cfg.tls.mode = TlsMode::Disable;
     cfg.connect_timeout_ms = Some(30_000);
+    // The containers advertise their Docker network address, unreachable from the host: talk to
+    // the published port only (the same mode an SSH tunnel uses).
+    cfg.options.insert("cql.singleNode".into(), "true".into());
     cfg
 }
 
@@ -98,7 +105,11 @@ pub fn secret_of(user: &str) -> Secret {
     })
 }
 
-pub async fn connect_cfg(s: Server, cfg: &ConnectionConfig, user: &str) -> dbstudio_core::Result<Box<dyn Session>> {
+pub async fn connect_cfg(
+    s: Server,
+    cfg: &ConnectionConfig,
+    user: &str,
+) -> dbstudio_core::Result<Box<dyn Session>> {
     let secret = secret_of(user);
     if s.scylla {
         ScyllaDriver::new().connect(cfg, Some(&secret)).await
@@ -167,7 +178,11 @@ pub struct Keyspace {
 impl Keyspace {
     pub async fn create(server: Server, session: &dyn Session, name: &str) -> Keyspace {
         run(session, None, &format!("DROP KEYSPACE IF EXISTS {name}")).await;
-        let tablets = if server.scylla { " AND tablets = {'enabled': false}" } else { "" };
+        let tablets = if server.scylla {
+            " AND tablets = {'enabled': false}"
+        } else {
+            ""
+        };
         run(
             session,
             None,
@@ -208,7 +223,8 @@ impl Drop for Keyspace {
                 .build()
                 .unwrap();
             rt.block_on(async {
-                if let Ok(s) = connect_cfg(server, &config(server, "cassandra"), "cassandra").await {
+                if let Ok(s) = connect_cfg(server, &config(server, "cassandra"), "cassandra").await
+                {
                     let _ = execute_collect(
                         s.as_ref(),
                         QueryRequest::new(format!("DROP KEYSPACE IF EXISTS {name}")),

@@ -1,0 +1,97 @@
+{
+  "command": "QUERY",
+  "coordinator": "172.28.0.7",
+  "durationUs": 206,
+  "events": [
+    {
+      "activity": "Parsing a statement",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 1,
+      "thread": "shard 0/sl:driver"
+    },
+    {
+      "activity": "Processing a statement for authenticated user: dbstudio",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 70,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Executing read query (reversed false)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 85,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Creating read executor for token -4069959284402364209 with all: [4a331627-47f9-4176-a068-d78ab64c59ca] targets: [4a331627-47f9-4176-a068-d78ab64c59ca] repair decision: NONE",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 98,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Creating never_speculating_read_executor - speculative retry is disabled or there are no extra replicas to speculate with",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 100,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "read_data: querying locally",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 102,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Start querying singular range {{-4069959284402364209, pk{000400000001}}}",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 134,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "[reader concurrency semaphore sl:default] admitted immediately",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 137,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "[reader concurrency semaphore sl:default] executing read",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 141,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Querying cache for range {{-4069959284402364209, pk{000400000001}}} and slice [{ckp{000400000001}}]",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 152,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Page stats: 1 partition(s) (1 live, 0 dead), 0 static row(s) (0 live, 0 dead), 1 clustering row(s) (1 live, 0 dead), 0 range tombstone(s) and 1 cell(s) (1 live, 0 dead)",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 175,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Querying is done",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 180,
+      "thread": "shard 0/sl:default"
+    },
+    {
+      "activity": "Done processing - preparing a result",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 195,
+      "thread": "shard 0/sl:driver"
+    }
+  ],
+  "parameters": {
+    "consistency_level": "LOCAL_ONE",
+    "page_size": "1000",
+    "query": "SELECT * FROM nums WHERE p = 1 AND c = 1",
+    "serial_consistency_level": "SERIAL",
+    "table": "it_scylla_explain.nums",
+    "user_timestamp": "-9223372036854775808"
+  },
+  "request": "Execute CQL3 query",
+  "rows": 1,
+  "sessionId": "bf5d3510-dfd9-11f1-92fc-9f6336da3617",
+  "startedAt": "2026-11-14T03:16:13.665Z"
+}

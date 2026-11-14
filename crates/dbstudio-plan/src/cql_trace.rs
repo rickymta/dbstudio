@@ -102,14 +102,6 @@ pub(crate) fn parse(text: &str) -> Result<PlanTree, PlanError> {
                     warnings.push("tombstones");
                 }
             }
-        } else if activity.to_ascii_lowercase().contains("tombstone")
-            && !activity.to_ascii_lowercase().contains(" 0 tombstone")
-            && !activity.to_ascii_lowercase().contains("(0 live, 0 dead)")
-        {
-            node.put("warning", "tombstones");
-            if !warnings.contains(&"tombstones") {
-                warnings.push("tombstones");
-            }
         }
         root.children.push(node);
     }
@@ -178,48 +170,49 @@ fn rows_read(activity: &str) -> Option<(u64, u64)> {
         }
     }
     if lower.contains("page stats") {
-        // Sum "(x live, y dead)" groups.
-        let (mut live, mut dead) = (0u64, 0u64);
-        let mut rest = lower.as_str();
-        let mut found = false;
-        while let Some(i) = rest.find('(') {
-            let after = &rest[i + 1..];
-            let Some(close) = after.find(')') else { break };
-            let inner = &after[..close];
-            if let Some((l, d)) = inner.split_once(" live, ") {
-                if let (Ok(l), Some(d)) = (
-                    l.trim().parse::<u64>(),
-                    d.strip_suffix(" dead")
-                        .and_then(|d| d.trim().parse::<u64>().ok()),
-                ) {
-                    live += l;
-                    dead += d;
-                    found = true;
-                }
-            }
-            rest = &after[close + 1..];
-        }
-        if let Some(i) = lower.find(" and ") {
-            let tail = &lower[i + 5..];
-            let n: String = tail.chars().take_while(char::is_ascii_digit).collect();
-            if tail[n.len()..].trim_start().starts_with("range tombstone") {
-                dead += n.parse().unwrap_or(0);
-                found = true;
-            }
-        }
-        if found {
-            // The static row counters count the same partitions; only clustering rows are rows.
-            return Some((live, dead));
-        }
+        // "... 420 clustering row(s) (419 live, 1 dead), 0 range tombstone(s) and 419 cell(s)
+        // (399 live, 20 dead)"
+        let group_after = |marker: &str| -> Option<(u64, u64)> {
+            let at = lower.find(marker)? + marker.len();
+            let rest = &lower[at..];
+            let open = rest.find('(')?;
+            let close = rest.find(')')?;
+            let inner = rest.get(open + 1..close)?;
+            let (l, d) = inner.split_once(" live, ")?;
+            Some((
+                l.trim().parse().ok()?,
+                d.strip_suffix(" dead")?.trim().parse().ok()?,
+            ))
+        };
+        let (live, row_dead) = group_after("clustering row(s)")?;
+        let range_tombstones = lower
+            .find(" range tombstone(s)")
+            .and_then(|i| {
+                lower[..i]
+                    .rsplit(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .and_then(|n| n.parse::<u64>().ok())
+            })
+            .unwrap_or(0);
+        let cell_dead = group_after("cell(s)").map_or(0, |(_, d)| d);
+        return Some((live, (row_dead + range_tombstones).max(cell_dead)));
     }
     None
 }
 
 fn kind_of(activity: &str) -> PlanNodeKind {
     let a = activity.to_ascii_lowercase();
-    if a.contains("seq scan") || a.contains("range slice") || a.contains("computing ranges") {
+    if a.contains("seq scan")
+        || a.contains("range slice")
+        || a.contains("computing ranges")
+        || a.contains("token range")
+        || (a.contains("singular range") && a.contains("inf"))
+    {
         PlanNodeKind::FullScan
-    } else if a.contains("single-partition query") || a.contains("single partition") {
+    } else if a.contains("single-partition query")
+        || a.contains("single partition")
+        || a.contains("querying singular range")
+    {
         PlanNodeKind::IndexSeek
     } else if a.contains("using index") || a.contains("index mean cardinalities") {
         PlanNodeKind::IndexScan
@@ -227,8 +220,6 @@ fn kind_of(activity: &str) -> PlanNodeKind {
         PlanNodeKind::Result
     } else if a.contains("mutation") || a.contains("applying") {
         PlanNodeKind::Modify
-    } else if a.contains("merging") {
-        PlanNodeKind::Other
     } else {
         PlanNodeKind::Other
     }

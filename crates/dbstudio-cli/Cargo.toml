@@ -31,14 +31,14 @@ uuid.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "signal", "time", "fs"] }
 
 [features]
-default = ["postgres", "mysql", "mssql", "oracle", "mongodb", "redis"]
+default = ["postgres", "mysql", "mssql", "oracle", "mongodb", "redis", "cassandra"]
 postgres = ["dep:dbstudio-driver-postgres"]
 mysql = ["dep:dbstudio-driver-mysql"]
 mssql = ["dep:dbstudio-driver-mssql"]
 oracle = ["dep:dbstudio-driver-oracle"]
 mongodb = ["dep:dbstudio-driver-mongodb"]
 redis = ["dep:dbstudio-driver-redis"]
-# Not in `default` yet: switched on when packages C / H make the drivers real.
+# `clickhouse` is not in `default` yet (package H).
 cassandra = ["dep:dbstudio-driver-cassandra"]
 clickhouse = ["dep:dbstudio-driver-clickhouse"]
 

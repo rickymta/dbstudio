@@ -436,6 +436,25 @@ pub(crate) async fn load(session: &Session) -> Result<Snapshot> {
             t.indexes.push(info);
         }
     }
+    // ScyllaDB backs a secondary index with a hidden view named `<index>_index`.
+    for k in keyspaces.values_mut() {
+        let hidden: Vec<String> = k
+            .views
+            .keys()
+            .filter(|v| {
+                v.strip_suffix("_index").is_some_and(|idx| {
+                    k.tables
+                        .values()
+                        .chain(k.views.values())
+                        .any(|t| t.indexes.iter().any(|i| i.name == idx))
+                })
+            })
+            .cloned()
+            .collect();
+        for v in hidden {
+            k.views.remove(&v);
+        }
+    }
     if let Some(rows) = try_rows(session, "SELECT * FROM system_schema.triggers").await {
         for r in rows {
             let ks = r.string("keyspace_name");

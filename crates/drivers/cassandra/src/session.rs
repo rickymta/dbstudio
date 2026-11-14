@@ -45,10 +45,13 @@ async fn detect(pool: &Pool) -> Result<ServerFacts> {
         .first()
         .ok_or_else(|| Error::Connection("system.local is empty".into()))?;
     // Only ScyllaDB has this column.
-    let scylla_version = query_rows(&base, "SELECT scylla_version FROM system.local")
-        .await
-        .ok()
-        .and_then(|rows| rows.first().and_then(|r| r.str("scylla_version")));
+    let scylla_version = query_rows(
+        &base,
+        "SELECT version FROM system.versions WHERE key = 'local'",
+    )
+    .await
+    .ok()
+    .and_then(|rows| rows.first().and_then(|r| r.str("version")));
     Ok(ServerFacts {
         version: scylla_version
             .clone()

@@ -483,6 +483,8 @@ impl Core {
         }
         let session = self.pool.base();
         let mut result = BulkInsertResult::default();
+        // Lightweight transactions contend on the same partition: fewer at a time.
+        let concurrency = if lwt { 8 } else { BULK_CONCURRENCY };
         let mut stream = futures::stream::iter(statements.into_iter().map(|text| {
             let session = session.clone();
             async move {
@@ -496,7 +498,7 @@ impl Core {
                 Ok::<Option<bool>, Error>(if lwt { applied(r) } else { None })
             }
         }))
-        .buffer_unordered(BULK_CONCURRENCY);
+        .buffer_unordered(concurrency);
         while let Some(r) = stream.next().await {
             match r? {
                 None | Some(true) => result.inserted += 1,
