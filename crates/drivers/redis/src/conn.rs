@@ -1,10 +1,12 @@
 //! Connection setup (TLS modes, ACL user, database) and the per-database connection cache.
 //!
-//! Limitation (R6): the `redis` crate connects to and verifies the certificate against the same
-//! `host`, so `tls.server_name` is not honoured. Behind an SSH tunnel the host is `127.0.0.1`;
-//! `VerifyFull`/`VerifyCa` then need a certificate that lists that address.
+//! R6: behind an SSH tunnel the profile host is `127.0.0.1:<tunnel port>` and `tls.server_name`
+//! holds the original host. The client is then built for the ORIGINAL host (SNI and certificate
+//! name check) and a custom DNS resolver maps that name to the tunnel address.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use dbstudio_core::{ConnectionConfig, Error, Result, Secret, TlsMode};
@@ -17,6 +19,44 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::error::map_err;
 
+/// Resolver that sends `logical` to the tunnel address and everything else to the system DNS.
+#[derive(Clone, Debug)]
+pub struct TunnelResolver {
+    logical: String,
+    target_host: String,
+}
+
+impl redis::io::AsyncDNSResolver for TunnelResolver {
+    fn resolve<'a, 'b: 'a>(
+        &'a self,
+        host: &'b str,
+        port: u16,
+    ) -> redis::RedisFuture<'a, Box<dyn Iterator<Item = SocketAddr> + Send + 'a>> {
+        let name = if host.eq_ignore_ascii_case(&self.logical) {
+            self.target_host.clone()
+        } else {
+            host.to_string()
+        };
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((name.as_str(), port))
+                .await
+                .map_err(redis::RedisError::from)?
+                .collect();
+            Ok(Box::new(addrs.into_iter()) as Box<dyn Iterator<Item = SocketAddr> + Send + 'a>)
+        })
+    }
+}
+
+/// Name to use for TLS (SNI + certificate check) when it differs from the connect address.
+fn tls_logical_host(cfg: &ConnectionConfig) -> Option<String> {
+    cfg.tls
+        .server_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case(&cfg.host))
+        .map(str::to_string)
+}
+
 /// Default connect timeout.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -28,6 +68,8 @@ pub struct Shared {
     pub delimiter: String,
     pub show_empty_dbs: bool,
     pub connect_timeout: Duration,
+    /// Custom name resolution for TLS behind an SSH tunnel (R6); `None` when not needed.
+    resolver: Option<Arc<TunnelResolver>>,
     conns: AsyncMutex<HashMap<i64, MultiplexedConnection>>,
     /// Lower-cased command name -> flags from `COMMAND INFO` (`None` = unknown command).
     pub cmd_flags: std::sync::Mutex<HashMap<String, Option<Vec<String>>>>,
@@ -92,7 +134,7 @@ fn build_client(
     }
     let verify = matches!(cfg.tls.mode, TlsMode::VerifyCa | TlsMode::VerifyFull);
     let addr = ConnectionAddr::TcpTls {
-        host: cfg.host.clone(),
+        host: tls_logical_host(cfg).unwrap_or_else(|| cfg.host.clone()),
         port: cfg.port,
         insecure: !verify,
         tls_params: None,
@@ -137,10 +179,14 @@ fn build_client(
 async fn open_with(
     client: &Client,
     timeout: Duration,
+    resolver: Option<&TunnelResolver>,
 ) -> std::result::Result<MultiplexedConnection, RedisError> {
-    let cfg = AsyncConnectionConfig::new()
+    let mut cfg = AsyncConnectionConfig::new()
         .set_connection_timeout(Some(timeout))
         .set_response_timeout(None);
+    if let Some(r) = resolver {
+        cfg = cfg.set_dns_resolver(r.clone());
+    }
     client
         .get_multiplexed_async_connection_with_config(&cfg)
         .await
@@ -156,21 +202,27 @@ impl Shared {
         let timeout = cfg
             .connect_timeout_ms
             .map_or(DEFAULT_CONNECT_TIMEOUT, Duration::from_millis);
-        let (client, first) = match cfg.tls.mode {
+        let tls_resolver = tls_logical_host(cfg).map(|logical| TunnelResolver {
+            logical,
+            target_host: cfg.host.clone(),
+        });
+        // A resolver only applies to TLS clients, whose address carries the logical name.
+        let r = tls_resolver.as_ref();
+        let (client, first, use_resolver) = match cfg.tls.mode {
             TlsMode::Disable => {
                 let c = build_client(cfg, secret, false, default_db)?;
-                let first = open_with(&c, timeout).await.map_err(map_err)?;
-                (c, first)
+                let first = open_with(&c, timeout, None).await.map_err(map_err)?;
+                (c, first, false)
             }
             TlsMode::Prefer => {
                 let tls = build_client(cfg, secret, true, default_db)?;
-                match open_with(&tls, timeout).await {
-                    Ok(conn) => (tls, conn),
+                match open_with(&tls, timeout, r).await {
+                    Ok(conn) => (tls, conn, true),
                     Err(tls_err) => {
                         // Prefer: fall back to plain text (documented downgrade).
                         let plain = build_client(cfg, secret, false, default_db)?;
-                        match open_with(&plain, timeout).await {
-                            Ok(conn) => (plain, conn),
+                        match open_with(&plain, timeout, None).await {
+                            Ok(conn) => (plain, conn, false),
                             // The plain attempt failed too: report the plain error unless it
                             // is a protocol mismatch, in which case the TLS error is the clue.
                             Err(plain_err) => {
@@ -187,8 +239,8 @@ impl Shared {
             }
             _ => {
                 let c = build_client(cfg, secret, true, default_db)?;
-                let first = open_with(&c, timeout).await.map_err(map_err)?;
-                (c, first)
+                let first = open_with(&c, timeout, r).await.map_err(map_err)?;
+                (c, first, true)
             }
         };
         let mut conns = HashMap::new();
@@ -206,6 +258,7 @@ impl Shared {
             show_empty_dbs: truthy(options.get("show_empty_dbs"))
                 || truthy(options.get("showEmptyDbs")),
             connect_timeout: timeout,
+            resolver: tls_resolver.filter(|_| use_resolver).map(Arc::new),
             conns: AsyncMutex::new(conns),
             cmd_flags: std::sync::Mutex::new(HashMap::new()),
             running: std::sync::Mutex::new(HashMap::new()),
@@ -231,7 +284,7 @@ impl Shared {
     /// A new dedicated connection (not shared) to `db`. Used by leases, scripts and edits.
     pub async fn dedicated(&self, db: i64) -> Result<MultiplexedConnection> {
         let client = self.client_for(db)?;
-        open_with(&client, self.connect_timeout)
+        open_with(&client, self.connect_timeout, self.resolver.as_deref())
             .await
             .map_err(map_err)
     }
