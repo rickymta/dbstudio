@@ -375,7 +375,9 @@ async fn mongo_round_trip(replica: bool) {
         assert_eq!(a, b, "structure of {c}");
     }
     assert!(
-        ddl_of(&s, &dst, "people", false).await.contains("$jsonSchema"),
+        ddl_of(&s, &dst, "people", false)
+            .await
+            .contains("$jsonSchema"),
         "validator kept"
     );
     assert_eq!(
@@ -383,14 +385,11 @@ async fn mongo_round_trip(replica: bool) {
         2
     );
     // The unique index is enforced again.
-    let dup = execute_collect(
-        &*s,
-        {
-            let mut r = QueryRequest::new(r#"db.people.insertOne({"name": "An"})"#);
-            r.database = Some(dst.clone());
-            r
-        },
-    )
+    let dup = execute_collect(&*s, {
+        let mut r = QueryRequest::new(r#"db.people.insertOne({"name": "An"})"#);
+        r.database = Some(dst.clone());
+        r
+    })
     .await;
     assert!(dup.is_err(), "unique index must exist after restore");
 
@@ -398,7 +397,12 @@ async fn mongo_round_trip(replica: bool) {
     let part = format!("bk_part_{}", unique());
     let res = run_restore(
         ctx(&cfg, &s, &rep),
-        &restore_spec(file.to_str().unwrap(), Some(&part), false, vec!["logs".into()]),
+        &restore_spec(
+            file.to_str().unwrap(),
+            Some(&part),
+            false,
+            vec!["logs".into()],
+        ),
         Some(&pass),
     )
     .await
@@ -408,7 +412,12 @@ async fn mongo_round_trip(replica: bool) {
     // An unknown name is refused before anything is written.
     let bad = run_restore(
         ctx(&cfg, &s, &rep),
-        &restore_spec(file.to_str().unwrap(), Some(&part), false, vec!["nope".into()]),
+        &restore_spec(
+            file.to_str().unwrap(),
+            Some(&part),
+            false,
+            vec!["nope".into()],
+        ),
         Some(&pass),
     )
     .await;
@@ -461,7 +470,11 @@ async fn redis_connect(
     let mut cfg = ConnectionConfig::new(DbKind::Redis, name, "127.0.0.1");
     cfg.port = port(var, default_port);
     cfg.username = Some("dbstudio".into());
-    cfg.tls.mode = if tls { TlsMode::Require } else { TlsMode::Disable };
+    cfg.tls.mode = if tls {
+        TlsMode::Require
+    } else {
+        TlsMode::Disable
+    };
     match dbstudio_driver_redis::RedisDriver::new()
         .connect(&cfg, Some(&Secret::new("dbstudio_test")))
         .await
@@ -521,13 +534,7 @@ async fn key_dump(s: &Arc<dyn Session>, db: &str) -> Vec<String> {
     out
 }
 
-async fn redis_round_trip(
-    name: &'static str,
-    var: &str,
-    default_port: u16,
-    tls: bool,
-    db: &str,
-) {
+async fn redis_round_trip(name: &'static str, var: &str, default_port: u16, tls: bool, db: &str) {
     let Some((cfg, s)) = redis_connect(name, var, default_port, tls).await else {
         return;
     };

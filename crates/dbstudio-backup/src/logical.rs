@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use dbstudio_core::{
     CancelToken, ColumnMeta, DdlOptions, EndOutcome, Error, JobProgress, JobReporter, Lease,
-    LeaseOptions, ObjectKind, ObjectPath, QueryRequest, Result, ResultSink, ScriptDialect,
-    Session, StatementEnd, TxOptions, Value,
+    LeaseOptions, ObjectKind, ObjectPath, QueryRequest, Result, ResultSink, ScriptDialect, Session,
+    StatementEnd, TxOptions, Value,
 };
 use dbstudio_export::{
     ExportContent, ExportContext, ExportDestination, ExportFormat, ExportSource, ExportSpec,
@@ -82,26 +82,6 @@ pub(crate) struct Dump {
     pub preamble: Json,
     pub objects: u32,
     pub rows: u64,
-}
-
-/// The nonce the writer put in its first marker (the prologue, written before any data, so it
-/// cannot be forged by row values).
-fn marker_nonce(file: &Path) -> Option<String> {
-    let f = File::open(file).ok()?;
-    for line in BufReader::new(f).lines().take(50) {
-        let line = line.ok()?;
-        if line.starts_with("-- dbstudio:") {
-            let at = line.find(" nonce=")? + " nonce=".len();
-            return Some(
-                line[at..]
-                    .split_whitespace()
-                    .next()?
-                    .trim_matches('"')
-                    .to_string(),
-            );
-        }
-    }
-    None
 }
 
 /// Source of the export for `targets` (all in `database`).
@@ -214,7 +194,7 @@ pub(crate) async fn dump(
         },
         "dumpFile": DUMP_ENTRY,
         "objects": report.object_list,
-        "markerNonce": marker_nonce(&file),
+        "markerNonce": report.marker_nonce,
         "tables": report.objects,
         "warnings": report.warnings,
         "unsupported": UNSUPPORTED_SCOPE,
@@ -503,6 +483,14 @@ pub(crate) async fn restore(
                 format!("CREATE DATABASE {}", q.quote_ident(&target_db)),
                 Some("postgres".to_string()),
             ),
+            ScriptDialect::MsSql => (
+                format!(
+                    "IF DB_ID(N'{}') IS NULL CREATE DATABASE {}",
+                    target_db.replace('\'', "''"),
+                    q.quote_ident(&target_db)
+                ),
+                Some("master".to_string()),
+            ),
             _ => (
                 format!(
                     "CREATE DATABASE IF NOT EXISTS {}",
@@ -519,6 +507,11 @@ pub(crate) async fn restore(
                 return Err(e);
             }
         }
+    }
+    if spec.clean && matches!(sd, ScriptDialect::MsSql) {
+        return Err(Error::Unsupported(
+            "a clean restore is not available for SQL Server: restore into a new database".into(),
+        ));
     }
     // MySQL `clean` replaces the whole database: do it on the session, before the lease opens.
     let clean = if spec.clean {
@@ -626,6 +619,8 @@ async fn run_script(
     let mut splitter = StreamSplitter::new(script_dialect_of(sd));
     let mut errors: Vec<RowError> = Vec::new();
     let (mut n, mut bytes) = (0u64, 0u64);
+    // SQL Server: rows go in with their identity values.
+    let mut identity = matches!(sd, ScriptDialect::MsSql).then(IdentityInsert::default);
     let mut line = String::new();
     let mut eof = false;
     // Partial restore: the block the next statements belong to.
@@ -686,7 +681,7 @@ async fn run_script(
                 }
             }
             n += 1;
-            match target.run(cancel, stmt).await {
+            match run_statement(target, cancel, identity.as_mut(), stmt).await {
                 Ok(()) => {}
                 Err(Error::Cancelled) => return Err(Error::Cancelled),
                 Err(e) if spec.continue_on_error => {
@@ -720,6 +715,69 @@ async fn run_script(
     progress.bytes_done = bytes;
     reporter.progress(progress);
     Ok((errors, n))
+}
+
+/// `SET IDENTITY_INSERT` handling for SQL Server: the export script inserts explicit values
+/// into identity columns, which the server only accepts with this switch on. The switch lives
+/// as long as the batch that sets it, so it goes in the same batch as the `INSERT`. A table
+/// without an identity column answers it with an error: the table is then remembered and its
+/// inserts run as they are.
+#[derive(Default)]
+struct IdentityInsert {
+    /// Quoted names of the tables known to have no identity column.
+    plain: std::collections::HashSet<String>,
+}
+
+fn quote_table(t: &(Option<String>, String)) -> String {
+    let q = |s: &str| format!("[{}]", s.replace(']', "]]"));
+    match &t.0 {
+        Some(schema) => format!("{}.{}", q(schema), q(&t.1)),
+        None => q(&t.1),
+    }
+}
+
+async fn run_statement(
+    target: &Target,
+    cancel: &CancelToken,
+    identity: Option<&mut IdentityInsert>,
+    stmt: String,
+) -> Result<()> {
+    let Some(id) = identity else {
+        return target.run(cancel, stmt).await;
+    };
+    if partial::insert_target(&stmt).is_none() {
+        return target.run(cancel, stmt).await;
+    }
+    // T-SQL batches end at `GO`, so one batch can hold the inserts of several tables: each
+    // `INSERT` gets its own switch. The split is lexical (quote aware), not textual.
+    let mut splitter = StreamSplitter::new(ScriptDialect::Postgres);
+    let mut pieces = splitter.push(&stmt);
+    pieces.extend(splitter.finish());
+    for piece in pieces {
+        if piece.trim().is_empty() {
+            continue;
+        }
+        let Some(table) = partial::insert_target(&piece) else {
+            target.run(cancel, piece).await?;
+            continue;
+        };
+        let name = quote_table(&table);
+        if id.plain.contains(&name) {
+            target.run(cancel, piece).await?;
+            continue;
+        }
+        let wrapped =
+            format!("SET IDENTITY_INSERT {name} ON;\n{piece}\n;SET IDENTITY_INSERT {name} OFF;");
+        match target.run(cancel, wrapped).await {
+            Err(e) if e.message().contains("does not have the identity property") => {
+                id.plain.insert(name);
+                target.run(cancel, piece).await?;
+            }
+            Err(e) => return Err(e),
+            Ok(()) => {}
+        }
+    }
+    Ok(())
 }
 
 /// Which statements of the script run during a partial restore.

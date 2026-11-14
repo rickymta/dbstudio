@@ -239,14 +239,24 @@ pub(crate) fn spawn_job_run(state: &AppState, job: BackupJob, trigger: RunTrigge
                 // and tell the user instead of letting it pass unnoticed.
                 Err(e) => match record_skipped(&env, &job, trigger, &e) {
                     Ok(run) => {
-                        crate::background::notify_run(host.as_ref(), crate::notify::current_language(env.service.store()), &job, &run);
+                        crate::background::notify_run(
+                            host.as_ref(),
+                            crate::notify::current_language(env.service.store()),
+                            &job,
+                            &run,
+                        );
                         Err(e)
                     }
                     Err(_) => Err(e),
                 },
             };
             if let Ok(run) = &result {
-                crate::background::notify_run(host.as_ref(), crate::notify::current_language(env.service.store()), &job, run);
+                crate::background::notify_run(
+                    host.as_ref(),
+                    crate::notify::current_language(env.service.store()),
+                    &job,
+                    run,
+                );
             }
             events.emit(BACKUP_CHANGED, serde_json::Value::Null);
             let run = result?;

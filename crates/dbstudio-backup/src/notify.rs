@@ -154,9 +154,15 @@ mod tests {
     fn language_follows_the_setting_then_the_os_locale() {
         assert_eq!(resolve_language(UiLanguage::Vi, Some("en-US")), Lang::Vi);
         assert_eq!(resolve_language(UiLanguage::En, Some("vi-VN")), Lang::En);
-        assert_eq!(resolve_language(UiLanguage::System, Some("vi-VN")), Lang::Vi);
+        assert_eq!(
+            resolve_language(UiLanguage::System, Some("vi-VN")),
+            Lang::Vi
+        );
         assert_eq!(resolve_language(UiLanguage::System, Some("vi")), Lang::Vi);
-        assert_eq!(resolve_language(UiLanguage::System, Some("fr-FR")), Lang::En);
+        assert_eq!(
+            resolve_language(UiLanguage::System, Some("fr-FR")),
+            Lang::En
+        );
         assert_eq!(resolve_language(UiLanguage::System, None), Lang::En);
     }
 

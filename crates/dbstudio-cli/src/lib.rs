@@ -132,6 +132,10 @@ pub enum Command {
         /// Keep going after a failed statement.
         #[arg(long)]
         continue_on_error: bool,
+        /// Restore only this object (table, collection; `schema.name` or `name`); repeat for
+        /// several. Needs a backup made with markers (format 3); default: everything.
+        #[arg(long = "object", value_name = "NAME")]
+        objects: Vec<String>,
         /// Do not ask for confirmation.
         #[arg(long)]
         yes: bool,
@@ -488,6 +492,7 @@ pub async fn execute_async(cli: &Cli, deps: &CliDeps, out: &mut dyn Write) -> u8
             create_database,
             clean,
             continue_on_error,
+            objects,
             yes,
             confirm_text,
             passphrase_env,
@@ -498,7 +503,7 @@ pub async fn execute_async(cli: &Cli, deps: &CliDeps, out: &mut dyn Write) -> u8
                 target_database: database.clone(),
                 create_database: *create_database,
                 clean: *clean,
-                objects: vec![],
+                objects: objects.clone(),
                 continue_on_error: *continue_on_error,
             };
             let profile = match env.service.get_profile(*connection) {

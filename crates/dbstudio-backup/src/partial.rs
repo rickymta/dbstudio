@@ -190,8 +190,9 @@ pub(crate) fn referenced_table(stmt: &str) -> Option<(Option<String>, String)> {
     let mut from = 0;
     while let Some(pos) = upper[from..].find("REFERENCES") {
         let at = from + pos;
-        let before_ok =
-            at == 0 || upper.as_bytes()[at - 1].is_ascii_whitespace() || upper.as_bytes()[at - 1] == b')';
+        let before_ok = at == 0
+            || upper.as_bytes()[at - 1].is_ascii_whitespace()
+            || upper.as_bytes()[at - 1] == b')';
         let after = at + "REFERENCES".len();
         let after_ok = upper
             .as_bytes()
@@ -205,6 +206,24 @@ pub(crate) fn referenced_table(stmt: &str) -> Option<(Option<String>, String)> {
         from = after;
     }
     None
+}
+
+/// The table of an `INSERT INTO <table> ...` statement.
+pub(crate) fn insert_target(stmt: &str) -> Option<(Option<String>, String)> {
+    // Marker and other comment lines may lead the statement.
+    let mut t = stmt.trim_start();
+    while t.starts_with("--") {
+        t = t.split_once('\n').map_or("", |(_, r)| r).trim_start();
+    }
+    let head = t.get(..11)?;
+    if !head.eq_ignore_ascii_case("INSERT INTO") {
+        return None;
+    }
+    let rest = &t[11..];
+    if !rest.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    parse_qualified(rest.trim_start())
 }
 
 /// `a`, `"a"."b"`, `` `a`.`b` `` or `[a].[b]` at the start of `s`.
@@ -290,7 +309,10 @@ mod tests {
         );
         // No nonce, or a wrong one: plain text.
         assert_eq!(parse_marker("-- dbstudio:common\n", n), None);
-        assert_eq!(parse_marker("-- dbstudio:common nonce=ffffffffffffffff", n), None);
+        assert_eq!(
+            parse_marker("-- dbstudio:common nonce=ffffffffffffffff", n),
+            None
+        );
         assert_eq!(
             parse_marker(
                 r#"-- dbstudio:object kind=table name="t" phase=data nonce=ffffffffffffffff"#,
@@ -299,14 +321,14 @@ mod tests {
             None
         );
         assert_eq!(
-            parse_marker(
-                r#"-- dbstudio:object kind=table name="t" phase=data"#,
-                n
-            ),
+            parse_marker(r#"-- dbstudio:object kind=table name="t" phase=data"#, n),
             None
         );
         assert_eq!(
-            parse_marker(r#"-- dbstudio:object kind=table schema="public" name="we\"ird t" phase=data nonce=0123456789abcdef"#, n),
+            parse_marker(
+                r#"-- dbstudio:object kind=table schema="public" name="we\"ird t" phase=data nonce=0123456789abcdef"#,
+                n
+            ),
             Some(Marker::Object {
                 kind: ObjectKind::Table,
                 schema: Some("public".into()),
@@ -315,7 +337,10 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_marker(r#"-- dbstudio:object kind=view name="v" phase=pre nonce=0123456789abcdef"#, n),
+            parse_marker(
+                r#"-- dbstudio:object kind=view name="v" phase=pre nonce=0123456789abcdef"#,
+                n
+            ),
             Some(Marker::Object {
                 kind: ObjectKind::View,
                 schema: None,
@@ -325,7 +350,10 @@ mod tests {
         );
         assert_eq!(parse_marker("-- just a comment", n), None);
         assert_eq!(
-            parse_marker("-- dbstudio:object kind=table name=\"t\" phase=x nonce=0123456789abcdef", n),
+            parse_marker(
+                "-- dbstudio:object kind=table name=\"t\" phase=x nonce=0123456789abcdef",
+                n
+            ),
             None
         );
     }
@@ -353,7 +381,9 @@ mod tests {
     fn references_are_found_in_every_quoting_style() {
         let r = |s| referenced_table(s);
         assert_eq!(
-            r("ALTER TABLE \"app\".\"b\" ADD CONSTRAINT fk FOREIGN KEY (a_id) REFERENCES \"app\".\"a\" (id);"),
+            r(
+                "ALTER TABLE \"app\".\"b\" ADD CONSTRAINT fk FOREIGN KEY (a_id) REFERENCES \"app\".\"a\" (id);"
+            ),
             Some((Some("app".into()), "a".into()))
         );
         assert_eq!(
@@ -366,6 +396,26 @@ mod tests {
         );
         assert_eq!(r("CREATE INDEX i ON t (a);"), None);
         assert_eq!(r("COMMENT ON COLUMN t.references IS 'x'"), None);
+    }
+
+    #[test]
+    fn insert_targets() {
+        assert_eq!(
+            insert_target("INSERT INTO [dbo].[child] ([id]) VALUES (1)"),
+            Some((Some("dbo".into()), "child".into()))
+        );
+        assert_eq!(
+            insert_target("  insert into t (a) values (1)"),
+            Some((None, "t".into()))
+        );
+        assert_eq!(
+            insert_target(
+                "-- dbstudio:object kind=table name=\"t\" phase=data\nINSERT INTO t (a) VALUES (1)"
+            ),
+            Some((None, "t".into()))
+        );
+        assert_eq!(insert_target("INSERTINTO t"), None);
+        assert_eq!(insert_target("CREATE TABLE t (a int)"), None);
     }
 
     #[test]
