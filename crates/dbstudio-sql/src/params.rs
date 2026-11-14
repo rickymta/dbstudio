@@ -243,6 +243,8 @@ fn find_params_chars(d: ScriptDialect, chars: &[char]) -> Vec<ParamRef> {
             | ScriptDialect::MySql { .. }
             | ScriptDialect::MsSql
             | ScriptDialect::Oracle
+            | ScriptDialect::Cql
+            | ScriptDialect::ClickHouse
     ) {
         return Vec::new();
     }
@@ -281,6 +283,21 @@ fn find_params_chars(d: ScriptDialect, chars: &[char]) -> Vec<ParamRef> {
                     continue;
                 }
                 let oracle = matches!(d, ScriptDialect::Oracle);
+                // CQL / ClickHouse: `{f:v}`, `{'k':v}` and ClickHouse `{name:Type}` have the
+                // colon glued to the previous token; a marker never does.
+                if matches!(d, ScriptDialect::Cql | ScriptDialect::ClickHouse)
+                    && i > 0
+                    && t[i - 1].end == x.start
+                    && matches!(
+                        t[i - 1].kind,
+                        TokenKind::Word
+                            | TokenKind::String
+                            | TokenKind::QuotedIdent
+                            | TokenKind::Number
+                    )
+                {
+                    continue;
+                }
                 let ok = match nx.kind {
                     TokenKind::Word => !nx.text.starts_with(['@', '#']),
                     TokenKind::Number => oracle && nx.text.chars().all(|c| c.is_ascii_digit()),
@@ -301,7 +318,10 @@ fn find_params_chars(d: ScriptDialect, chars: &[char]) -> Vec<ParamRef> {
                     range(x.start, nx.end),
                 ));
             }
-            (TokenKind::Punct, ScriptDialect::MySql { .. }) if x.text == "?" => {
+            (
+                TokenKind::Punct,
+                ScriptDialect::MySql { .. } | ScriptDialect::Cql | ScriptDialect::ClickHouse,
+            ) if x.text == "?" => {
                 question += 1;
                 found.push((
                     format!("?{question}"),
