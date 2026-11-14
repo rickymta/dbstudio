@@ -58,6 +58,15 @@ describe('ErdTab (mock IPC)', () => {
     await waitFor(() =>
       expect(document.querySelectorAll('[data-testid^="erd-edge-"]').length).toBe(25),
     );
+    // Edges are announced as readable foreign keys, never as raw object paths.
+    const labels = [...document.querySelectorAll('[data-testid^="rf__edge-"]')].map((e) =>
+      e.getAttribute('aria-label'),
+    );
+    expect(labels.length).toBe(25);
+    for (const l of labels) {
+      expect(l).toMatch(/^Foreign key .+: .+\..+ → .+\..+$/);
+      expect(l).not.toContain('[[');
+    }
   });
 
   it('searches by name and focuses "table + 1 level"', async () => {

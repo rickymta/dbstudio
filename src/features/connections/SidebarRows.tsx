@@ -19,6 +19,7 @@ import { kindBadgeFor } from './kindConfig';
 import { connectionColor } from './queries';
 import type { DragItem, DropTarget } from './dragModel';
 import { moveFocus } from './rowNav';
+import { SlowConnectHint } from './SlowConnectHint';
 
 /** Drag-and-drop plumbing handed to every row by the sidebar (CONN-02). */
 export interface DndApi {
@@ -319,6 +320,11 @@ export function ProfileRow({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+      <SlowConnectHint
+        active={opening}
+        keychain={profile.savePassword && profile.hasPassword}
+        className="px-2 py-1 text-xs text-muted-foreground"
+      />
       {children}
     </div>
   );

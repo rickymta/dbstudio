@@ -99,5 +99,8 @@
     "description": "Bố cục này đã được lưu bởi người khác (hoặc cửa sổ khác) sau khi bạn mở. Ghi đè bằng bản của bạn, hoặc tải bản đã lưu và bỏ thay đổi của bạn.",
     "overwrite": "Ghi đè",
     "reload": "Tải bản đã lưu"
+  },
+  "edge": {
+    "label": "Khoá ngoại {{name}}: {{fromTable}}.{{fromColumns}} → {{toTable}}.{{toColumns}}"
   }
 }

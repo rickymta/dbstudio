@@ -19,6 +19,7 @@ import {
   extraDetail,
   resultContext,
   resultContextParts,
+  searchScopeDatabase,
   SERVER_SEARCH_MIN_CHARS,
 } from './serverSearchModel';
 
@@ -59,6 +60,10 @@ export function ServerSearch({
           snapshot?.profiles.find((p) => p.id === session.connectionId)?.name ??
           session.serverInfo.product;
         const nodes = result?.data ?? [];
+        const scopeDb = searchScopeDatabase(
+          session,
+          snapshot?.profiles.find((p) => p.id === session.connectionId)?.database,
+        );
         return (
           <div key={session.sessionId} role="none">
             <div className="flex items-center gap-1.5 px-3 py-0.5 text-xs font-medium">
@@ -69,6 +74,11 @@ export function ServerSearch({
             {result?.error && (
               <p role="alert" className="px-5 py-0.5 text-xs text-danger">
                 {describeError(t, result.error)}
+              </p>
+            )}
+            {result?.data && scopeDb && (
+              <p className="px-5 py-0.5 text-xs text-muted-foreground">
+                {t('search.currentDbOnly', { database: scopeDb })}
               </p>
             )}
             {result?.data && nodes.length === 0 && (

@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, Eye, EyeOff, FolderOpen, TriangleAlert, XCircle } from 'lucide-react';
-import { useId, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent } from '@/components/ui/Dialog';
@@ -31,6 +31,7 @@ import {
   type ConnectionForm,
 } from './connectionForm';
 import { describeError } from './errors';
+import { SlowConnectHint } from './SlowConnectHint';
 import {
   COLOR_SWATCHES,
   databaseFieldFor,
@@ -42,6 +43,7 @@ import {
 import { needsTlsWarning } from './tlsWarning';
 import { OptionsEditor } from '@/features/document/OptionsEditor';
 import { UriPaste } from '@/features/document/UriPaste';
+import { defaultUriName } from '@/features/document/uriForm';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
 import { useHostKeyPrompt } from './useHostKeyPrompt';
 import { SshSection } from './SshSection';
@@ -102,6 +104,8 @@ function ConnectionDialogBody({
   const [form, setForm] = useState<ConnectionForm>(() => initialForm(profile, { groupId }));
   const [showPassword, setShowPassword] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  // Bumped on every rejected submit so the first invalid field gets focus (and scrolls into view).
+  const [focusTick, setFocusTick] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [test, setTest] = useState<TestState>({ status: 'idle' });
@@ -115,6 +119,16 @@ function ConnectionDialogBody({
   const errors = useMemo(() => validateForm(form), [form]);
   const showErrors = submitted;
 
+  useEffect(() => {
+    if (focusTick === 0) return;
+    const field = document
+      .getElementById(formId)
+      ?.querySelector<HTMLElement>('[aria-invalid="true"]');
+    if (!field) return;
+    field.scrollIntoView?.({ block: 'center' });
+    field.focus();
+  }, [focusTick, formId]);
+
   const update = (patch: Partial<ConnectionForm>) => {
     setForm((f) => ({ ...f, ...patch }));
     setTest({ status: 'idle' });
@@ -125,6 +139,11 @@ function ConnectionDialogBody({
     setSsh((s) => ({ ...s, ...patch }));
     setTest({ status: 'idle' });
     setSaveError(null);
+  };
+
+  const onUriParsed = (patch: Partial<ConnectionForm>) => {
+    // A blank name gets a readable default, so Save does not fail on a field the user never saw.
+    update(form.name.trim() ? patch : { ...patch, name: defaultUriName({ ...form, ...patch }) });
   };
 
   const onKindChange = (kind: string) => {
@@ -173,6 +192,7 @@ function ConnectionDialogBody({
     // A name is not needed to test; the server address is.
     if (errors.host || errors.port || errors.timeout || Object.keys(sshErrors).length > 0) {
       setSubmitted(true);
+      setFocusTick((n) => n + 1);
       return;
     }
     setTest({ status: 'running' });
@@ -196,7 +216,11 @@ function ConnectionDialogBody({
 
   const submit = async () => {
     setSubmitted(true);
-    if (saving || Object.keys(errors).length > 0 || Object.keys(sshErrors).length > 0) return;
+    if (saving) return;
+    if (Object.keys(errors).length > 0 || Object.keys(sshErrors).length > 0) {
+      setFocusTick((n) => n + 1);
+      return;
+    }
     setSaving(true);
     setSaveError(null);
     const built = withSsh(
@@ -228,6 +252,9 @@ function ConnectionDialogBody({
     }
   };
 
+  // A typed password is not read from the keychain, but a stored one (or saving one) is.
+  const usesKeychain =
+    form.savePassword && (form.password !== '' || (profile?.hasPassword ?? false));
   const fieldKey = databaseFieldFor(form.kind);
   const verifying = TLS_VERIFYING.has(form.tlsMode);
   const defaultColor = form.environment ? ENVIRONMENT_COLOR[form.environment] : undefined;
@@ -245,6 +272,7 @@ function ConnectionDialogBody({
       footer={
         <div className="flex w-full flex-col gap-2">
           <TestResult state={test} />
+          <SlowConnectHint active={test.status === 'running' || saving} keychain={usesKeychain} />
           <div className="flex items-center gap-2">
             <Button
               onClick={() => void runTest()}
@@ -286,7 +314,7 @@ function ConnectionDialogBody({
         )}
 
         <Section title={t('section.general')}>
-          {!isEdit && <UriPaste id={`${formId}-uri`} onParsed={update} />}
+          {!isEdit && <UriPaste id={`${formId}-uri`} onParsed={onUriParsed} />}
           <Field label={t('field.kind')} htmlFor={`${formId}-kind`}>
             <Select
               id={`${formId}-kind`}

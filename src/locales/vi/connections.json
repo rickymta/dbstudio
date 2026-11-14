@@ -179,6 +179,11 @@
     "noServerResults": "Không có kết quả trên máy chủ",
     "openData": "Mở dữ liệu",
     "viewDdl": "Xem DDL",
-    "showInTree": "Hiện trong cây"
+    "showInTree": "Hiện trong cây",
+    "currentDbOnly": "Chỉ tìm trong database {{database}}. Mở database khác để tìm ở đó."
+  },
+  "slow": {
+    "keychain": "Đang chờ hệ thống cấp quyền truy cập Keychain / kho mật khẩu - hãy kiểm tra hộp thoại của hệ điều hành.",
+    "generic": "Vẫn đang chờ kết nối hoặc quyền truy cập kho mật khẩu của hệ thống..."
   }
 }

@@ -99,5 +99,8 @@
     "description": "This layout was saved by someone else (or another window) after you opened it. Overwrite it with your version, or load the saved one and lose your changes.",
     "overwrite": "Overwrite",
     "reload": "Load saved"
+  },
+  "edge": {
+    "label": "Foreign key {{name}}: {{fromTable}}.{{fromColumns}} → {{toTable}}.{{toColumns}}"
   }
 }

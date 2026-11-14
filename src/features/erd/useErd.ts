@@ -4,9 +4,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Position, useReactFlow, type NodeHandle } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/toastStore';
 import { ipc } from '@/lib/ipc';
-import { pathKey, pathsEqual } from '@/lib/objectPath';
+import { lastSegment, pathKey, pathsEqual } from '@/lib/objectPath';
 import type { ErdLayout, IpcError, SchemaModel, Uuid } from '@/lib/types';
 import type { ErdTabPayload } from '@/stores/tabs';
 import { diffLayout, makeSnapshot, type LayoutDiff } from './diff';
@@ -78,6 +79,7 @@ function errorMessage(e: unknown): string {
 export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPayload) {
   const queryClient = useQueryClient();
   const flow = useReactFlow();
+  const { t } = useTranslation('erd');
 
   const [activeLayoutId, setActiveLayoutId] = useState<Uuid | null>(layoutId);
   const [layoutName, setLayoutName] = useState<string | null>(null);
@@ -350,6 +352,13 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
         pb.y + anchorOffset(to, r.toColumns, collapsed.has(b), sb.height),
       );
       const ends = relationEnds(r);
+      const label = t('edge.label', {
+        name: r.name,
+        fromTable: lastSegment(r.fromTable)?.name ?? a,
+        fromColumns: r.fromColumns.join(', '),
+        toTable: lastSegment(r.toTable)?.name ?? b,
+        toColumns: r.toColumns.join(', '),
+      });
       const touchesSelection = selectedKey !== null && (a === selectedKey || b === selectedKey);
       out.push({
         id: relationKey(r),
@@ -362,12 +371,13 @@ export function useErd({ sessionId, connectionId, scope, layoutId }: ErdTabPaylo
           parent: ends.parent,
           highlight: touchesSelection,
           dim: selectedKey !== null && !touchesSelection,
-          label: `${r.name}: ${r.fromColumns.join(', ')} → ${r.toColumns.join(', ')}`,
+          label,
         },
+        ariaLabel: label,
       });
     }
     return out;
-  }, [ready, visibleTables, view, sizes, positions, collapsed, selectedKey]);
+  }, [ready, visibleTables, view, sizes, positions, collapsed, selectedKey, t]);
 
   const fit = useCallback(() => {
     requestAnimationFrame(() => void flow.fitView({ padding: 0.15, duration: 250 }));
