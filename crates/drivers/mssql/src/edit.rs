@@ -192,6 +192,7 @@ async fn run_change(conn: &mut Conn, sql: &str) -> Result<u64> {
         max_rows: None,
         batch_size: 100,
         timeout: None,
+        full_lob: false,
     };
     run_script(conn, sql, &params, &ctl, None, &mut SinkOut(&mut sink)).await?;
     Ok(sink

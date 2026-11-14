@@ -97,6 +97,9 @@ pub struct RunParams {
     pub batch_size: usize,
     /// Client side time limit.
     pub timeout: Option<Duration>,
+    /// Read large (`max`) columns whole: no `max_lob_bytes` cap, no cell truncation. For
+    /// export/backup reads; interactive reads keep the cap.
+    pub full_lob: bool,
 }
 
 /// Message to a paused executor.
@@ -134,6 +137,10 @@ struct OpenSet {
     started: Instant,
     /// Rows allowed in the current segment.
     limit: u64,
+    /// Per column: cells cut at `lob` bytes in this segment (reported when the segment ends).
+    cut: Vec<u64>,
+    names: Vec<String>,
+    lob: usize,
 }
 
 struct Totals {
@@ -223,8 +230,11 @@ async fn run_batch(
 ) -> Result<BatchEnd> {
     // Wire bytes: `nvarchar` is 2 bytes per character, so keep twice the cell limit and let
     // `value::decode` do the exact cut on a character boundary.
-    conn.client
-        .set_plp_limit(Some(conn.lob_limit.saturating_mul(2)));
+    conn.client.set_plp_limit(if p.full_lob {
+        None
+    } else {
+        Some(conn.lob_limit.saturating_mul(2))
+    });
     let r = run_batch_inner(conn, batch, p, ctl, deadline, gate, out, totals).await;
     conn.client.set_plp_limit(None);
     r
@@ -242,7 +252,11 @@ async fn run_batch_inner(
     totals: &mut Totals,
 ) -> Result<BatchEnd> {
     let handle = conn.cancel.clone();
-    let lob = conn.lob_limit;
+    let lob = if p.full_lob {
+        usize::MAX
+    } else {
+        conn.lob_limit
+    };
     let range = TextRange {
         start: batch.start,
         end: batch.start + batch.len,
@@ -379,16 +393,15 @@ async fn run_batch_inner(
                     buf: Vec::new(),
                     started: totals.last_end,
                     limit: p.max_rows.unwrap_or(u64::MAX),
+                    cut: Vec::new(),
+                    names: col_names.clone(),
+                    lob,
                 });
             }
             QueryItem::Truncated(t) => {
+                // The row follows; the report is made per result set once the row is accepted.
                 if reason.is_none() {
                     row_trunc.push(t.column);
-                    let name = col_names.get(t.column).map_or("?", String::as_str);
-                    emit!(out.message(format!(
-                        "column {name} truncated at {} bytes (value has {} bytes)",
-                        conn.lob_limit, t.total_bytes
-                    )));
                 }
             }
             QueryItem::Row(row) => {
@@ -423,6 +436,9 @@ async fn run_batch_inner(
                                         buf: Vec::new(),
                                         started: Instant::now(),
                                         limit: n.max(1),
+                                        cut: Vec::new(),
+                                        names: col_names.clone(),
+                                        lob,
                                     });
                                 }
                                 Some(GateMsg::Discard) | None => {
@@ -444,6 +460,16 @@ async fn run_batch_inner(
                 for col in row_trunc.drain(..) {
                     if let Some(cell) = cells.get_mut(col) {
                         value::mark_truncated(cell);
+                    }
+                }
+                // Count cells cut at the limit (on the wire or by the decoder) per column.
+                for (i, c) in cells.iter().enumerate() {
+                    if matches!(c, Value::Ext(e) if e.ty == "truncatedText" || e.ty == "truncatedBytes")
+                    {
+                        if set.cut.len() <= i {
+                            set.cut.resize(i + 1, 0);
+                        }
+                        set.cut[i] += 1;
                     }
                 }
                 set.buf.push(cells);
@@ -523,6 +549,15 @@ async fn finish_set(
 ) -> Result<()> {
     if !set.buf.is_empty() {
         out.rows(std::mem::take(&mut set.buf)).await?;
+    }
+    // One message per column, sizes in bytes of the value (UTF-8 for text).
+    for (i, n) in set.cut.iter().enumerate().filter(|(_, n)| **n > 0) {
+        let name = set.names.get(i).map_or("?", String::as_str);
+        out.message(format!(
+            "column {name}: {n} value(s) truncated at {} bytes",
+            set.lob
+        ))
+        .await?;
     }
     out.end(StatementEnd {
         outcome: EndOutcome::Rows {

@@ -26,7 +26,10 @@ changed spot is marked `DBStudio patch`:
    64 KiB windows and dropped, so memory stays bounded; the connection stays in sync. A cut value
    is reported by `QueryItem::Truncated(Truncated { column, total_bytes })`, emitted just before
    its `Row`. UTF-16 cuts drop a dangling high surrogate, code-page cuts decode lossily. UDT
-   values and the connection default (`None`) are unaffected.
+   values and the connection default (`None`) are unaffected. Limitations: `QueryStream` queues
+   the `Truncated` notes and their row in a `pending` list; `columns()` (peek-ahead) stops while
+   that list is non-empty instead of reading past the queued row, and the limit also applies to
+   output parameters and other PLP values read while it is set (callers reset it to `None`).
 
 Updating: copy the new upstream `src`, re-apply the marked spots (`grep -rn "DBStudio patch"`),
 run `cargo test -p dbstudio-driver-mssql` with `DBSTUDIO_IT=1` against `mssql2022`. Candidates for

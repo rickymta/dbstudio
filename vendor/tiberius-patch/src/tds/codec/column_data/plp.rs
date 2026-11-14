@@ -65,6 +65,8 @@ where
                 // `Vec` capacity-overflow panic for values near u64::MAX).
                 _ => Vec::with_capacity((len as usize).min(super::MAX_PREALLOC)),
             };
+            // DBStudio patch: the effective cap never exceeds the global PLP size limit.
+            let limit = limit.map(|l| l.min(super::MAX_PLP_SIZE));
             let cap = limit.unwrap_or(usize::MAX);
             let mut total: u64 = 0;
             let mut scratch: Vec<u8> = Vec::new();
@@ -175,5 +177,77 @@ mod tests {
             }
             other => panic!("expected a protocol error, got {other:?}"),
         }
+    }
+}
+
+// DBStudio patch: tests of the byte-limited PLP read.
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+    use crate::sql_read_bytes::test_utils::IntoSqlReadBytes;
+    use bytes::{BufMut, BytesMut};
+
+    fn plp(total: u64, chunks: &[&[u8]]) -> BytesMut {
+        let mut buf = BytesMut::new();
+        buf.put_u64_le(total);
+        for c in chunks {
+            buf.put_u32_le(c.len() as u32);
+            buf.extend_from_slice(c);
+        }
+        buf.put_u32_le(0);
+        buf.put_u8(0x7f); // the next field must stay readable
+        buf
+    }
+
+    const UNKNOWN: u64 = 0xffff_ffff_ffff_fffe;
+
+    #[tokio::test]
+    async fn cut_inside_a_chunk_reports_total_and_stays_in_sync() {
+        let mut r = plp(UNKNOWN, &[b"abcdefgh"]).into_sql_read_bytes();
+        let (data, cut) = decode_limited(&mut r, 0xffff_ffff, Some(3)).await.unwrap();
+        assert_eq!(data.as_deref(), Some(&b"abc"[..]));
+        assert_eq!(cut, Some(8));
+        assert_eq!(r.read_u8().await.unwrap(), 0x7f);
+    }
+
+    #[tokio::test]
+    async fn cut_across_many_chunks_known_length() {
+        let mut r = plp(10, &[b"abcd", b"efgh", b"ij"]).into_sql_read_bytes();
+        let (data, cut) = decode_limited(&mut r, 0xffff_ffff, Some(6)).await.unwrap();
+        assert_eq!(data.as_deref(), Some(&b"abcdef"[..]));
+        assert_eq!(cut, Some(10));
+        assert_eq!(r.read_u8().await.unwrap(), 0x7f);
+    }
+
+    #[tokio::test]
+    async fn value_at_or_under_the_limit_is_whole() {
+        let mut r = plp(UNKNOWN, &[b"abcd"]).into_sql_read_bytes();
+        let (data, cut) = decode_limited(&mut r, 0xffff_ffff, Some(4)).await.unwrap();
+        assert_eq!(data.as_deref(), Some(&b"abcd"[..]));
+        assert_eq!(cut, None);
+    }
+
+    #[tokio::test]
+    async fn no_limit_reads_everything_and_null_stays_null() {
+        let mut r = plp(UNKNOWN, &[b"abcd", b"ef"]).into_sql_read_bytes();
+        assert_eq!(
+            decode(&mut r, 0xffff_ffff).await.unwrap().as_deref(),
+            Some(&b"abcdef"[..])
+        );
+        let mut buf = BytesMut::new();
+        buf.put_u64_le(0xffff_ffff_ffff_ffff);
+        let mut r = buf.into_sql_read_bytes();
+        let (data, cut) = decode_limited(&mut r, 0xffff_ffff, Some(1)).await.unwrap();
+        assert!(data.is_none() && cut.is_none());
+    }
+
+    #[tokio::test]
+    async fn skipped_tail_larger_than_a_window_is_dropped() {
+        let big = vec![7u8; 200_000];
+        let mut r = plp(UNKNOWN, &[&big, b"zz"]).into_sql_read_bytes();
+        let (data, cut) = decode_limited(&mut r, 0xffff_ffff, Some(2)).await.unwrap();
+        assert_eq!(data.as_deref(), Some(&[7u8, 7][..]));
+        assert_eq!(cut, Some(200_002));
+        assert_eq!(r.read_u8().await.unwrap(), 0x7f);
     }
 }

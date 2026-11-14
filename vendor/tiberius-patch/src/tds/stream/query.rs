@@ -121,6 +121,10 @@ impl<'a> QueryStream<'a> {
     /// error.
     pub(crate) async fn forward_to_metadata(&mut self) -> crate::Result<()> {
         loop {
+            // DBStudio patch: queued items (a `Truncated` note and its row) come first.
+            if !self.pending.is_empty() {
+                break;
+            }
             let item = Pin::new(&mut self.token_stream)
                 .peek()
                 .await
