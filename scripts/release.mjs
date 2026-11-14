@@ -130,7 +130,13 @@ const ENV = {
 function run(cmd, args, { allowFail = false } = {}) {
   const r = spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', env: ENV });
   if (r.error) {
-    if (allowFail) return { ok: false, out: '', err: String(r.error.message), missing: r.error.code === 'ENOENT' };
+    if (allowFail)
+      return {
+        ok: false,
+        out: '',
+        err: String(r.error.message),
+        missing: r.error.code === 'ENOENT',
+      };
     die(`không chạy được ${cmd}: ${r.error.message}`);
   }
   if (r.status !== 0 && !allowFail) die(`${cmd} ${args.join(' ')} lỗi:\n${r.stderr || r.stdout}`);
@@ -139,7 +145,9 @@ function run(cmd, args, { allowFail = false } = {}) {
 const git = (...a) => run('git', a).out;
 
 function buildChangelogSection(version) {
-  const prev = run('git', ['describe', '--tags', '--abbrev=0', '--match', 'v*.*.*'], { allowFail: true });
+  const prev = run('git', ['describe', '--tags', '--abbrev=0', '--match', 'v*.*.*'], {
+    allowFail: true,
+  });
   const prevTag = prev.ok && prev.out ? prev.out : null;
   const range = prevTag ? [`${prevTag}..HEAD`] : ['HEAD'];
   const log = git('log', '--no-merges', '--pretty=format:%s (%h)', ...range);
@@ -151,7 +159,8 @@ function buildChangelogSection(version) {
 }
 
 function insertChangelog(section) {
-  const header = '# Changelog\n\nCác thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.\n\n';
+  const header =
+    '# Changelog\n\nCác thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.\n\n';
   if (!existsSync(CHANGELOG)) return header + section + '\n';
   const t = readFileSync(CHANGELOG, 'utf8');
   const idx = t.search(/^## /m);
@@ -195,7 +204,9 @@ if (git('status', '--porcelain', '--untracked-files=no')) {
 }
 const branch = git('rev-parse', '--abbrev-ref', 'HEAD');
 if (!flags.branches.includes(branch)) {
-  die(`đang ở nhánh "${branch}", không phải nhánh phát hành (${flags.branches.join(', ')}). Dùng --allow-branch ${branch} nếu cố ý.`);
+  die(
+    `đang ở nhánh "${branch}", không phải nhánh phát hành (${flags.branches.join(', ')}). Dùng --allow-branch ${branch} nếu cố ý.`,
+  );
 }
 
 const cur = readVersions();
@@ -215,9 +226,14 @@ const files = writeVersions(next);
 const section = buildChangelogSection(next);
 const changelogNew = insertChangelog(section.text);
 
-console.log(`${flags.dryRun ? '[dry-run] ' : ''}Phát hành ${current} -> ${next} (tag ${tag}, nhánh ${branch})`);
-for (const f of Object.keys(files)) console.log(`  sửa  ${f.replace(ROOT + '/', '')}: version ${current} -> ${next}`);
-console.log(`  ${existsSync(CHANGELOG) ? 'sửa ' : 'tạo '} CHANGELOG.md (từ ${section.prevTag ?? 'đầu lịch sử'}):\n`);
+console.log(
+  `${flags.dryRun ? '[dry-run] ' : ''}Phát hành ${current} -> ${next} (tag ${tag}, nhánh ${branch})`,
+);
+for (const f of Object.keys(files))
+  console.log(`  sửa  ${f.replace(ROOT + '/', '')}: version ${current} -> ${next}`);
+console.log(
+  `  ${existsSync(CHANGELOG) ? 'sửa ' : 'tạo '} CHANGELOG.md (từ ${section.prevTag ?? 'đầu lịch sử'}):\n`,
+);
 console.log(section.text.replace(/^/gm, '    '));
 console.log('  chạy cargo update -w --offline để cập nhật Cargo.lock');
 console.log(`  commit "chore(release): ${tag}" và tạo tag annotated ${tag}`);
