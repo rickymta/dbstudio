@@ -424,10 +424,7 @@ mod tests {
 
     #[test]
     fn scaffolded_formats_are_unsupported_until_their_package_lands() {
-        for format in [
-            PlanFormat::ClickHouseJson,
-            PlanFormat::CqlTrace,
-        ] {
+        for format in [PlanFormat::ClickHouseJson, PlanFormat::CqlTrace] {
             assert_eq!(parse(&raw(format)), Err(PlanError::Unsupported(format)));
             // Empty text is still reported as invalid before dispatch.
             let mut empty = raw(format);

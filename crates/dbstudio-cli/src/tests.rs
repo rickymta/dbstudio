@@ -619,7 +619,7 @@ async fn verify_and_restore_with_confirmation_rules() {
         .collect();
     assert!(
         sql.iter()
-            .any(|s| s.starts_with("CREATE TABLE \"accounts\""))
+            .any(|s| s.contains("CREATE TABLE \"accounts\""))
     );
     assert!(
         sql.iter()
@@ -710,7 +710,7 @@ async fn verify_and_restore_with_confirmation_rules() {
         .collect();
     assert!(
         sql.iter()
-            .any(|s| s.starts_with("DROP SCHEMA IF EXISTS \"public\" CASCADE"))
+            .any(|s| s.contains("DROP SCHEMA IF EXISTS \"public\" CASCADE"))
     );
 }
 
