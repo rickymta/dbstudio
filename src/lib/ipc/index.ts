@@ -1,6 +1,7 @@
 import { backupApi } from './backup';
 import { changesApi } from './changes';
 import { coreApi } from './core';
+import { debugApi } from './debug';
 import { editorApi } from './editor';
 import { erdApi } from './erd';
 import { eventsApi } from './events';
@@ -23,7 +24,7 @@ export { EVENTS, type EventPayloads } from './events';
 /**
  * The single backend API of the frontend. All backend access goes through this object; each
  * area lives in its own file (core, editor, changes, plan, erd, files, jobs, export, backup,
- * keyvalue, events).
+ * keyvalue, debug, events).
  */
 export const ipc = {
   ...coreApi,
@@ -36,5 +37,6 @@ export const ipc = {
   ...exportApi,
   ...backupApi,
   ...keyvalueApi,
+  ...debugApi,
   ...eventsApi,
 };

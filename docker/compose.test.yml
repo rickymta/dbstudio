@@ -42,6 +42,11 @@
 #                             DBSTUDIO_IT_CASSANDRA41_PORT / _SCYLLA62_PORT / _CLICKHOUSE23_PORT)
 #   docker compose -f docker/compose.test.yml up -d --wait scylla       # starts one service
 #   sshd (same compose network) reaches every service by its service name.
+#
+# SQL debugger (profile debug, ~300 MB; the image is built locally from docker/pg16dbg):
+#   pg16dbg      DBSTUDIO_IT_PGDBG_PORT=54317   dbstudio / dbstudio_test, PostgreSQL 16 + pldebugger,
+#                shared_preload_libraries=plugin_debugger, extension pldbgapi created in `dbstudio`
+#   docker compose -f docker/compose.test.yml --profile debug up -d --wait pg16dbg
 name: dbstudio-test
 
 x-pg-env: &pg-env
@@ -501,6 +506,24 @@ services:
       timeout: 10s
       retries: 60
       start_period: 60s
+
+  # ---- SQL debugger (profile debug) ----------------------------------------------------------
+
+  # PostgreSQL 16 with pldebugger preloaded (routine debugger tests, package P).
+  pg16dbg:
+    profiles: ['debug']
+    build:
+      context: ./pg16dbg
+    image: dbstudio/pg16-pldebugger:local
+    environment: *pg-env
+    mem_limit: 512m
+    ports: ['127.0.0.1:54317:5432']
+    command: ['postgres', '-c', 'shared_preload_libraries=plugin_debugger']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U dbstudio -d dbstudio']
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
 volumes:
   target-oracle:

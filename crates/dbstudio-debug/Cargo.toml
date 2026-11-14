@@ -1,0 +1,27 @@
+[package]
+name = "dbstudio-debug"
+description = "SQL debugger engine (script debugger + routine debugger) for DBStudio, independent of Tauri."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+dbstudio-core.workspace = true
+dbstudio-sql.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+uuid.workspace = true
+
+[dev-dependencies]
+dbstudio-core = { workspace = true, features = ["testing"] }
+tokio.workspace = true
+
+[features]
+# Package O: prototype of the Oracle DBMS_DEBUG routine debugger (spike).
+oracle-debug-spike = []
+
+[lints]
+workspace = true

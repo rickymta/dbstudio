@@ -2,6 +2,7 @@ import { backupMock, resetMockBackup } from './backup';
 import { mockChildren, mockObjectDdl, mockTableDetails } from './catalog';
 import { mockParseMongoUri } from './catalogMongo';
 import { changesMock } from './changes';
+import { debugMock, resetMockDebug } from './debug';
 import { erdMock, resetMockErd } from './erd';
 import { exportMock, resetMockExport } from './export';
 import { historyMock, resetMockHistory } from './history';
@@ -35,6 +36,7 @@ export function resetMockPhase2(): void {
   resetMockBackup();
   resetMockRedis();
   resetMockPlanHistory();
+  resetMockDebug();
 }
 
 type Path = Parameters<typeof mockChildren>[1];
@@ -50,6 +52,7 @@ export const mock = {
   ...exportMock,
   ...backupMock,
   ...keyvalueMock,
+  ...debugMock,
   connectionsList: connections.connectionsList,
   connectionSave: connections.connectionSave,
   connectionDelete: connections.connectionDelete,

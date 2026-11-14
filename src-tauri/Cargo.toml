@@ -23,6 +23,7 @@ dbstudio-plan.workspace = true
 dbstudio-export.workspace = true
 dbstudio-backup.workspace = true
 dbstudio-ssh.workspace = true
+dbstudio-debug.workspace = true
 dbstudio-driver-mysql = { version = "0.1.0", path = "../crates/drivers/mysql", optional = true }
 dbstudio-driver-postgres = { version = "0.1.0", path = "../crates/drivers/postgres", optional = true }
 dbstudio-driver-mssql = { version = "0.1.0", path = "../crates/drivers/mssql", optional = true }

@@ -103,6 +103,12 @@ jobs:
             test: |
               cargo test -p dbstudio-driver-postgres -- cockroach
               cargo test -p dbstudio-driver-mysql -- tidb
+          # SQL debugger: PostgreSQL 16 + pldebugger (image built from docker/pg16dbg). Tests of
+          # the routine debugger carry `pgdbg` in their names.
+          - group: debug
+            services: pg16dbg
+            profile: debug
+            test: cargo test -p dbstudio-debug -- pgdbg
     steps:
       - uses: actions/checkout@v4
 
@@ -163,6 +169,7 @@ jobs:
           DBSTUDIO_IT_CLICKHOUSE_TLS_PORT: '18443'
           DBSTUDIO_IT_COCKROACH_PORT: '26258'
           DBSTUDIO_IT_TIDB_PORT: '34000'
+          DBSTUDIO_IT_PGDBG_PORT: '54317'
         run: ${{ matrix.test }}
 
       # The Oracle driver needs Instant Client (a Linux build of it lives in the oracle-it image),

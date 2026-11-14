@@ -7,6 +7,7 @@
 
 mod backup;
 mod db;
+mod debug;
 mod erd;
 mod history;
 mod known_hosts;
@@ -42,10 +43,11 @@ pub use service::{
     MAX_IMPORT_GROUPS, MAX_IMPORT_PROFILES,
 };
 pub use settings::{
-    AppSettings, CloseBehavior, EDITOR_ROWS_RANGE, FONT_FAMILY_MAX_CHARS, FONT_SIZE_RANGE,
-    GRID_CELLS_RANGE, GRID_ROWS_RANGE, HISTORY_MAX_RANGE, KEEPALIVE_RANGE, LOB_BYTES_RANGE,
-    LogLevel, OracleClientSettings, PLAN_FACTOR_RANGE, PLAN_HISTORY_MAX_RANGE,
+    AppSettings, CloseBehavior, DEBUG_PAUSED_TTL_RANGE, DEBUG_ROWS_RANGE, DEBUG_TX_WARN_RANGE,
+    DEBUG_WATCH_TIMEOUT_RANGE, DebugKeymap, EDITOR_ROWS_RANGE, FONT_FAMILY_MAX_CHARS,
+    FONT_SIZE_RANGE, GRID_CELLS_RANGE, GRID_ROWS_RANGE, HISTORY_MAX_RANGE, KEEPALIVE_RANGE,
+    LOB_BYTES_RANGE, LogLevel, OracleClientSettings, PLAN_FACTOR_RANGE, PLAN_HISTORY_MAX_RANGE,
     QUERY_TIMEOUT_MAX_MS, TimestampDisplay, UiLanguage,
 };
-pub use tabs::EditorTabState;
+pub use tabs::{EditorTabState, TabDebugState};
 pub use validate::{IMPORT_OPTION_ALLOWLIST, MAX_FIELD_CHARS, is_valid_color};

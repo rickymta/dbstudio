@@ -10,3 +10,4 @@ export * from './export';
 export * from './backup';
 export * from './history';
 export * from './ssh';
+export * from './debug';

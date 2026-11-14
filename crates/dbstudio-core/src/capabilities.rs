@@ -87,6 +87,10 @@ pub struct Capabilities {
     /// `count_table` returns an exact count cheaply enough for the grid (false: CQL full scan).
     #[serde(default)]
     pub exact_count: bool,
+    /// The driver *can* host a routine debugger (PostgreSQL `pldbgapi`); whether the server really
+    /// supports it is reported by `debug_support`.
+    #[serde(default)]
+    pub routine_debug: bool,
 }
 
 impl Capabilities {
@@ -123,6 +127,7 @@ impl Capabilities {
                 ssh_tunnel: true,
                 table_sort: true,
                 exact_count: true,
+                routine_debug: true,
                 ..none
             },
             DbKind::MySql => Capabilities {
@@ -278,6 +283,7 @@ impl Capabilities {
             // and is switched on by `Session::capabilities()`.
             DbKind::CockroachDb => Capabilities {
                 triggers: false,
+                routine_debug: false,
                 ..Capabilities::planned_for(DbKind::Postgres)
             },
             DbKind::YugabyteDb => Capabilities::planned_for(DbKind::Postgres),

@@ -15,6 +15,12 @@ use tokio::sync::broadcast;
 pub const JOB_PROGRESS: &str = "job://progress";
 /// Event name of `{leaseId, state}` payloads.
 pub const LEASE_STATE: &str = "lease://state";
+/// Event name of [`dbstudio_core::debug::DebugState`] payloads (SQL debugger).
+#[allow(dead_code)] // emitted by the debug manager (package T)
+pub const DEBUG_STATE: &str = "debug://state";
+/// Event name of [`dbstudio_core::debug::DebugOutputEvent`] payloads (SQL debugger console).
+#[allow(dead_code)] // emitted by the debug manager (package T)
+pub const DEBUG_OUTPUT: &str = "debug://output";
 /// Event name emitted (payload `null`) when backup jobs changed.
 #[allow(dead_code)] // emitted by the backup package
 pub const BACKUP_CHANGED: &str = "backup://changed";

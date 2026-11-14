@@ -38,6 +38,13 @@ export interface EditorTabPayload {
   mode: EditorMode;
 }
 
+/** Payload of a `debugSource` tab: the source of a routine the SQL debugger stopped in. */
+export interface DebugSourcePayload {
+  sessionId: Uuid;
+  connectionId: Uuid;
+  signature: string;
+}
+
 /** Payload of a `plan` tab; the plan itself is kept in the plan store. */
 export interface PlanTabPayload {
   sessionId: Uuid;
@@ -64,6 +71,7 @@ export type TabItem =
   | (TabBase & { kind: 'plan'; payload: PlanTabPayload })
   | (TabBase & { kind: 'erd'; payload: ErdTabPayload })
   | (TabBase & { kind: 'key'; payload: KeyTabPayload })
+  | (TabBase & { kind: 'debugSource'; payload: DebugSourcePayload })
   | (TabBase & { kind: 'backup'; payload?: undefined });
 
 export type TabKind = TabItem['kind'];

@@ -14,7 +14,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { bracketMatching, indentOnInput } from '@codemirror/language';
 import { setDiagnostics, lintKeymap, type Diagnostic } from '@codemirror/lint';
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
-import { Compartment, EditorState } from '@codemirror/state';
+import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import {
   EditorView,
   drawSelection,
@@ -58,6 +58,8 @@ export interface SqlEditorProps {
   /** Error marks (run error and lexer problems). */
   marks: ErrorMark[];
   ariaLabel: string;
+  /** Extensions of other features (the debugger's gutter and inline values); keep the array stable. */
+  extraExtensions?: Extension[];
   /** One handler for every editor shortcut (see `shortcuts.ts`). */
   onShortcut: (id: ShortcutId) => void;
   onChange: (text: string) => void;
@@ -84,6 +86,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     const host = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const language = useRef(new Compartment());
+    const extra = useRef(new Compartment());
     const changeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const flushChange = useRef<() => void>(() => {});
     const latest = useRef(props);
@@ -134,6 +137,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
               indentWithTab,
             ]),
             language.current.of(languageExtension(latest.current.mode, latest.current.dialect)),
+            extra.current.of(latest.current.extraExtensions ?? []),
             editorHighlight,
             editorTheme,
             EditorView.contentAttributes.of({ 'aria-label': latest.current.ariaLabel }),
@@ -183,6 +187,13 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         effects: language.current.reconfigure(languageExtension(props.mode, props.dialect)),
       });
     }, [props.mode, props.dialect]);
+
+    // Extensions of other features (debugger).
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: extra.current.reconfigure(props.extraExtensions ?? []),
+      });
+    }, [props.extraExtensions]);
 
     // Error marks become lint diagnostics (underline, gutter marker, tooltip).
     useEffect(() => {

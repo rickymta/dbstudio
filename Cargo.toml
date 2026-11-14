@@ -37,6 +37,7 @@ dbstudio-plan = { path = "crates/dbstudio-plan" }
 dbstudio-export = { path = "crates/dbstudio-export" }
 dbstudio-backup = { path = "crates/dbstudio-backup" }
 dbstudio-ssh = { path = "crates/dbstudio-ssh" }
+dbstudio-debug = { path = "crates/dbstudio-debug" }
 quick-xml = "0.42"
 rust_xlsxwriter = "0.102"
 calamine = "0.38"

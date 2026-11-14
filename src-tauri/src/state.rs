@@ -5,6 +5,7 @@ use std::sync::Arc;
 use dbstudio_core::DriverRegistry;
 use dbstudio_store::{ConnectionService, SecretStore};
 
+use crate::debug::DebugManager;
 use crate::events::{EventEmitter, EventHub};
 use crate::grants::PathGrants;
 use crate::guard::ConfirmTokens;
@@ -30,6 +31,8 @@ pub struct AppState {
     pub events: Arc<EventHub>,
     /// Dedicated connections of editor / console tabs.
     pub leases: Arc<LeaseManager>,
+    /// SQL debugger sessions.
+    pub debug: Arc<DebugManager>,
     /// Background jobs.
     pub jobs: Arc<JobManager>,
     /// Pending confirmations for destructive operations.
@@ -68,6 +71,7 @@ impl AppState {
             jobs: Arc::new(JobManager::new(emitter)),
             events,
             leases,
+            debug: Arc::new(DebugManager::new()),
             confirm: Arc::new(ConfirmTokens::new()),
             grants: Arc::new(PathGrants::new()),
             data_dir: Arc::new(std::env::temp_dir().join("dbstudio")),

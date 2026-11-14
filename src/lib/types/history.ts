@@ -1,6 +1,7 @@
 // Query history, saved queries, editor tab state, ERD layouts (dbstudio-store).
 
 import type { DbKind, ObjectPath, Uuid } from './core';
+import type { TabDebugState } from './debug';
 import type { PlanFormat, RawPlan } from './plan';
 
 export type HistoryStatus = 'running' | 'ok' | 'error' | 'cancelled';
@@ -72,6 +73,8 @@ export interface EditorTabState {
   autoCommit: boolean;
   /** Text differs from `filePath` on disk (or the tab was never saved). Optional on input. */
   dirty?: boolean;
+  /** SQL debugger breakpoints and watches of the tab (`null` = nothing saved). */
+  debug?: TabDebugState | null;
 }
 
 /** One plan history row without the raw plan (`plan_history_list`). */

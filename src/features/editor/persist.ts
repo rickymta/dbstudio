@@ -7,6 +7,7 @@ import type { DbKind, EditorTabState } from '@/lib/types';
 import { useTabsStore, type EditorMode, type TabItem } from '@/stores/tabs';
 import { addEditorTab } from './open';
 import { getTabData, isDirty, useEditorStore, type EditorTabData } from './editorStore';
+import { applyDebugState, debugStateOf, onDebugStateChanged } from './persistHooks';
 
 export function modeOfKind(kind: DbKind | undefined): EditorMode {
   if (kind === 'mongodb') return 'mongo';
@@ -38,6 +39,7 @@ export function collectEditorTabs(): EditorTabState[] {
       filePath: data.filePath,
       cursor: data.cursor,
       autoCommit: data.leaseState?.autoCommit ?? data.autoCommit,
+      debug: debugStateOf(tab.payload.tabStateId),
     });
   }
   return states;
@@ -110,6 +112,7 @@ export async function restoreEditorTabs(): Promise<number | null> {
       },
       false,
     );
+    if (state.debug) applyDebugState(state.id, state.debug);
     restored++;
   }
   useTabsStore.getState().activate(previous);
@@ -184,6 +187,7 @@ export function startEditorPersistence(): () => void {
     timer ??= setTimeout(flush, SAVE_DELAY_MS);
   };
   const stopTabs = useTabsStore.subscribe(schedule);
+  const stopDebug = onDebugStateChanged(schedule);
   // Run results and lease progress change the store constantly; only persisted fields count.
   const stopEditors = useEditorStore.subscribe((state, prev) => {
     for (const [id, data] of Object.entries(state.tabs)) {
@@ -193,6 +197,7 @@ export function startEditorPersistence(): () => void {
   });
   return () => {
     stopTabs();
+    stopDebug();
     stopEditors();
     if (timer) clearTimeout(timer);
     flush();

@@ -347,6 +347,7 @@ pub(crate) async fn script_generate_impl(
 }
 
 pub(crate) async fn lease_close_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseCloseReport> {
+    state.debug.stop_for_lease(lease_id).await;
     state.leases.close(lease_id).await
 }
 
@@ -360,6 +361,7 @@ pub(crate) async fn lease_execute_impl<F>(
 where
     F: FnMut(QueryEvent) -> bool + Send,
 {
+    state.leases.ensure_not_debugging(lease_id)?;
     let (session_id, lease) = state.leases.get_with_session(lease_id)?;
     let (session, config) = state.sessions.get_with_config(session_id)?;
     let ExecuteRequest {
@@ -449,6 +451,7 @@ pub(crate) async fn lease_fetch_more_impl<F>(
 where
     F: FnMut(QueryEvent) -> bool + Send,
 {
+    state.leases.ensure_not_debugging(lease_id)?;
     let lease = state.leases.get(lease_id)?;
     let mut sink = EventSink::new(emit);
     let result = lease
@@ -495,6 +498,7 @@ pub(crate) async fn lease_begin_impl(
     lease_id: Uuid,
     options: TxOptions,
 ) -> Result<LeaseState> {
+    state.leases.ensure_not_debugging(lease_id)?;
     let (session_id, lease) = state.leases.get_with_session(lease_id)?;
     // A read-only connection never gets a read-write transaction.
     let mut options = options;
@@ -512,6 +516,7 @@ pub(crate) async fn lease_begin_impl(
 }
 
 pub(crate) async fn lease_commit_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseState> {
+    state.leases.ensure_not_debugging(lease_id)?;
     let lease = state.leases.get(lease_id)?;
     let result = lease.commit().await;
     notify_on_error(state, lease_id, &result);
@@ -520,6 +525,7 @@ pub(crate) async fn lease_commit_impl(state: &AppState, lease_id: Uuid) -> Resul
 }
 
 pub(crate) async fn lease_rollback_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseState> {
+    state.leases.ensure_not_debugging(lease_id)?;
     let lease = state.leases.get(lease_id)?;
     let result = lease.rollback().await;
     notify_on_error(state, lease_id, &result);
@@ -532,6 +538,7 @@ pub(crate) async fn lease_set_auto_commit_impl(
     lease_id: Uuid,
     auto_commit: bool,
 ) -> Result<LeaseState> {
+    state.leases.ensure_not_debugging(lease_id)?;
     let lease = state.leases.get(lease_id)?;
     let result = lease.set_auto_commit(auto_commit).await;
     notify_on_error(state, lease_id, &result);
@@ -544,6 +551,7 @@ pub(crate) async fn lease_set_context_impl(
     lease_id: Uuid,
     context: LeaseContext,
 ) -> Result<LeaseState> {
+    state.leases.ensure_not_debugging(lease_id)?;
     let lease = state.leases.get(lease_id)?;
     let result = lease.set_context(context).await;
     notify_on_error(state, lease_id, &result);
@@ -1790,6 +1798,7 @@ mod tests {
             cursor: 3,
             auto_commit: true,
             dirty: false,
+            debug: None,
         };
         cmd::editor_tabs_set_impl(&state, vec![tab.clone()])
             .await

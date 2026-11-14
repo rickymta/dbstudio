@@ -59,6 +59,8 @@ struct Entry {
     /// Set when the connection under the lease is known to be dead (keepalive failed, or the
     /// session was reconnected while a transaction was open).
     lost: Option<Lost>,
+    /// Debug session that holds the lease; editor commands answer `Busy` meanwhile.
+    debug: Option<Uuid>,
 }
 
 /// What is known about a lease whose connection died.
@@ -154,6 +156,7 @@ impl LeaseManager {
                 last_activity: Instant::now(),
                 last_ping: Instant::now(),
                 lost: None,
+                debug: None,
             },
         );
         Ok(LeaseInfo {
@@ -161,6 +164,44 @@ impl LeaseManager {
             session_id,
             state,
         })
+    }
+
+    /// Give the lease to debug session `debug_id`. `Busy` when another session holds it.
+    pub fn claim_debug(&self, lease_id: Uuid, debug_id: Uuid) -> Result<()> {
+        let mut map = self.lock();
+        let entry = map
+            .get_mut(&lease_id)
+            .ok_or_else(|| Error::NotFound(format!("lease {lease_id}")))?;
+        match entry.debug {
+            Some(owner) if owner != debug_id => Err(Error::Busy("debugging".into())),
+            _ => {
+                entry.debug = Some(debug_id);
+                Ok(())
+            }
+        }
+    }
+
+    /// Release the lease from `debug_id` (no-op when it is not the holder).
+    pub fn release_debug(&self, lease_id: Uuid, debug_id: Uuid) {
+        if let Some(entry) = self.lock().get_mut(&lease_id) {
+            if entry.debug == Some(debug_id) {
+                entry.debug = None;
+            }
+        }
+    }
+
+    /// Debug session that currently holds the lease.
+    pub fn debug_owner(&self, lease_id: Uuid) -> Option<Uuid> {
+        self.lock().get(&lease_id).and_then(|e| e.debug)
+    }
+
+    /// `Busy("debugging")` while a debug session holds the lease (called by every editor command
+    /// that would run something on it).
+    pub fn ensure_not_debugging(&self, lease_id: Uuid) -> Result<()> {
+        match self.debug_owner(lease_id) {
+            Some(_) => Err(Error::Busy("debugging".into())),
+            None => Ok(()),
+        }
     }
 
     /// The lease, or `NotFound`.
@@ -688,6 +729,35 @@ mod tests {
         // Closing again is harmless and does not close twice.
         leases.close(info.lease_id).await.unwrap();
         assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_debug_session_holds_the_lease_until_released() {
+        let (leases, _) = manager();
+        let closes = Arc::new(AtomicUsize::new(0));
+        let info = leases.register(Uuid::new_v4(), fake(&closes)).unwrap();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        leases.ensure_not_debugging(info.lease_id).unwrap();
+        leases.claim_debug(info.lease_id, a).unwrap();
+        assert_eq!(leases.debug_owner(info.lease_id), Some(a));
+        assert!(matches!(
+            leases.ensure_not_debugging(info.lease_id),
+            Err(Error::Busy(m)) if m == "debugging"
+        ));
+        assert!(matches!(
+            leases.claim_debug(info.lease_id, b),
+            Err(Error::Busy(_))
+        ));
+        // Claiming again by the holder is fine; a stranger cannot release.
+        leases.claim_debug(info.lease_id, a).unwrap();
+        leases.release_debug(info.lease_id, b);
+        assert_eq!(leases.debug_owner(info.lease_id), Some(a));
+        leases.release_debug(info.lease_id, a);
+        leases.ensure_not_debugging(info.lease_id).unwrap();
+        assert!(matches!(
+            leases.claim_debug(Uuid::new_v4(), a),
+            Err(Error::NotFound(_))
+        ));
     }
 
     #[tokio::test]
