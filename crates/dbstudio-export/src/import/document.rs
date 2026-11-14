@@ -675,7 +675,7 @@ mod tests {
         );
         assert_eq!(
             doc,
-            r#"{"_id":{"$oid":"507f1f77bcf86cd799439011"},"n":5,"when":{"$date":"2024-05-01T10:00:00Z"},"price":{"$numberDecimal":"1.50"},"txt":"{\"not\":\"a wrapper\"}"}"#
+            r#"{"_id":{"$oid":"507f1f77bcf86cd799439011"},"n":5,"when":{"$date":"2024-05-01T10:00:00Z"},"price":{"$numberDecimal":"1.50"},"txt":{"not":"a wrapper"}}"#
         );
     }
 
