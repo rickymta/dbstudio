@@ -845,10 +845,27 @@ impl DebugManager {
 
     /// Start a session on the lease of `request` (design 2.1): claims the lease, builds the
     /// gate / sink / proxy of this lease and hands them to the engine.
-    pub async fn start(&self, state: &AppState, request: DebugStartRequest) -> Result<DebugState> {
+    pub async fn start(
+        &self,
+        state: &AppState,
+        mut request: DebugStartRequest,
+    ) -> Result<DebugState> {
         let lease_id = request.lease_id;
         let (session_id, lease) = state.leases.get_with_session(lease_id)?;
         let (session, config) = state.sessions.get_with_config(session_id)?;
+        // The routine breakpoints of the connection live in the store: the frontend loads them
+        // only when a routine tab opens, so the engine starts with all of them.
+        let svc = state.connections.clone();
+        let connection_id = config.id;
+        let stored =
+            tokio::task::spawn_blocking(move || svc.store().routine_breakpoints_get(connection_id))
+                .await
+                .map_err(|e| Error::Other(format!("store task failed: {e}")))
+                .and_then(|r| r);
+        match stored {
+            Ok(list) => merge_stored_routine_breakpoints(&mut request, list),
+            Err(e) => tracing::warn!(error = %e, "stored routine breakpoints not loaded"),
+        }
         let lease_state = state.leases.state_of(lease_id)?;
         if lease_state.running.is_some() {
             return Err(Error::Busy("the lease is running a statement".into()));
@@ -1341,6 +1358,24 @@ impl DebugManager {
         self.inner.reg().support.insert(key, found.clone());
         Ok(found)
     }
+}
+
+/// Add the stored routine breakpoints to the request. What the frontend sent wins per routine
+/// (like DAP `setBreakpoints`, a source's list replaces the earlier one).
+pub(crate) fn merge_stored_routine_breakpoints(
+    request: &mut DebugStartRequest,
+    stored: Vec<RoutineBreakpoint>,
+) {
+    let sent: Vec<String> = request
+        .routine_breakpoints
+        .iter()
+        .map(|b| b.routine.signature.clone())
+        .collect();
+    request.routine_breakpoints.extend(
+        stored
+            .into_iter()
+            .filter(|b| !sent.contains(&b.routine.signature)),
+    );
 }
 
 /// Capabilities of a session: its own when it reports them, else its driver's descriptor.
@@ -2376,6 +2411,54 @@ mod tests {
             cmd::debug_support_impl(&m.state, Uuid::new_v4()).await,
             Err(Error::NotFound(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn start_loads_the_stored_routine_breakpoints_of_the_connection() {
+        let _c = use_keyword_classifier();
+        let m = rig().await;
+        let connection_id = m.state.sessions.get_with_config(m.sid).unwrap().1.id;
+        let mk = |sig: &str, id: &str, line: u32| RoutineBreakpoint {
+            routine: RoutineRef {
+                signature: sig.into(),
+                oid: None,
+                path: None,
+            },
+            source_hash: Some(source_hash("body")),
+            breakpoint: Breakpoint {
+                id: id.into(),
+                line,
+                enabled: true,
+                suspend: true,
+                condition: None,
+                log_message: None,
+                hit_count: None,
+            },
+        };
+        cmd::routine_breakpoints_set_impl(
+            &m.state,
+            connection_id,
+            vec![mk("public.f(int)", "a", 3), mk("public.g(int)", "b", 4)],
+        )
+        .await
+        .unwrap();
+        // The frontend already sent its own list for g: that one replaces the stored one.
+        let mut req = start_request(m.lease, "select f(1)");
+        req.routine_breakpoints = vec![mk("public.g(int)", "b2", 9)];
+        cmd::debug_start_impl(&m.state, req).await.unwrap();
+        let reqs = m.backend.requests.lock().unwrap();
+        let got: Vec<(String, u32)> = reqs[0]
+            .routine_breakpoints
+            .iter()
+            .map(|b| (b.routine.signature.clone(), b.breakpoint.line))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("public.g(int)".to_string(), 9),
+                ("public.f(int)".to_string(), 3)
+            ]
+        );
     }
 
     #[tokio::test]
