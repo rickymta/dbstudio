@@ -26,6 +26,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          # Node only (no pnpm here): setup-node v5 would auto-enable the pnpm cache from
+          # package.json "packageManager" and fail without pnpm installed.
+          package-manager-cache: false
       - run: node scripts/release.mjs --check
 
   check:
