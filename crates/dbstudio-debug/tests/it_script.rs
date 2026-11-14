@@ -289,7 +289,7 @@ async fn mysql8_script_with_breakpoint_watch_and_rollback() {
     .await;
 }
 
-/// A function that writes, called from a watch, must leave nothing behind (PostgreSQL).
+/// A function that writes, called from a watch, is refused and leaves nothing behind (PostgreSQL).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pg16_watch_with_a_writing_function_is_undone() {
     if !enabled() {
@@ -322,22 +322,24 @@ async fn pg16_watch_with_a_writing_function_is_undone() {
     h.wait_until(|s| matches!(s.status, DebugStatus::Paused { .. }))
         .await;
     let r = h.evaluate(&format!("{func}()"), None, false).await.unwrap();
+    // The frame is read-only (SET LOCAL transaction_read_only): the write is refused.
+    let EvalValue::Error { error } = &r.value else {
+        panic!("{:?}", r.value)
+    };
     assert!(
-        matches!(
-            r.value,
-            EvalValue::Scalar {
-                value: Value::Int(1),
-                ..
-            }
-        ),
-        "{:?}",
-        r.value
+        error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("read-only"),
+        "{error:?}"
     );
     assert_eq!(
         count_of(&rows(&*lease, &format!("SELECT count(*) FROM {table}")).await),
         0,
-        "the insert inside the watch was rolled back"
+        "nothing was written by the watch"
     );
+    // The savepoint closed and the transaction is read-write again for the script.
+    run(&*lease, &format!("INSERT INTO {table} VALUES (7)")).await;
     h.stop(Some(DebugEndAction::Rollback)).await.unwrap();
     run(&*lease, &format!("DROP FUNCTION {func}()")).await;
     run(&*lease, &format!("DROP TABLE {table}")).await;
