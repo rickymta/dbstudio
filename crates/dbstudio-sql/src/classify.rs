@@ -654,6 +654,9 @@ const WHERE_STOP: &[&str] = &[
     "OPTION",
     "FETCH",
     "OUTPUT",
+    // ClickHouse: `DELETE WHERE 1 SETTINGS ...`, `... FORMAT Null`
+    "SETTINGS",
+    "FORMAT",
 ];
 
 fn trivially_true(cond: &[&Sig]) -> bool {
@@ -737,6 +740,11 @@ fn dml_without_where(sig: &[Sig], from: usize) -> Option<DestructiveReason> {
                         && t.kind == TokenKind::Word
                         && WHERE_STOP.contains(&t.up.as_str())
                     {
+                        break;
+                    }
+                    // ClickHouse `ALTER TABLE t DELETE WHERE 1, MODIFY SETTING ...`: a comma
+                    // at the same depth starts the next command.
+                    if dd == 0 && t.kind == TokenKind::Punct && t.up == "," {
                         break;
                     }
                     cond.push(t);
@@ -1233,6 +1241,9 @@ fn set_lifts(sig: &[Sig]) -> bool {
         "SQL_MODE",
         "SUPER_READ_ONLY",
         "READONLY",
+        // ClickHouse settings that unlock DDL / introspection for the session
+        "ALLOW_DDL",
+        "ALLOW_INTROSPECTION_FUNCTIONS",
         "STANDARD_CONFORMING_STRINGS",
         "BACKSLASH_QUOTE",
         "ESCAPE_STRING_WARNING",
@@ -1284,6 +1295,12 @@ fn classify_sig(
         // TiDB non-transactional DML: `BATCH ON id LIMIT 1000 DELETE FROM t WHERE ...`.
         "BATCH" if is_mysql(d) && matches!(second, "ON" | "LIMIT") => {
             (C::Write, dml_without_where(sig, f + 1))
+        }
+        // TiDB `FLASHBACK CLUSTER|DATABASE|TABLE ...` rewinds data: everything newer is lost.
+        "FLASHBACK"
+            if is_mysql(d) && matches!(second, "CLUSTER" | "DATABASE" | "SCHEMA" | "TABLE") =>
+        {
+            (C::Admin, Some(DestructiveReason::Drop))
         }
         // TiDB `ADMIN SHOW DDL JOBS`, `ADMIN CANCEL DDL JOBS`; CockroachDB / TiDB
         // `CANCEL QUERY|JOB|SESSION|IMPORT JOB`, CockroachDB `PAUSE|RESUME JOB`.
@@ -1453,7 +1470,7 @@ fn classify_sig(
             (C::Session, None)
         }
         "RESET" => {
-            if is_mysql(d) || second == "ALL" || set_lifts(sig) {
+            if is_mysql(d) || second == "ALL" || set_lifts(sig) || (pg && second == "CLUSTER") {
                 (C::Admin, None)
             } else {
                 (C::Session, None)
@@ -1555,30 +1572,177 @@ fn classify_clickhouse(
     match w(sig, f) {
         "EXISTS" | "WATCH" => Some((C::Read, None)),
         "DETACH" => Some((C::Ddl, Some(DestructiveReason::Drop))),
-        "ATTACH" | "OPTIMIZE" | "EXCHANGE" | "UNDROP" => Some((C::Ddl, None)),
-        "SYSTEM" => Some((C::Admin, None)),
-        "ALTER" if w(sig, after_modifiers(sig, f + 1)) == "TABLE" => {
-            // Mutations `ALTER TABLE t UPDATE ... WHERE` / `DELETE WHERE` change data. A `DELETE`
-            // after `TTL` is only the TTL action.
-            let ttl = sig
-                .iter()
-                .position(|s| s.kind == TokenKind::Word && s.up == "TTL");
-            let m = depth0_word_pos(sig, f + 1, &["UPDATE", "DELETE"])
-                .filter(|k| ttl.is_none_or(|t| *k < t));
-            let drops = sig.iter().enumerate().skip(f + 1).any(|(k, s)| {
-                s.kind == TokenKind::Word
-                    && matches!(s.up.as_str(), "DROP" | "DETACH")
-                    && !matches!(w(sig, k + 1), "DEFAULT" | "MATERIALIZED" | "ALIAS")
-            });
-            if drops {
-                return Some((
-                    if m.is_some() { C::Write } else { C::Ddl },
-                    Some(DestructiveReason::AlterDrop),
-                ));
-            }
-            m.map(|k| (C::Write, dml_without_where(sig, k)))
+        // `REPLACE TABLE t AS SELECT ...` drops the old table.
+        "REPLACE" if matches!(w(sig, f + 1), "TABLE" | "DICTIONARY") => {
+            Some((C::Ddl, Some(DestructiveReason::Drop)))
         }
+        // OPTIMIZE ... DEDUPLICATE deletes the duplicate rows.
+        "OPTIMIZE" => Some((
+            C::Ddl,
+            sig.iter()
+                .any(|s| s.kind == TokenKind::Word && s.up == "DEDUPLICATE")
+                .then_some(DestructiveReason::DeleteWithoutWhere),
+        )),
+        "ATTACH" | "EXCHANGE" | "UNDROP" => Some((C::Ddl, None)),
+        "SYSTEM" => Some((C::Admin, None)),
+        // `MOVE USER|ROLE|... TO <storage>` moves access entities.
+        "MOVE" => Some((C::Admin, None)),
+        "ALTER" if w(sig, after_modifiers(sig, f + 1)) == "TABLE" => clickhouse_alter(sig, f),
         _ => None,
+    }
+}
+
+/// First words of the commands of a ClickHouse `ALTER TABLE`.
+const CH_ALTER_COMMANDS: &[&str] = &[
+    "ADD",
+    "DROP",
+    "MODIFY",
+    "ALTER",
+    "UPDATE",
+    "DELETE",
+    "CLEAR",
+    "COMMENT",
+    "RENAME",
+    "MATERIALIZE",
+    "DETACH",
+    "ATTACH",
+    "FREEZE",
+    "UNFREEZE",
+    "REPLACE",
+    "MOVE",
+    "FETCH",
+    "RESET",
+    "REMOVE",
+    "APPLY",
+];
+
+/// `ALTER TABLE t cmd1, cmd2, ...`: every command is judged on its own. Mutations (`UPDATE`,
+/// `DELETE`) write, `DROP`/`DETACH`/`CLEAR`/`REPLACE PARTITION`/`MOVE PARTITION .. TO TABLE`/a TTL
+/// with a `DELETE` action destroy data.
+fn clickhouse_alter(sig: &[Sig], f: usize) -> Option<(StatementClass, Option<DestructiveReason>)> {
+    use StatementClass as C;
+    // Skip `TABLE [IF EXISTS] [db.]name [ON CLUSTER c]`.
+    let mut i = after_modifiers(sig, f + 1) + 1;
+    if w(sig, i) == "IF" && w(sig, i + 1) == "EXISTS" {
+        i += 2;
+    }
+    while sig
+        .get(i)
+        .is_some_and(|s| matches!(s.kind, TokenKind::Word | TokenKind::QuotedIdent))
+    {
+        i += 1;
+        if p(sig, i) == "." {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    if w(sig, i) == "ON" && w(sig, i + 1) == "CLUSTER" {
+        i += 3;
+    }
+    // Commands, split at commas of depth 0.
+    let mut cmds: Vec<&[Sig]> = Vec::new();
+    let (mut depth, mut start) = (0i32, i.min(sig.len()));
+    for k in start..sig.len() {
+        match (sig[k].kind, sig[k].up.as_str()) {
+            (TokenKind::Punct, "(") => depth += 1,
+            (TokenKind::Punct, ")") => depth -= 1,
+            // A comma separates two commands only when a command keyword follows; inside
+            // `UPDATE a = 1, b = 2 WHERE ...` it separates assignments.
+            (TokenKind::Punct, ",")
+                if depth == 0
+                    && CH_ALTER_COMMANDS.contains(&w(sig, k + 1))
+                    && p(sig, k + 2) != "=" =>
+            {
+                cmds.push(&sig[start..k]);
+                start = k + 1;
+            }
+            _ => {}
+        }
+    }
+    cmds.push(&sig[start..]);
+    let mut mutation = false;
+    let mut mutation_reason = None;
+    let mut destroys = false;
+    for c in cmds {
+        match (w(c, 0), w(c, 1)) {
+            ("UPDATE" | "DELETE", _) => {
+                mutation = true;
+                mutation_reason = mutation_reason.or_else(|| dml_without_where(c, 0));
+            }
+            ("DROP" | "DETACH", next) if !matches!(next, "DEFAULT" | "MATERIALIZED" | "ALIAS") => {
+                destroys = true;
+            }
+            ("CLEAR", _) | ("REPLACE", "PARTITION") => destroys = true,
+            ("MOVE", "PARTITION" | "PART") => {
+                if c.windows(2)
+                    .any(|x| x[0].up == "TO" && x[1].up == "TABLE" && x[1].kind == TokenKind::Word)
+                {
+                    destroys = true;
+                }
+            }
+            ("MODIFY" | "MATERIALIZE", "TTL")
+                if c.iter()
+                    .any(|s| s.kind == TokenKind::Word && s.up == "DELETE") =>
+            {
+                destroys = true;
+            }
+            _ => {}
+        }
+    }
+    let class = if mutation { C::Write } else { C::Ddl };
+    if destroys {
+        return Some((class, Some(DestructiveReason::AlterDrop)));
+    }
+    mutation.then_some((C::Write, mutation_reason))
+}
+
+/// Table functions that read or write resources outside the server (files, URLs, object stores,
+/// other databases, shell commands). A read-only connection must not run them, so a statement
+/// that would otherwise be a plain read is classified `Admin`.
+const CLICKHOUSE_EXTERNAL_FUNCTIONS: &[&str] = &[
+    "FILE",
+    "URL",
+    "URLCLUSTER",
+    "S3",
+    "S3CLUSTER",
+    "GCS",
+    "AZUREBLOBSTORAGE",
+    "AZUREBLOBSTORAGECLUSTER",
+    "HDFS",
+    "HDFSCLUSTER",
+    "REMOTE",
+    "REMOTESECURE",
+    "CLUSTER",
+    "CLUSTERALLREPLICAS",
+    "MYSQL",
+    "POSTGRESQL",
+    "MONGODB",
+    "REDIS",
+    "JDBC",
+    "ODBC",
+    "SQLITE",
+    "EXECUTABLE",
+    "INPUT",
+];
+
+/// Does the statement call one of [`CLICKHOUSE_EXTERNAL_FUNCTIONS`] (ClickHouse) or a CockroachDB
+/// `crdb_internal.unsafe_*` function (PostgreSQL dialect)?
+fn uses_external_resource(d: ScriptDialect, sig: &[Sig]) -> bool {
+    match d {
+        ScriptDialect::ClickHouse => sig.iter().enumerate().any(|(k, s)| {
+            s.kind == TokenKind::Word
+                && CLICKHOUSE_EXTERNAL_FUNCTIONS.contains(&s.up.as_str())
+                && p(sig, k + 1) == "("
+        }),
+        ScriptDialect::Postgres => sig.iter().enumerate().any(|(k, s)| {
+            s.kind == TokenKind::Word
+                && s.up.starts_with("UNSAFE_")
+                && k >= 2
+                && p(sig, k - 1) == "."
+                && w(sig, k - 2) == "CRDB_INTERNAL"
+        }),
+        _ => false,
     }
 }
 
@@ -1605,7 +1769,15 @@ fn classify_ddl(
         || ch_admin)
         && !matches!(first, "TRUNCATE" | "RENAME");
     let class = if admin_obj { C::Admin } else { C::Ddl };
+    // `CREATE OR REPLACE TABLE` (MariaDB, ClickHouse) drops the existing table first.
+    let or_replace = first == "CREATE"
+        && matches!(d, ScriptDialect::MySql { .. } | ScriptDialect::ClickHouse)
+        && matches!(obj, "TABLE" | "DICTIONARY")
+        && sig[f + 1..obj_i]
+            .windows(2)
+            .any(|x| x[0].up == "OR" && x[1].up == "REPLACE");
     let destructive = match first {
+        "CREATE" if or_replace => Some(DestructiveReason::Drop),
         "DROP" => Some(DestructiveReason::Drop),
         "TRUNCATE" => Some(DestructiveReason::Truncate),
         "ALTER" => {
@@ -1715,7 +1887,10 @@ fn classify_sql(d: ScriptDialect, chars: &[char], sig: &[Sig]) -> Outcome {
             };
         }
     }
-    let (class, destructive) = classify_sig(d, chars, sig);
+    let (mut class, destructive) = classify_sig(d, chars, sig);
+    if class == StatementClass::Read && uses_external_resource(d, sig) {
+        class = StatementClass::Admin;
+    }
     let implicit = implicit_commit(d, sig, class);
     Outcome {
         class,
