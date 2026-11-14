@@ -23,6 +23,11 @@ impl DialectKit for PgKit {
     fn eval_frame(&self, tx: TxStatus) -> EvalFrame {
         match tx {
             TxStatus::Failed => failed_frame(),
+            // SET LOCAL inside the savepoint: rolling back to it restores read-write mode.
+            TxStatus::Active if !self.cockroach => frame(
+                &["SAVEPOINT __dbg", "SET LOCAL transaction_read_only = on"],
+                &["ROLLBACK TO SAVEPOINT __dbg", "RELEASE SAVEPOINT __dbg"],
+            ),
             TxStatus::Active => frame(
                 &["SAVEPOINT __dbg"],
                 &["ROLLBACK TO SAVEPOINT __dbg", "RELEASE SAVEPOINT __dbg"],
@@ -91,7 +96,16 @@ mod tests {
         assert_eq!(k.eval_frame(TxStatus::Idle).before, ["BEGIN READ ONLY"]);
         assert_eq!(k.eval_frame(TxStatus::Idle).after, ["ROLLBACK"]);
         let a = k.eval_frame(TxStatus::Active);
-        assert_eq!(a.before, ["SAVEPOINT __dbg"]);
+        assert_eq!(
+            a.before,
+            ["SAVEPOINT __dbg", "SET LOCAL transaction_read_only = on"]
+        );
+        assert_eq!(
+            PgKit { cockroach: true }
+                .eval_frame(TxStatus::Active)
+                .before,
+            ["SAVEPOINT __dbg"]
+        );
         assert_eq!(
             a.after,
             ["ROLLBACK TO SAVEPOINT __dbg", "RELEASE SAVEPOINT __dbg"]

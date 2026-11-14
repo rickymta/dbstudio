@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use dbstudio_core::debug::{EvalContext, EvalResult, EvalValue};
 use dbstudio_core::{
-    CollectingSink, Error, Lease, QueryRequest, Result, ScriptDialect, StatementOutcome, Value,
+    CollectingSink, Error, Lease, QueryRequest, Result, ScriptDialect, StatementOutcome, TxStatus,
+    Value,
 };
 use tokio::time::Instant;
 
@@ -134,6 +135,74 @@ impl std::fmt::Debug for Evaluator<'_> {
     }
 }
 
+/// Function (or construct) with side effects that a read-only transaction does not stop:
+/// sequences, advisory and named locks, session control, files, other sessions. Evaluations
+/// repeat at every stop, so they are refused outright. `None` when the text has none.
+pub fn side_effect_call(dialect: ScriptDialect, text: &str) -> Option<String> {
+    use dbstudio_sql::lexer::{TokenKind, tokenize};
+    let chars: Vec<char> = text.chars().collect();
+    let slice = |r: dbstudio_core::TextRange| -> String {
+        chars[r.start as usize..r.end as usize].iter().collect()
+    };
+    let mysql = matches!(dialect, ScriptDialect::MySql { .. });
+    let pg = matches!(dialect, ScriptDialect::Postgres);
+    if !mysql && !pg {
+        return None;
+    }
+    const PG: &[&str] = &[
+        "nextval",
+        "setval",
+        "set_config",
+        "pg_terminate_backend",
+        "pg_cancel_backend",
+        "pg_reload_conf",
+        "pg_rotate_logfile",
+        "pg_switch_wal",
+        "pg_create_restore_point",
+        "pg_notify",
+        "dblink_exec",
+        "dblink",
+        "dblink_connect",
+        "lo_export",
+        "lo_import",
+        "lo_unlink",
+        "lo_create",
+        "lo_from_bytea",
+        "lowrite",
+        "pg_logical_emit_message",
+    ];
+    const MYSQL: &[&str] = &[
+        "get_lock",
+        "release_lock",
+        "release_all_locks",
+        "load_file",
+        "outfile",
+        "dumpfile",
+        "kill",
+    ];
+    for t in tokenize(dialect, text) {
+        match t.kind {
+            TokenKind::Word => {
+                let w = slice(t.range).to_ascii_lowercase();
+                let bad = if pg {
+                    PG.contains(&w.as_str())
+                        || w.starts_with("pg_advisory_")
+                        || w.starts_with("pg_try_advisory_")
+                } else {
+                    MYSQL.contains(&w.as_str())
+                };
+                if bad {
+                    return Some(w);
+                }
+            }
+            // `@x := value` assigns a user variable.
+            TokenKind::Punct if mysql && slice(t.range) == ":=" => return Some(":=".into()),
+            _ => {}
+        }
+    }
+    None
+}
+
 pub(crate) fn error_json(e: &Error) -> serde_json::Value {
     serde_json::to_value(e)
         .unwrap_or_else(|_| serde_json::json!({"kind": "other", "message": e.to_string()}))
@@ -171,26 +240,47 @@ impl Evaluator<'_> {
         if let Some(reason) = self.skip {
             return Framed::Skipped(reason.to_string());
         }
-        let frame = self.kit.eval_frame(self.lease.state().transaction);
+        let tx = self.lease.state().transaction;
+        if tx == TxStatus::Unknown {
+            // Wrapping blindly could roll back a transaction nobody knows about.
+            return Framed::Skipped(
+                "the transaction state is unknown: nothing is evaluated until it is known".into(),
+            );
+        }
+        let frame = self.kit.eval_frame(tx);
         if let Some(reason) = frame.skip {
             return Framed::Skipped(reason);
+        }
+        if let Some(name) = side_effect_call(self.dialect, text) {
+            return Framed::Failed(Error::ReadOnlyViolation {
+                message: format!("`{name}` has side effects and is not evaluated by the debugger"),
+                position: None,
+            });
         }
         let gated = match self.gate.check_read_only(self.dialect, text) {
             Ok(g) => g,
             Err(e) => return Framed::Failed(e),
         };
         let mut outcome: Result<Vec<dbstudio_core::StatementResult>> = Ok(vec![]);
+        let mut opened = 0;
         for before in &frame.before {
-            if let Err(e) = self.run(before).await {
-                outcome = Err(e);
-                break;
+            match self.run(before).await {
+                Ok(_) => opened += 1,
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
             }
         }
         if outcome.is_ok() {
             outcome = self.run(&gated.text).await;
         }
-        for after in &frame.after {
-            let _ = self.run(after).await;
+        // The closing statements undo what the opening ones did: when none of them worked
+        // there is nothing to undo (a ROLLBACK would hit the user's own transaction).
+        if opened > 0 {
+            for after in &frame.after {
+                let _ = self.run(after).await;
+            }
         }
         match outcome {
             Ok(r) => Framed::Done(r),
@@ -322,6 +412,47 @@ fn to_value(results: Vec<dbstudio_core::StatementResult>) -> EvalValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn side_effect_calls_are_found_outside_strings_and_comments() {
+        let pg = ScriptDialect::Postgres;
+        assert_eq!(
+            side_effect_call(pg, "SELECT nextval('s')"),
+            Some("nextval".into())
+        );
+        assert_eq!(
+            side_effect_call(pg, "select pg_advisory_lock(1)"),
+            Some("pg_advisory_lock".into())
+        );
+        assert_eq!(
+            side_effect_call(pg, "SELECT PG_TERMINATE_BACKEND(5)"),
+            Some("pg_terminate_backend".into())
+        );
+        assert_eq!(side_effect_call(pg, "SELECT 'nextval', 1 -- dblink"), None);
+        assert_eq!(side_effect_call(pg, "SELECT a + 1 FROM t"), None);
+        let my = ScriptDialect::MySql {
+            ansi_quotes: false,
+            backslash_escapes: true,
+            mariadb: false,
+        };
+        assert_eq!(
+            side_effect_call(my, "SELECT GET_LOCK('a', 1)"),
+            Some("get_lock".into())
+        );
+        assert_eq!(side_effect_call(my, "SELECT @x := 3"), Some(":=".into()));
+        assert_eq!(
+            side_effect_call(my, "SELECT 1 INTO OUTFILE '/tmp/x'"),
+            Some("outfile".into())
+        );
+        assert_eq!(
+            side_effect_call(my, "SELECT a FROM t WHERE b = 'get_lock'"),
+            None
+        );
+        assert_eq!(
+            side_effect_call(ScriptDialect::Oracle, "SELECT nextval FROM dual"),
+            None
+        );
+    }
 
     #[test]
     fn display_and_truthy() {

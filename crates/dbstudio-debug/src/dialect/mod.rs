@@ -134,12 +134,37 @@ pub fn literal(value_text: &str) -> String {
         || t.eq_ignore_ascii_case("null")
         || t.eq_ignore_ascii_case("true")
         || t.eq_ignore_ascii_case("false")
-        || (t.len() >= 2 && t.starts_with('\'') && t.ends_with('\''))
+        || is_single_quoted_literal(t)
     {
         t.to_string()
     } else {
         format!("'{}'", t.replace('\'', "''"))
     }
+}
+
+/// `'...'` that is one string literal: inside, a quote only appears doubled and there is no
+/// backslash (MySQL would read it as an escape). `'a'; DELETE ...; SELECT 'b'` is not one.
+fn is_single_quoted_literal(t: &str) -> bool {
+    if t.len() < 2 || !t.starts_with('\'') || !t.ends_with('\'') {
+        return false;
+    }
+    let inner: Vec<char> = t[1..t.len() - 1].chars().collect();
+    let mut i = 0;
+    while i < inner.len() {
+        match inner[i] {
+            '\\' => return false,
+            '\'' => {
+                if inner.get(i + 1) == Some(&'\'') {
+                    i += 1;
+                } else {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    true
 }
 
 /// `name` is a safe setting / variable name (`work_mem`, `app.x`).
@@ -166,6 +191,13 @@ mod tests {
         assert_eq!(literal("NULL"), "NULL");
         assert_eq!(literal("it's"), "'it''s'");
         assert_eq!(literal("'x'"), "'x'");
+        assert_eq!(literal("'it''s'"), "'it''s'");
+        // Not one literal: escaped as a whole, the statements inside never run.
+        assert_eq!(
+            literal("'a'; DELETE FROM t; SELECT 'b'"),
+            "'''a''; DELETE FROM t; SELECT ''b'''"
+        );
+        assert_eq!(literal("'a\\'"), "'''a\\'''");
         assert_eq!(literal("1abc"), "'1abc'");
         assert_eq!(eval_text(ScriptDialect::Postgres, "a + 1;"), "SELECT a + 1");
         assert_eq!(eval_text(ScriptDialect::Postgres, "select 1"), "select 1");

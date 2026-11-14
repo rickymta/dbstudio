@@ -649,9 +649,10 @@ async fn evaluate_uses_the_frame_of_the_transaction_state() {
     let rig = paused_pg(three(), None).await;
     rig.h.evaluate("1 + 1", None, true).await.unwrap();
     assert_eq!(
-        tail(&rig, 4),
+        tail(&rig, 5),
         [
             "SAVEPOINT __dbg",
+            "SET LOCAL transaction_read_only = on",
             "SELECT 1 + 1",
             "ROLLBACK TO SAVEPOINT __dbg",
             "RELEASE SAVEPOINT __dbg"
@@ -684,6 +685,42 @@ async fn the_closing_statement_runs_even_when_the_expression_fails() {
         tail(&rig, 2),
         ["ROLLBACK TO SAVEPOINT __dbg", "RELEASE SAVEPOINT __dbg"]
     );
+}
+
+#[tokio::test]
+async fn functions_with_side_effects_are_not_evaluated() {
+    let rig = paused_pg(three(), None).await;
+    let before = rig.lease.log().len();
+    let r = rig.h.evaluate("nextval('s')", None, false).await.unwrap();
+    let EvalValue::Error { error } = r.value else {
+        panic!("{:?}", r.value)
+    };
+    assert!(error["message"].as_str().unwrap().contains("nextval"));
+    assert_eq!(rig.lease.log().len(), before, "nothing reached the server");
+}
+
+#[tokio::test]
+async fn an_unknown_transaction_state_is_not_evaluated() {
+    let rig = paused_pg(three(), Some(TxStatus::Unknown)).await;
+    let before = rig.lease.log().len();
+    let r = rig.h.evaluate("1", None, false).await.unwrap();
+    assert!(
+        matches!(r.value, EvalValue::Skipped { .. }),
+        "{:?}",
+        r.value
+    );
+    assert_eq!(rig.lease.log().len(), before);
+}
+
+#[tokio::test]
+async fn the_closing_statements_do_not_run_when_the_frame_never_opened() {
+    let rig = paused_pg(three(), Some(TxStatus::Idle)).await;
+    rig.lease
+        .on("begin read only", vec![Reply::Fail("nope".into())]);
+    let before = rig.lease.log().len();
+    let r = rig.h.evaluate("1", None, false).await.unwrap();
+    assert!(matches!(r.value, EvalValue::Error { .. }));
+    assert_eq!(rig.lease.log()[before..], ["BEGIN READ ONLY"]);
 }
 
 #[tokio::test]
