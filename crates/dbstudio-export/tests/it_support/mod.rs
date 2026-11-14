@@ -908,6 +908,95 @@ pub async fn csv_round_trip(env: &Env) {
     );
 }
 
+/// CSV with a NULL text (`NULL`, `\N`): NULL, the empty string, the text `NULL` and the text
+/// `\N` all come back as what they were.
+pub async fn csv_null_text(env: &Env) {
+    let dir = tempfile::tempdir().unwrap();
+    let s = &*env.src;
+    let db = env.src_database();
+    run(s, db, "DROP TABLE IF EXISTS exp_n").await;
+    run(s, db, "CREATE TABLE exp_n (id INT PRIMARY KEY, v TEXT)").await;
+    let lit = |v: &str| match env.flavor {
+        Flavor::Pg => format!("E'{}'", v.replace('\\', "\\\\")),
+        Flavor::My => format!("'{}'", v.replace('\\', "\\\\")),
+    };
+    run(
+        s,
+        db,
+        &format!(
+            "INSERT INTO exp_n VALUES (1, NULL), (2, ''), (3, 'NULL'), (4, {}), (5, 'x')",
+            lit("\\N")
+        ),
+    )
+    .await;
+    let agg = match env.flavor {
+        Flavor::Pg => "SELECT string_agg(coalesce(v, '~null~'), '|' ORDER BY id) FROM exp_n",
+        Flavor::My => {
+            "SELECT GROUP_CONCAT(IFNULL(v, '~null~') ORDER BY id SEPARATOR '|') FROM exp_n"
+        }
+    };
+    let want = text_of(s, db, agg).await;
+    assert_eq!(want, "~null~||NULL|\\N|x", "fixture");
+    for (n, null_text) in ["NULL", "\\N"].into_iter().enumerate() {
+        let dest = dir.path().join(format!("n{n}.csv"));
+        run_export(
+            env.ctx(&env.src, Recorder::new()),
+            export_spec(
+                ExportSource::Tables {
+                    paths: vec![env.table("exp_n")],
+                },
+                ExportContent::Data,
+                ExportFormat::Csv(CsvOptions {
+                    null_text: null_text.into(),
+                    ..CsvOptions::default()
+                }),
+                &dest,
+            ),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("[{}] {e}", env.label));
+        let (dst, database) = env.destination(&format!("nt{n}")).await;
+        let db2 = database.as_deref();
+        run(
+            &*dst,
+            db2,
+            "CREATE TABLE exp_n (id INT PRIMARY KEY, v TEXT)",
+        )
+        .await;
+        let db_name = dst_db_name(env, &format!("nt{n}"), &database);
+        let mut table = import_table_path(env, &db_name);
+        table.segments.last_mut().unwrap().name = "exp_n".into();
+        let report = run_import(
+            env.ctx(&dst, Recorder::new()),
+            ImportSpec {
+                connection_id: Uuid::nil(),
+                file: dest.to_string_lossy().into_owned(),
+                format: ImportFormat::Csv {
+                    delimiter: ',',
+                    quote: '"',
+                    header: true,
+                    encoding: TextEncoding::Utf8Bom,
+                    null_text: Some(null_text.into()),
+                },
+                target: ImportTarget::Existing { table },
+                mapping: vec![],
+                on_conflict: None,
+                mode: ImportMode::Batches { rows: 10 },
+                max_errors: 0,
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("[{}] {e}", env.label));
+        assert_eq!(report.inserted, 5);
+        assert_eq!(
+            text_of(&*dst, db2, agg).await,
+            want,
+            "[{}] null text {null_text}",
+            env.label
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Big table (DBSTUDIO_IT_BIG=1)
 // ---------------------------------------------------------------------------------------------
