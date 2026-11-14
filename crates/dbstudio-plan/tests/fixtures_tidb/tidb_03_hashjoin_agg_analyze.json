@@ -1,0 +1,101 @@
+[
+ {
+  "id": "Projection_10",
+  "estRows": "1.00",
+  "actRows": "1",
+  "task": "root",
+  "access object": "",
+  "execution info": "time:34.6ms, loops:2, RU:46.26, Concurrency:OFF",
+  "operator info": "tidbfx.customers.country, Column#9, Column#10",
+  "memory": "2.39 KB",
+  "disk": "N/A"
+ },
+ {
+  "id": "└─HashAgg_11",
+  "estRows": "1.00",
+  "actRows": "1",
+  "task": "root",
+  "access object": "",
+  "execution info": "time:34.6ms, loops:2, partial_worker:{wall_time:34.320916ms, concurrency:5, task_num:33, tot_wait:166.115749ms, tot_exec:4.49579ms, tot_time:171.045499ms, max:34.213916ms, p95:34.213916ms}, final_worker:{wall_time:34.582667ms, concurrency:5, task_num:9, tot_wait:4.379µs, tot_exec:54.417µs, tot_time:171.440541ms, max:34.4765ms, p95:34.4765ms}",
+  "operator info": "group by:tidbfx.customers.country, funcs:count(1)->Column#9, funcs:sum(tidbfx.orders.amount)->Column#10, funcs:firstrow(tidbfx.customers.country)->tidbfx.customers.country",
+  "memory": "753.7 KB",
+  "disk": "0 Bytes"
+ },
+ {
+  "id": "  └─Projection_12",
+  "estRows": "33333.00",
+  "actRows": "33333",
+  "task": "root",
+  "access object": "",
+  "execution info": "time:34.1ms, loops:34, Concurrency:5",
+  "operator info": "tidbfx.orders.amount, tidbfx.customers.country",
+  "memory": "335.9 KB",
+  "disk": "N/A"
+ },
+ {
+  "id": "    └─HashJoin_14",
+  "estRows": "33333.00",
+  "actRows": "33333",
+  "task": "root",
+  "access object": "",
+  "execution info": "time:34ms, loops:34, build_hash_table:{total:1.27ms, fetch:579.3µs, build:689.9µs}, probe:{concurrency:5, total:161.5ms, max:32.4ms, probe:9.4ms, fetch and wait:152.1ms}",
+  "operator info": "inner join, equal:[eq(tidbfx.customers.id, tidbfx.orders.customer_id)]",
+  "memory": "130.6 KB",
+  "disk": "0 Bytes"
+ },
+ {
+  "id": "      ├─TableReader_49(Build)",
+  "estRows": "1000.00",
+  "actRows": "1000",
+  "task": "root",
+  "access object": "",
+  "execution info": "time:516.3µs, loops:2, cop_task: {num: 4, max: 188µs, min: 42.1µs, avg: 109.6µs, p95: 188µs, copr_cache_hit_ratio: 0.00, build_task_duration: 12.3µs, max_distsql_concurrency: 1}, rpc_info:{Cop:{num_rpc:4, total_time:412.2µs}}",
+  "operator info": "data:TableFullScan_48",
+  "memory": "15.6 KB",
+  "disk": "N/A"
+ },
+ {
+  "id": "      │ └─TableFullScan_48",
+  "estRows": "1000.00",
+  "actRows": "1000",
+  "task": "cop[tikv]",
+  "access object": "table:c",
+  "execution info": "tikv_task:{proc max:133.4µs, min:34.6µs, avg: 86.5µs, p80:133.4µs, p95:133.4µs, iters:0, tasks:4}",
+  "operator info": "keep order:false",
+  "memory": "N/A",
+  "disk": "N/A"
+ },
+ {
+  "id": "      └─TableReader_52(Probe)",
+  "estRows": "33333.00",
+  "actRows": "33333",
+  "task": "root",
+  "access object": "",
+  "execution info": "time:30.3ms, loops:34, cop_task: {num: 9, max: 13.9ms, min: 595.5µs, avg: 3.59ms, p95: 13.9ms, tot_proc: 26ms, copr_cache_hit_ratio: 0.00, build_task_duration: 1.13µs, max_distsql_concurrency: 1}, rpc_info:{Cop:{num_rpc:9, total_time:32.1ms}}",
+  "operator info": "data:Selection_51",
+  "memory": "1.44 MB",
+  "disk": "N/A"
+ },
+ {
+  "id": "        └─Selection_51",
+  "estRows": "33333.00",
+  "actRows": "33333",
+  "task": "cop[tikv]",
+  "access object": "",
+  "execution info": "tikv_task:{proc max:13.7ms, min:547.8µs, avg: 3.4ms, p80:6.97ms, p95:13.7ms, iters:0, tasks:9}, time_detail: {total_process_time: 26ms}",
+  "operator info": "eq(tidbfx.orders.status, \"open\"), not(isnull(tidbfx.orders.customer_id))",
+  "memory": "N/A",
+  "disk": "N/A"
+ },
+ {
+  "id": "          └─TableFullScan_50",
+  "estRows": "100000.00",
+  "actRows": "100000",
+  "task": "cop[tikv]",
+  "access object": "table:o",
+  "execution info": "tikv_task:{proc max:13.7ms, min:547.8µs, avg: 3.4ms, p80:6.97ms, p95:13.7ms, iters:0, tasks:9}",
+  "operator info": "keep order:false",
+  "memory": "N/A",
+  "disk": "N/A"
+ }
+]
