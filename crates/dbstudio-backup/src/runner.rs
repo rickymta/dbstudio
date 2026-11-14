@@ -1006,10 +1006,21 @@ mod tests {
         fs::write(tmp.join("run-old/dump.sql"), "x").unwrap();
         fs::create_dir_all(tmp.join("run-fresh")).unwrap();
         let old = SystemTime::now() - Duration::from_secs(48 * 3600);
-        fs::File::open(tmp.join("run-old"))
-            .unwrap()
-            .set_modified(old)
-            .unwrap();
+        // Setting a directory's times needs a handle to the directory itself: on Windows that
+        // takes FILE_FLAG_BACKUP_SEMANTICS and FILE_WRITE_ATTRIBUTES (`File::open` is refused).
+        #[cfg(windows)]
+        let handle = {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .access_mode(0x0100) // FILE_WRITE_ATTRIBUTES
+                .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS
+                .open(tmp.join("run-old"))
+                .unwrap()
+        };
+        #[cfg(not(windows))]
+        let handle = fs::File::open(tmp.join("run-old")).unwrap();
+        handle.set_modified(old).unwrap();
+        drop(handle);
         assert_eq!(cleanup_orphans(&env), 1);
         assert!(!tmp.join("run-old").exists());
         assert!(tmp.join("run-fresh").exists());
