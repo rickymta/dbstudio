@@ -5,10 +5,9 @@
 //! file the bundled webpki-roots set is used, not the OS store. See the crate docs for the
 //! `VerifyCa` host-name limitation.
 //!
-//! Limitation (R6): `mysql_async` always validates the certificate against the host it connects
-//! to and has no override for the verified name, so `tls.server_name` is not honoured. Behind an
-//! SSH tunnel the host is `127.0.0.1`; `VerifyFull` then only succeeds when the certificate lists
-//! that address, otherwise use `VerifyCa` (chain only) or `Require`.
+//! R6: `tls.server_name` (the original host when the connection goes through an SSH tunnel)
+//! is the name the certificate is verified against, via
+//! `SslOpts::with_danger_tls_hostname_override`. Without it the TCP host is used.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -104,6 +103,16 @@ pub fn ssl_opts(tls: &TlsConfig) -> Result<Option<SslOpts>> {
         return Ok(None);
     }
     let mut ssl = SslOpts::default();
+    // R6: verify the certificate against the configured name instead of the TCP host (behind an
+    // SSH tunnel the TCP host is `127.0.0.1`).
+    if let Some(name) = tls
+        .server_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        ssl = ssl.with_danger_tls_hostname_override(Some(name.to_string()));
+    }
     match (&tls.client_cert_path, &tls.client_key_path) {
         (Some(cert), Some(key)) => {
             let cert = check_readable("client certificate", cert)?;
@@ -150,6 +159,7 @@ pub fn build_opts(
     secret: Option<&Secret>,
     ssl: Option<SslOpts>,
     tunables: &Tunables,
+    server_read_only: bool,
 ) -> Result<Opts> {
     let max = tunables.pool_max;
     let constraints = PoolConstraints::new(1, max)
@@ -160,7 +170,8 @@ pub fn build_opts(
     // COM_RESET_CONNECTION restores the *server's* default character set on MySQL 5.7 and
     // MariaDB 10.4 (often latin1), not the one negotiated in the handshake.
     setup.push("SET NAMES utf8mb4".into());
-    if cfg.read_only {
+    // `server_read_only` is false for TiDB, which rejects the statement (noop implementation).
+    if cfg.read_only && server_read_only {
         // Best effort server side guard; fetch_table additionally uses READ ONLY transactions.
         setup.push("SET SESSION TRANSACTION READ ONLY".into());
     }
@@ -222,6 +233,40 @@ mod tests {
     }
 
     #[test]
+    fn server_name_overrides_verified_host() {
+        let mk = |server_name: Option<&str>| {
+            ssl_opts(&TlsConfig {
+                mode: TlsMode::VerifyFull,
+                server_name: server_name.map(str::to_string),
+                ..Default::default()
+            })
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(
+            mk(Some(" db.internal ")).tls_hostname_override(),
+            Some("db.internal")
+        );
+        assert_eq!(mk(None).tls_hostname_override(), None);
+    }
+
+    #[test]
+    fn read_only_setup_is_skipped_for_tidb() {
+        let mut c = cfg();
+        c.read_only = true;
+        let t = Tunables::from_config(&c).unwrap();
+        let has = |on| {
+            build_opts(&c, None, None, &t, on)
+                .unwrap()
+                .setup()
+                .iter()
+                .any(|s| s.contains("READ ONLY"))
+        };
+        assert!(has(true));
+        assert!(!has(false));
+    }
+
+    #[test]
     fn missing_files_are_tls_errors() {
         let tls = TlsConfig {
             mode: TlsMode::VerifyFull,
@@ -262,6 +307,7 @@ mod tests {
             Some(&Secret::new("pw")),
             None,
             &Tunables::from_config(&cfg()).unwrap(),
+            true,
         )
         .unwrap();
         assert_eq!(o.ip_or_hostname(), "localhost");

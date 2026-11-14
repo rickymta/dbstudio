@@ -59,6 +59,8 @@ async fn plain_explain_parses() {
             .unwrap_or_else(|e| panic!("[{}] {e}", t.name));
         let expected = if t.mariadb {
             PlanFormat::MariaDbJson
+        } else if t.tidb {
+            PlanFormat::TiDbRows
         } else {
             PlanFormat::MySqlJson
         };
@@ -94,6 +96,8 @@ async fn analyze_select_works_where_the_server_supports_it() {
                 assert!(raw.analyzed && raw.rolled_back, "[{}]", t.name);
                 let expected = if t.mariadb {
                     PlanFormat::MariaDbJson
+                } else if t.tidb {
+                    PlanFormat::TiDbRows
                 } else {
                     PlanFormat::MySqlTree
                 };

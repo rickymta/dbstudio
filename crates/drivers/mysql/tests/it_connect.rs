@@ -206,11 +206,19 @@ async fn error_classification() {
         );
         assert!(started.elapsed().as_secs() < 5);
         // Unknown default database is a connection-time error but not an auth one.
-        let mut c = config(t, "root", TlsMode::Disable);
+        // (TiDB's `root` has no password, use the global-privilege login there.)
+        let mut c = config(
+            t,
+            if t.tidb { "dbstudio" } else { "root" },
+            TlsMode::Disable,
+        );
         c.database = Some("no_such_db_zzz".into());
         let r = MySqlDriverExt::connect_with(&c, "dbstudio_test").await;
         assert!(
-            matches!(r, Err(Error::Connection(_))),
+            matches!(r, Err(Error::Connection(_)))
+                // TiDB answers "access denied to database" (1044) for a login without global
+                // privileges.
+                || (t.tidb && matches!(r, Err(Error::Authentication(_)))),
             "[{}] {}",
             t.name,
             describe(&r)
@@ -229,10 +237,30 @@ async fn server_info_and_close() {
         let info = s.server_info().await.unwrap();
         assert_eq!(
             info.product,
-            if t.mariadb { "MariaDB" } else { "MySQL" },
+            if t.mariadb {
+                "MariaDB"
+            } else if t.tidb {
+                "TiDB"
+            } else {
+                "MySQL"
+            },
             "[{}]",
             t.name
         );
+        let flavor = if t.mariadb {
+            "mariadb"
+        } else if t.tidb {
+            "tidb"
+        } else {
+            "mysql"
+        };
+        assert_eq!(info.extra["flavor"], flavor, "[{}]", t.name);
+        // Capabilities follow the server: only TiDB overrides the descriptor.
+        let caps = s.capabilities();
+        assert_eq!(caps.is_some(), t.tidb, "[{}]", t.name);
+        if let Some(c) = caps {
+            assert!(!c.read_only_session && !c.triggers && !c.stored_routines && c.sequences);
+        }
         assert!(info.version.starts_with(t.version), "{}", info.version);
         assert!(!info.extra["charset"].is_empty());
         assert!(info.extra.contains_key("time_zone") && info.extra.contains_key("sql_mode"));
@@ -256,6 +284,13 @@ async fn default_database_and_read_only() {
         let s = connect_cfg(&c).await.unwrap();
         let rs = query(&*s, "SELECT DATABASE()").await;
         assert_eq!(rs.rows[0][0], dbstudio_core::Value::Text(FIXTURE_DB.into()));
+        if t.tidb {
+            // TiDB has no read-only sessions or transactions (noop implementation): the profile
+            // connects (the setup statement is skipped) and the capability is off, so the
+            // application's own guard is what refuses writes.
+            assert!(!s.capabilities().unwrap().read_only_session);
+            continue;
+        }
         let r = dbstudio_core::execute_collect(
             &*s,
             dbstudio_core::QueryRequest::new("DELETE FROM people"),

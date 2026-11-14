@@ -2,6 +2,9 @@
 //!
 //! * MySQL: `EXPLAIN FORMAT=JSON` (plan only) or `EXPLAIN ANALYZE` (8.0.18+, tree text).
 //! * MariaDB: `EXPLAIN FORMAT=JSON` or `ANALYZE FORMAT=JSON`.
+//! * TiDB: `EXPLAIN [ANALYZE] FORMAT='row'`; the result rows are packed as a JSON array of
+//!   objects keyed by column name (`id`, `estRows`, `actRows`, `task`, ...) for the `tidb`
+//!   plan parser.
 //!
 //! ANALYZE executes the statement. Only read statements are analysed (inside a read-only
 //! transaction that is rolled back); write statements answer `Unsupported`, because tables of
@@ -44,7 +47,14 @@ pub(crate) async fn explain(session: &MySqlSession, req: ExplainRequest) -> Resu
 }
 
 async fn run(session: &MySqlSession, conn: &mut Conn, req: &ExplainRequest) -> Result<RawPlan> {
-    run_on(conn, req, session.inner.is_mariadb, false).await
+    run_on(
+        conn,
+        req,
+        session.inner.is_mariadb,
+        session.inner.is_tidb,
+        false,
+    )
+    .await
 }
 
 /// Explain one statement on a dedicated (lease) connection. With `in_transaction` the user's
@@ -54,15 +64,17 @@ pub(crate) async fn explain_on_lease(
     conn: &mut Conn,
     req: &ExplainRequest,
     mariadb: bool,
+    tidb: bool,
     in_transaction: bool,
 ) -> Result<RawPlan> {
-    run_on(conn, req, mariadb, in_transaction).await
+    run_on(conn, req, mariadb, tidb, in_transaction).await
 }
 
 async fn run_on(
     conn: &mut Conn,
     req: &ExplainRequest,
     mariadb: bool,
+    tidb: bool,
     in_transaction: bool,
 ) -> Result<RawPlan> {
     let (raw_version, sql_mode): (String, String) = conn
@@ -72,12 +84,11 @@ async fn run_on(
         .unwrap_or_default();
     let version = normalize_version(&raw_version);
     // The dialect follows this very connection's sql_mode (backslash escapes in strings).
-    let dialect = ScriptDialect::mysql(
+    let dialect = ScriptDialect::MySql {
         mariadb,
-        !sql_mode
-            .to_ascii_uppercase()
-            .contains("NO_BACKSLASH_ESCAPES"),
-    );
+        backslash_escapes: !crate::sql_mode_no_backslash_escapes(&sql_mode),
+        ansi_quotes: crate::sql_mode_has_ansi_quotes(&sql_mode),
+    };
     let (statement, class) = single_statement(dialect, &req.text)?;
     if req.analyze {
         match kind_of(class, &statement) {
@@ -85,11 +96,31 @@ async fn run_on(
             Kind::Write => return Err(Error::Unsupported("explain_analyze_writes".into())),
             Kind::Other => return Err(Error::Unsupported("explain_analyze_ddl".into())),
         }
-        if !mariadb && !supports_explain_analyze(&version) {
+        if !mariadb && !tidb && !supports_explain_analyze(&version) {
             return Err(Error::Unsupported("explain_analyze".into()));
         }
     }
     let statement = statement.as_str();
+
+    if tidb {
+        let sql = if req.analyze {
+            format!("EXPLAIN ANALYZE FORMAT='row' {statement}")
+        } else {
+            format!("EXPLAIN FORMAT='row' {statement}")
+        };
+        let own_tx = req.analyze && !in_transaction;
+        let text = fetch_rows_json(conn, &sql, own_tx).await?;
+        return Ok(RawPlan {
+            format: PlanFormat::TiDbRows,
+            text,
+            statement: statement.to_string(),
+            analyzed: req.analyze,
+            rolled_back: own_tx,
+            server_version: version,
+            captured_at: rfc3339_now(),
+            extra: Default::default(),
+        });
+    }
 
     let (sql, format) = match (mariadb, req.analyze) {
         (true, false) => (
@@ -208,6 +239,45 @@ async fn fetch(conn: &mut Conn, sql: &str, own_tx: bool) -> Result<String> {
         .and_then(|r| r.as_ref(0))
         .and_then(value_to_string)
         .ok_or_else(|| Error::Other("EXPLAIN returned no plan".into()))
+}
+
+/// Like [`fetch`] for TiDB: every result row as an object keyed by column name, in a JSON array.
+/// Runs in a plain transaction that is rolled back (TiDB has no read-only transactions).
+async fn fetch_rows_json(conn: &mut Conn, sql: &str, own_tx: bool) -> Result<String> {
+    let stmt = conn.prep(sql).await.map_err(map_query_error)?;
+    if own_tx {
+        conn.query_drop(crate::read_tx_sql(true))
+            .await
+            .map_err(map_query_error)?;
+    }
+    let rows: std::result::Result<Vec<Row>, _> = conn.exec(&stmt, ()).await;
+    if own_tx {
+        let _ = conn.query_drop("ROLLBACK").await;
+    }
+    let _ = conn.close(stmt).await;
+    let rows = rows.map_err(map_query_error)?;
+    if rows.is_empty() {
+        return Err(Error::Other("EXPLAIN returned no plan".into()));
+    }
+    Ok(rows_to_json(&rows))
+}
+
+fn rows_to_json(rows: &[Row]) -> String {
+    let list: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            let mut obj = serde_json::Map::new();
+            for (i, c) in r.columns_ref().iter().enumerate() {
+                let v = r
+                    .as_ref(i)
+                    .and_then(value_to_string)
+                    .map_or(serde_json::Value::Null, serde_json::Value::String);
+                obj.insert(c.name_str().to_string(), v);
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+    serde_json::Value::Array(list).to_string()
 }
 
 /// MySQL 8.0.18 introduced EXPLAIN ANALYZE.

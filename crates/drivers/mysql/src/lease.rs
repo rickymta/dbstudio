@@ -71,12 +71,26 @@ pub(crate) async fn open(session: &MySqlSession, opts: LeaseOptions) -> Result<B
         .map_err(map_query_error)?
         .flatten();
     let conn_id = conn.id();
+    // The lexer dialect follows this very connection's sql_mode (`ANSI_QUOTES`, backslashes).
+    let sql_mode: String = conn
+        .query_first::<String, _>("SELECT @@SESSION.sql_mode")
+        .await
+        .map_err(map_query_error)?
+        .unwrap_or_default();
+    let ansi = crate::sql_mode_has_ansi_quotes(&sql_mode);
+    inner.ansi_quotes.store(ansi, Ordering::Relaxed);
     let backend = MyBackend {
         killer: Arc::new(Killer {
             opts: inner.opts.clone(),
             conn_id,
         }),
-        dialect: ScriptDialect::mysql(inner.is_mariadb, inner.backslash_escapes),
+        dialect: ScriptDialect::MySql {
+            mariadb: inner.is_mariadb,
+            backslash_escapes: !crate::sql_mode_no_backslash_escapes(&sql_mode),
+            ansi_quotes: ansi,
+        },
+        is_tidb: inner.is_tidb,
+        ansi_flag: inner.ansi_quotes.clone(),
         conn: Some(conn),
         auto_commit: opts.auto_commit,
         in_tx: false,
@@ -846,6 +860,10 @@ struct Parked {
 struct MyBackend {
     killer: Arc<Killer>,
     dialect: ScriptDialect,
+    /// The server is TiDB (no read-only transactions, `FORMAT='row'` plans).
+    is_tidb: bool,
+    /// Session-wide copy of the `ANSI_QUOTES` flag, published when this lease changes `sql_mode`.
+    ansi_flag: Arc<AtomicBool>,
     /// `None` while a parked task owns it, or after the connection was lost / closed.
     conn: Option<Conn>,
     auto_commit: bool,
@@ -874,7 +892,40 @@ fn isolation_sql(level: IsolationLevel) -> Result<&'static str> {
     })
 }
 
+/// True for a `SET ... sql_mode ...` statement.
+fn mentions_sql_mode(stmt: &str) -> bool {
+    let t = stmt.trim_start();
+    t.len() >= 3
+        && t[..3].eq_ignore_ascii_case("SET")
+        && stmt.to_ascii_lowercase().contains("sql_mode")
+}
+
 impl MyBackend {
+    /// Re-read this connection's `sql_mode` and update the lexer dialect (also the session-wide
+    /// `ANSI_QUOTES` flag the editor reads). A failed read keeps the current dialect.
+    async fn refresh_dialect(&mut self) {
+        let Some(conn) = self.conn.as_mut() else {
+            return;
+        };
+        let Ok(Some(mode)) = conn
+            .query_first::<String, _>("SELECT @@SESSION.sql_mode")
+            .await
+        else {
+            return;
+        };
+        let ansi = crate::sql_mode_has_ansi_quotes(&mode);
+        if let ScriptDialect::MySql {
+            backslash_escapes,
+            ansi_quotes,
+            ..
+        } = &mut self.dialect
+        {
+            *backslash_escapes = !crate::sql_mode_no_backslash_escapes(&mode);
+            *ansi_quotes = ansi;
+        }
+        self.ansi_flag.store(ansi, Ordering::Relaxed);
+    }
+
     fn conn(&mut self) -> Result<&mut Conn> {
         self.conn.as_mut().ok_or_else(lost)
     }
@@ -1292,7 +1343,8 @@ impl LeaseBackend for MyBackend {
         let result = match self.conn.as_mut() {
             None => Err(lost()),
             Some(conn) => {
-                let work = crate::explain::explain_on_lease(conn, &req, mariadb, in_tx);
+                let work =
+                    crate::explain::explain_on_lease(conn, &req, mariadb, self.is_tidb, in_tx);
                 tokio::pin!(work);
                 let sleep =
                     tokio::time::sleep(timeout.unwrap_or(Duration::from_secs(86_400 * 365)));
@@ -1367,7 +1419,7 @@ impl LeaseBackend for MyBackend {
                 }
                 // A read-only profile never gets a read-write transaction.
                 let sql = if opts.read_only || self.read_only {
-                    "START TRANSACTION READ ONLY"
+                    crate::read_tx_sql(self.is_tidb)
                 } else {
                     "START TRANSACTION"
                 };
@@ -1429,9 +1481,12 @@ impl LeaseBackend for MyBackend {
         if self.conn.is_none() {
             return Ok(None);
         }
-        let switched = split_statements(executed_text, self.dialect)
-            .iter()
-            .any(|p| starts_with_use(&p.text));
+        let pieces = split_statements(executed_text, self.dialect);
+        // A script that touches `sql_mode` may change how the next text is split.
+        if pieces.iter().any(|p| mentions_sql_mode(&p.text)) {
+            self.refresh_dialect().await;
+        }
+        let switched = pieces.iter().any(|p| starts_with_use(&p.text));
         if !switched {
             return Ok(None);
         }
