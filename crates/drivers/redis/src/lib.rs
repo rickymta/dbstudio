@@ -17,6 +17,7 @@ mod error;
 mod exec;
 mod keys;
 mod lease;
+mod put;
 mod session;
 mod tree;
 
