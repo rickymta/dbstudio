@@ -116,7 +116,8 @@
   "inspector": {
     "expand": "Mở bảng chi tiết",
     "collapse": "Thu gọn bảng chi tiết",
-    "resize": "Đổi độ rộng bảng chi tiết"
+    "resize": "Đổi độ rộng bảng chi tiết",
+    "tabs": "Các tab của bảng chi tiết"
   },
   "analyzeConfirm": {
     "title": "Chạy câu lệnh với ANALYZE?",
@@ -153,7 +154,8 @@
       "executionTimeMs": "Thời gian thực thi",
       "rows": "Số dòng",
       "nodeCount": "Số toán tử",
-      "warnings": "Cảnh báo"
+      "warnings": "Cảnh báo",
+      "advice": "Gợi ý"
     }
   },
   "advice": {
@@ -173,7 +175,8 @@
       "checked": "Đã đối chiếu index của {{count}} bảng",
       "partial": "Chỉ đối chiếu được một phần — độ tin cậy đã hạ",
       "unavailable": "Không lấy được metadata — độ tin cậy đã hạ",
-      "disabled": "Đã tắt đối chiếu index hiện có"
+      "disabled": "Đã tắt đối chiếu index hiện có",
+      "failed": "Không đối chiếu được với index hiện có"
     },
     "confidence": {
       "high": "Tin cậy cao",
@@ -198,7 +201,32 @@
     "actions": {
       "copy": "Sao chép",
       "insert": "Chèn vào editor",
-      "openTable": "Mở bảng"
+      "openTable": "Mở bảng",
+      "createIndex": "Tạo index",
+      "createTrigramIndex": "Tạo index trigram",
+      "refreshStatistics": "Làm mới thống kê",
+      "rewriteAsRange": "Viết lại thành điều kiện khoảng",
+      "rewriteNotExists": "Viết lại bằng NOT EXISTS",
+      "keysetPagination": "Dùng phân trang theo khoá",
+      "listColumns": "Chỉ liệt kê các cột cần dùng",
+      "moveFunctionToConstant": "Chuyển hàm sang vế hằng số",
+      "raiseStatisticsTarget": "Tăng statistics target",
+      "raiseWorkMem": "Tăng work_mem cho phiên này",
+      "reviewFilter": "Xem lại điều kiện lọc",
+      "reviewJoinStrategy": "Xem lại cách nối",
+      "reviewMemory": "Xem lại cấu hình bộ nhớ",
+      "reviewStatistics": "Xem lại thống kê",
+      "tuneAutovacuum": "Chỉnh autovacuum cho bảng",
+      "vacuumTable": "Chạy vacuum cho bảng",
+      "gatherStatistics": "Thu thập thống kê",
+      "reviewPgaTarget": "Xem lại PGA target",
+      "createMissingIndex": "Tạo index được gợi ý",
+      "createStatistics": "Tạo thống kê",
+      "addIncludeColumns": "Thêm cột INCLUDE",
+      "rewriteUnionAll": "Viết lại bằng UNION ALL",
+      "rewritePrewhere": "Lọc sớm hơn bằng PREWHERE",
+      "reviewPartitionKey": "Lọc theo khoá partition",
+      "reviewJoinOrder": "Xem lại thứ tự nối"
     },
     "template": "Mẫu — cần sửa trước khi chạy",
     "readOnlyBanner": "Kết nối chỉ đọc: câu này sẽ bị chặn khi chạy; dùng kết nối có quyền DDL.",
@@ -208,6 +236,278 @@
       "gone": "Đã hết",
       "new": "Mới",
       "kept": "Còn lại"
+    },
+    "why": "Vì sao",
+    "what": "Nên làm gì",
+    "caveatsTitle": "Lưu ý",
+    "estimateSuffix": "(ước tính)",
+    "copied": "Đã sao chép",
+    "copyFailed": "Không sao chép được",
+    "noSession": "Kết nối của plan này chưa mở; hãy kết nối trước.",
+    "view": "Xem",
+    "dismiss": "Ẩn",
+    "filteredBy": "Đang hiện gợi ý của node #{{node}}",
+    "showAll": "Xem tất cả",
+    "noneForNode": "Không có gợi ý cho node này",
+    "productionNote": "Kết nối production: nên chạy ngoài giờ cao điểm.",
+    "nodeHasAdvice": "Node này có gợi ý tối ưu",
+    "rules": {
+      "indexForFilter": {
+        "title": "Thêm index cho điều kiện lọc trên {{table}}",
+        "why": "Quét {{table}} đọc {{examined}} dòng nhưng chỉ giữ {{kept}} ({{selectivity}}). Index trên {{columns}} cho phép đọc thẳng các dòng cần."
+      },
+      "indexResidualFilter": {
+        "title": "Mở rộng index trên {{table}} để bao {{columns}}",
+        "why": "Index {{usedIndex}} tìm ra {{examined}} dòng rồi bộ lọc mới giữ lại {{kept}}. Index trên {{columns}} sẽ lọc ngay trong index."
+      },
+      "indexForSort": {
+        "title": "Thêm index trả {{table}} đã sắp xếp",
+        "why": "Phải sắp xếp {{rows}} dòng. Index trên {{columns}} trả dòng đúng thứ tự yêu cầu và có thể bỏ bước sắp xếp."
+      },
+      "nestedLoopInnerScan": {
+        "title": "Phía trong của nested loop bị quét {{loops}} lần",
+        "why": "Đầu vào bên trong chạy {{loops}} lần. Index trên cột nối của bảng bên trong, hoặc đổi cách nối, sẽ tránh quét lặp."
+      },
+      "staleStatistics": {
+        "title": "Thống kê của {{table}} có vẻ đã cũ",
+        "why": "Planner ước lượng {{estimated}} dòng nhưng thực tế {{actual}} (lệch {{factor}} lần). Ước lượng sai có thể chọn sai thứ tự hoặc kiểu nối."
+      },
+      "sortSpill": {
+        "title": "Sắp xếp phải ghi ra đĩa",
+        "why": "Sắp xếp dùng khoảng {{spaceKb}} KB trên đĩa vì không vừa bộ nhớ ({{workMem}}). Sắp xếp trong bộ nhớ nhanh hơn nhiều."
+      },
+      "hashSpill": {
+        "title": "Thao tác hash phải ghi ra đĩa",
+        "why": "Bảng băm không vừa bộ nhớ nên bị chia thành {{batches}} lô ghi ra đĩa."
+      },
+      "fullScanReview": {
+        "title": "Xem lại việc quét toàn bộ {{table}}",
+        "why": "{{table}} bị đọc toàn bộ ({{rows}} dòng). Nếu truy vấn chỉ cần ít dòng thì điều kiện lọc hoặc index có thể giúp; nếu cần phần lớn dòng thì quét như vậy là hợp lý."
+      },
+      "existingIndexUnused": {
+        "title": "Một index sẵn có trên {{table}} không được dùng",
+        "why": "Index {{index}} có thể phục vụ truy vấn này nhưng planner chọn đường khác. Kiểm tra thống kê và dạng điều kiện."
+      },
+      "pgBitmapLossy": {
+        "title": "Bitmap scan trên {{table}} bị mất độ chính xác (lossy)",
+        "why": "Bitmap không vừa bộ nhớ ({{workMem}}): {{lossy}} trang bị lossy và {{recheck}} dòng phải kiểm tra lại. Tăng work_mem giữ bitmap chính xác."
+      },
+      "pgHeapFetches": {
+        "title": "Index-only scan trên {{table}} vẫn phải đọc bảng",
+        "why": "{{fetches}} dòng phải đọc thêm bảng vì visibility map chưa cập nhật. VACUUM sẽ làm mới nó."
+      },
+      "pgFunctionOnColumn": {
+        "title": "Hàm trên {{column}} chặn việc dùng index của {{table}}",
+        "why": "Điều kiện áp {{function}} lên cột nên index thường trên {{column}} không dùng được, phải đọc {{examined}} dòng. Index theo biểu thức hoặc viết lại điều kiện sẽ khắc phục."
+      },
+      "implicitConversion": {
+        "title": "Chuyển kiểu ngầm trên {{column}}",
+        "why": "Phép so sánh chuyển kiểu ngầm, có thể làm index trên {{column}} không dùng được. Hãy so sánh giá trị cùng kiểu."
+      },
+      "pgParallelNotLaunched": {
+        "title": "Worker song song được lên kế hoạch nhưng không chạy",
+        "why": "Dự kiến {{planned}} worker nhưng chỉ chạy {{launched}}. Máy chủ có thể đã hết slot worker song song."
+      },
+      "pgJitOverhead": {
+        "title": "Biên dịch JIT tốn hơn lợi ích",
+        "why": "JIT tốn {{jit}} ms để biên dịch. Với truy vấn ngắn, đây thường chỉ là chi phí thừa."
+      },
+      "pgColdCache": {
+        "title": "Phần lớn trang phải đọc từ đĩa",
+        "why": "Nhiều trang chưa nằm trong cache nên thời gian có thể cao hơn lần chạy lặp lại. Hãy chạy lại plan để so sánh."
+      },
+      "pgNotInSubplan": {
+        "title": "NOT IN với truy vấn con chạy chậm",
+        "why": "NOT IN được đánh giá từng dòng với truy vấn con. NOT EXISTS cho cùng kết quả với giá trị khác null và có thể dùng hashed anti join."
+      },
+      "mysqlPossibleKeysUnused": {
+        "title": "MySQL bỏ qua các index ứng viên trên {{table}}",
+        "why": "Có index ứng viên nhưng không index nào được chọn. Kiểm tra thống kê, điều kiện và kiểu dữ liệu."
+      },
+      "mysqlTempTableGroup": {
+        "title": "Phải dựng bảng tạm cho phép nhóm",
+        "why": "GROUP BY hoặc ORDER BY cần bảng tạm. Index theo thứ tự nhóm sẽ tránh được."
+      },
+      "mysqlJoinBuffer": {
+        "title": "Phép nối dùng join buffer thay vì index",
+        "why": "Phép nối trên {{table}} không có index dùng được nên rơi về block nested loop hoặc hash join. Index trên cột nối sẽ giúp."
+      },
+      "mysqlIndexMerge": {
+        "title": "Nhiều index được gộp cho một bảng",
+        "why": "Máy chủ gộp nhiều index trên {{table}}. Một index ghép thường nhanh hơn."
+      },
+      "mssqlMissingIndex": {
+        "title": "SQL Server gợi ý index còn thiếu trên {{table}}",
+        "why": "Optimizer báo một index sẽ giảm chi phí truy vấn này. Hãy xem như gợi ý, không phải quy tắc: nó không tính đến các truy vấn khác."
+      },
+      "mssqlKeyLookup": {
+        "title": "Key Lookup trên {{table}} chạy cho nhiều dòng",
+        "why": "Mỗi dòng tìm thấy trong index cần đọc thêm bảng một lần. Thêm các cột cần thiết vào INCLUDE sẽ bỏ lookup."
+      },
+      "mssqlNoJoinPredicate": {
+        "title": "Một phép nối không có điều kiện nối",
+        "why": "Plan nối hai đầu vào mà không có điều kiện, làm số dòng nhân lên. Hãy kiểm tra mệnh đề ON."
+      },
+      "mssqlNoStatistics": {
+        "title": "Thiếu thống kê trên {{table}}",
+        "why": "Optimizer không có thống kê trên {{columns}} nên phải đoán số dòng. Tạo thống kê sẽ cải thiện ước lượng."
+      },
+      "mssqlExcessiveGrant": {
+        "title": "Cấp phát bộ nhớ lớn hơn nhiều so với nhu cầu",
+        "why": "Truy vấn xin nhiều bộ nhớ hơn mức dùng, có thể khiến truy vấn khác phải chờ."
+      },
+      "oracleCartesian": {
+        "title": "Có phép nối Descartes",
+        "why": "Hai nguồn dòng được nối không có điều kiện. Hãy kiểm tra điều kiện nối của truy vấn."
+      },
+      "oracleIndexSkipScan": {
+        "title": "Dùng index skip scan trên {{table}}",
+        "why": "Cột đầu của index không có trong điều kiện nên index bị dò nhiều lần. Index bắt đầu bằng cột được lọc sẽ rẻ hơn."
+      },
+      "mongoCollscan": {
+        "title": "Quét toàn bộ collection {{collection}}",
+        "why": "Truy vấn đọc mọi document của {{collection}}. Index trên các trường được lọc giúp MongoDB chỉ đọc các document khớp."
+      },
+      "mongoExaminedRatio": {
+        "title": "Phải duyệt nhiều document cho ít kết quả",
+        "why": "MongoDB duyệt nhiều key hoặc document hơn hẳn số trả về. Index chọn lọc hơn hoặc index ghép sẽ thu hẹp công việc."
+      },
+      "mongoBlockingSort": {
+        "title": "Sắp xếp không dùng được index",
+        "why": "MongoDB sắp xếp document trong bộ nhớ. Index khớp điều kiện lọc và thứ tự sắp xếp sẽ tránh việc đó."
+      },
+      "mongoLookupNoIndex": {
+        "title": "$lookup nối mà không có index",
+        "why": "Collection được nối không có index trên trường ngoại nên mỗi lần lookup phải quét toàn bộ."
+      },
+      "mongoUnanchoredRegex": {
+        "title": "Biểu thức chính quy không tận dụng tốt index",
+        "why": "Regex không neo ở đầu phải quét mọi key của index. Hãy neo bằng ^ hoặc dùng text index."
+      },
+      "chPrimaryKeyUnused": {
+        "title": "Điều kiện lọc không dùng khoá chính của {{table}}",
+        "why": "Điều kiện không nằm trên tiền tố của khoá ORDER BY nên phải đọc phần lớn granule. Lọc theo tiền tố khoá hoặc thêm skip index sẽ giảm lượng đọc."
+      },
+      "chPartitionNotPruned": {
+        "title": "Không bỏ qua được partition nào trên {{table}}",
+        "why": "Truy vấn không lọc theo khoá partition nên mọi partition đều bị đọc."
+      },
+      "chSkipIndexUseless": {
+        "title": "Skip index không giảm được lượng đọc",
+        "why": "Skip index trên {{table}} không loại được granule nào cho truy vấn này."
+      },
+      "chFinal": {
+        "title": "FINAL làm việc đọc chậm đi",
+        "why": "FINAL gộp dòng ngay lúc truy vấn. Hãy cân nhắc cách khử trùng khác nếu bảng lớn."
+      },
+      "chJoinRightLarge": {
+        "title": "Vế phải của phép nối lớn",
+        "why": "ClickHouse nạp bảng bên phải của phép nối vào bộ nhớ. Hãy đặt bảng nhỏ hơn ở bên phải."
+      },
+      "crdbIndexRecommendation": {
+        "title": "CockroachDB đề xuất index trên {{table}}",
+        "why": "Optimizer liệt kê một index sẽ làm truy vấn này nhanh hơn. Hãy đối chiếu với các truy vấn khác trước khi tạo."
+      },
+      "crdbMissingStats": {
+        "title": "Thiếu thống kê trên {{table}}",
+        "why": "Plan được dựng mà không có thống kê bảng nên số dòng chỉ là phỏng đoán."
+      },
+      "tidbPseudoStats": {
+        "title": "TiDB dùng thống kê giả trên {{table}}",
+        "why": "Chưa có thống kê thật nên TiDB ước lượng bằng giá trị cố định. Hãy chạy ANALYZE TABLE."
+      },
+      "nonSargablePredicate": {
+        "title": "Điều kiện trên {{column}} không dùng được index",
+        "why": "Áp {{function}} lên {{column}} làm index không nhìn thấy cột. Hãy viết lại để cột đứng một mình."
+      },
+      "leadingWildcardLike": {
+        "title": "LIKE bắt đầu bằng ký tự đại diện trên {{column}}",
+        "why": "Mẫu như {{pattern}} không dùng được index B-tree. Index trigram hoặc full-text thì dùng được."
+      },
+      "orAcrossColumns": {
+        "title": "OR trên nhiều cột khác nhau",
+        "why": "OR giữa các cột khác nhau thường ép quét toàn bộ. UNION ALL của hai truy vấn có index cho phép mỗi phần dùng một index."
+      },
+      "selectStar": {
+        "title": "SELECT * trả mọi cột",
+        "why": "Đọc mọi cột làm mỗi dòng rộng ra và chặn truy cập chỉ qua index. Hãy liệt kê đúng các cột cần."
+      },
+      "largeOffset": {
+        "title": "OFFSET lớn đọc những dòng rồi bỏ đi",
+        "why": "OFFSET {{offset}} vẫn đọc rồi bỏ chừng đó dòng. Phân trang theo khoá bắt đầu ngay sau dòng cuối đã xem."
+      },
+      "notInSubquery": {
+        "title": "NOT IN với truy vấn con trên {{column}}",
+        "why": "NOT IN không trả dòng nào nếu truy vấn con có NULL và thường chậm. NOT EXISTS an toàn hơn và dùng được anti join."
+      },
+      "typeMismatch": {
+        "title": "Kiểu dữ liệu không khớp trên {{column}}",
+        "why": "Giá trị được so sánh với cột khác kiểu nên index trên {{column}} có thể bị bỏ qua. Hãy dùng giá trị đúng kiểu của cột."
+      },
+      "unknown": {
+        "title": "Gợi ý tối ưu",
+        "why": "Gợi ý này đến từ phiên bản advisor mới hơn. Xem số liệu và hành động bên dưới."
+      }
+    },
+    "evidence": {
+      "actualRows": "Số dòng thực tế",
+      "estimatedRows": "Số dòng ước lượng",
+      "exactHeapBlocks": "Block heap chính xác",
+      "expression": "Biểu thức",
+      "heapFetches": "Lượt đọc heap",
+      "innerTime": "Thời gian vế trong",
+      "loops": "Số vòng lặp",
+      "lossyHeapBlocks": "Block heap lossy",
+      "misestimateFactor": "Ước lượng lệch",
+      "offset": "Offset",
+      "planSign": "Dấu hiệu trong plan",
+      "rowsKept": "Dòng được giữ",
+      "rowsRead": "Dòng đã đọc",
+      "rowsRemovedByFilter": "Dòng bị bộ lọc loại",
+      "rowsRemovedByRecheck": "Dòng bị loại khi kiểm tra lại",
+      "selfTime": "Thời gian riêng",
+      "sortKey": "Khoá sắp xếp",
+      "sortMethod": "Cách sắp xếp",
+      "sortRows": "Dòng được sắp xếp",
+      "sortSpaceKb": "Dung lượng sắp xếp trên đĩa",
+      "spillDetail": "Chi tiết ghi ra đĩa",
+      "lookupExecutions": "Số lần lookup",
+      "missingIndexImpact": "Mức cải thiện ước tính",
+      "selectivity": "Độ chọn lọc",
+      "keysExamined": "Key đã duyệt",
+      "docsExamined": "Document đã duyệt",
+      "docsReturned": "Document trả về",
+      "granulesSelected": "Granule được chọn",
+      "granulesTotal": "Tổng số granule",
+      "grantedKb": "Bộ nhớ được cấp",
+      "usedKb": "Bộ nhớ đã dùng",
+      "plannedWorkers": "Worker dự kiến",
+      "launchedWorkers": "Worker đã chạy",
+      "jitTime": "Thời gian JIT"
+    },
+    "caveats": {
+      "estimateFromExpression": "Ước lượng đến từ biểu thức hoặc CTE nên có thể không phản ánh thống kê cũ.",
+      "estimatedOnly": "Chỉ dựa trên ước lượng; hãy chạy Analyze để xác nhận.",
+      "heapFetchesReplica": "Trên replica, heap fetches có thể vẫn cao cho tới khi primary chạy vacuum.",
+      "indexForSortSpill": "Index theo thứ tự sắp xếp có thể bỏ hẳn bước sắp xếp thay vì chỉ chỉnh bộ nhớ.",
+      "keysetNeedsUniqueOrder": "Phân trang theo khoá cần thứ tự duy nhất và ổn định (thêm khoá chính để phân định khi trùng).",
+      "metadataUnavailable": "Không kiểm tra được index hiện có; gợi ý có thể trùng với index đã có.",
+      "semanticsDiffer": "Câu viết lại xử lý NULL khác đi; hãy kiểm tra kết quả.",
+      "spillEstimate": "Con số bộ nhớ chỉ là ước tính.",
+      "vacuumIo": "VACUUM đọc bảng và tăng tải I/O.",
+      "workMemEstimate": "Giá trị work_mem được ước tính từ số trang.",
+      "workMemMultiplies": "work_mem áp cho từng node sắp xếp hoặc hash và từng worker song song; chỉ nên tăng cho phiên này.",
+      "writeOverhead": "Mỗi index làm chậm insert, update và tốn dung lượng đĩa.",
+      "expressionMustBeImmutable": "Biểu thức phải là immutable mới đánh index được.",
+      "extendsIndex": "Thay thế hoặc mở rộng index hiện có; chỉ xoá index cũ sau khi kiểm tra các truy vấn khác.",
+      "onlineDdlMayFail": "Tạo index online có thể thất bại hoặc phải chờ giao dịch dài.",
+      "selectivityHigh": "Điều kiện giữ lại phần lớn dòng nên index có thể không giúp.",
+      "serverSuggestion": "Do máy chủ gợi ý chỉ dựa trên truy vấn này; hãy xem lại trước khi tạo.",
+      "planMayBeStale": "Plan này đã cũ; dữ liệu và index có thể đã thay đổi.",
+      "ambiguousTable": "Tên bảng khớp nhiều đối tượng; hãy kiểm tra đối tượng nào được dùng.",
+      "coversOtherAdvice": "Index này cũng bao một gợi ý khác.",
+      "largeTableBuild": "Bảng lớn ({{rows}} dòng): tạo index tốn thời gian, dung lượng đĩa và I/O.",
+      "requiresExtension": "Cần extension {{extension}}, do quản trị viên cài đặt."
     }
   }
 }

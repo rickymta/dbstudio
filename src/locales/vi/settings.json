@@ -5,7 +5,8 @@
   "section": {
     "appearance": "Giao diện",
     "data": "Dữ liệu",
-    "logging": "Nhật ký"
+    "logging": "Nhật ký",
+    "plan": "Kế hoạch truy vấn"
   },
   "language": "Ngôn ngữ",
   "theme": "Chủ đề",
@@ -49,5 +50,7 @@
     "ligatures": "Bật chữ ghép trong mã nguồn",
     "reset": "Khôi phục giao diện",
     "hint": "Cỡ chữ độc lập (pixel). Thay đổi áp dụng khi lưu. Font chưa cài sẽ dùng font dự phòng của hệ thống."
-  }
+  },
+  "planAdvisorMetadata": "Đối chiếu gợi ý với index hiện có (đọc catalog)",
+  "planAdvisorMetadataHint": "Query Advisor đọc index, cột và số dòng của các bảng trong plan để tránh gợi ý trùng. Chỉ đọc, không bao giờ chạy câu lệnh của bạn."
 }

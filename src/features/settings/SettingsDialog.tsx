@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
 import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
+import { Switch } from '@/components/ui/Switch';
 import { toast } from '@/components/ui/toastStore';
 import { describeError } from '@/features/connections/errors';
 import { ipc } from '@/lib/ipc';
@@ -45,6 +46,7 @@ function SettingsBody({ onClose }: { onClose: () => void }) {
   const setMode = useThemeStore((s) => s.setMode);
   const [logLevel, setLogLevel] = useState<LogLevel>(current.logLevel);
   const [timestamp, setTimestamp] = useState<TimestampDisplay>(current.timestampDisplay);
+  const [advisorMetadata, setAdvisorMetadata] = useState(current.planAdvisorMetadata);
   const [rows, setRows] = useState(String(current.gridMaxRows));
   const [cells, setCells] = useState(String(current.gridMaxCells));
   const [submitted, setSubmitted] = useState(false);
@@ -67,6 +69,7 @@ function SettingsBody({ onClose }: { onClose: () => void }) {
       gridMaxRows: rowsValue,
       gridMaxCells: cellsValue,
       timestampDisplay: timestamp,
+      planAdvisorMetadata: advisorMetadata,
     };
     try {
       await save(next);
@@ -184,6 +187,21 @@ function SettingsBody({ onClose }: { onClose: () => void }) {
               options={TIMESTAMPS.map((v) => ({ value: v, label: t(`timestamp.${v}`) }))}
             />
           </Field>
+        </Section>
+
+        <Section title={t('section.plan')}>
+          <div className="flex items-start gap-2">
+            <Switch
+              id={`${id}-advisor`}
+              checked={advisorMetadata}
+              onCheckedChange={setAdvisorMetadata}
+              className="mt-0.5"
+            />
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <Label htmlFor={`${id}-advisor`}>{t('planAdvisorMetadata')}</Label>
+              <p className="text-xs text-muted-foreground">{t('planAdvisorMetadataHint')}</p>
+            </div>
+          </div>
         </Section>
 
         <Section title={t('section.logging')}>

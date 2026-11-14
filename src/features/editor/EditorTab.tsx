@@ -212,6 +212,7 @@ function EditorBody({
       text: input.text,
       database: d.leaseState?.database ?? d.database,
       leaseId: d.leaseId,
+      sourceEditorId: id,
     });
   }, [id, sessionId, connectionId, t, toast, analyzeForRun]);
 

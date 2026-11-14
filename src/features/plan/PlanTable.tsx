@@ -1,9 +1,11 @@
 import { ChevronDown, ChevronRight, Flame } from 'lucide-react';
-import { useMemo, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import type { PlanNode, PlanTree } from '@/lib/types';
 import { SeverityIcon } from './PlanDetails';
+import { flashElement, useAdviceFocus } from './adviceContext';
+import { AdviceMark } from './PlanAdviceMarks';
 import { PlanNodeIcon } from './PlanNodeIcon';
 import {
   formatCost,
@@ -49,6 +51,17 @@ export function PlanTable({ tree, selectedId, onSelect, collapsed, onToggle }: P
   const metric = metricOf(tree);
   // Without actual statistics there is nothing to show in these two columns.
   const analyzed = tree.analyzed;
+  // An advice card brings its rows into view (the branches that hide them are opened by the tab).
+  const focus = useAdviceFocus();
+  const scroller = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!focus || focus.nodeIds.length === 0) return;
+    const row = (id: number) => scroller.current?.querySelector(`[data-testid="plan-row-${id}"]`);
+    row(focus.nodeIds[0]!)?.scrollIntoView?.({ block: 'center' });
+    for (const id of focus.nodeIds.slice(1)) flashElement(row(id));
+    // Only when a card is clicked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.seq]);
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -60,7 +73,7 @@ export function PlanTable({ tree, selectedId, onSelect, collapsed, onToggle }: P
   };
 
   return (
-    <div className="h-full overflow-auto" onKeyDown={onKeyDown}>
+    <div ref={scroller} className="h-full overflow-auto" onKeyDown={onKeyDown}>
       <table
         className={cn(
           'w-full border-collapse text-xs',
@@ -138,6 +151,7 @@ export function PlanTable({ tree, selectedId, onSelect, collapsed, onToggle }: P
                     <PlanNodeIcon kind={node.kind} />
                     <span className="truncate">{node.op}</span>
                     {severity && <SeverityIcon severity={severity} size={12} />}
+                    <AdviceMark nodeId={node.id} />
                   </span>
                 </td>
                 <td className="px-2 py-1 text-right tabular-nums">{formatCount(node.estRows)}</td>

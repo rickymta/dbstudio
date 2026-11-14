@@ -51,10 +51,12 @@ import {
 } from './elkLayout';
 import { buildGraph, initialCollapsed, type CardNode } from './graphModel';
 import { NodeFacts, SeverityIcon } from './PlanDetails';
+import { flashElement, useAdviceFocus } from './adviceContext';
+import { AdviceMark } from './PlanAdviceMarks';
 import { PlanNodeIcon } from './PlanNodeIcon';
 import { exportPlan, type ExportFormat } from './planExport';
 import { useGraphDirection } from './planPrefs';
-import { flatten, formatCount, formatPercent, objectLabel } from './planModel';
+import { flatten, formatCount, formatPercent, objectLabel, pathTo } from './planModel';
 import { initialViewport } from './viewport';
 
 /** The MiniMap only helps on plans too big to see at a glance. */
@@ -112,6 +114,7 @@ const PlanNodeCard = memo(function PlanNodeCard({ data }: NodeProps<CardNode>) {
         <PlanNodeIcon kind={node.kind} />
         <span className={cn('truncate', hot ? 'font-bold' : 'font-semibold')}>{node.op}</span>
         {severity && <SeverityIcon severity={severity} size={12} />}
+        <AdviceMark nodeId={node.id} />
       </div>
       <div className="truncate text-[11px] text-muted-foreground">{objectLabel(node) || ' '}</div>
       <div className="mt-0.5 flex items-center justify-between text-[11px] tabular-nums">
@@ -249,7 +252,10 @@ function InitialViewport({
   return null;
 }
 
-/** Keeps the selected node in view, also when it was chosen in another view. */
+/**
+ * Keeps the selected node in view, also when it was chosen in another view. A click on an advice
+ * card (`useAdviceFocus`) zooms in further and flashes the other nodes the advice concerns.
+ */
 function FollowSelection({
   selectedId,
   layout,
@@ -258,19 +264,32 @@ function FollowSelection({
   layout: PlanLayout;
 }) {
   const flow = useReactFlow();
+  const focus = useAdviceFocus();
+  const handled = useRef(0);
   useEffect(() => {
     if (selectedId == null) return;
     const p = layout.positions.get(selectedId);
     if (!p) return;
+    const fresh = focus != null && focus.seq !== handled.current;
+    if (fresh) handled.current = focus.seq;
     void flow.setCenter(p.x + NODE_WIDTH / 2, p.y + NODE_HEIGHT / 2, {
-      zoom: Math.max(flow.getZoom(), 0.6),
+      zoom: Math.max(flow.getZoom(), fresh ? ADVICE_ZOOM : 0.6),
       duration: 200,
     });
+    if (fresh) {
+      for (const id of focus.nodeIds) {
+        if (id === selectedId) continue;
+        flashElement(document.querySelector(`.react-flow__node[data-id="${id}"]`));
+      }
+    }
     // Only when the selection changes, not on every zoom.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, layout]);
+  }, [selectedId, layout, focus?.seq]);
   return null;
 }
+
+/** Zoom used when an advice card brings its node into view. */
+const ADVICE_ZOOM = 0.9;
 
 interface PlanGraphProps {
   tree: PlanTree;
@@ -285,6 +304,18 @@ function Graph({ tree, selectedId, onSelect }: PlanGraphProps) {
   const [layoutError, setLayoutError] = useState<string | null>(null);
   const [hover, setHover] = useState<{ id: number; x: number; y: number } | null>(null);
   const [direction, setDirection] = useGraphDirection();
+  // An advice card needs its nodes visible: open the branches that hide them.
+  const focus = useAdviceFocus();
+  const [seenFocus, setSeenFocus] = useState(focus?.seq ?? 0);
+  if (focus && focus.seq !== seenFocus) {
+    setSeenFocus(focus.seq);
+    const hidden = focus.nodeIds.flatMap((id) => pathTo(tree.root, id).slice(0, -1));
+    if (hidden.some((id) => collapsed.has(id))) {
+      const next = new Set(collapsed);
+      for (const id of hidden) next.delete(id);
+      setCollapsed(next);
+    }
+  }
   // The first layout (and the first one after a direction change) picks the viewport.
   const pendingViewport = useRef(true);
   const changeDirection = useCallback(

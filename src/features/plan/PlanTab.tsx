@@ -11,7 +11,8 @@ import {
   Gauge,
   type LucideIcon,
 } from 'lucide-react';
-import { lazy, Suspense, useCallback, useRef, useState, type FC } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useRef, useState, type FC } from 'react';
+import type { PlanAdvice } from '@/lib/types';
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -31,8 +32,12 @@ import { ipc, toIpcError } from '@/lib/ipc';
 import { isSessionLost, reconnectSession } from '@/stores/sessionRecovery';
 import type { PlanTabPayload } from '@/stores/tabs';
 import { openPlanFile } from './open';
+import { adviceNodeSet } from './adviceModel';
+import { AdviceSummary } from './PlanAdvice';
+import { useAdviceRefresh, usePlanAdvice } from './PlanAdviceData';
+import { PlanAdviceInspector, type InspectorTab } from './PlanAdviceInspector';
+import { AdviceFocusContext, AdviceNodesContext, type AdviceFocus } from './adviceContext';
 import { PlanCompare } from './PlanCompare';
-import { PlanDetails } from './PlanDetails';
 import { PlanGraph } from './PlanGraph';
 import { PlanInspector } from './PlanInspector';
 import { useInspectorPrefs } from './planPrefs';
@@ -46,6 +51,7 @@ import {
   statementWrites,
   locateRaw,
   nodeById,
+  pathTo,
 } from './planModel';
 import { PlanTable } from './PlanTable';
 import { cancelPlan, runPlan, usePlanStore } from './planStore';
@@ -93,7 +99,60 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
         : width < INSPECTOR_AUTO_COLLAPSE_PX;
   const [reconnecting, setReconnecting] = useState(false);
 
-  const onSelect = useCallback((id: number) => select(planId, id), [select, planId]);
+  // Query Advisor: tier 2 is asked once per plan; the inspector, the summary strip, the marks on
+  // the nodes and the compare dialog all read the same answer.
+  useAdviceRefresh(planId);
+  const { ranked, status: adviceStatus } = usePlanAdvice(planId);
+  const adviceNodes = useMemo(() => adviceNodeSet(ranked), [ranked]);
+  // The tab the user chose; until then Advice when the plan came with advice, else Node.
+  const [tabChoice, setTabChoice] = useState<InspectorTab | null>(null);
+  const baseAdvice = entry?.tree?.advice?.length ?? 0;
+  const inspectorTab: InspectorTab = tabChoice ?? (baseAdvice > 0 ? 'advice' : 'node');
+  const [expandedAdvice, setExpandedAdvice] = useState<string | null>(null);
+  const [nodeFilter, setNodeFilter] = useState<number | null>(null);
+  const [focus, setFocus] = useState<AdviceFocus | null>(null);
+  const focusSeq = useRef(0);
+
+  // A click on an operator: select it and, when it has advice, list only that advice.
+  const onSelect = useCallback(
+    (id: number) => {
+      select(planId, id);
+      setNodeFilter(adviceNodes.has(id) ? id : null);
+    },
+    [select, planId, adviceNodes],
+  );
+  // A click on an advice card: select its first node and bring the nodes into view.
+  const onActivateAdvice = useCallback(
+    (advice: PlanAdvice) => {
+      setExpandedAdvice((cur) => (cur === advice.id ? null : advice.id));
+      setNodeFilter(null);
+      const first = advice.nodeIds[0];
+      if (first == null) return;
+      select(planId, first);
+      const root = usePlanStore.getState().entries[planId]?.tree?.root;
+      if (root) {
+        const hidden = advice.nodeIds.flatMap((id) => pathTo(root, id).slice(0, -1));
+        setCollapsed((cur) => {
+          if (!hidden.some((id) => cur.has(id))) return cur;
+          const next = new Set(cur);
+          for (const id of hidden) next.delete(id);
+          return next;
+        });
+      }
+      setFocus({ seq: ++focusSeq.current, nodeIds: advice.nodeIds });
+    },
+    [select, planId],
+  );
+  const viewAdvice = useCallback(() => {
+    const first = ranked[0];
+    if (!first) return;
+    inspector.choose('open');
+    setTabChoice('advice');
+    setExpandedAdvice(null);
+    onActivateAdvice(first);
+    // Only the choice of the panel matters, not the identity of `inspector`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ranked, onActivateAdvice]);
   const onToggle = useCallback(
     (id: number) =>
       setCollapsed((cur) => {
@@ -432,9 +491,23 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
               onCollapsedChange={(c) => inspector.choose(c ? 'collapsed' : 'open')}
               width={inspector.width}
               onWidthChange={inspector.resize}
-              badge={tree.warnings.length}
+              badge={ranked.length || tree.warnings.length}
             >
-              <PlanDetails tree={tree} selected={selected} onSelect={onSelect} />
+              <PlanAdviceInspector
+                planId={planId}
+                tree={tree}
+                statement={entry.statement}
+                selected={selected}
+                ranked={ranked}
+                status={adviceStatus}
+                tab={inspectorTab}
+                onTabChange={setTabChoice}
+                nodeFilter={nodeFilter}
+                onClearFilter={() => setNodeFilter(null)}
+                expandedId={expandedAdvice}
+                onActivate={onActivateAdvice}
+                onSelectNode={onSelect}
+              />
             </PlanInspector>
           )}
         </div>
@@ -445,7 +518,12 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
   return (
     <div ref={rootRef} className="flex h-full min-h-0 flex-col" data-testid="plan-tab">
       {header}
-      {body}
+      {tree && (
+        <AdviceSummary ranked={ranked} tree={tree} status={adviceStatus} onView={viewAdvice} />
+      )}
+      <AdviceNodesContext.Provider value={adviceNodes}>
+        <AdviceFocusContext.Provider value={focus}>{body}</AdviceFocusContext.Provider>
+      </AdviceNodesContext.Provider>
       {comparing && <PlanCompare planId={planId} open onOpenChange={setComparing} />}
       <ConfirmDialog
         open={confirm !== null}

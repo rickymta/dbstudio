@@ -5,7 +5,8 @@
   "section": {
     "appearance": "Appearance",
     "data": "Data",
-    "logging": "Logging"
+    "logging": "Logging",
+    "plan": "Query plan"
   },
   "language": "Language",
   "theme": "Theme",
@@ -49,5 +50,7 @@
     "ligatures": "Enable code ligatures",
     "reset": "Reset appearance",
     "hint": "Font sizes are independent (pixels). Changes apply when you save. Unavailable fonts use the system fallback."
-  }
+  },
+  "planAdvisorMetadata": "Match advice against existing indexes (reads the catalog)",
+  "planAdvisorMetadataHint": "The Query Advisor reads the indexes, columns and row counts of the tables in a plan to avoid duplicate suggestions. It only reads; it never runs your statement."
 }
