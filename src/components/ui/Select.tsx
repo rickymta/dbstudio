@@ -37,7 +37,7 @@ export function Select({
         id={id}
         aria-label={aria['aria-label']}
         className={cn(
-          'inline-flex h-7 w-full items-center justify-between gap-2 rounded-md border border-border',
+          'inline-flex control h-8 w-full items-center justify-between gap-2 rounded-md border border-border',
           'bg-surface px-2 text-[13px] text-foreground data-[placeholder]:text-muted-foreground',
           'disabled:cursor-not-allowed disabled:opacity-50',
           className,

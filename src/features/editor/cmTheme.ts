@@ -10,14 +10,15 @@ export const editorTheme = EditorView.theme({
     height: '100%',
     color: 'var(--foreground)',
     backgroundColor: 'var(--surface)',
-    fontSize: '13px',
+    fontSize: 'var(--editor-font-size, 14px)',
   },
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': {
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    fontFamily: 'var(--data-font-family)',
+    fontVariantLigatures: 'var(--code-ligatures)',
     lineHeight: '1.55',
   },
-  '.cm-content': { caretColor: 'var(--foreground)', padding: '6px 0' },
+  '.cm-content': { caretColor: 'var(--foreground)', padding: '10px 0' },
   '.cm-gutters': {
     backgroundColor: 'var(--surface-muted)',
     color: 'var(--muted-foreground)',
@@ -29,7 +30,7 @@ export const editorTheme = EditorView.theme({
   },
   '.cm-activeLineGutter': { backgroundColor: 'var(--surface-muted)' },
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
-    backgroundColor: 'var(--ring) !important',
+    backgroundColor: 'var(--selection) !important',
   },
   '.cm-tooltip': {
     backgroundColor: 'var(--surface)',
@@ -51,11 +52,15 @@ export const editorTheme = EditorView.theme({
 
 export const editorHighlight = syntaxHighlighting(
   HighlightStyle.define([
-    { tag: [t.keyword, t.operatorKeyword, t.modifier], color: 'var(--accent)', fontWeight: '600' },
-    { tag: [t.string, t.special(t.string)], color: 'var(--success)' },
-    { tag: [t.number, t.bool, t.null], color: 'var(--warning)' },
+    {
+      tag: [t.keyword, t.operatorKeyword, t.modifier],
+      color: 'var(--syntax-keyword)',
+      fontWeight: '600',
+    },
+    { tag: [t.string, t.special(t.string)], color: 'var(--syntax-string)' },
+    { tag: [t.number, t.bool, t.null], color: 'var(--syntax-number)' },
     { tag: [t.lineComment, t.blockComment], color: 'var(--muted-foreground)', fontStyle: 'italic' },
-    { tag: [t.typeName, t.standard(t.name)], color: 'var(--danger)' },
+    { tag: [t.typeName, t.standard(t.name)], color: 'var(--syntax-type)' },
     { tag: [t.punctuation, t.operator], color: 'var(--muted-foreground)' },
   ]),
 );

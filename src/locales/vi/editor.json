@@ -18,7 +18,11 @@
     "history": "Lịch sử và truy vấn đã lưu",
     "shortcuts": "Phím tắt",
     "context": "Database và schema",
-    "explain": "Giải thích kế hoạch"
+    "explain": "Giải thích kế hoạch",
+    "runSelection": "Chạy vùng chọn",
+    "runStatement": "Chạy câu lệnh",
+    "scopeLines": "Dòng {{from}}–{{to}}",
+    "scopePending": "Câu lệnh tại con trỏ"
   },
   "run": {
     "nothing": "Không có gì để chạy."
@@ -54,7 +58,8 @@
     "loadMore": "Tải thêm",
     "cellViewer": "Trình xem ô",
     "viewTable": "Bảng",
-    "viewDocuments": "Tài liệu"
+    "viewDocuments": "Tài liệu",
+    "goToError": "Đến vị trí lỗi"
   },
   "tx": {
     "autoCommit": "Tự động commit",
@@ -171,7 +176,9 @@
       "closeTab": "Đóng tab",
       "findObject": "Tìm đối tượng ở thanh bên",
       "help": "Hiện bảng phím tắt",
-      "explain": "Xem kế hoạch thực thi"
+      "explain": "Xem kế hoạch thực thi",
+      "toggleSidebar": "Ẩn/hiện sidebar",
+      "focusResults": "Chuyển editor / kết quả"
     }
   }
 }

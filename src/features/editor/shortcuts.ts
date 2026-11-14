@@ -13,6 +13,8 @@ export type ShortcutId =
   | 'newTab'
   | 'closeTab'
   | 'findObject'
+  | 'toggleSidebar'
+  | 'focusResults'
   | 'help';
 
 export interface Shortcut {
@@ -34,6 +36,8 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'newTab', keys: 'Mod-t', scope: 'global' },
   { id: 'closeTab', keys: 'Mod-w', scope: 'global' },
   { id: 'findObject', keys: 'Mod-Shift-o', scope: 'global' },
+  { id: 'toggleSidebar', keys: 'Mod-b', scope: 'global' },
+  { id: 'focusResults', keys: 'F6', scope: 'editor' },
   { id: 'help', keys: 'Mod-/', scope: 'global' },
 ];
 

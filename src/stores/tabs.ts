@@ -12,6 +12,7 @@ interface TabBase {
   id: string;
   title: TabTitle;
   closable: boolean;
+  pinned?: boolean;
 }
 
 /** Payload of a `table` or `ddl` tab. */
@@ -101,6 +102,7 @@ interface TabsState {
    */
   requestClose: (id: string) => Promise<boolean>;
   activate: (id: string) => void;
+  togglePin: (id: string) => void;
   /**
    * Close every tab whose payload belongs to `sessionId`. `editor` tabs stay open (their text
    * must survive) and only lose their `sessionId`.
@@ -141,6 +143,8 @@ export const useTabsStore = create<TabsState>((set, get) => ({
       return allowed;
     });
   },
+  togglePin: (id) =>
+    set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)) })),
   activate: (id) => set((s) => (s.tabs.some((t) => t.id === id) ? { activeId: id } : s)),
   closeSessionTabs: (sessionId) =>
     set((s) => {

@@ -73,5 +73,21 @@
   },
   "transport": {
     "hint": "Backend: {{transport}} (không phải runtime Tauri)"
+  },
+  "workspace": {
+    "favorites": "Yêu thích",
+    "recent": "Đối tượng gần đây",
+    "noRecent": "Mở kết nối hoặc đối tượng để bắt đầu làm việc.",
+    "databaseSupport": "Hỗ trợ database và lộ trình",
+    "toggleSidebar": "Ẩn/hiện sidebar",
+    "newQuery": "Query mới",
+    "openTabs": "Các tab đang mở",
+    "pinTab": "Ghim tab",
+    "unpinTab": "Bỏ ghim tab",
+    "addFavorite": "Thêm vào yêu thích",
+    "removeFavorite": "Bỏ yêu thích",
+    "savedConnections": "Kết nối đã lưu",
+    "startConnection": "Tạo một kết nối",
+    "continue": "Tiếp tục công việc"
   }
 }

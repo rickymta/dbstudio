@@ -1,3 +1,4 @@
+import { useAppearanceStore, gridRowHeight } from '@/stores/appearance';
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import {
   useCallback,
@@ -115,6 +116,9 @@ interface DataGridProps {
  * Row positions come from `gridScale` so ~1M rows still scroll to the end (see that module).
  */
 export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGridProps) {
+  const appearance = useAppearanceStore((s) => s.appearance);
+  const ROW_HEIGHT = gridRowHeight(appearance);
+  const HEADER_HEIGHT = Math.max(32, appearance.gridFontSize + 14);
   const { t } = useTranslation('data');
   useGridVersion(model);
   const [ui, patchUi] = useTabUi(tabId);
@@ -218,6 +222,10 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
     observeElementRect: (inst, cb) =>
       observeElementRect(inst, (r) => cb(validRect(r, lastRectRef))),
   });
+
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [ROW_HEIGHT, rowVirtualizer]);
 
   const viewportHeight = rowVirtualizer.scrollRect?.height ?? FALLBACK_RECT.height;
   const bodyViewport = Math.max(ROW_HEIGHT, viewportHeight - HEADER_HEIGHT);
@@ -644,7 +652,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
           editMode && readOnlyColumns?.includes(col.name) ? t('edit.generatedColumn') : undefined
         }
         className={cn(
-          'absolute top-0 truncate border-r border-b border-border/60 px-2 leading-[23px] [unicode-bidi:isolate]',
+          'absolute top-0 truncate border-r border-b border-border/35 px-2 [unicode-bidi:isolate]',
           d.align === 'right' && 'text-right',
           TONE[d.kind],
           edit && !ctx.insert && 'bg-warning-soft not-italic',
@@ -652,7 +660,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
           selected && 'z-[5] bg-accent/15 not-italic outline-2 -outline-offset-2 outline-accent',
           editing && !dialog && 'z-[6] overflow-visible p-0',
         )}
-        style={{ left, width, height: ROW_HEIGHT }}
+        style={{ left, width, height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT - 1}px` }}
       >
         {editing && !dialog ? (
           <EditableCell
@@ -689,7 +697,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
         tabIndex={0}
         onKeyDown={onKeyDown}
         onScroll={onScroll}
-        className="absolute inset-0 select-none overflow-auto bg-surface text-xs outline-none"
+        className="absolute inset-0 select-none overflow-auto bg-surface grid-typography outline-none"
       >
         <div
           className="relative"
@@ -800,14 +808,23 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
                       'sticky left-0 z-10 flex shrink-0 items-center justify-end border-r border-b border-border bg-surface-muted px-2 text-[11px] text-muted-foreground',
                       rowSelected && 'text-foreground',
                     )}
-                    style={{ width: ROWNUM_WIDTH, height: ROW_HEIGHT }}
+                    style={{
+                      width: ROWNUM_WIDTH,
+                      height: ROW_HEIGHT,
+                      lineHeight: `${ROW_HEIGHT - 1}px`,
+                    }}
                   >
                     {insert ? '+' : deleted ? '\u2212' : vr.index + 1}
                   </div>
                   {pinnedIdx.length > 0 && (
                     <div
                       className="sticky z-[9] shrink-0 border-r-2 border-border bg-surface"
-                      style={{ left: ROWNUM_WIDTH, width: pinnedWidth, height: ROW_HEIGHT }}
+                      style={{
+                        left: ROWNUM_WIDTH,
+                        width: pinnedWidth,
+                        height: ROW_HEIGHT,
+                        lineHeight: `${ROW_HEIGHT - 1}px`,
+                      }}
                     >
                       {pinnedIdx.map((ci, i) =>
                         renderCell(

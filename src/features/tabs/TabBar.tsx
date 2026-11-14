@@ -1,5 +1,18 @@
-import { X } from 'lucide-react';
-import type { KeyboardEvent, MouseEvent } from 'react';
+import { X, Pin, PanelLeft, ChevronDown, Plus } from 'lucide-react';
+import { useEffect, useRef, type KeyboardEvent, type MouseEvent } from 'react';
+import { Button } from '@/components/ui/Button';
+import { IconButton } from '@/components/ui/IconButton';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/DropdownMenu';
+import { useWorkspaceStore } from '@/features/workspace/layout';
+import { openEditorForActiveTab } from '@/features/editor/open';
+import { useSessionsStore } from '@/stores/sessions';
+import { useConnectionsSnapshot } from '@/features/connections/queries';
+import { formatKeys } from '@/features/editor/shortcuts';
 import { useTranslation } from 'react-i18next';
 import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
 import { cn } from '@/lib/cn';
@@ -10,13 +23,30 @@ function useTabTitle(title: TabTitle): string {
   return typeof title === 'string' ? title : t(title.key, { ns: title.ns ?? 'common' });
 }
 
-function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
+function TabButton({
+  tab,
+  active,
+  duplicate,
+}: {
+  tab: TabItem;
+  active: boolean;
+  duplicate: boolean;
+}) {
   const { t } = useTranslation();
   const activate = useTabsStore((s) => s.activate);
   const closeTab = useTabsStore((s) => s.requestClose);
   const title = useTabTitle(tab.title);
   const profile = useConnectionProfile(tab.payload?.connectionId ?? '');
   const color = connectionColor(profile);
+  const togglePin = useTabsStore((s) => s.togglePin);
+  const path =
+    tab.payload && 'path' in tab.payload
+      ? tab.payload.path.segments
+          .filter((s) => s.kind !== 'folder')
+          .map((s) => s.name)
+          .join('.')
+      : '';
+  const detail = [title, profile?.name, path].filter(Boolean).join(' · ');
 
   // Middle click closes the tab (auxclick; mousedown would also start autoscroll).
   const onAuxClick = (e: MouseEvent) => {
@@ -29,7 +59,7 @@ function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
   return (
     <div
       className={cn(
-        'group relative flex h-8 items-center rounded-t-md border border-b-0',
+        'group relative flex h-9 shrink-0 items-center rounded-t-md border border-b-0',
         active
           ? 'border-border bg-background text-foreground'
           : 'border-transparent text-muted-foreground hover:text-foreground',
@@ -50,7 +80,7 @@ function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
         aria-selected={active}
         tabIndex={active ? 0 : -1}
         data-tab-id={tab.id}
-        title={title}
+        title={detail}
         onClick={() => activate(tab.id)}
         className={cn(
           'h-full max-w-56 truncate pl-3 text-[13px]',
@@ -59,14 +89,31 @@ function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
         )}
       >
         {title}
+        {duplicate && (
+          <span className="ml-2 text-xs text-muted-foreground">
+            {profile?.name}
+            {path ? ` · ${path}` : ''}
+          </span>
+        )}
       </button>
       {tab.closable && (
+        <button
+          type="button"
+          aria-label={`${t(tab.pinned ? 'workspace.unpinTab' : 'workspace.pinTab')}: ${title}`}
+          aria-pressed={!!tab.pinned}
+          onClick={() => togglePin(tab.id)}
+          className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-surface-muted"
+        >
+          <Pin size={12} className={tab.pinned ? 'fill-current text-accent' : 'opacity-40'} />
+        </button>
+      )}
+      {tab.closable && !tab.pinned && (
         <button
           type="button"
           aria-label={`${t('tabs.close')}: ${title}`}
           tabIndex={-1}
           onClick={() => void closeTab(tab.id)}
-          className="mr-1 rounded p-0.5 text-muted-foreground opacity-60 hover:bg-surface-muted hover:opacity-100 group-hover:opacity-100"
+          className="mr-1 flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground opacity-60 hover:bg-surface-muted hover:opacity-100 group-hover:opacity-100"
         >
           <X size={12} />
         </button>
@@ -76,11 +123,26 @@ function TabButton({ tab, active }: { tab: TabItem; active: boolean }) {
 }
 
 export function TabBar() {
+  const { t } = useTranslation();
+  const listRef = useRef<HTMLDivElement>(null);
+  const hidden = useWorkspaceStore((s) => s.sidebarHidden);
+  const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar);
+  const sessions = useSessionsStore((s) => s.sessionsByConnection);
+  const { data: connections } = useConnectionsSnapshot();
   const tabs = useTabsStore((s) => s.tabs);
   const activeId = useTabsStore((s) => s.activeId);
   const activate = useTabsStore((s) => s.activate);
   const closeTab = useTabsStore((s) => s.requestClose);
 
+  const ordered = [...tabs.filter((t) => t.pinned), ...tabs.filter((t) => !t.pinned)];
+  const label = (tab: TabItem) =>
+    typeof tab.title === 'string' ? tab.title : t(tab.title.key, { ns: tab.title.ns ?? 'common' });
+  useEffect(() => {
+    const active = Array.from(
+      listRef.current?.querySelectorAll<HTMLElement>('[data-tab-id]') ?? [],
+    ).find((el) => el.dataset.tabId === activeId);
+    active?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [activeId]);
   const focusTab = (list: HTMLElement, id: string | undefined) => {
     if (!id) return;
     const el = Array.from(list.querySelectorAll<HTMLElement>('[data-tab-id]')).find(
@@ -94,9 +156,9 @@ export function TabBar() {
     const current = (e.target as HTMLElement).closest<HTMLElement>('[data-tab-id]');
     if (!current) return;
     const id = current.dataset.tabId!;
-    const index = tabs.findIndex((t) => t.id === id);
+    const index = ordered.findIndex((t) => t.id === id);
     const go = (target: number) => {
-      const next = tabs[(target + tabs.length) % tabs.length];
+      const next = ordered[(target + ordered.length) % ordered.length];
       if (!next) return;
       e.preventDefault();
       activate(next.id);
@@ -105,9 +167,9 @@ export function TabBar() {
     if (e.key === 'ArrowRight') go(index + 1);
     else if (e.key === 'ArrowLeft') go(index - 1);
     else if (e.key === 'Home') go(0);
-    else if (e.key === 'End') go(tabs.length - 1);
+    else if (e.key === 'End') go(ordered.length - 1);
     else if (e.key === 'Delete' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'w')) {
-      if (!tabs[index]?.closable) return;
+      if (!ordered[index]?.closable) return;
       e.preventDefault();
       void closeTab(id);
       // The store picks the neighbor; focus it once React has rendered.
@@ -116,14 +178,54 @@ export function TabBar() {
   };
 
   return (
-    <div
-      role="tablist"
-      onKeyDown={onKeyDown}
-      className="flex h-9 shrink-0 items-end gap-px overflow-x-auto border-b border-border bg-surface-muted px-1"
-    >
-      {tabs.map((tab) => (
-        <TabButton key={tab.id} tab={tab} active={tab.id === activeId} />
-      ))}
+    <div className="flex min-h-10 shrink-0 items-center border-b border-border bg-surface-muted px-1">
+      <IconButton
+        label={`${t('workspace.toggleSidebar')} (${formatKeys('Mod-b')})`}
+        icon={<PanelLeft size={16} />}
+        aria-pressed={!hidden}
+        onClick={toggleSidebar}
+      />
+      <div
+        ref={listRef}
+        role="tablist"
+        onKeyDown={onKeyDown}
+        className="flex min-w-0 flex-1 items-end gap-px overflow-x-auto"
+      >
+        {ordered.map((tab) => (
+          <TabButton
+            key={tab.id}
+            tab={tab}
+            active={tab.id === activeId}
+            duplicate={tabs.some((other) => other.id !== tab.id && label(other) === label(tab))}
+          />
+        ))}
+      </div>
+      <IconButton
+        label={`${t('workspace.newQuery')} (${formatKeys('Mod-t')})`}
+        icon={<Plus size={16} />}
+        disabled={!Object.values(sessions).some((s) => s.descriptor.capabilities.leases)}
+        onClick={() => openEditorForActiveTab()}
+      />
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="icon" variant="ghost" aria-label={t('workspace.openTabs')}>
+            <ChevronDown size={16} />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="max-h-80 max-w-[min(480px,90vw)] overflow-auto">
+          {ordered.map((tab) => (
+            <DropdownMenuItem key={tab.id} onSelect={() => activate(tab.id)}>
+              <span className="truncate">
+                {tab.pinned ? '• ' : ''}
+                {label(tab)}
+              </span>
+              <span className="ml-auto truncate text-xs text-muted-foreground">
+                {connections?.profiles.find((p) => p.id === tab.payload?.connectionId)?.name}
+              </span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }

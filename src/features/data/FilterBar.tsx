@@ -1,4 +1,5 @@
-import { Filter, Plus, X } from 'lucide-react';
+import { GridActions } from './GridActions';
+import { ChevronDown, ChevronUp, Filter, Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
@@ -8,7 +9,13 @@ import { Select } from '@/components/ui/Select';
 import { cn } from '@/lib/cn';
 import { FILTER_OPS, type FilterOp } from '@/lib/types';
 import type { GridModel } from './gridModel';
-import { isFilterActive, opIsUnary, type FilterDraft, type FilterRowDraft } from './request';
+import {
+  buildApplied,
+  isFilterActive,
+  opIsUnary,
+  type FilterDraft,
+  type FilterRowDraft,
+} from './request';
 import { useTabUi } from './store';
 import { useGridVersion } from './useGridVersion';
 
@@ -30,6 +37,7 @@ export function FilterBar({ tabId, model }: FilterBarProps) {
 
   const columnOptions = model.columns.map((c) => ({ value: c.name, label: c.name }));
   const opOptions = FILTER_OPS.map((op) => ({ value: op, label: t(`filterOp.${op}`) }));
+  const dirty = JSON.stringify(buildApplied(draft)) !== JSON.stringify(model.applied);
   const active = isFilterActive(model.applied);
 
   const apply = () => model.applyFilter(draft);
@@ -70,12 +78,12 @@ export function FilterBar({ tabId, model }: FilterBarProps) {
 
   return (
     <div className="shrink-0 border-b border-border bg-surface" role="search">
-      <div className="flex h-8 items-center gap-1.5 px-2">
+      <div className="flex min-h-10 flex-wrap items-center gap-2 px-3 py-1">
         <Filter
           size={13}
           className={cn('shrink-0', active ? 'text-accent' : 'text-muted-foreground')}
         />
-        <div className="flex h-6 overflow-hidden rounded-md border border-border text-xs">
+        <div className="flex min-h-7 overflow-hidden rounded-md border border-border text-xs">
           {(['builder', 'raw'] as const).map((mode) => (
             <button
               key={mode}
@@ -93,22 +101,42 @@ export function FilterBar({ tabId, model }: FilterBarProps) {
             </button>
           ))}
         </div>
-        {draft.mode === 'builder' && (
+        {draft.mode === 'builder' && !ui.filterCollapsed && (
           <Button size="sm" variant="ghost" onClick={addRow}>
             <Plus size={12} /> {t('filter.add')}
           </Button>
         )}
-        {draft.mode === 'raw' && (
+        {draft.mode === 'raw' && !ui.filterCollapsed && (
           <Input
             aria-label={t('filter.rawLabel')}
             placeholder={t('filter.rawPlaceholder')}
             value={draft.raw}
             onChange={(e) => setDraft({ ...draft, raw: e.target.value })}
             onKeyDown={onEnter}
-            className="h-6 flex-1 font-mono text-xs"
+            className="min-w-40 flex-1 font-mono text-xs"
           />
         )}
-        <span className="flex-1" />
+        {dirty && (
+          <span role="status" className="text-xs text-warning">
+            {t('filter.pending')}
+          </span>
+        )}
+        {ui.filterCollapsed && active && (
+          <span
+            className="max-w-72 truncate text-xs text-muted-foreground"
+            title={
+              model.applied.rawWhere ??
+              model.applied.filters
+                .map((f) => `${f.column} ${t(`filterOp.${f.op}`)} ${f.values.join(', ')}`)
+                .join(' AND ')
+            }
+          >
+            {model.applied.rawWhere ??
+              model.applied.filters
+                .map((f) => `${f.column} ${t(`filterOp.${f.op}`)} ${f.values.join(', ')}`)
+                .join(' AND ')}
+          </span>
+        )}
         {active && (
           <span className="text-xs text-accent">
             {model.applied.rawWhere !== null
@@ -116,7 +144,7 @@ export function FilterBar({ tabId, model }: FilterBarProps) {
               : t('filter.active', { count: model.applied.filters.length })}
           </span>
         )}
-        <Button size="sm" variant="primary" onClick={apply}>
+        <Button size="sm" variant="primary" onClick={apply} disabled={model.status === 'loading'}>
           {t('filter.apply')}
         </Button>
         <Button
@@ -127,33 +155,43 @@ export function FilterBar({ tabId, model }: FilterBarProps) {
         >
           {t('filter.clear')}
         </Button>
+        <IconButton
+          label={t(ui.filterCollapsed ? 'filter.expand' : 'filter.collapse')}
+          icon={ui.filterCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          aria-expanded={!ui.filterCollapsed}
+          onClick={() => patchUi({ filterCollapsed: !ui.filterCollapsed })}
+        />
+        <div className="ml-auto">
+          <GridActions model={model} tabId={tabId} />
+        </div>
       </div>
 
       {draft.mode === 'builder' &&
+        !ui.filterCollapsed &&
         draft.rows.map((r) => (
-          <div key={r.id} className="flex h-8 items-center gap-1.5 px-2 pl-7">
+          <div key={r.id} className="flex min-h-10 flex-wrap items-center gap-2 px-3 py-1 pl-7">
             <Checkbox
               aria-label={t('filter.enabled')}
               checked={r.enabled}
               onCheckedChange={(c) => updateRow(r.id, { enabled: c === true })}
             />
-            <div className="w-44">
+            <div className="w-44 max-w-full">
               <Select
                 aria-label={t('filter.column')}
                 value={r.column || undefined}
                 placeholder={t('filter.noColumns')}
                 options={columnOptions}
                 onValueChange={(column) => updateRow(r.id, { column })}
-                className="h-6 text-xs"
+                className="text-xs"
               />
             </div>
-            <div className="w-40">
+            <div className="w-40 max-w-full">
               <Select
                 aria-label={t('filter.operator')}
                 value={r.op}
                 options={opOptions}
                 onValueChange={(op) => updateRow(r.id, { op: op as FilterOp })}
-                className="h-6 text-xs"
+                className="text-xs"
               />
             </div>
             {!opIsUnary(r.op) && (
@@ -163,7 +201,7 @@ export function FilterBar({ tabId, model }: FilterBarProps) {
                 value={r.value}
                 onChange={(e) => updateRow(r.id, { value: e.target.value })}
                 onKeyDown={onEnter}
-                className="h-6 max-w-sm flex-1 font-mono text-xs"
+                className="min-w-32 max-w-sm flex-1 font-mono text-xs"
               />
             )}
             <IconButton

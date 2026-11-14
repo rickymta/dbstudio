@@ -35,6 +35,7 @@ export interface TabUiState {
   /** The persisted layout was read into `layout` for this tab. */
   layoutLoaded: boolean;
   draft: FilterDraft;
+  filterCollapsed: boolean;
 }
 
 export function initialTabUi(): TabUiState {
@@ -47,6 +48,7 @@ export function initialTabUi(): TabUiState {
     layout: EMPTY_LAYOUT,
     layoutLoaded: false,
     draft: emptyDraft(),
+    filterCollapsed: false,
   };
 }
 
@@ -110,6 +112,10 @@ export function peekGridModel(tabId: string): GridModel | undefined {
 
 export function saveScroll(tabId: string, top: number, left: number): void {
   scrollPositions.set(tabId, { top, left });
+}
+
+export function clearGridScroll(tabId: string): void {
+  scrollPositions.delete(tabId);
 }
 
 export function loadScroll(tabId: string): { top: number; left: number } {

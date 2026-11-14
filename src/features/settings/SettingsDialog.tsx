@@ -1,3 +1,5 @@
+import { AppearanceFields } from './AppearanceFields';
+import { useAppearanceStore } from '@/stores/appearance';
 import { useQuery } from '@tanstack/react-query';
 import { Copy, FolderOpen } from 'lucide-react';
 import { useId, useState, type ReactNode } from 'react';
@@ -37,6 +39,7 @@ function SettingsBody({ onClose }: { onClose: () => void }) {
   const { t, i18n } = useTranslation('settings');
   const id = useId();
   const current = useAppSettings();
+  const [appearance, setAppearance] = useState(useAppearanceStore.getState().appearance);
   const save = useSaveSettings();
   const mode = useThemeStore((s) => s.mode);
   const setMode = useThemeStore((s) => s.setMode);
@@ -67,6 +70,7 @@ function SettingsBody({ onClose }: { onClose: () => void }) {
     };
     try {
       await save(next);
+      useAppearanceStore.getState().update(appearance);
       onClose();
     } catch (e) {
       setError(describeError(t, e));
@@ -139,6 +143,7 @@ function SettingsBody({ onClose }: { onClose: () => void }) {
               />
             </Field>
           </div>
+          <AppearanceFields id={id} value={appearance} onChange={setAppearance} />
         </Section>
 
         <Section title={t('section.data')}>

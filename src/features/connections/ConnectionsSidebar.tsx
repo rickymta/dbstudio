@@ -1,3 +1,6 @@
+import { QuickAccess } from '@/features/workspace/QuickAccess';
+import { useNavigation, openSavedObject, type SavedObject } from '@/features/workspace/navigation';
+import { useWorkspaceStore } from '@/features/workspace/layout';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   ChevronsDownUp,
@@ -89,6 +92,7 @@ export function ConnectionsSidebar() {
   const query = useConnectionsSnapshot();
   const snapshot = query.data;
 
+  const pendingObject = useRef<SavedObject | null>(null);
   const [filter, setFilter] = useState('');
   const [collapsed, setCollapsed] = useState<Set<Uuid>>(loadCollapsed);
   const [expandedProfiles, setExpandedProfiles] = useState<Set<Uuid>>(() => new Set());
@@ -144,12 +148,18 @@ export function ConnectionsSidebar() {
       const sessions = useSessionsStore.getState();
       if (sessions.sessionsByConnection[profile.id]) {
         setProfileExpanded(profile.id, true);
+        if (pendingObject.current?.connectionId === profile.id) {
+          openSavedObject(pendingObject.current);
+          pendingObject.current = null;
+        }
         return;
       }
       if (password === undefined && needsPassword(profile)) {
         setModal({ type: 'password', profile });
         return;
       }
+      const objectToOpen = pendingObject.current;
+      pendingObject.current = null;
       setErrors((e) => {
         const rest = { ...e };
         delete rest[profile.id];
@@ -158,6 +168,9 @@ export function ConnectionsSidebar() {
       try {
         await runWithHostKey(() => sessions.open(profile.id, password ?? null));
         setProfileExpanded(profile.id, true);
+        if (objectToOpen?.connectionId === profile.id) {
+          openSavedObject(objectToOpen);
+        }
       } catch (e) {
         const error = toIpcError(e);
         if (error.kind === 'cancelled') return; // disconnected while connecting
@@ -168,6 +181,32 @@ export function ConnectionsSidebar() {
     },
     [t, runWithHostKey],
   );
+
+  useEffect(() => {
+    let alive = true;
+    const handle = () => {
+      const navigation = useNavigation.getState().request;
+      if (!alive || !navigation || !snapshot) return;
+      useNavigation.setState({ request: null });
+      useWorkspaceStore.getState().showSidebar();
+      if (navigation.create) {
+        setModal({ type: 'connection' });
+        return;
+      }
+      const profile = snapshot.profiles.find((p) => p.id === navigation.connectionId);
+      if (!profile) return;
+      pendingObject.current = navigation.object ?? null;
+      setFilter('');
+      void connect(profile);
+    };
+    const unsubscribe = useNavigation.subscribe(handle);
+    // A request may arrive while connection profiles are still loading.
+    queueMicrotask(handle);
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, [snapshot, connect]);
 
   // Drag and drop (CONN-02). The dragged item lives in a ref because `dragover` cannot read
   // `dataTransfer` data.
@@ -468,6 +507,7 @@ export function ConnectionsSidebar() {
         </DropdownMenu>
       </header>
 
+      <QuickAccess />
       <div className="relative shrink-0 border-b border-border px-2 py-1.5">
         <Search
           size={13}
@@ -491,7 +531,7 @@ export function ConnectionsSidebar() {
           }}
           placeholder={t('sidebar.search')}
           aria-label={t('sidebar.search')}
-          className="h-6 pr-6 pl-6 text-xs [&::-webkit-search-cancel-button]:hidden"
+          className="h-8 pr-6 pl-6 text-xs [&::-webkit-search-cancel-button]:hidden"
         />
         {filter && (
           <button
@@ -581,7 +621,12 @@ export function ConnectionsSidebar() {
       />
       <PasswordDialog
         open={modal?.type === 'password'}
-        onOpenChange={(o) => !o && setModal(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            pendingObject.current = null;
+            setModal(null);
+          }
+        }}
         connectionName={modal?.type === 'password' ? modal.profile.name : ''}
         onSubmit={(password) => {
           if (modal?.type === 'password') void connect(modal.profile, password);

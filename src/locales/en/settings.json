@@ -36,5 +36,18 @@
   "validation": {
     "rows": "Rows must be a whole number from 1,000 to 5,000,000",
     "cells": "Cells must be a whole number from 100,000 to 200,000,000"
+  },
+  "appearance": {
+    "density": "Display density",
+    "compact": "Compact",
+    "comfortable": "Comfortable",
+    "monoFont": "Code font",
+    "systemFont": "System monospace",
+    "uiFontSize": "Interface",
+    "gridFontSize": "Data grid",
+    "editorFontSize": "SQL editor",
+    "ligatures": "Enable code ligatures",
+    "reset": "Reset appearance",
+    "hint": "Font sizes are independent (pixels). Changes apply when you save. Unavailable fonts use the system fallback."
   }
 }

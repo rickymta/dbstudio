@@ -3,7 +3,7 @@
 // Entries are dropped, and their lease closed, when the tab leaves the tabs store.
 
 import { create } from 'zustand';
-import type { IpcError, LeaseState, Uuid } from '@/lib/types';
+import type { IpcError, LeaseState, StatementInfo, Uuid } from '@/lib/types';
 import { useTabsStore } from '@/stores/tabs';
 import type { ErrorMark } from './errorMarks';
 import type { ParamDraft } from './params';
@@ -42,6 +42,7 @@ export interface ConsoleEntry {
 }
 
 export interface EditorTabData {
+  selectedResult?: { runId: number; key: string } | null;
   id: string;
   title: string;
   text: string;
@@ -72,6 +73,11 @@ export interface EditorTabData {
   /** Redis / Mongo console scrollback. */
   console: ConsoleEntry[];
   consoleHistory: string[];
+  scrollTop: number;
+  scrollLeft: number;
+  historyOpen: boolean;
+  analyzedText: string | null;
+  statements: StatementInfo[];
 }
 
 export function newTabData(id: string, init: Partial<EditorTabData> = {}): EditorTabData {
@@ -98,6 +104,11 @@ export function newTabData(id: string, init: Partial<EditorTabData> = {}): Edito
     problems: [],
     console: [],
     consoleHistory: [],
+    scrollTop: 0,
+    scrollLeft: 0,
+    historyOpen: false,
+    analyzedText: null,
+    statements: [],
     ...init,
   };
 }

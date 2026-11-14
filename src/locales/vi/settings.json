@@ -36,5 +36,18 @@
   "validation": {
     "rows": "Số dòng phải là số nguyên từ 1.000 đến 5.000.000",
     "cells": "Số ô phải là số nguyên từ 100.000 đến 200.000.000"
+  },
+  "appearance": {
+    "density": "Mật độ hiển thị",
+    "compact": "Gọn",
+    "comfortable": "Thoải mái",
+    "monoFont": "Font mã nguồn",
+    "systemFont": "Monospace hệ thống",
+    "uiFontSize": "Giao diện",
+    "gridFontSize": "Lưới dữ liệu",
+    "editorFontSize": "SQL editor",
+    "ligatures": "Bật chữ ghép trong mã nguồn",
+    "reset": "Khôi phục giao diện",
+    "hint": "Cỡ chữ độc lập (pixel). Thay đổi áp dụng khi lưu. Font chưa cài sẽ dùng font dự phòng của hệ thống."
   }
 }

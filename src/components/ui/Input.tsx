@@ -11,5 +11,5 @@ export function Input({
   type = 'text',
   ...rest
 }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input type={type} className={cn(fieldClass, 'h-7', className)} {...rest} />;
+  return <input type={type} className={cn(fieldClass, 'control h-8', className)} {...rest} />;
 }

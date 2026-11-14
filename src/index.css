@@ -6,7 +6,7 @@
 :root {
   --background: oklch(0.985 0.002 250);
   --foreground: oklch(0.21 0.02 255);
-  --surface: oklch(1 0 0);
+  --surface: oklch(0.992 0.002 85);
   --surface-muted: oklch(0.965 0.004 250);
   --border: oklch(0.9 0.006 250);
   --muted-foreground: oklch(0.5 0.02 255);
@@ -18,6 +18,11 @@
   --warning-soft: oklch(0.95 0.06 85);
   --danger: oklch(0.55 0.2 25);
   --danger-soft: oklch(0.95 0.04 25);
+  --syntax-keyword: oklch(0.48 0.16 265);
+  --syntax-string: oklch(0.42 0.1 150);
+  --syntax-number: oklch(0.43 0.1 65);
+  --syntax-type: oklch(0.48 0.13 310);
+  --selection: oklch(0.88 0.05 262);
   --ring: oklch(0.55 0.2 262 / 0.5);
 }
 
@@ -36,6 +41,11 @@
   --warning-soft: oklch(0.32 0.06 80);
   --danger: oklch(0.72 0.17 25);
   --danger-soft: oklch(0.3 0.07 25);
+  --syntax-keyword: oklch(0.77 0.11 265);
+  --syntax-string: oklch(0.8 0.1 150);
+  --syntax-number: oklch(0.82 0.1 75);
+  --syntax-type: oklch(0.79 0.1 310);
+  --selection: oklch(0.38 0.06 262);
   --ring: oklch(0.68 0.16 262 / 0.6);
 }
 
@@ -69,7 +79,7 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: var(--ui-font-size, 13px);
   -webkit-font-smoothing: antialiased;
   user-select: none;
 }
@@ -77,4 +87,62 @@ body {
 *:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
+}
+
+/* User typography scales labels without changing the rem-based layout geometry. */
+:root {
+  --ui-font-size: 13px;
+  --grid-font-size: 13px;
+  --editor-font-size: 14px;
+  --data-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --code-ligatures: none;
+  --control-height: 32px;
+  --small-control-height: 28px;
+  --tree-row-height: 30px;
+}
+:root[data-density='compact'] {
+  --control-height: 28px;
+  --small-control-height: 28px;
+  --tree-row-height: 26px;
+}
+@layer utilities {
+  .text-xs {
+    font-size: max(12px, calc(var(--ui-font-size) - 1px));
+  }
+  .text-\[13px\] {
+    font-size: var(--ui-font-size);
+  }
+  .font-mono {
+    font-family: var(--data-font-family);
+    font-variant-ligatures: var(--code-ligatures);
+  }
+  .control {
+    min-height: max(var(--control-height), calc(var(--ui-font-size) + 12px));
+  }
+  .control-small {
+    min-height: max(var(--small-control-height), calc(var(--ui-font-size) + 10px));
+  }
+  .grid-typography {
+    font-size: var(--grid-font-size);
+  }
+}
+.object-tree {
+  container-type: inline-size;
+}
+.object-detail {
+  display: none;
+}
+@container (min-width: 350px) {
+  .object-detail {
+    display: inline;
+    max-width: 30%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+  }
 }

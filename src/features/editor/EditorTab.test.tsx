@@ -41,7 +41,8 @@ async function mountEditor(text = 'SELECT * FROM users', connectionId?: string) 
   return { id, session, ...view };
 }
 
-const run = () => userEvent.click(screen.getByRole('button', { name: /^Run$/ }));
+const run = () =>
+  userEvent.click(screen.getByRole('button', { name: /^Run (statement|selection)$/ }));
 
 describe('EditorTab', () => {
   it('runs the statement at the cursor and shows one result tab with the grid', async () => {
@@ -347,7 +348,7 @@ describe('connection loss and console mode', () => {
       </Providers>,
     );
     await screen.findByTestId('sql-editor', undefined, { timeout: 5000 });
-    await user.click(screen.getByRole('button', { name: /^Run$/ }));
+    await user.click(screen.getByRole('button', { name: /^Run (statement|selection)$/ }));
     await user.click(await screen.findByRole('button', { name: 'Documents' }, { timeout: 5000 }));
     expect(await screen.findByTestId('mongo-documents')).toHaveTextContent('"name": "doc 1"');
   });

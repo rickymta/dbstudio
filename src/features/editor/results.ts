@@ -1,3 +1,4 @@
+import { useDataUiStore, clearGridScroll } from '@/features/data/store';
 // Result sets of one editor run. `ResultGridModel` plugs query results into the virtualized grid
 // of the data feature (it extends `GridModel`, which only the grid reads); `ResultCollector`
 // turns the `QueryEvent` stream of `lease_execute` into one entry per statement.
@@ -104,7 +105,13 @@ export class ResultGridModel extends GridModel {
     this.onLoadMore?.();
   }
 
+  readonly viewIds = new Set<string>();
   override dispose(): void {
+    for (const id of this.viewIds) {
+      useDataUiStore.getState().drop(id);
+      clearGridScroll(id);
+    }
+    this.viewIds.clear();
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     this.subs.clear();

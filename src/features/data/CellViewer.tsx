@@ -328,12 +328,32 @@ export function CellViewer({ tabId, model, timestamp = 'utc' }: CellViewerProps)
         'relative flex shrink-0 flex-col border-border bg-surface',
         right ? 'border-l' : 'border-t',
       )}
-      style={right ? { width: ui.viewerSize } : { height: ui.viewerSize }}
+      style={
+        right
+          ? { width: ui.viewerSize, maxWidth: '60%' }
+          : { height: ui.viewerSize, maxHeight: '65%' }
+      }
     >
       <div
         role="separator"
         aria-orientation={right ? 'vertical' : 'horizontal'}
         aria-label={t('viewer.resize')}
+        tabIndex={0}
+        aria-valuemin={MIN_SIZE}
+        aria-valuemax={MAX_SIZE}
+        aria-valuenow={ui.viewerSize}
+        onKeyDown={(e) => {
+          const delta =
+            e.key === 'ArrowLeft' || e.key === 'ArrowUp'
+              ? 20
+              : e.key === 'ArrowRight' || e.key === 'ArrowDown'
+                ? -20
+                : 0;
+          if (delta) {
+            e.preventDefault();
+            patchUi({ viewerSize: Math.max(MIN_SIZE, Math.min(MAX_SIZE, ui.viewerSize + delta)) });
+          }
+        }}
         onPointerDown={startResize}
         className={cn(
           'absolute z-10 hover:bg-accent/40',
@@ -342,7 +362,7 @@ export function CellViewer({ tabId, model, timestamp = 'utc' }: CellViewerProps)
             : 'top-0 left-0 h-1 w-full cursor-row-resize',
         )}
       />
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border bg-surface-muted px-2">
+      <div className="flex min-h-9 flex-wrap py-1 shrink-0 items-center gap-1 border-b border-border bg-surface-muted px-2">
         <div className="min-w-0 flex-1 truncate text-xs">
           <span className="font-medium">{column?.name ?? t('viewer.title')}</span>
           {column && <span className="ml-2 text-muted-foreground">{column.typeName}</span>}

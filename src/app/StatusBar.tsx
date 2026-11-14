@@ -74,8 +74,8 @@ export function StatusBar() {
   const nextLanguage: Language = language === 'vi' ? 'en' : 'vi';
 
   return (
-    <footer className="flex h-7 shrink-0 items-center justify-between border-t border-border bg-surface px-3 text-xs text-muted-foreground">
-      <div className="flex min-w-0 items-center gap-3">
+    <footer className="flex min-h-9 shrink-0 items-center justify-between border-t border-border bg-surface px-3 text-xs text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-2">
         <span data-testid="app-version" className="shrink-0">
           {info ? `${info.name} v${info.version}` : t('app.name')}
           {info && info.os !== 'browser' ? ` · ${info.os}/${info.arch}` : ''}

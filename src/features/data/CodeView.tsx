@@ -21,19 +21,20 @@ function sqlDialectFor(kind: DbKind | undefined): SQLDialect {
 }
 
 // Colors come from the design tokens, so light/dark follow the app theme automatically.
-const theme = EditorView.theme({
+const sqlTheme = EditorView.theme({
   '&': {
     height: '100%',
     color: 'var(--foreground)',
     backgroundColor: 'var(--surface)',
-    fontSize: '12.5px',
+    fontSize: 'var(--editor-font-size, 14px)',
   },
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': {
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    fontFamily: 'var(--data-font-family)',
+    fontVariantLigatures: 'var(--code-ligatures)',
     lineHeight: '1.55',
   },
-  '.cm-content': { caretColor: 'var(--foreground)', padding: '6px 0' },
+  '.cm-content': { caretColor: 'var(--foreground)', padding: '10px 0' },
   '.cm-gutters': {
     backgroundColor: 'var(--surface-muted)',
     color: 'var(--muted-foreground)',
@@ -42,16 +43,20 @@ const theme = EditorView.theme({
   },
   '.cm-activeLine': { backgroundColor: 'transparent' },
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
-    backgroundColor: 'var(--ring) !important',
+    backgroundColor: 'var(--selection) !important',
   },
 });
 
-const highlight = HighlightStyle.define([
-  { tag: [t.keyword, t.operatorKeyword, t.modifier], color: 'var(--accent)', fontWeight: '600' },
-  { tag: [t.string, t.special(t.string)], color: 'var(--success)' },
-  { tag: [t.number, t.bool, t.null], color: 'var(--warning)' },
+const sqlHighlight = HighlightStyle.define([
+  {
+    tag: [t.keyword, t.operatorKeyword, t.modifier],
+    color: 'var(--syntax-keyword)',
+    fontWeight: '600',
+  },
+  { tag: [t.string, t.special(t.string)], color: 'var(--syntax-string)' },
+  { tag: [t.number, t.bool, t.null], color: 'var(--syntax-number)' },
   { tag: [t.lineComment, t.blockComment], color: 'var(--muted-foreground)', fontStyle: 'italic' },
-  { tag: [t.typeName, t.standard(t.name)], color: 'var(--danger)' },
+  { tag: [t.typeName, t.standard(t.name)], color: 'var(--syntax-type)' },
   { tag: [t.punctuation, t.operator], color: 'var(--muted-foreground)' },
 ]);
 
@@ -77,8 +82,8 @@ export default function CodeView({ value, kind, label }: CodeViewProps) {
           EditorState.readOnly.of(true),
           EditorView.editable.of(false),
           sql({ dialect: sqlDialectFor(kind) }),
-          syntaxHighlighting(highlight),
-          theme,
+          syntaxHighlighting(sqlHighlight),
+          sqlTheme,
           EditorView.contentAttributes.of({
             'aria-label': label ?? 'SQL',
             'aria-readonly': 'true',

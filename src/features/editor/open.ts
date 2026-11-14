@@ -124,6 +124,12 @@ export function openEditorForActiveTab(): boolean {
       ? useEditorStore.getState().tabs[active.payload.tabStateId]
       : undefined;
   openEditor(session, {
+    path:
+      session === own &&
+      active &&
+      (active.kind === 'table' || active.kind === 'ddl' || active.kind === 'key')
+        ? active.payload.path
+        : undefined,
     database: data ? (data.leaseState?.database ?? data.database) : undefined,
     schema: data ? (data.leaseState?.schema ?? data.schema) : undefined,
   });

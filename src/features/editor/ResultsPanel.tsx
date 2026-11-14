@@ -11,13 +11,13 @@ import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
 import { CellViewer } from '@/features/data/CellViewer';
 import { DataGrid } from '@/features/data/DataGrid';
-import { useDataUiStore, useTabUi } from '@/features/data/store';
+import { useTabUi } from '@/features/data/store';
 import { useGridVersion } from '@/features/data/useGridVersion';
 import { useAppSettings } from '@/features/settings/queries';
 import { describeError } from '@/features/connections/errors';
 import type { EditorMode } from '@/stores/tabs';
 import { getConsolePlugin } from './consolePlugins';
-import type { RunSnapshot } from './editorStore';
+import { getTabData, patchTabData, type RunSnapshot } from './editorStore';
 import { resultKind, type StatementResult } from './results';
 
 const LAYOUT_KEY = 'dbstudio.editor.resultLayout';
@@ -37,6 +37,7 @@ function defaultResultKey(results: readonly StatementResult[]): string | null {
 
 export interface ResultsPanelProps {
   tabStateId: string;
+  onRevealError?: () => void;
   run: RunSnapshot | null;
   onLoadMore: () => void;
   /** Editor mode: MongoDB results can also be shown as documents. */
@@ -47,9 +48,17 @@ const MESSAGES = 'messages';
 /** More result tabs than this are not drawn (a script can have thousands of statements). */
 const MAX_RESULT_TABS = 50;
 
-export function ResultsPanel({ tabStateId, run, onLoadMore, mode }: ResultsPanelProps) {
+export function ResultsPanel({
+  tabStateId,
+  run,
+  onLoadMore,
+  mode,
+  onRevealError,
+}: ResultsPanelProps) {
   const { t } = useTranslation('editor');
-  const [picked, setPicked] = useState<{ runId: number; key: string } | null>(null);
+  const [picked, setPicked] = useState<{ runId: number; key: string } | null>(
+    () => getTabData(tabStateId)?.selectedResult ?? null,
+  );
 
   // Characters of the executed text, split once per run (statement ranges are scalar offsets).
   const chars = useMemo(() => Array.from(run?.text ?? ''), [run?.text]);
@@ -77,15 +86,34 @@ export function ResultsPanel({ tabStateId, run, onLoadMore, mode }: ResultsPanel
     );
   }
 
-  const select = (key: string) => setPicked({ runId: run.id, key });
+  const select = (key: string) => {
+    const next = { runId: run.id, key };
+    setPicked(next);
+    patchTabData(tabStateId, { selectedResult: next });
+  };
   const shown = results.find((r) => r.key === selected);
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="results-panel">
+      {run.error && run.status !== 'cancelled' && (
+        <div
+          role="status"
+          className="flex shrink-0 items-center gap-2 border-b border-border bg-danger-soft px-3 py-1 text-xs text-danger"
+        >
+          <span className="min-w-0 flex-1 truncate" title={run.error.message}>
+            {run.error.message}
+          </span>
+          {onRevealError && (
+            <Button size="sm" onClick={onRevealError}>
+              {t('results.goToError')}
+            </Button>
+          )}
+        </div>
+      )}
       <div
         role="tablist"
         aria-label={t('results.tabs')}
-        className="flex h-8 shrink-0 items-end gap-1 overflow-x-auto border-b border-border bg-surface px-2"
+        className="flex min-h-9 shrink-0 items-end gap-1 overflow-x-auto border-b border-border bg-surface px-2"
       >
         {results.slice(0, MAX_RESULT_TABS).map((r, i) => (
           <ResultTabButton
@@ -307,8 +335,10 @@ function ResultGrid({
   const [ui, patchUi] = useTabUi(gridId);
   useGridVersion(model);
 
-  // Drop the UI state of this grid (selection, viewer) with it.
-  useEffect(() => () => useDataUiStore.getState().drop(gridId), [gridId]);
+  // A result owns its view state across tab switches, and releases it on disposal.
+  useEffect(() => {
+    model.viewIds.add(gridId);
+  }, [model, gridId]);
 
   const loaded = model.rows.length;
   const truncated = result.outcome?.kind === 'rows' && result.outcome.truncated;
@@ -335,7 +365,7 @@ function ResultGrid({
           <CellViewer tabId={gridId} model={model} timestamp={settings.timestampDisplay} />
         )}
       </div>
-      <div className="flex h-7 shrink-0 items-center gap-3 border-t border-border bg-surface px-2 text-xs text-muted-foreground">
+      <div className="flex min-h-9 flex-wrap py-1 shrink-0 items-center gap-3 border-t border-border bg-surface px-2 text-xs text-muted-foreground">
         <span>{t('results.rows', { count: loaded, formatted: nf.format(loaded) })}</span>
         {elapsed && <span>{elapsed}</span>}
         {truncated && canFetchMore && (

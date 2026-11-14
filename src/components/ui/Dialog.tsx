@@ -48,7 +48,7 @@ export function DialogContent({
           </div>
           <DialogPrimitive.Close
             aria-label={t('actions.close')}
-            className="rounded p-0.5 text-muted-foreground hover:bg-surface-muted hover:text-foreground"
+            className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-surface-muted hover:text-foreground"
           >
             <X size={14} />
           </DialogPrimitive.Close>

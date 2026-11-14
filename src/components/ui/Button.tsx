@@ -17,9 +17,9 @@ const variants: Record<Variant, string> = {
 };
 
 const sizes: Record<Size, string> = {
-  sm: 'h-6 px-2 text-xs gap-1',
-  md: 'h-7 px-3 text-[13px] gap-1.5',
-  icon: 'h-6 w-6',
+  sm: 'control-small h-7 px-2 text-xs gap-1',
+  md: 'control h-8 px-3 text-[13px] gap-1.5',
+  icon: 'control-small h-7 min-w-7 shrink-0',
 };
 
 export function Button({

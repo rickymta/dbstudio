@@ -1,3 +1,4 @@
+import { useWorkspaceStore } from '@/features/workspace/layout';
 // App-level pieces of the editor feature, mounted once (by `App`): the tab
 // restore and persistence, `lease://state` events, global shortcuts, and the dialogs that must
 // work whichever tab is active (close with open transaction, shortcut cheat-sheet). The tab registry only renders the active tab, so none of this can
@@ -77,7 +78,12 @@ function useGlobalShortcuts(): void {
           }
           break;
         }
+        case 'toggleSidebar':
+          e.preventDefault();
+          useWorkspaceStore.getState().toggleSidebar();
+          break;
         case 'findObject': {
+          useWorkspaceStore.getState().showSidebar();
           const input = document.querySelector<HTMLInputElement>('[data-search-input]');
           if (input) {
             e.preventDefault();

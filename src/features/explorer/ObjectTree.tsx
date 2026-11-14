@@ -1,3 +1,4 @@
+import { useAppearanceStore } from '@/stores/appearance';
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronRight, RefreshCw, X } from 'lucide-react';
@@ -75,7 +76,7 @@ export interface ObjectTreeProps {
 }
 
 const ROW_HEIGHT = 24;
-const INDENT = 14;
+const INDENT = 10;
 const NAV_KEYS: ReadonlySet<string> = new Set([
   'ArrowUp',
   'ArrowDown',
@@ -102,6 +103,11 @@ function SessionTree({
   nested?: boolean;
 }) {
   const { sessionId, connectionId } = session;
+  const appearance = useAppearanceStore((s) => s.appearance);
+  const ROW_HEIGHT = Math.max(
+    appearance.density === 'compact' ? 26 : 30,
+    appearance.uiFontSize + 12,
+  );
   const capabilities = session.descriptor.capabilities;
   const { t } = useTranslation('explorer');
   const qc = useQueryClient();
@@ -179,6 +185,10 @@ function SessionTree({
     overscan: 12,
     getItemKey: (i) => rows[i]!.key,
   });
+
+  useEffect(() => {
+    virtualizer.measure();
+  }, [ROW_HEIGHT, virtualizer]);
 
   // Give up when the target row never shows up, so focus cannot jump much later.
   useEffect(() => {
@@ -348,7 +358,7 @@ function SessionTree({
       onKeyDown={onKeyDown}
       onFocus={onFocus}
       data-testid="object-tree"
-      className="group/tree max-h-[60vh] overflow-auto outline-none focus-visible:outline-none"
+      className="object-tree group/tree max-h-[60vh] overflow-auto outline-none focus-visible:outline-none"
     >
       {rows.length === 0 && <TreeSkeleton sessionId={sessionId} />}
       <div style={{ height: virtualizer.getTotalSize(), position: 'relative', minWidth: '100%' }}>
@@ -487,7 +497,7 @@ const TreeNodeRow = memo(function TreeNodeRow({
       title={node.detail ? `${label} - ${node.detail}` : label}
       onClick={() => onSelect(row.key)}
       onDoubleClick={() => onActivate(row)}
-      style={{ paddingLeft: 4 + row.depth * INDENT, height: ROW_HEIGHT }}
+      style={{ paddingLeft: 4 + Math.min(row.depth, 6) * INDENT, height: '100%' }}
       className={cn(
         'flex cursor-default items-center gap-1 pr-2 text-[13px] hover:bg-surface-muted',
         selected && 'bg-surface-muted group-focus-within/tree:bg-accent/20',
@@ -517,7 +527,7 @@ const TreeNodeRow = memo(function TreeNodeRow({
         ) : null}
       </span>
       <KindIcon kind={node.kind} className="shrink-0 text-muted-foreground" />
-      <span className="min-w-0 truncate">{label}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
       {keyDetail ? (
         <span className="ml-auto flex shrink-0 items-center gap-1 pl-2">
           {keyDetail.ttlSeconds !== null && (
@@ -529,7 +539,7 @@ const TreeNodeRow = memo(function TreeNodeRow({
         </span>
       ) : (
         node.detail && (
-          <span className="ml-auto max-w-[50%] shrink-0 truncate pl-2 text-[11px] text-muted-foreground">
+          <span className="object-detail ml-auto shrink-0 truncate pl-2 text-xs text-muted-foreground">
             {node.detail}
           </span>
         )

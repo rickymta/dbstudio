@@ -1,4 +1,6 @@
-import { Group, Panel, Separator } from 'react-resizable-panels';
+import { useEffect } from 'react';
+import { useWorkspaceStore, useSavedLayout } from '@/features/workspace/layout';
+import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 import { ConnectionsSidebar } from '@/features/connections/ConnectionsSidebar';
 import { EditorHost } from '@/features/editor/EditorHost';
 import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
@@ -25,15 +27,33 @@ function MainArea() {
 }
 
 export function App() {
+  const sidebarHidden = useWorkspaceStore((s) => s.sidebarHidden);
+  const sidebarRef = usePanelRef();
+  const layout = useSavedLayout('main');
+  useEffect(() => {
+    if (sidebarHidden) sidebarRef.current?.collapse();
+    else sidebarRef.current?.expand();
+  }, [sidebarHidden, sidebarRef]);
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1">
-        <Group orientation="horizontal">
-          <Panel defaultSize="22%" minSize="180px" maxSize="50%">
+        <Group orientation="horizontal" {...layout}>
+          <Panel
+            id="sidebar"
+            panelRef={sidebarRef}
+            defaultSize="300px"
+            minSize="220px"
+            maxSize="45%"
+            collapsible
+            collapsedSize={0}
+            onResize={(size) => {
+              useWorkspaceStore.setState({ sidebarHidden: size.inPixels === 0 });
+            }}
+          >
             <ConnectionsSidebar />
           </Panel>
-          <Separator className="w-px bg-border transition-colors hover:bg-accent data-[separator=active]:bg-accent" />
-          <Panel minSize="40%">
+          <Separator className="w-1 bg-border/50 transition-colors hover:bg-accent data-[separator=active]:bg-accent" />
+          <Panel id="main" minSize="40%">
             <MainArea />
           </Panel>
         </Group>

@@ -48,6 +48,8 @@ export interface SqlEditorHandle {
 
 export interface SqlEditorProps {
   initialText: string;
+  initialScroll?: { top: number; left: number };
+  onScroll?: (position: { top: number; left: number }) => void;
   initialSelection: { from: number; to: number };
   mode: EditorMode;
   dialect: ScriptDialect;
@@ -74,6 +76,7 @@ const EDITOR_SHORTCUTS: ShortcutId[] = [
   'save',
   'open',
   'history',
+  'focusResults',
 ];
 
 export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
@@ -148,6 +151,16 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         }),
       });
       viewRef.current = view;
+      const restoreFrame = requestAnimationFrame(() => {
+        view.scrollDOM.scrollTop = latest.current.initialScroll?.top ?? 0;
+        view.scrollDOM.scrollLeft = latest.current.initialScroll?.left ?? 0;
+      });
+      const saveScroll = () =>
+        latest.current.onScroll?.({
+          top: view.scrollDOM.scrollTop,
+          left: view.scrollDOM.scrollLeft,
+        });
+      view.scrollDOM.addEventListener('scroll', saveScroll);
       flushChange.current = () => {
         if (changeTimer.current === null) return;
         clearTimeout(changeTimer.current);
@@ -155,6 +168,9 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         latest.current.onChange(view.state.doc.toString());
       };
       return () => {
+        cancelAnimationFrame(restoreFrame);
+        saveScroll();
+        view.scrollDOM.removeEventListener('scroll', saveScroll);
         flushChange.current(); // a tab switch right after typing must not lose text
         view.destroy();
         viewRef.current = null;

@@ -4,12 +4,14 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { Providers } from '@/app/providers';
 import { StatusBar } from '@/app/StatusBar';
 import i18n from '@/lib/i18n';
+import { useAppearanceStore } from '@/stores/appearance';
 import { ipc } from '@/lib/ipc';
 import { resetMockSettings } from '@/lib/mock';
 import { parseBounded, ROWS_RANGE } from './queries';
 
 beforeEach(async () => {
   resetMockSettings();
+  useAppearanceStore.getState().reset();
   await i18n.changeLanguage('en');
 });
 
@@ -56,6 +58,26 @@ describe('SettingsDialog', () => {
     await user.keyboard('{Control>},{/Control}');
     dialog = await screen.findByRole('dialog', { name: 'Settings' });
     expect(within(dialog).getByLabelText('Maximum rows loaded into a grid')).toHaveValue('2000');
+  });
+
+  it('keeps appearance changes as drafts until Save and discards Cancel', async () => {
+    const user = setup();
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    let dialog = await screen.findByRole('dialog', { name: 'Settings' });
+    await user.click(within(dialog).getByLabelText('SQL editor'));
+    await user.click(await screen.findByRole('option', { name: '18 px' }));
+    expect(useAppearanceStore.getState().appearance.editorFontSize).toBe(14);
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    dialog = await screen.findByRole('dialog', { name: 'Settings' });
+    expect(within(dialog).getByLabelText('SQL editor')).toHaveTextContent('14 px');
+    await user.click(within(dialog).getByLabelText('SQL editor'));
+    await user.click(await screen.findByRole('option', { name: '18 px' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(useAppearanceStore.getState().appearance.editorFontSize).toBe(18);
+    expect(document.documentElement.style.getPropertyValue('--editor-font-size')).toBe('18px');
+    expect(JSON.parse(localStorage.getItem('dbstudio.appearance')!).editorFontSize).toBe(18);
   });
 
   it('validates the ranges and keeps the dialog open', async () => {

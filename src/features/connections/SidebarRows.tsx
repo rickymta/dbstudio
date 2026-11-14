@@ -85,7 +85,7 @@ export interface RowActions {
 }
 
 const ROW_CLASS =
-  'relative flex h-[26px] cursor-default items-center gap-1 pr-2 text-[13px] outline-none ' +
+  'relative flex min-h-[max(var(--tree-row-height),calc(var(--ui-font-size)+12px))] cursor-default items-center gap-1 pr-2 text-[13px] outline-none ' +
   'hover:bg-surface-muted focus-visible:bg-accent/20 focus-visible:outline-none';
 
 const indent = (depth: number) => 6 + depth * 12;

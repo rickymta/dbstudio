@@ -18,7 +18,11 @@
     "history": "History and saved queries",
     "shortcuts": "Keyboard shortcuts",
     "context": "Database and schema",
-    "explain": "Explain plan"
+    "explain": "Explain plan",
+    "runSelection": "Run selection",
+    "runStatement": "Run statement",
+    "scopeLines": "Lines {{from}}–{{to}}",
+    "scopePending": "Statement at cursor"
   },
   "run": {
     "nothing": "Nothing to run."
@@ -54,7 +58,8 @@
     "loadMore": "Load more",
     "cellViewer": "Cell viewer",
     "viewTable": "Table",
-    "viewDocuments": "Documents"
+    "viewDocuments": "Documents",
+    "goToError": "Go to error"
   },
   "tx": {
     "autoCommit": "Auto-commit",
@@ -171,7 +176,9 @@
       "closeTab": "Close tab",
       "findObject": "Find objects in the sidebar",
       "help": "Show keyboard shortcuts",
-      "explain": "Show the execution plan"
+      "explain": "Show the execution plan",
+      "toggleSidebar": "Toggle sidebar",
+      "focusResults": "Switch editor / results"
     }
   }
 }

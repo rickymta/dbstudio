@@ -101,7 +101,7 @@ function DataPane({
           <CellViewer tabId={tabId} model={model} timestamp={settings.timestampDisplay} />
         )}
       </div>
-      <GridStatusBar model={model} />
+      <GridStatusBar model={model} showActions={false} />
     </div>
   );
 }

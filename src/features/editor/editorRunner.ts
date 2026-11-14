@@ -513,7 +513,11 @@ export async function analyzeTab(tabId: string, sessionId: Uuid, text: string): 
   try {
     const analysis = await ipc.scriptAnalyze(sessionId, text);
     if (getTabData(tabId)?.text === text) {
-      patchTabData(tabId, { problems: problemMarks(text, analysis.problems) });
+      patchTabData(tabId, {
+        problems: problemMarks(text, analysis.problems),
+        statements: analysis.statements,
+        analyzedText: text,
+      });
     }
   } catch {
     // analysis is advisory: running reports real errors

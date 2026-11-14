@@ -1,3 +1,6 @@
+import { ConnectionContext } from '@/features/connections/ConnectionContext';
+import { useSavedLayout } from '@/features/workspace/layout';
+import { utf16ToCharOffset, charToUtf16Offset } from '@/lib/text';
 import {
   CircleHelp,
   FileDown,
@@ -41,7 +44,7 @@ import { addEditorTab, fileBaseName, nextEditorTitle, setEditorTitle } from './o
 import { ParamsDialog } from './ParamsDialog';
 import { toParamValue } from './params';
 import { ResultsPanel } from './ResultsPanel';
-import { defaultScope, selectRunText, type RunScope } from './runScope';
+import { defaultScope, selectRunText, statementAt, type RunScope } from './runScope';
 import { keysOf, formatKeys, type ShortcutId } from './shortcuts';
 import { useShortcutsHelp } from './shortcutsHelpStore';
 import { SidePanel } from './SidePanel';
@@ -83,7 +86,13 @@ function EditorBody({
   const { run: runWithHostKey, dialog: hostKeyDialog } = useHostKeyPrompt();
   const toast = useToastStore.getState().push;
   const editor = useRef<SqlEditorHandle>(null);
-  const [panel, setPanel] = useState(false);
+  const panel = data.historyOpen;
+  const setPanel = (update: boolean | ((value: boolean) => boolean)) =>
+    patchTabData(id, {
+      historyOpen: typeof update === 'function' ? update(data.historyOpen) : update,
+    });
+  const layout = useSavedLayout('editor');
+  const resultsRef = useRef<HTMLDivElement>(null);
   const [paramsFor, setParamsFor] = useState<{
     refs: ParamRef[];
     run: (p: ParamValue[]) => void;
@@ -232,6 +241,10 @@ function EditorBody({
 
   const onShortcut = (action: ShortcutId) => {
     switch (action) {
+      case 'focusResults':
+        resultsRef.current?.querySelector<HTMLElement>('[role=grid], [role=tab], button')?.focus();
+        if (!resultsRef.current?.contains(document.activeElement)) resultsRef.current?.focus();
+        return;
       case 'run':
         return void start(
           defaultScope(useEditorStore.getState().tabs[id]?.selection ?? { from: 0, to: 0 }),
@@ -294,12 +307,45 @@ function EditorBody({
     .filter(Boolean)
     .join(' · ');
   const runKeys = formatKeys(keysOf('run'));
+  const scope = defaultScope(data.selection);
+  const runLabel = t(scope === 'selection' ? 'toolbar.runSelection' : 'toolbar.runStatement');
+  const statement =
+    data.analyzedText === data.text
+      ? statementAt(data.statements, utf16ToCharOffset(data.text, data.selection.from))
+      : null;
+  const scopeStart =
+    scope === 'selection'
+      ? data.selection.from
+      : statement
+        ? charToUtf16Offset(data.text, statement.range.start)
+        : null;
+  const scopeEnd =
+    scope === 'selection'
+      ? data.selection.to
+      : statement
+        ? charToUtf16Offset(data.text, statement.range.end)
+        : null;
+  const scopeDescription =
+    scopeStart !== null && scopeEnd !== null
+      ? t('toolbar.scopeLines', {
+          from: data.text.slice(0, scopeStart).split('\n').length,
+          to: data.text.slice(0, scopeEnd).split('\n').length,
+        })
+      : t('toolbar.scopePending');
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="editor-tab">
       {hostKeyDialog}
+      <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-3 border-b border-border px-3 py-1">
+        {connectionId && <ConnectionContext connectionId={connectionId} />}
+        {context && (
+          <span className="min-w-0 truncate text-[13px] text-muted-foreground" title={context}>
+            {context}
+          </span>
+        )}
+      </div>
       <div
-        className="flex h-9 shrink-0 items-center gap-1 border-b border-border bg-surface px-2"
+        className="flex min-h-10 shrink-0 flex-wrap py-1 items-center gap-2 border-b border-border bg-surface px-2"
         role="toolbar"
         aria-label={t('toolbar.label')}
       >
@@ -308,10 +354,20 @@ function EditorBody({
           size="sm"
           disabled={!sessionId || running}
           aria-keyshortcuts={keysOf('run')}
-          title={`${t('toolbar.run')} (${runKeys})`}
+          title={`${runLabel} (${runKeys}) · ${scopeDescription}`}
           onClick={() => onShortcut('run')}
         >
-          <Play size={12} aria-hidden /> {t('toolbar.run')}
+          <Play size={14} aria-hidden /> {runLabel}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!running || !caps?.cancelQuery}
+          onClick={() => onShortcut('cancel')}
+          title={formatKeys(keysOf('cancel'))}
+        >
+          <Square size={13} aria-hidden />
+          {t('toolbar.cancel')}
         </Button>
         {mode !== 'redis' && (
           <IconButton
@@ -320,16 +376,6 @@ function EditorBody({
             disabled={!sessionId || running}
             onClick={() => onShortcut('runAll')}
           />
-        )}
-        {running && (
-          <Button
-            size="sm"
-            variant="danger"
-            onClick={() => onShortcut('cancel')}
-            title={formatKeys(keysOf('cancel'))}
-          >
-            <Square size={11} aria-hidden /> {t('toolbar.cancel')}
-          </Button>
         )}
         {mode !== 'redis' && (
           <>
@@ -378,15 +424,6 @@ function EditorBody({
         )}
         <span className="ml-auto flex items-center gap-2">
           {data.leaseStatus === 'opening' && <Spinner size={12} />}
-          {context && (
-            <span
-              className="text-xs text-muted-foreground"
-              data-testid="editor-context"
-              title={t('toolbar.context')}
-            >
-              {context}
-            </span>
-          )}
           <IconButton
             label={`${t('toolbar.history')} (${formatKeys(keysOf('history'))})`}
             icon={<History size={14} />}
@@ -401,6 +438,16 @@ function EditorBody({
         </span>
       </div>
 
+      {mode !== 'redis' && (
+        <div
+          className="flex min-h-7 shrink-0 items-center gap-2 border-b border-border px-3 text-xs text-muted-foreground"
+          data-testid="run-scope"
+        >
+          <span>
+            {runLabel} · {scopeDescription}
+          </span>
+        </div>
+      )}
       {!sessionId && (
         <div
           role="status"
@@ -442,8 +489,8 @@ function EditorBody({
           {mode === 'redis' ? (
             <ConsoleView data={data} mode={mode} sessionId={sessionId} />
           ) : (
-            <Group orientation="vertical">
-              <Panel defaultSize="55%" minSize="15%">
+            <Group orientation="vertical" {...layout}>
+              <Panel id="query" defaultSize="55%" minSize="15%">
                 <Suspense
                   fallback={
                     <div className="flex h-full items-center justify-center">
@@ -454,6 +501,10 @@ function EditorBody({
                   <SqlEditor
                     ref={editor}
                     initialText={data.text}
+                    initialScroll={{ top: data.scrollTop, left: data.scrollLeft }}
+                    onScroll={({ top, left }) =>
+                      patchTabData(id, { scrollTop: top, scrollLeft: left })
+                    }
                     initialSelection={{ from: data.selection.from, to: data.selection.to }}
                     mode={mode}
                     dialect={dialect}
@@ -468,14 +519,31 @@ function EditorBody({
                   />
                 </Suspense>
               </Panel>
-              <Separator className="h-px bg-border transition-colors hover:bg-accent data-[separator=active]:bg-accent" />
-              <Panel minSize="10%">
-                <ResultsPanel
-                  tabStateId={id}
-                  run={run}
-                  mode={mode}
-                  onLoadMore={() => void fetchMore(id)}
-                />
+              <Separator className="h-1 bg-border/50 transition-colors hover:bg-accent data-[separator=active]:bg-accent" />
+              <Panel id="results" minSize="10%">
+                <div
+                  ref={resultsRef}
+                  tabIndex={-1}
+                  className="h-full min-h-0"
+                  onKeyDown={(e) => {
+                    if (e.key === 'F6') {
+                      e.preventDefault();
+                      editor.current?.focus();
+                    }
+                  }}
+                >
+                  <ResultsPanel
+                    tabStateId={id}
+                    run={run}
+                    mode={mode}
+                    onRevealError={
+                      errorMark
+                        ? () => editor.current?.reveal(errorMark.from, errorMark.to)
+                        : undefined
+                    }
+                    onLoadMore={() => void fetchMore(id)}
+                  />
+                </div>
               </Panel>
             </Group>
           )}

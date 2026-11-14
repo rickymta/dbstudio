@@ -38,7 +38,10 @@
     "active": "{{count}} filter(s) active",
     "rawActive": "WHERE active",
     "errorTitle": "Filter error",
-    "noColumns": "Columns load with the first page"
+    "noColumns": "Columns load with the first page",
+    "pending": "Changes not applied",
+    "collapse": "Collapse filters",
+    "expand": "Expand filters"
   },
   "grid": {
     "rowNumber": "Row",

@@ -38,7 +38,10 @@
     "active": "Đang lọc {{count}} điều kiện",
     "rawActive": "Đang dùng WHERE",
     "errorTitle": "Lỗi bộ lọc",
-    "noColumns": "Danh sách cột có sau khi tải trang đầu"
+    "noColumns": "Danh sách cột có sau khi tải trang đầu",
+    "pending": "Thay đổi chưa áp dụng",
+    "collapse": "Thu gọn bộ lọc",
+    "expand": "Mở bộ lọc"
   },
   "grid": {
     "rowNumber": "Dòng",

@@ -73,5 +73,21 @@
   },
   "transport": {
     "hint": "Backend: {{transport}} (not the Tauri runtime)"
+  },
+  "workspace": {
+    "favorites": "Favorites",
+    "recent": "Recent objects",
+    "noRecent": "Open a connection or an object to start working.",
+    "databaseSupport": "Database support and roadmap",
+    "toggleSidebar": "Toggle sidebar",
+    "newQuery": "New query",
+    "openTabs": "Open tabs",
+    "pinTab": "Pin tab",
+    "unpinTab": "Unpin tab",
+    "addFavorite": "Add to favorites",
+    "removeFavorite": "Remove from favorites",
+    "savedConnections": "Saved connections",
+    "startConnection": "Create a connection",
+    "continue": "Continue working"
   }
 }
