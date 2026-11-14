@@ -13,6 +13,8 @@ use crate::convert::value_bytes;
 use crate::error::map_err;
 
 type Args = Vec<Vec<u8>>;
+/// One stream entry: id and `(field, value)` pairs.
+type StreamRow = (String, Vec<(Vec<u8>, Vec<u8>)>);
 
 /// Bytes of a string written per `APPEND`.
 const STRING_CHUNK: usize = 8 * 1024 * 1024;
@@ -37,7 +39,7 @@ enum Body {
     List(Vec<Vec<u8>>),
     Set(Vec<Vec<u8>>),
     ZSet(Vec<(Vec<u8>, String)>),
-    Stream(Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>),
+    Stream(Vec<StreamRow>),
     Json(String),
 }
 
