@@ -253,6 +253,7 @@ async fn socks_accept_loop(
     allowed: Vec<(String, u16)>,
 ) {
     let allowed = Arc::new(allowed);
+    let permits = Arc::new(tokio::sync::Semaphore::new(SOCKS_MAX_CLIENTS));
     let mut set: JoinSet<()> = JoinSet::new();
     loop {
         tokio::select! {
@@ -266,7 +267,13 @@ async fn socks_accept_loop(
                 };
                 let handle = Arc::clone(&handle);
                 let allowed = Arc::clone(&allowed);
+                // Too many clients at once (a local process flooding the port): refuse.
+                let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+                    tracing::warn!("ssh socks5: too many connections, refusing one");
+                    continue;
+                };
                 set.spawn(async move {
+                    let _permit = permit;
                     if let Err(e) = serve_socks5(sock, peer, &handle, &allowed).await {
                         tracing::debug!(error = %e, "ssh socks5 request failed");
                     }
@@ -276,6 +283,12 @@ async fn socks_accept_loop(
         }
     }
 }
+
+/// Most concurrent SOCKS5 clients (a database pool opens tens of connections).
+const SOCKS_MAX_CLIENTS: usize = 128;
+/// Time a client has to finish the SOCKS5 handshake and for the SSH channel to open.
+const SOCKS_HANDSHAKE: Duration = Duration::from_secs(10);
+const SOCKS_CHANNEL_OPEN: Duration = Duration::from_secs(15);
 
 /// SOCKS5 reply code: succeeded / not allowed / host unreachable / command not supported /
 /// address type not supported.
@@ -290,13 +303,51 @@ async fn socks_reply(sock: &mut TcpStream, code: u8) -> std::io::Result<()> {
     sock.write_all(&[5, code, 0, 1, 0, 0, 0, 0, 0, 0]).await
 }
 
-/// Handshake of one SOCKS5 client, then pipe it through a `direct-tcpip` channel.
+/// Handshake of one SOCKS5 client (bounded by [`SOCKS_HANDSHAKE`]), then pipe it through a
+/// `direct-tcpip` channel. Established connections are not cut when idle: pooled database
+/// connections are legitimately quiet, and the SSH keepalive detects a dead bastion.
 async fn serve_socks5(
     mut sock: TcpStream,
     peer: SocketAddr,
     handle: &Handle<ClientHandler>,
     allowed: &[(String, u16)],
 ) -> std::io::Result<()> {
+    let timed_out = || std::io::Error::new(std::io::ErrorKind::TimedOut, "socks5 timed out");
+    let (host, port) = tokio::time::timeout(SOCKS_HANDSHAKE, socks_request(&mut sock, allowed))
+        .await
+        .map_err(|_| timed_out())??;
+    let opened = tokio::time::timeout(
+        SOCKS_CHANNEL_OPEN,
+        handle.channel_open_direct_tcpip(
+            host,
+            u32::from(port),
+            peer.ip().to_string(),
+            u32::from(peer.port()),
+        ),
+    )
+    .await;
+    let channel = match opened {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
+            socks_reply(&mut sock, REP_HOST_UNREACHABLE).await?;
+            return Err(std::io::Error::other(e.to_string()));
+        }
+        Err(_) => {
+            socks_reply(&mut sock, REP_HOST_UNREACHABLE).await?;
+            return Err(timed_out());
+        }
+    };
+    socks_reply(&mut sock, REP_OK).await?;
+    let mut stream = channel.into_stream();
+    tokio::io::copy_bidirectional(&mut sock, &mut stream).await?;
+    Ok(())
+}
+
+/// Read greeting and CONNECT request; returns the allowed destination.
+async fn socks_request(
+    sock: &mut TcpStream,
+    allowed: &[(String, u16)],
+) -> std::io::Result<(String, u16)> {
     let bad = |m: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, m.to_string());
     // Greeting: VER NMETHODS METHODS...; we only offer "no authentication" (0).
     let mut head = [0u8; 2];
@@ -336,7 +387,7 @@ async fn serve_socks5(
             std::net::Ipv6Addr::from(a).to_string()
         }
         _ => {
-            socks_reply(&mut sock, REP_ATYP_UNSUPPORTED).await?;
+            socks_reply(sock, REP_ATYP_UNSUPPORTED).await?;
             return Err(bad("unsupported address type"));
         }
     };
@@ -344,35 +395,17 @@ async fn serve_socks5(
     sock.read_exact(&mut port).await?;
     let port = u16::from_be_bytes(port);
     if req[1] != 1 {
-        socks_reply(&mut sock, REP_CMD_UNSUPPORTED).await?;
+        socks_reply(sock, REP_CMD_UNSUPPORTED).await?;
         return Err(bad("only CONNECT is supported"));
     }
     if !allowed
         .iter()
         .any(|(h, p)| *p == port && h.eq_ignore_ascii_case(&host))
     {
-        socks_reply(&mut sock, REP_NOT_ALLOWED).await?;
+        socks_reply(sock, REP_NOT_ALLOWED).await?;
         return Err(bad("destination is not allowed"));
     }
-    let channel = match handle
-        .channel_open_direct_tcpip(
-            host,
-            u32::from(port),
-            peer.ip().to_string(),
-            u32::from(peer.port()),
-        )
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            socks_reply(&mut sock, REP_HOST_UNREACHABLE).await?;
-            return Err(std::io::Error::other(e.to_string()));
-        }
-    };
-    socks_reply(&mut sock, REP_OK).await?;
-    let mut stream = channel.into_stream();
-    tokio::io::copy_bidirectional(&mut sock, &mut stream).await?;
-    Ok(())
+    Ok((host, port))
 }
 
 fn conn_err(cfg: &SshConfig, what: &str, e: impl std::fmt::Display) -> Error {

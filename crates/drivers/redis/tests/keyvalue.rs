@@ -729,3 +729,78 @@ async fn scan_keys_walks_one_million_keys() {
     assert_eq!(keys.len(), 1_000_000);
     run(sess, db, "FLUSHDB").await;
 }
+
+async fn put_edge_cases_and_hidden_temp_keys(s: Server, db: i64) {
+    use dbstudio_core::{KeyData, PutMode};
+    let session = fresh(s, db).await;
+    let sess = session.as_ref();
+    // Keys with a hashtag, with braces but no tag, and a TTL so short it expires at once.
+    apply(
+        sess,
+        db,
+        vec![
+            put("user:{42}:x", KeyData::String { value: text("a") }, None),
+            put("odd}key", KeyData::String { value: text("b") }, None),
+            put("plain", KeyData::String { value: text("c") }, None),
+        ],
+    )
+    .await
+    .unwrap();
+    let r = apply(
+        sess,
+        db,
+        vec![KeyChange::Put {
+            key: "shortlived".into(),
+            data: KeyData::String { value: text("z") },
+            ttl_ms: Some(1),
+            mode: PutMode::Replace,
+        }],
+    )
+    .await;
+    // Either outcome is acceptable (expired at once: affected 0; or still there for a moment),
+    // but never an error and never a leftover temporary key.
+    r.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(scalar(sess, db, "EXISTS shortlived").await, Value::Int(0));
+    let all = scan_all(sess, db, None, None, 100).await;
+    assert_eq!(all, vec!["odd}key", "plain", "user:{42}:x"]);
+    // A stale temporary key of an unfinished Put is not listed by scan_keys.
+    run(sess, db, "SET plain.__dbstudio_tmp.{plain}.abc leftover").await;
+    assert_eq!(scan_all(sess, db, None, None, 100).await.len(), 3);
+    assert_eq!(scalar(sess, db, "DBSIZE").await, Value::Int(4));
+    // TYPE filter works (server side on Redis >= 6).
+    assert_eq!(scan_all(sess, db, None, Some("string"), 100).await.len(), 3);
+    // List edits name a missing or retyped key clearly.
+    let e = apply(
+        sess,
+        db,
+        vec![KeyChange::ListSet {
+            key: "nolist".into(),
+            index: 0,
+            value: text("x"),
+            expected: Some(text("y")),
+        }],
+    )
+    .await
+    .unwrap_err();
+    assert!(e.message().contains("does not exist"), "{e:?}");
+    let e = apply(
+        sess,
+        db,
+        vec![KeyChange::ListRemoveAt {
+            key: "plain".into(),
+            index: 0,
+            expected: Some(text("c")),
+        }],
+    )
+    .await
+    .unwrap_err();
+    assert!(e.message().contains("WRONGTYPE"), "{e:?}");
+}
+on_all!(
+    put_edge_cases_and_hidden_temp_keys,
+    putedge_r6,
+    putedge_r7,
+    putedge_v8,
+    12
+);

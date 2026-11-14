@@ -342,7 +342,10 @@ async fn concurrent_document_edits_are_detected(srv: Srv) {
         ))
         .await
         .unwrap();
-    assert!(p[0].contains("{\"_id\": 1, \"a\": 100}"), "{p:?}");
+    assert!(
+        p[0].contains("{\"_id\": 1, \"a\": {\"$eq\": 100}}"),
+        "{p:?}"
+    );
     drop_db(&*s, &db).await;
 }
 
@@ -664,4 +667,71 @@ async fn tls_name_is_checked_against_the_original_host_through_socks5_over_ssh()
     wrong.port = 27017;
     wrong.connect_timeout_ms = Some(3000);
     assert!(connect_cfg(&wrong).await.is_err());
+}
+
+#[tokio::test]
+async fn expected_values_are_compared_as_values_and_bad_conflict_keys_are_refused() {
+    if !enabled() {
+        return;
+    }
+    let s = connect(Srv::M7).await;
+    let db = unique_db();
+    // A sub-document with `$` keys and a regex are plain values, not operators.
+    run(
+        &*s,
+        &db,
+        "db.c.insertOne({_id: 1, re: /ab+/i, sub: {\"$gt\": 5}, n: 1})",
+    )
+    .await;
+    let r = s
+        .apply_changes(set(
+            &db,
+            vec![DocumentChange::Update {
+                id: Value::Int(1),
+                set: vec![set_field(&["n"], Value::Int(2))],
+                unset: vec![],
+                expected: vec![orig(&["n"], Some(Value::Int(1)))],
+            }],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.affected, vec![1]);
+    let regex_doc = fetch(&*s, &db, "c", |_| {}).await;
+    let re = ext(&regex_doc[0], "re");
+    let e = s
+        .apply_changes(set(
+            &db,
+            vec![DocumentChange::Update {
+                id: Value::Int(1),
+                set: vec![set_field(&["n"], Value::Int(3))],
+                unset: vec![],
+                expected: vec![orig(&["re"], Some(re))],
+            }],
+        ))
+        .await;
+    assert!(e.is_ok(), "an unchanged regex must match itself: {e:?}");
+    // `$document` Update: operator first key and dotted conflict columns are refused.
+    let lease = s
+        .open_lease(LeaseOptions {
+            database: None,
+            schema: None,
+            auto_commit: true,
+        })
+        .await
+        .unwrap();
+    let mut req = bulk(
+        &db,
+        vec![Value::Document(vec![("$set".into(), Value::Int(1))])],
+        OnConflict::Update,
+    );
+    let e = lease.bulk_insert(req.clone()).await.unwrap_err();
+    assert!(e.message().contains("operator"), "{e}");
+    req.rows = vec![vec![EditValue::Value(Value::Document(vec![(
+        "_id".into(),
+        Value::Int(9),
+    )]))]];
+    req.conflict_columns = vec!["a.b".into()];
+    let e = lease.bulk_insert(req).await.unwrap_err();
+    assert!(e.message().contains("not supported"), "{e}");
+    finish(&*s, &db, lease).await;
 }
