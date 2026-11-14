@@ -109,6 +109,7 @@ jobs:
             strict: clickhouse26,sshd
             test: |
               cargo test -p dbstudio-driver-clickhouse -- --test-threads=2
+              cargo test -p dbstudio --lib plan_advice_it::clickhouse26 -- --test-threads=2
               cargo test -p dbstudio-export --test it_newdb -- clickhouse --test-threads=2
               cargo test -p dbstudio-backup --test it_newdb -- clickhouse --test-threads=2
           # CockroachDB and TiDB: the flavour tests live in the PostgreSQL / MySQL driver crates

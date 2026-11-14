@@ -107,7 +107,13 @@ pub(crate) fn flatten_scalars(node: &mut PlanNode, obj: &Js, skip: &[&str], pref
                     node.put(&key, joined);
                 }
             }
-            crate::json::JVal::Obj(_) => {}
+            // MongoDB extended JSON numbers (`{"$numberInt": "5"}`) are scalars: a real server
+            // wraps `docsExamined`, `works`, ... this way.
+            crate::json::JVal::Obj(_) => {
+                if let Some(n) = v.as_f64() {
+                    node.put(&key, crate::json::fmt_num(n));
+                }
+            }
             _ => node.put(&key, v.display()),
         }
     }

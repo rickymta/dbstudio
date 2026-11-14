@@ -217,7 +217,13 @@ Running one group at a time (start the listed services first):
 | CockroachDB / YugabyteDB    | `cockroach` (`heavy`: `yugabyte`)                                                           | `DBSTUDIO_IT=1 cargo test -p dbstudio-driver-postgres --test it_flavor` |
 | TiDB                        | `tidb` (+ `sshd` for the TLS-through-SSH test)                                              | `DBSTUDIO_IT=1 cargo test -p dbstudio-driver-mysql --test it_tidb`      |
 | Command layer (`src-tauri`) | `pg16`, `mysql8`, `redis6`                                                                  | `DBSTUDIO_IT=1 cargo test -p dbstudio`                                  |
+| Query Advisor (`src-tauri`) | `pg16`, `mysql8`, `mariadb` (+ `mssql2022`, `mongo7`, `clickhouse26`)                       | `DBSTUDIO_IT=1 cargo test -p dbstudio --lib plan_advice_it`             |
 | Oracle driver               | `oraclefree`                                                                                | `docker/oracle-it/run-tests.sh` (see below)                             |
+
+The Query Advisor suite (`src-tauri/src/plan_advice_it.rs`, one test per service) seeds a 200 000 row
+table in a `dbstudio_it_adv*` schema / database, runs the DDL the advice generates and explains
+again; a service that is not running is skipped unless `DBSTUDIO_IT_STRICT` lists it (for example
+`DBSTUDIO_IT_STRICT=pg16,mysql8`). Run one service with `... plan_advice_it::pg16`.
 
 The export / backup suites for the newer databases (`it_newdb`) need the profile services of the
 database they test (ScyllaDB, Cassandra 5, ClickHouse 26, CockroachDB, YugabyteDB, TiDB).

@@ -26,7 +26,7 @@
         "nodeId": 1,
         "text": null,
         "unit": "rows",
-        "value": 250000.0
+        "value": 1200000.0
       },
       {
         "actual": true,
@@ -42,7 +42,7 @@
         "nodeId": 1,
         "text": null,
         "unit": "pct",
-        "value": 100.0
+        "value": 20.833333333333336
       },
       {
         "actual": true,
@@ -71,7 +71,7 @@
     ],
     "params": {
       "columns": "kind, ts DESC",
-      "examined": "250000",
+      "examined": "1200000",
       "index": "kind_1_ts_-1",
       "kept": "250000",
       "table": "shop.events"

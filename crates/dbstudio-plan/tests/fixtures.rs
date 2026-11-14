@@ -117,7 +117,7 @@ const EXPECTED: &[Expectation] = &[
         true,
         2,
         None,
-        &["0:spillToDisk:warning", "1:fullScanLargeTable:warning"],
+        &["0:spillToDisk:warning", "1:fullScanLargeTable:critical"],
     ),
     ("mongo_04_aggregate_group_stats.json", true, 4, None, &[]),
     ("mongo_05_idhack_stats.json", true, 1, None, &[]),

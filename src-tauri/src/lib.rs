@@ -256,6 +256,8 @@ mod contract_tests;
 mod it;
 #[cfg(test)]
 mod leak_test;
+#[cfg(all(test, any(feature = "postgres", feature = "mysql")))]
+mod plan_advice_it;
 #[cfg(test)]
 mod scaffold_tests;
 #[cfg(test)]

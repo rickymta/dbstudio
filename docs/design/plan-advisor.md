@@ -501,6 +501,8 @@ Mẫu probe-rồi-skip (`DBSTUDIO_IT_STRICT=1` ở CI). Mỗi DB: seed bảng `o
 | ClickHouse | clickhouse26 (ORDER BY `(customer_id, created_at)`, lọc theo `status`) | `chPrimaryKeyUnused` có rewrite + skip index. |
 | Metadata | pg16 | `plan_advise` trả `checked` với `path` đúng; tên bảng trùng ở 2 schema ⇒ `ambiguousTable`. |
 
+Triển khai (gói T): `src-tauri/src/plan_advice_it.rs` (module `cfg(test)`, không phải `src-tauri/tests/` vì `advise_with`/`AdviseLimits` là `pub(crate)`), một test mỗi dịch vụ: `pg16`, `mysql8`, `mariadb`, `mssql2022`, `mongo7`, `clickhouse26`; seed 200 000 dòng tạo ngay trong test (schema/database `dbstudio_it_adv*`, dọn trước và sau). Chạy: `DBSTUDIO_IT=1 cargo test -p dbstudio --lib plan_advice_it` (thêm `DBSTUDIO_IT_STRICT=pg16,mysql8,...` để thiếu container thì lỗi thay vì bỏ qua; lọc một dịch vụ bằng `plan_advice_it::pg16`). Ca đã phủ: lọc không index + chạy DDL sinh ra + Explain lại (pg16, mysql8, mariadb, mssql2022, mongo7), index sẵn + hàm bọc cột (pg16, mysql8), sort spill (pg16), chuyển kiểu ngầm (mysql8, mariadb, mssql2022), metadata `checked`/`path`/`ambiguousTable` (pg16), `chPrimaryKeyUnused` + skip index (clickhouse26). CI: nhóm `core` đã chạy qua `cargo test --workspace` (5 dịch vụ trong `strict`), nhóm `analytics` chạy thêm `plan_advice_it::clickhouse26`. Chưa phủ: `staleStatistics`, sort spill SQL Server, các DB `oracle-it`/cockroach/tidb/yugabyte. MSSQL cần câu có join để plan không "trivial" (plan trivial không mang MissingIndexes); ClickHouse không có EXPLAIN ANALYZE nên chỉ so số granule.
+
 ### 11.3 Frontend
 Vitest/RTL theo §8 và §9; kiểm tay trong cửa sổ Tauri ở 1024×768 và 1440×900 (light/dark) trước khi đóng gói.
 

@@ -389,13 +389,26 @@ fn filter_exprs(cx: &Cx<'_>, read: &PlanNode) -> Vec<String> {
     out
 }
 
-/// A skip index is already declared on a column when its condition names it.
-fn covered_by_skip_index(stages: &[Stage], column: &str) -> bool {
-    stages
-        .iter()
-        .filter(|s| s.kind == "Skip")
-        .filter_map(|s| s.condition.as_deref())
-        .any(|c| c.contains(column))
+/// A skip index is already declared on a column when the stage's condition names it, or (real
+/// servers print only the index name and its type) when the catalog says the index of that name
+/// is built on the column.
+fn covered_by_skip_index(
+    stages: &[Stage],
+    column: &str,
+    meta: Option<&[dbstudio_core::IndexDetail]>,
+) -> bool {
+    stages.iter().filter(|s| s.kind == "Skip").any(|s| {
+        s.condition.as_deref().is_some_and(|c| c.contains(column))
+            || s.name.as_deref().is_some_and(|name| {
+                meta.is_some_and(|indexes| {
+                    indexes.iter().any(|i| {
+                        !i.primary
+                            && i.name == name
+                            && i.columns.iter().any(|c| c.eq_ignore_ascii_case(column))
+                    })
+                })
+            })
+    })
 }
 
 fn sanitize(s: &str) -> String {
@@ -487,13 +500,29 @@ fn primary_key_unused(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
     }
     let warn = warning_severity(cx, node.id, PlanRule::FullScanLargeTable);
     let pk_cols = primary_key(cx, &table);
+    let meta = cx.ctx.table_meta(table.schema.as_deref(), &table.name);
+    let meta_indexes = meta.map(|m| m.indexes.as_slice());
+    // A skip index that already prunes granules for a column of the filter answers the problem.
+    let pruning: Vec<Stage> = st
+        .iter()
+        .filter(|s| {
+            s.kind == "Skip" && s.selected_granules < s.initial_granules * SKIP_USELESS_SHARE
+        })
+        .cloned()
+        .collect();
+    if uses
+        .iter()
+        .any(|(n, _)| covered_by_skip_index(&pruning, n, meta_indexes))
+    {
+        return;
+    }
     // Columns the filter uses and the key does not already lead with.
     let key_lead: Vec<String> = pk_cols.iter().flatten().map(|c| c.to_lowercase()).collect();
     let pick = |wanted: &[Use]| {
         uses.iter()
             .filter(|(n, u)| {
                 wanted.contains(u)
-                    && !covered_by_skip_index(&st, n)
+                    && !covered_by_skip_index(&st, n, meta_indexes)
                     && !key_lead.first().is_some_and(|k| *k == n.to_lowercase())
             })
             .map(|(n, u)| (n.clone(), *u))
@@ -1041,8 +1070,32 @@ mod tests {
         assert_eq!(pk.keys, vec!["user_id".to_string(), "ts".to_string()]);
         let skip = stage_of(&st, "Skip").unwrap();
         assert_eq!(skip.name.as_deref(), Some("idx_kind"));
-        assert!(covered_by_skip_index(&st, "kind"));
-        assert!(!covered_by_skip_index(&st, "payload"));
+        assert!(covered_by_skip_index(&st, "kind", None));
+        assert!(!covered_by_skip_index(&st, "payload", None));
+    }
+
+    #[test]
+    fn a_skip_stage_without_condition_is_matched_through_the_catalog() {
+        // A real server prints only the name and the type of a skip index.
+        let mut n = PlanNode::new("ReadFromMergeTree", PlanNodeKind::FullScan);
+        n.extra.insert(
+            "index Skip ix_orders_code".into(),
+            "granules 24/24, parts 1/1".into(),
+        );
+        let st = stages(&n);
+        let index = |name: &str, col: &str| dbstudio_core::IndexDetail {
+            name: name.into(),
+            columns: vec![col.into()],
+            unique: false,
+            primary: false,
+            method: Some("bloom_filter".into()),
+            definition: None,
+            partial: false,
+        };
+        let meta = [index("ix_orders_code", "code"), index("other", "status")];
+        assert!(covered_by_skip_index(&st, "code", Some(&meta)));
+        assert!(!covered_by_skip_index(&st, "status", Some(&meta)));
+        assert!(!covered_by_skip_index(&st, "code", None));
     }
 
     use crate::advice::model::PlanAdvice;
