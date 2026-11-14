@@ -49,7 +49,7 @@ pub(crate) async fn explain(
         let plan = core
             .rows(
                 &base,
-                &format!("EXPLAIN json = 1, indexes = 1, actions = 1 PLAN {stmt}"),
+                &format!("EXPLAIN PLAN json = 1, indexes = 1, actions = 1 {stmt}"),
             )
             .await?;
         let text = plan

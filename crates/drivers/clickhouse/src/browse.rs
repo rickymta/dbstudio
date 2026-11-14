@@ -691,7 +691,8 @@ pub(crate) async fn table_details(core: &Core, path: &ObjectPath) -> Result<Tabl
         ("PRIMARY KEY", &facts.primary_key, "primary"),
         ("SAMPLE BY", &facts.sampling_key, "sampling"),
     ] {
-        if !expr.is_empty() {
+        // The primary key defaults to the sorting key: list it only when it is a prefix of it.
+        if !expr.is_empty() && !(method == "primary" && *expr == facts.sorting_key) {
             indexes.push(IndexDetail {
                 name: name.to_string(),
                 columns: expr
@@ -935,11 +936,13 @@ pub(crate) async fn generate_ddl(core: &Core, req: DdlRequest) -> Result<Vec<Ddl
             }
         }
     }
+    // Without schema qualification the statements become database independent.
     let qualify = |sql: String, db: &str| -> String {
         if o.qualify_schema {
             sql
         } else {
-            sql.replacen(&format!("{}.", quote_ident(db)), "", 1)
+            sql.replace(&format!("{}.", quote_ident(db)), "")
+                .replace(&format!("{db}."), "")
         }
     };
     let finish = |mut sql: String, drop: Option<String>| -> String {
@@ -1014,11 +1017,11 @@ pub(crate) async fn generate_ddl(core: &Core, req: DdlRequest) -> Result<Vec<Ddl
                 Class::Dictionary => "DICTIONARY",
                 _ => "TABLE",
             };
-            let drop = format!(
-                "DROP {drop_what} IF EXISTS {}.{};",
-                quote_ident(db),
-                quote_ident(name)
-            );
+            let drop = if o.qualify_schema {
+                format!("DROP {drop_what} IF EXISTS {}.{};", quote_ident(db), quote_ident(name))
+            } else {
+                format!("DROP {drop_what} IF EXISTS {};", quote_ident(name))
+            };
             let path = ObjectPath::root()
                 .child(ObjectKind::Database, db.clone())
                 .child(ObjectKind::Folder, class.folder())
