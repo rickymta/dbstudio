@@ -1,0 +1,24 @@
+[
+  {
+    "actions": [],
+    "basis": "none",
+    "caveats": [
+      "noDdlForDialect",
+      "estimatedOnly"
+    ],
+    "confidence": "low",
+    "evidence": [],
+    "fromWarnings": [],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "columns": "status",
+      "table": "shop.orders"
+    },
+    "rule": "mongoCollscan",
+    "severity": "warning",
+    "share": null,
+    "table": "shop.orders"
+  }
+]

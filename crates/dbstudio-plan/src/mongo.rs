@@ -59,6 +59,14 @@ fn from_explain(e: &Js, pipeline: Option<&[Js]>) -> Result<PlanTree, PlanError> 
     if let Some(ns) = namespace {
         tree.root.put("namespace", ns);
     }
+    // Whole-query figures the advisor compares (keys / documents examined against returned).
+    if let Some(s) = stats.filter(|_| analyzed) {
+        for key in ["totalKeysExamined", "totalDocsExamined", "nReturned"] {
+            if let Some(v) = s.num(key) {
+                tree.root.put(key, json::fmt_num(v));
+            }
+        }
+    }
     Ok(tree)
 }
 
@@ -95,8 +103,35 @@ fn pipeline_node(step: &Js, input: PlanNode) -> PlanNode {
     if let Some(d) = step.get("usedDisk") {
         n.put("usedDisk", d.display());
     }
+    if matches!(name, "$lookup" | "$graphLookup") {
+        lookup_details(&mut n, step, body);
+    }
     n.children.push(input);
     n
+}
+
+/// What the advisor needs from a `$lookup` stage: the joined collection and field, the join
+/// strategy (MongoDB 6.0+) and how the foreign side was read.
+fn lookup_details(n: &mut PlanNode, step: &Js, body: Option<&Js>) {
+    for key in ["from", "localField", "foreignField"] {
+        if let Some(v) = body.and_then(|b| b.text(key)) {
+            n.put(key, v);
+        }
+    }
+    for key in ["strategy", "indexName"] {
+        if let Some(v) = step.text(key).or_else(|| body.and_then(|b| b.text(key))) {
+            n.put(key, v);
+        }
+    }
+    for key in ["collectionScans", "totalDocsExamined", "totalKeysExamined"] {
+        if let Some(v) = step.num(key) {
+            n.put(key, json::fmt_num(v));
+        }
+    }
+    if let Some(used) = step.get("indexesUsed") {
+        let names: Vec<String> = used.items().iter().map(Js::display).collect();
+        n.put("indexesUsed", names.join(", "));
+    }
 }
 
 fn stage_node(s: &Js, namespace: Option<&str>) -> PlanNode {
@@ -201,6 +236,7 @@ fn kind_of(stage: &str) -> PlanNodeKind {
         "LIMIT" | "SKIP" | "limit" | "skip" => Limit,
         "AND_HASH" | "AND_SORTED" | "OR" | "SORT_MERGE" | "UNION" | "union" => Union,
         "SHARD_MERGE" | "SINGLE_SHARD" | "SHARDING_FILTER" => Gather,
+        "EQ_LOOKUP" | "eq_lookup" => NestedLoopJoin,
         "GROUP" | "group" => HashAggregate,
         "COUNT" => Aggregate,
         "filter" => Filter,

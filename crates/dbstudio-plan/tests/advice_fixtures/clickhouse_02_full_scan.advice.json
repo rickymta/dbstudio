@@ -1,0 +1,112 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "findSortingKey",
+        "lock": null,
+        "params": {},
+        "scope": "object",
+        "sql": "SELECT sorting_key FROM system.tables WHERE database = 'plan_fx' AND name = 'events';",
+        "template": false
+      },
+      {
+        "kind": "createIndex",
+        "label": "addSkipIndex",
+        "lock": "none",
+        "params": {
+          "column": "payload"
+        },
+        "scope": "object",
+        "sql": "ALTER TABLE `plan_fx`.`events` ADD INDEX `ix_events_payload` `payload` TYPE bloom_filter(0.01) GRANULARITY 4;",
+        "template": false
+      },
+      {
+        "kind": "maintenance",
+        "label": "materializeSkipIndex",
+        "lock": "heavyMutation",
+        "params": {},
+        "scope": "object",
+        "sql": "ALTER TABLE `plan_fx`.`events` MATERIALIZE INDEX `ix_events_payload`;",
+        "template": false
+      },
+      {
+        "kind": "maintenance",
+        "label": "addProjection",
+        "lock": "none",
+        "params": {
+          "column": "payload"
+        },
+        "scope": "object",
+        "sql": "ALTER TABLE `plan_fx`.`events` ADD PROJECTION `p_payload` (SELECT * ORDER BY `payload`);",
+        "template": false
+      },
+      {
+        "kind": "maintenance",
+        "label": "materializeProjection",
+        "lock": "heavyMutation",
+        "params": {},
+        "scope": "object",
+        "sql": "ALTER TABLE `plan_fx`.`events` MATERIALIZE PROJECTION `p_payload`;",
+        "template": false
+      }
+    ],
+    "basis": "none",
+    "caveats": [
+      "skipIndexTypeGuess",
+      "projectionStorage",
+      "metadataUnavailable"
+    ],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "granulesSelected",
+        "nodeId": 4,
+        "text": null,
+        "unit": "count",
+        "value": 247.0
+      },
+      {
+        "actual": false,
+        "key": "granulesTotal",
+        "nodeId": 4,
+        "text": null,
+        "unit": "count",
+        "value": 247.0
+      },
+      {
+        "actual": false,
+        "key": "rowsRead",
+        "nodeId": 4,
+        "text": null,
+        "unit": "rows",
+        "value": 2023424.0
+      },
+      {
+        "actual": false,
+        "key": "filter",
+        "nodeId": 4,
+        "text": "equals(__table1.payload, 'zzz'_String)",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      4
+    ],
+    "params": {
+      "columns": "payload",
+      "granules": "247",
+      "rows": "2023424",
+      "table": "plan_fx.events"
+    },
+    "rule": "chPrimaryKeyUnused",
+    "severity": "critical",
+    "share": null,
+    "table": "plan_fx.events"
+  }
+]

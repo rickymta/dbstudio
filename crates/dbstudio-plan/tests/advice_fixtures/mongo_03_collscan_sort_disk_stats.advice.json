@@ -1,0 +1,70 @@
+[
+  {
+    "actions": [],
+    "basis": "time",
+    "caveats": [
+      "noDdlForDialect"
+    ],
+    "confidence": "high",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 250000.0
+      },
+      {
+        "actual": true,
+        "key": "rowsKept",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 250000.0
+      },
+      {
+        "actual": true,
+        "key": "selectivity",
+        "nodeId": 1,
+        "text": null,
+        "unit": "pct",
+        "value": 100.0
+      },
+      {
+        "actual": true,
+        "key": "selfTime",
+        "nodeId": 1,
+        "text": null,
+        "unit": "ms",
+        "value": 950.0
+      },
+      {
+        "actual": false,
+        "key": "sortKey",
+        "nodeId": 0,
+        "text": "ts DESC",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable",
+      "spillToDisk"
+    ],
+    "nodeIds": [
+      1,
+      0
+    ],
+    "params": {
+      "columns": "kind, ts DESC",
+      "examined": "250000",
+      "kept": "250000",
+      "table": "shop.events"
+    },
+    "rule": "mongoCollscan",
+    "severity": "critical",
+    "share": 0.927,
+    "table": "shop.events"
+  }
+]

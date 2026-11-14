@@ -14,7 +14,9 @@
 //!       table: big@big_pkey              of indentation per level
 //!       spans: FULL SCAN
 //!
-//! index recommendations: 1           <- footer, ignored
+//! index recommendations: 1           <- footer: kept as `crdbIndexRecommendations`
+//! 1. type: index creation
+//!    SQL command: CREATE INDEX ON db.sv.big (name) STORING (grp);
 //! ```
 
 use std::collections::BTreeMap;
@@ -36,6 +38,7 @@ pub(crate) fn parse(text: &str) -> Result<PlanTree, PlanError> {
     let mut header: BTreeMap<String, String> = BTreeMap::new();
     let mut in_tree = false;
     let mut footer = false;
+    let mut footer_lines: Vec<String> = Vec::new();
 
     fn close(stack: &mut Vec<Frame>, roots: &mut Vec<PlanNode>, depth: usize) {
         while stack.last().is_some_and(|f| f.depth >= depth) {
@@ -88,6 +91,7 @@ pub(crate) fn parse(text: &str) -> Result<PlanTree, PlanError> {
             _ => {}
         }
         if footer {
+            footer_lines.push(line.to_string());
             continue;
         }
         let Some(frame) = stack.last_mut() else {
@@ -134,7 +138,60 @@ pub(crate) fn parse(text: &str) -> Result<PlanTree, PlanError> {
     if let Some(d) = header.get("distribution") {
         tree.root.extra.insert("distribution".into(), d.clone());
     }
+    let recs = index_recommendations(&footer_lines);
+    if !recs.is_empty() {
+        tree.root.extra.insert(
+            "crdbIndexRecommendations".into(),
+            serde_json::to_string(&recs).unwrap_or_default(),
+        );
+    }
     Ok(tree)
+}
+
+/// One entry of the footer `index recommendations`: the server's own advice with the SQL it
+/// would run (`SQL command:` / `SQL commands:`, several statements for a replacement).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct IndexRecommendation {
+    /// `index creation`, `index replacement`...
+    r#type: String,
+    sql: String,
+}
+
+/// Parse the footer lines that follow the `index recommendations: N` header (that header is the
+/// first footer line when the plan has recommendations; other footer lines are ignored).
+fn index_recommendations(lines: &[String]) -> Vec<IndexRecommendation> {
+    let mut out: Vec<IndexRecommendation> = Vec::new();
+    let mut open = false;
+    for line in lines {
+        let t = line.trim();
+        let rest = t
+            .split_once(". ")
+            .filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        if let Some((_, body)) = rest {
+            if let Some(ty) = body.strip_prefix("type:") {
+                out.push(IndexRecommendation {
+                    r#type: ty.trim().to_string(),
+                    sql: String::new(),
+                });
+                open = true;
+                continue;
+            }
+        }
+        let sql = t
+            .strip_prefix("SQL commands:")
+            .or_else(|| t.strip_prefix("SQL command:"));
+        match (sql, out.last_mut()) {
+            (Some(sql), Some(rec)) if open => rec.sql = sql.trim().to_string(),
+            // A long statement continues on the next, indented line.
+            (None, Some(rec)) if open && !rec.sql.is_empty() && line.starts_with(' ') => {
+                rec.sql.push(' ');
+                rec.sql.push_str(t);
+            }
+            _ => open = false,
+        }
+    }
+    out.retain(|r| !r.sql.is_empty());
+    out
 }
 
 /// Column of the `•` of an operator line (after the tree glyphs and spaces), if the line is one.
@@ -329,6 +386,36 @@ mod tests {
         );
         assert_eq!(number("0 (missing stats)"), Some(0.0));
         assert_eq!(number("n/a"), None);
+    }
+
+    #[test]
+    fn footer_index_recommendations() {
+        let text = "distribution: local\n\n• scan\n  table: t@t_pkey\n  spans: FULL SCAN\n\nindex recommendations: 2\n\n1. type: index creation\n   SQL command: CREATE INDEX ON db.public.t (a) STORING (b);\n\n2. type: index replacement\n   SQL commands: CREATE INDEX ON db.public.t (c); DROP INDEX db.public.t@old_idx;\n";
+        let t = parse(text).unwrap();
+        let json = &t.root.extra["crdbIndexRecommendations"];
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 2);
+        assert_eq!(v[0]["type"], "index creation");
+        assert_eq!(v[0]["sql"], "CREATE INDEX ON db.public.t (a) STORING (b);");
+        assert_eq!(v[1]["type"], "index replacement");
+        assert!(
+            v[1]["sql"]
+                .as_str()
+                .unwrap()
+                .ends_with("DROP INDEX db.public.t@old_idx;")
+        );
+        // The footer does not become an operator and a plan without one has no key.
+        assert_eq!(t.node_count, 1);
+        let plain = parse("• scan\n  table: t@t_pkey\n  spans: FULL SCAN\n").unwrap();
+        assert!(!plain.root.extra.contains_key("crdbIndexRecommendations"));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn footer_parser_never_panics(lines in proptest::collection::vec("[ -~]{0,80}", 0..8)) {
+            let lines: Vec<String> = lines;
+            let _ = index_recommendations(&lines);
+        }
     }
 
     #[test]
