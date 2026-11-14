@@ -116,7 +116,8 @@
   "inspector": {
     "expand": "Show the details panel",
     "collapse": "Collapse the details panel",
-    "resize": "Resize the details panel"
+    "resize": "Resize the details panel",
+    "tabs": "Details panel tabs"
   },
   "analyzeConfirm": {
     "title": "Run the statement with ANALYZE?",
@@ -153,7 +154,8 @@
       "executionTimeMs": "Execution time",
       "rows": "Rows",
       "nodeCount": "Operators",
-      "warnings": "Warnings"
+      "warnings": "Warnings",
+      "advice": "Advice"
     }
   },
   "advice": {
@@ -173,7 +175,8 @@
       "checked": "Matched against the indexes of {{count}} tables",
       "partial": "Only partly matched — confidence lowered",
       "unavailable": "Could not read metadata — confidence lowered",
-      "disabled": "Matching against existing indexes is off"
+      "disabled": "Matching against existing indexes is off",
+      "failed": "Could not match against existing indexes"
     },
     "confidence": {
       "high": "High confidence",
@@ -198,7 +201,32 @@
     "actions": {
       "copy": "Copy",
       "insert": "Insert into editor",
-      "openTable": "Open table"
+      "openTable": "Open table",
+      "createIndex": "Create the index",
+      "createTrigramIndex": "Create a trigram index",
+      "refreshStatistics": "Refresh the statistics",
+      "rewriteAsRange": "Rewrite as a range condition",
+      "rewriteNotExists": "Rewrite with NOT EXISTS",
+      "keysetPagination": "Use keyset pagination",
+      "listColumns": "List only the columns you need",
+      "moveFunctionToConstant": "Move the function to the constant side",
+      "raiseStatisticsTarget": "Raise the statistics target",
+      "raiseWorkMem": "Raise work_mem for this session",
+      "reviewFilter": "Review the filter",
+      "reviewJoinStrategy": "Review the join strategy",
+      "reviewMemory": "Review the memory settings",
+      "reviewStatistics": "Review the statistics",
+      "tuneAutovacuum": "Tune autovacuum for the table",
+      "vacuumTable": "Vacuum the table",
+      "gatherStatistics": "Gather the statistics",
+      "reviewPgaTarget": "Review the PGA target",
+      "createMissingIndex": "Create the suggested index",
+      "createStatistics": "Create the statistics",
+      "addIncludeColumns": "Add INCLUDE columns",
+      "rewriteUnionAll": "Rewrite with UNION ALL",
+      "rewritePrewhere": "Filter earlier with PREWHERE",
+      "reviewPartitionKey": "Filter on the partition key",
+      "reviewJoinOrder": "Review the join order"
     },
     "template": "Template — edit before running",
     "readOnlyBanner": "Read-only connection: this statement will be blocked when run; use a connection with DDL rights.",
@@ -208,6 +236,278 @@
       "gone": "Resolved",
       "new": "New",
       "kept": "Remaining"
+    },
+    "why": "Why",
+    "what": "What to do",
+    "caveatsTitle": "Keep in mind",
+    "estimateSuffix": "(estimate)",
+    "copied": "Copied",
+    "copyFailed": "Could not copy",
+    "noSession": "The connection of this plan is not open; connect first.",
+    "view": "View",
+    "dismiss": "Hide",
+    "filteredBy": "Showing advice for node #{{node}}",
+    "showAll": "Show all",
+    "noneForNode": "No advice for this node",
+    "productionNote": "Production connection: run it outside peak hours.",
+    "nodeHasAdvice": "This node has optimisation advice",
+    "rules": {
+      "indexForFilter": {
+        "title": "Add an index for the filter on {{table}}",
+        "why": "A scan of {{table}} reads {{examined}} rows but keeps only {{kept}} ({{selectivity}}). An index on {{columns}} lets the server read just the rows it needs."
+      },
+      "indexResidualFilter": {
+        "title": "Extend the index on {{table}} to cover {{columns}}",
+        "why": "The index {{usedIndex}} finds {{examined}} rows, then a filter keeps only {{kept}}. An index on {{columns}} would filter inside the index."
+      },
+      "indexForSort": {
+        "title": "Add an index that returns {{table}} already sorted",
+        "why": "A sort of {{rows}} rows is needed. An index on {{columns}} returns rows in the requested order and can remove the sort."
+      },
+      "nestedLoopInnerScan": {
+        "title": "The inner side of a nested loop is scanned {{loops}} times",
+        "why": "The inner input runs {{loops}} times. An index on the join column of the inner table, or a different join method, avoids repeating the scan."
+      },
+      "staleStatistics": {
+        "title": "Statistics on {{table}} look out of date",
+        "why": "The planner expected {{estimated}} rows but {{actual}} came back (off by {{factor}}x). Bad estimates can pick a poor join order or method."
+      },
+      "sortSpill": {
+        "title": "The sort spilled to disk",
+        "why": "The sort used about {{spaceKb}} KB on disk because it did not fit in memory ({{workMem}}). Sorting in memory is much faster."
+      },
+      "hashSpill": {
+        "title": "The hash operation spilled to disk",
+        "why": "The hash table did not fit in memory and was split into {{batches}} batches written to disk."
+      },
+      "fullScanReview": {
+        "title": "Review the full scan of {{table}}",
+        "why": "{{table}} is read in full ({{rows}} rows). If the query needs only a few rows, a filter or an index may help; if it needs most rows, this scan is fine."
+      },
+      "existingIndexUnused": {
+        "title": "An existing index on {{table}} is not used",
+        "why": "The index {{index}} could serve this query but the planner chose another path. Check statistics and the shape of the condition."
+      },
+      "pgBitmapLossy": {
+        "title": "The bitmap scan on {{table}} became lossy",
+        "why": "The bitmap did not fit in memory ({{workMem}}): {{lossy}} pages are lossy and {{recheck}} rows were rechecked. Raising work_mem keeps the bitmap exact."
+      },
+      "pgHeapFetches": {
+        "title": "The index-only scan on {{table}} still visits the table",
+        "why": "{{fetches}} rows needed a trip to the table because the visibility map is not up to date. A VACUUM refreshes it."
+      },
+      "pgFunctionOnColumn": {
+        "title": "The function on {{column}} prevents index use on {{table}}",
+        "why": "The condition applies {{function}} to the column, so a plain index on {{column}} cannot be used and {{examined}} rows are read. An index on the expression, or a rewritten condition, fixes it."
+      },
+      "implicitConversion": {
+        "title": "Implicit type conversion on {{column}}",
+        "why": "The comparison converts types implicitly, which can stop the index on {{column}} from being used. Compare values of the same type."
+      },
+      "pgParallelNotLaunched": {
+        "title": "Parallel workers were planned but not launched",
+        "why": "{{planned}} workers were planned and {{launched}} started. The server may be out of parallel worker slots."
+      },
+      "pgJitOverhead": {
+        "title": "JIT compilation cost more than it saved",
+        "why": "JIT spent {{jit}} ms compiling. For short queries this is usually pure overhead."
+      },
+      "pgColdCache": {
+        "title": "Most pages were read from disk",
+        "why": "Many pages were not in the cache, so the timing may be higher than a repeated run. Run the plan again to compare."
+      },
+      "pgNotInSubplan": {
+        "title": "NOT IN with a subquery is slow",
+        "why": "NOT IN is evaluated row by row against the subquery. NOT EXISTS gives the same result for non-null values and can use a hashed anti join."
+      },
+      "mysqlPossibleKeysUnused": {
+        "title": "MySQL ignored the candidate indexes on {{table}}",
+        "why": "Candidate indexes exist but none was chosen. Check statistics, the condition and the data types."
+      },
+      "mysqlTempTableGroup": {
+        "title": "A temporary table is built for the grouping",
+        "why": "GROUP BY or ORDER BY needs a temporary table. An index in the grouping order avoids it."
+      },
+      "mysqlJoinBuffer": {
+        "title": "A join uses the join buffer instead of an index",
+        "why": "The join on {{table}} has no usable index and falls back to a block nested loop or hash join. An index on the join column helps."
+      },
+      "mysqlIndexMerge": {
+        "title": "Several indexes are merged for one table",
+        "why": "The server merges more than one index on {{table}}. A single composite index is often faster."
+      },
+      "mssqlMissingIndex": {
+        "title": "SQL Server suggests a missing index on {{table}}",
+        "why": "The optimizer reported an index that would lower the cost of this query. Treat it as a hint, not a rule: it ignores your other queries."
+      },
+      "mssqlKeyLookup": {
+        "title": "Key Lookup on {{table}} runs for many rows",
+        "why": "Each row found in the index needs a second read of the table. Adding the needed columns as INCLUDE columns removes the lookup."
+      },
+      "mssqlNoJoinPredicate": {
+        "title": "A join has no join predicate",
+        "why": "The plan joins two inputs without a condition, which multiplies their rows. Check the ON clause."
+      },
+      "mssqlNoStatistics": {
+        "title": "Statistics are missing on {{table}}",
+        "why": "The optimizer had no statistics on {{columns}} and guessed the row count. Creating them improves the estimates."
+      },
+      "mssqlExcessiveGrant": {
+        "title": "The memory grant is much larger than needed",
+        "why": "The query asked for far more memory than it used, which can make other queries wait."
+      },
+      "oracleCartesian": {
+        "title": "A Cartesian join was used",
+        "why": "Two row sources are joined without a condition. Check the join conditions of the query."
+      },
+      "oracleIndexSkipScan": {
+        "title": "An index skip scan was used on {{table}}",
+        "why": "The leading column of the index is not in the condition, so the index is probed many times. An index starting with the filtered column is cheaper."
+      },
+      "mongoCollscan": {
+        "title": "Full collection scan on {{collection}}",
+        "why": "The query reads every document of {{collection}}. An index on the filtered fields lets MongoDB read only the matches."
+      },
+      "mongoExaminedRatio": {
+        "title": "Many documents are examined for few results",
+        "why": "MongoDB examined far more keys or documents than it returned. A more selective or compound index narrows the work."
+      },
+      "mongoBlockingSort": {
+        "title": "The sort cannot use an index",
+        "why": "MongoDB sorts the documents in memory. An index matching the filter and the sort order avoids that."
+      },
+      "mongoLookupNoIndex": {
+        "title": "$lookup joins without an index",
+        "why": "The joined collection has no index on the foreign field, so every lookup scans it."
+      },
+      "mongoUnanchoredRegex": {
+        "title": "The regular expression cannot use an index well",
+        "why": "A regex that is not anchored at the start must scan all index keys. Anchor it with ^ or use a text index."
+      },
+      "chPrimaryKeyUnused": {
+        "title": "The filter does not use the primary key of {{table}}",
+        "why": "The condition is not on a prefix of the ORDER BY key, so most granules are read. Filtering on the key prefix, or adding a skip index, reduces reads."
+      },
+      "chPartitionNotPruned": {
+        "title": "No partitions were skipped on {{table}}",
+        "why": "The query does not filter on the partition key, so every partition is read."
+      },
+      "chSkipIndexUseless": {
+        "title": "A skip index did not reduce reads",
+        "why": "The data skipping index on {{table}} did not exclude any granules for this query."
+      },
+      "chFinal": {
+        "title": "FINAL makes the read slower",
+        "why": "FINAL merges rows at query time. Consider deduplicating differently if the table is large."
+      },
+      "chJoinRightLarge": {
+        "title": "The right side of the join is large",
+        "why": "ClickHouse loads the right table of a join into memory. Put the smaller table on the right."
+      },
+      "crdbIndexRecommendation": {
+        "title": "CockroachDB recommends an index on {{table}}",
+        "why": "The optimizer listed an index that would speed this query up. Check it against your other queries before creating it."
+      },
+      "crdbMissingStats": {
+        "title": "Statistics are missing on {{table}}",
+        "why": "The plan is built without table statistics, so row counts are guesses."
+      },
+      "tidbPseudoStats": {
+        "title": "TiDB used pseudo statistics on {{table}}",
+        "why": "Real statistics are missing, so TiDB estimates with fixed guesses. Run ANALYZE TABLE."
+      },
+      "nonSargablePredicate": {
+        "title": "The condition on {{column}} cannot use an index",
+        "why": "Applying {{function}} to {{column}} hides it from the index. Rewrite the condition so the column stands alone."
+      },
+      "leadingWildcardLike": {
+        "title": "LIKE with a leading wildcard on {{column}}",
+        "why": "A pattern such as {{pattern}} cannot use a B-tree index. A trigram or full-text index can."
+      },
+      "orAcrossColumns": {
+        "title": "OR across different columns",
+        "why": "An OR over different columns often forces a full scan. UNION ALL of two indexed queries can use an index for each part."
+      },
+      "selectStar": {
+        "title": "SELECT * returns every column",
+        "why": "Reading all columns widens every row and blocks index-only access. List only the columns you need."
+      },
+      "largeOffset": {
+        "title": "A large OFFSET reads rows it throws away",
+        "why": "OFFSET {{offset}} still reads and discards that many rows. Keyset pagination starts right after the last row seen."
+      },
+      "notInSubquery": {
+        "title": "NOT IN with a subquery on {{column}}",
+        "why": "NOT IN returns no rows if the subquery yields a NULL, and it is often slow. NOT EXISTS is safer and can use an anti join."
+      },
+      "typeMismatch": {
+        "title": "Type mismatch on {{column}}",
+        "why": "The value is compared with a column of another type, so the index on {{column}} may be skipped. Use a value of the column's type."
+      },
+      "unknown": {
+        "title": "Optimisation advice",
+        "why": "This advice comes from a newer version of the advisor. See the evidence and actions below."
+      }
+    },
+    "evidence": {
+      "actualRows": "Actual rows",
+      "estimatedRows": "Estimated rows",
+      "exactHeapBlocks": "Exact heap blocks",
+      "expression": "Expression",
+      "heapFetches": "Heap fetches",
+      "innerTime": "Inner side time",
+      "loops": "Loops",
+      "lossyHeapBlocks": "Lossy heap blocks",
+      "misestimateFactor": "Estimate off by",
+      "offset": "Offset",
+      "planSign": "Plan sign",
+      "rowsKept": "Rows kept",
+      "rowsRead": "Rows read",
+      "rowsRemovedByFilter": "Rows removed by filter",
+      "rowsRemovedByRecheck": "Rows removed by recheck",
+      "selfTime": "Own time",
+      "sortKey": "Sort key",
+      "sortMethod": "Sort method",
+      "sortRows": "Rows sorted",
+      "sortSpaceKb": "Sort space on disk",
+      "spillDetail": "Spill detail",
+      "lookupExecutions": "Lookup executions",
+      "missingIndexImpact": "Estimated improvement",
+      "selectivity": "Selectivity",
+      "keysExamined": "Keys examined",
+      "docsExamined": "Documents examined",
+      "docsReturned": "Documents returned",
+      "granulesSelected": "Granules selected",
+      "granulesTotal": "Granules total",
+      "grantedKb": "Memory granted",
+      "usedKb": "Memory used",
+      "plannedWorkers": "Workers planned",
+      "launchedWorkers": "Workers launched",
+      "jitTime": "JIT time"
+    },
+    "caveats": {
+      "estimateFromExpression": "The estimate comes from an expression or CTE, so it may not reflect stale statistics.",
+      "estimatedOnly": "Based on estimates only; run Analyze to confirm.",
+      "heapFetchesReplica": "On a replica, heap fetches can stay high until the primary vacuums.",
+      "indexForSortSpill": "An index in sort order may remove the sort instead of just tuning memory.",
+      "keysetNeedsUniqueOrder": "Keyset pagination needs a unique, stable ordering (add the primary key as a tie-breaker).",
+      "metadataUnavailable": "Existing indexes could not be checked; the suggestion may duplicate one.",
+      "semanticsDiffer": "The rewritten statement behaves differently with NULLs; check the results.",
+      "spillEstimate": "The memory figure is an estimate.",
+      "vacuumIo": "VACUUM reads the table and adds I/O load.",
+      "workMemEstimate": "The work_mem value is estimated from page counts.",
+      "workMemMultiplies": "work_mem applies per sort or hash node and per parallel worker; raise it for this session only.",
+      "writeOverhead": "Every index slows down inserts and updates and uses disk space.",
+      "expressionMustBeImmutable": "The expression must be immutable to be indexed.",
+      "extendsIndex": "Replaces or extends an existing index; drop the old one only after checking other queries.",
+      "onlineDdlMayFail": "Online index creation may fail or wait on long transactions.",
+      "selectivityHigh": "The condition keeps most rows, so an index may not help.",
+      "serverSuggestion": "Suggested by the server from this query alone; review before creating.",
+      "planMayBeStale": "This plan is old; data and indexes may have changed since.",
+      "ambiguousTable": "The table name matches more than one object; check which one is meant.",
+      "coversOtherAdvice": "This index also covers another suggestion.",
+      "largeTableBuild": "Large table ({{rows}} rows): building the index takes time, disk space and I/O.",
+      "requiresExtension": "Requires the {{extension}} extension, which must be installed by an administrator."
     }
   }
 }

@@ -150,10 +150,12 @@ interface PlanDetailsProps {
   tree: PlanTree;
   selected: PlanNode | undefined;
   onSelect: (id: number) => void;
+  /** List every warning of the plan above the node (off when the advice tab lists them). */
+  showWarnings?: boolean;
 }
 
-/** Side panel: every warning of the plan, then the figures of the selected operator. */
-export function PlanDetails({ tree, selected, onSelect }: PlanDetailsProps) {
+/** Node tab of the inspector: every warning of the plan (optional), then the selected operator. */
+export function PlanDetails({ tree, selected, onSelect, showWarnings = true }: PlanDetailsProps) {
   const { t } = useTranslation('plan');
   return (
     <aside
@@ -161,16 +163,18 @@ export function PlanDetails({ tree, selected, onSelect }: PlanDetailsProps) {
       aria-label={t('node.title')}
       data-testid="plan-details"
     >
-      <section className="border-b border-border p-2">
-        <h3 className="mb-1 px-1.5 text-xs font-medium">
-          {tree.warnings.length > 0
-            ? t('summary.warnings', { count: tree.warnings.length })
-            : t('summary.noWarnings')}
-        </h3>
-        {tree.warnings.map((w, i) => (
-          <WarningLine key={i} warning={w} onClick={() => onSelect(w.nodeId)} />
-        ))}
-      </section>
+      {showWarnings && (
+        <section className="border-b border-border p-2">
+          <h3 className="mb-1 px-1.5 text-xs font-medium">
+            {tree.warnings.length > 0
+              ? t('summary.warnings', { count: tree.warnings.length })
+              : t('summary.noWarnings')}
+          </h3>
+          {tree.warnings.map((w, i) => (
+            <WarningLine key={i} warning={w} onClick={() => onSelect(w.nodeId)} />
+          ))}
+        </section>
+      )}
       <section className="p-3">
         {selected ? (
           <NodeFacts tree={tree} node={selected} />

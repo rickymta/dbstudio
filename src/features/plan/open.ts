@@ -19,6 +19,8 @@ export interface OpenPlanOptions {
   analyze?: boolean;
   /** Dedicated connection of the editor tab, so session settings and temp tables apply. */
   leaseId?: Uuid | null;
+  /** Editor tab the statement comes from (`tabStateId`), for "Insert into editor". */
+  sourceEditorId?: string | null;
   timeoutMs?: number | null;
 }
 
@@ -60,6 +62,7 @@ export function openPlan(opts: OpenPlanOptions): string {
   usePlanStore.getState().add(
     newEntry(opts.session, planId, {
       leaseId: opts.leaseId ?? null,
+      sourceEditorId: opts.sourceEditorId ?? null,
       statement: opts.text,
       request: {
         queryId: crypto.randomUUID(),

@@ -96,6 +96,34 @@ export function openEditor(session: SessionInfo, options: OpenEditorOptions = {}
   );
 }
 
+/**
+ * Append `text` at the end of an open editor, one blank line after the existing text, and show
+ * the tab. Nothing is run. The new text is selected unless `select` is false (templates: the
+ * cursor goes to the end so a stray Enter or Run does not take the whole statement).
+ * Returns false when the editor is gone.
+ */
+export function appendToEditor(
+  tabStateId: string,
+  text: string,
+  { select = true }: { select?: boolean } = {},
+): boolean {
+  const store = useEditorStore.getState();
+  const data = store.tabs[tabStateId];
+  if (!data) return false;
+  const body = data.text;
+  const gap =
+    body.length === 0 ? '' : body.endsWith('\n\n') ? '' : body.endsWith('\n') ? '\n' : '\n\n';
+  const from = body.length + gap.length;
+  const to = from + text.length;
+  store.patch(tabStateId, {
+    text: body + gap + text,
+    cursor: to,
+    selection: select ? { from, to } : { from: to, to },
+  });
+  useTabsStore.getState().activate(editorTabId(tabStateId));
+  return true;
+}
+
 /** Show `title` on the tab of an editor (file name after open / save). */
 export function setEditorTitle(tabStateId: string, title: string): void {
   useEditorStore.getState().patch(tabStateId, { title });

@@ -13,6 +13,8 @@ export interface PlanEntry {
   connectionId: Uuid;
   /** Dedicated connection the statement was explained on (editor tab lease), if any. */
   leaseId: Uuid | null;
+  /** Editor tab (`tabStateId`) the plan was explained from: "Insert into editor" appends there. */
+  sourceEditorId?: string | null;
   /** What was asked; `null` for a plan opened from a file. */
   request: ExplainRequest | null;
   /** The statement text (also set for plans opened from a file). */

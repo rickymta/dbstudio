@@ -1,10 +1,17 @@
 // Comparison of two plans (before / after a change of query or index).
 
-import type { PlanNode, PlanTree } from '@/lib/types';
+import type { PlanAdvice, PlanNode, PlanTree } from '@/lib/types';
 import { flatten, metricOf, objectLabel } from './planModel';
 
 export interface TotalDiff {
-  key: 'totalCost' | 'planningTimeMs' | 'executionTimeMs' | 'rows' | 'nodeCount' | 'warnings';
+  key:
+    | 'totalCost'
+    | 'planningTimeMs'
+    | 'executionTimeMs'
+    | 'rows'
+    | 'nodeCount'
+    | 'warnings'
+    | 'advice';
   a: number | null;
   b: number | null;
   /** `b - a` (`null` when one side is unknown). */
@@ -20,6 +27,44 @@ export interface NodeDiff {
   b: PlanNode | null;
   /** Difference of the node's own time (analyzed plans) or cost, `b - a`. */
   delta: number | null;
+}
+
+/** Advice of plan A against plan B, matched by `fingerprint` (rule + table + columns). */
+export interface AdviceDiff {
+  /** In A but not in B: what the change resolved. */
+  gone: PlanAdvice[];
+  /** In B but not in A. */
+  added: PlanAdvice[];
+  /** In both; `a` and `b` are the two versions of the same advice. */
+  kept: { a: PlanAdvice; b: PlanAdvice }[];
+}
+
+/** Split two advice lists into resolved, new and remaining items (order of each input is kept). */
+export function adviceDiff(
+  a: readonly PlanAdvice[] | undefined,
+  b: readonly PlanAdvice[] | undefined,
+): AdviceDiff {
+  const listA = a ?? [];
+  const listB = b ?? [];
+  const inB = new Map<string, PlanAdvice>();
+  for (const x of listB) if (!inB.has(x.fingerprint)) inB.set(x.fingerprint, x);
+  const inA = new Set(listA.map((x) => x.fingerprint));
+  const out: AdviceDiff = { gone: [], added: [], kept: [] };
+  const seen = new Set<string>();
+  for (const x of listA) {
+    if (seen.has(x.fingerprint)) continue;
+    seen.add(x.fingerprint);
+    const other = inB.get(x.fingerprint);
+    if (other) out.kept.push({ a: x, b: other });
+    else out.gone.push(x);
+  }
+  const seenB = new Set<string>();
+  for (const x of listB) {
+    if (inA.has(x.fingerprint) || seenB.has(x.fingerprint)) continue;
+    seenB.add(x.fingerprint);
+    out.added.push(x);
+  }
+  return out;
 }
 
 export interface PlanComparison {
@@ -51,7 +96,12 @@ function weight(n: PlanNode | null, metric: 'time' | 'cost' | null): number {
  * Match nodes by operator and object in pre-order (the k-th "Seq Scan orders" of A pairs with
  * the k-th of B), then list pairs and unmatched nodes, the biggest change first.
  */
-export function comparePlans(a: PlanTree, b: PlanTree): PlanComparison {
+export function comparePlans(
+  a: PlanTree,
+  b: PlanTree,
+  /** Advice lists to count (default: the tier-1 advice carried by the trees). */
+  advice: { a?: readonly PlanAdvice[]; b?: readonly PlanAdvice[] } = {},
+): PlanComparison {
   const metricA = metricOf(a);
   const metricB = metricOf(b);
   const metric =
@@ -90,6 +140,7 @@ export function comparePlans(a: PlanTree, b: PlanTree): PlanComparison {
       diff('rows', a.totals.rows, b.totals.rows),
       diff('nodeCount', a.nodeCount, b.nodeCount),
       diff('warnings', a.warnings.length, b.warnings.length),
+      diff('advice', (advice.a ?? a.advice ?? []).length, (advice.b ?? b.advice ?? []).length),
     ],
   };
 }

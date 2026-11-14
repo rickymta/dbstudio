@@ -4,7 +4,11 @@ import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
 import { cn } from '@/lib/cn';
-import { comparePlans, type TotalDiff } from './compareModel';
+import { adviceDiff, comparePlans, type TotalDiff } from './compareModel';
+import { adviceTitle, confidenceLabel } from './adviceModel';
+import { usePlanAdvice } from './PlanAdviceData';
+import { SeverityIcon } from './PlanDetails';
+import type { PlanAdvice } from '@/lib/types';
 import { formatCost, formatCount, formatDuration, objectLabel } from './planModel';
 import { usePlanStore } from './planStore';
 
@@ -15,6 +19,7 @@ const fmt: Record<TotalDiff['key'], (n: number | null) => string> = {
   rows: formatCount,
   nodeCount: formatCount,
   warnings: formatCount,
+  advice: formatCount,
 };
 
 function label(e: { planId: string; statement: string }): string {
@@ -52,7 +57,14 @@ export function PlanCompare({
   const currentTree = usePlanStore((s) => s.entries[planId]?.tree ?? null);
   const otherTree = usePlanStore((s) => (other ? (s.entries[other.planId]?.tree ?? null) : null));
 
-  const result = currentTree && otherTree ? comparePlans(currentTree, otherTree) : null;
+  // Tier-2 advice when the plan has it (the two plans may run on different connections).
+  const adviceA = usePlanAdvice(planId).ranked;
+  const adviceB = usePlanAdvice(other?.planId ?? '').ranked;
+  const result =
+    currentTree && otherTree
+      ? comparePlans(currentTree, otherTree, { a: adviceA, b: adviceB })
+      : null;
+  const advice = adviceDiff(adviceA, adviceB);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -103,6 +115,7 @@ export function PlanCompare({
                 ))}
               </tbody>
             </table>
+            <AdviceCompare diff={advice} />
             <table className="w-full border-collapse" data-testid="plan-compare-nodes">
               <thead className="text-left text-muted-foreground">
                 <tr>
@@ -148,5 +161,49 @@ export function PlanCompare({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function AdviceLine({ advice }: { advice: PlanAdvice }) {
+  const { t } = useTranslation('plan');
+  return (
+    <li className="flex items-start gap-1.5" data-testid="compare-advice-item">
+      <SeverityIcon severity={advice.severity} size={12} />
+      <span className="min-w-0 flex-1">{adviceTitle(t, advice)}</span>
+      <span className="shrink-0 text-muted-foreground">
+        {t(`advice.confidence.${confidenceLabel(advice)}`)}
+      </span>
+    </li>
+  );
+}
+
+/** "Resolved / New / Remaining" advice between the two plans. */
+function AdviceCompare({ diff }: { diff: ReturnType<typeof adviceDiff> }) {
+  const { t } = useTranslation('plan');
+  if (diff.gone.length + diff.added.length + diff.kept.length === 0) return null;
+  const groups: { key: 'gone' | 'new' | 'kept'; items: PlanAdvice[]; tone: string }[] = [
+    { key: 'gone', items: diff.gone, tone: 'text-success' },
+    { key: 'new', items: diff.added, tone: 'text-danger' },
+    { key: 'kept', items: diff.kept.map((k) => k.b), tone: 'text-muted-foreground' },
+  ];
+  return (
+    <section data-testid="plan-compare-advice" className="space-y-2">
+      <h3 className="font-medium">{t('advice.title')}</h3>
+      {groups.map(
+        (g) =>
+          g.items.length > 0 && (
+            <div key={g.key} data-group={g.key}>
+              <h4 className={cn('mb-0.5 font-medium', g.tone)}>
+                {t(`advice.compare.${g.key}`)} ({g.items.length})
+              </h4>
+              <ul className="space-y-0.5">
+                {g.items.map((a) => (
+                  <AdviceLine key={a.fingerprint} advice={a} />
+                ))}
+              </ul>
+            </div>
+          ),
+      )}
+    </section>
   );
 }

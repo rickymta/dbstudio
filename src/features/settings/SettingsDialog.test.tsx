@@ -60,6 +60,21 @@ describe('SettingsDialog', () => {
     expect(within(dialog).getByLabelText('Maximum rows loaded into a grid')).toHaveValue('2000');
   });
 
+  it('saves the Query Advisor catalog switch', async () => {
+    const user = setup();
+    expect((await ipc.settingsGet()).planAdvisorMetadata).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Settings' });
+    const toggle = within(dialog).getByRole('switch', {
+      name: 'Match advice against existing indexes (reads the catalog)',
+    });
+    expect(toggle).toBeChecked();
+    await user.click(toggle);
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect((await ipc.settingsGet()).planAdvisorMetadata).toBe(false);
+  });
+
   it('keeps appearance changes as drafts until Save and discards Cancel', async () => {
     const user = setup();
     await user.click(screen.getByRole('button', { name: 'Settings' }));
