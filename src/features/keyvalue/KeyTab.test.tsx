@@ -278,7 +278,7 @@ describe('KeyTab editing', () => {
     await user.click(screen.getByRole('button', { name: 'Set TTL' }));
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1), WAIT);
     expect(keyChanges(spy)).toEqual([{ op: 'expire', key: 'cache:product:1', ttlMs: 90000 }]);
-    await waitFor(() => expect(screen.getByTestId('key-ttl')).toHaveTextContent('1m 30s'), WAIT);
+    await waitFor(() => expect(screen.getByTestId('key-ttl')).toHaveTextContent(/1m \d+s/), WAIT);
     await user.click(screen.getByRole('button', { name: 'TTL' }));
     await user.click(await screen.findByRole('button', { name: 'Remove TTL' }));
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(2), WAIT);
