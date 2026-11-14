@@ -17,7 +17,11 @@ uuid.workspace = true
 
 [dev-dependencies]
 dbstudio-core = { workspace = true, features = ["testing"] }
-tokio.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
+proptest.workspace = true
+dbstudio-driver-postgres = { path = "../drivers/postgres" }
+dbstudio-driver-mysql = { path = "../drivers/mysql" }
+async-trait.workspace = true
 
 [features]
 # Package O: prototype of the Oracle DBMS_DEBUG routine debugger (spike).
