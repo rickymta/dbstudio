@@ -26,6 +26,22 @@
 #              (passphrase dbstudio_key_pass; run docker/gen-ssh-keys.sh first). Same compose network as
 #              every DB, so tunnels reach pg16:5432, mysql8:3306, mssql2022:1433 ... by service name.
 # The Docker VM needs memory: MSSQL needs ~2 GB and Oracle ~3 GB, start them only when testing them.
+#
+# Backlog + phase 9 services (profiles keep `up` without arguments from starting them; naming a
+# service on the command line enables its profile). Start ONE profile at a time, never together
+# with MSSQL/Oracle (the Docker VM is ~8 GB). Logins of the CQL / SQL services below are created
+# by the integration tests (dbstudio / dbstudio_test) from the bootstrap account listed here.
+#   profile wide (~2 GB)      scylla       DBSTUDIO_IT_SCYLLA_PORT=19060, DBSTUDIO_IT_SCYLLA_TLS_PORT=19062
+#                             cassandra5   DBSTUDIO_IT_CASSANDRA5_PORT=19050   cassandra / cassandra
+#   profile analytics (~1 GB) clickhouse26 DBSTUDIO_IT_CLICKHOUSE_PORT=18123 (HTTP),
+#                             DBSTUDIO_IT_CLICKHOUSE_TLS_PORT=18443 (HTTPS)   dbstudio / dbstudio_test
+#   profile newsql (~1.5 GB)  cockroach    DBSTUDIO_IT_COCKROACH_PORT=26258   root (certs: docker/certs/cockroach)
+#                             tidb         DBSTUDIO_IT_TIDB_PORT=34000        root, no password
+#   profile heavy (~2 GB)     yugabyte     DBSTUDIO_IT_YUGABYTE_PORT=54333    yugabyte / yugabyte
+#   profile extra             cassandra41 19041, scylla62 19061, clickhouse23 18023 (older versions;
+#                             DBSTUDIO_IT_CASSANDRA41_PORT / _SCYLLA62_PORT / _CLICKHOUSE23_PORT)
+#   docker compose -f docker/compose.test.yml up -d --wait scylla       # starts one service
+#   sshd (same compose network) reaches every service by its service name.
 name: dbstudio-test
 
 x-pg-env: &pg-env
@@ -302,6 +318,187 @@ services:
       timeout: 3s
       retries: 40
       start_period: 5s
+
+  # ---- Backlog + phase 9 services (profiles; see the header for ports and RAM) --------------
+
+  # ScyllaDB 2026.1 (CQL). Password auth (cassandra/cassandra) and a TLS port 9142 (scylla.crt).
+  scylla:
+    profiles: ['wide']
+    image: scylladb/scylla:2026.1
+    mem_limit: 1g
+    command:
+      - --smp=1
+      - --memory=750M
+      - --overprovisioned=1
+      - --developer-mode=1
+      - --authenticator=PasswordAuthenticator
+    ports: ['127.0.0.1:19060:9042', '127.0.0.1:19062:9142']
+    volumes:
+      - ./certs:/certs:ro
+      - ./scylla/dbstudio.yaml:/etc/scylla.d/dbstudio.yaml:ro
+    healthcheck:
+      test: ['CMD-SHELL', "cqlsh -u cassandra -p cassandra -e 'SELECT now() FROM system.local'"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 60s
+
+  # Apache Cassandra 5.0 (CQL), PasswordAuthenticator through docker/cassandra/enable-auth.sh.
+  cassandra5:
+    profiles: ['wide']
+    image: cassandra:5.0.9
+    mem_limit: 1g
+    entrypoint: ['sh', '/cassandra/enable-auth.sh']
+    environment:
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    ports: ['127.0.0.1:19050:9042']
+    volumes: ['./cassandra:/cassandra:ro']
+    healthcheck:
+      test: ['CMD-SHELL', "cqlsh -u cassandra -p cassandra -e 'SELECT now() FROM system.local'"]
+      interval: 10s
+      timeout: 15s
+      retries: 30
+      start_period: 90s
+
+  # Oldest supported Cassandra (4.1).
+  cassandra41:
+    profiles: ['extra']
+    image: cassandra:4.1.12
+    mem_limit: 1g
+    entrypoint: ['sh', '/cassandra/enable-auth.sh']
+    environment:
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    ports: ['127.0.0.1:19041:9042']
+    volumes: ['./cassandra:/cassandra:ro']
+    healthcheck:
+      test: ['CMD-SHELL', "cqlsh -u cassandra -p cassandra -e 'SELECT now() FROM system.local'"]
+      interval: 10s
+      timeout: 15s
+      retries: 30
+      start_period: 90s
+
+  # Last AGPL ScyllaDB release (6.2).
+  scylla62:
+    profiles: ['extra']
+    image: scylladb/scylla:6.2
+    mem_limit: 1g
+    command:
+      - --smp=1
+      - --memory=750M
+      - --overprovisioned=1
+      - --developer-mode=1
+      - --authenticator=PasswordAuthenticator
+    ports: ['127.0.0.1:19061:9042']
+    healthcheck:
+      test: ['CMD-SHELL', "cqlsh -u cassandra -p cassandra -e 'SELECT now() FROM system.local'"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 60s
+
+  # ClickHouse 26.3 LTS: HTTP 8123 and HTTPS 8443 (clickhouse.crt), `backups` disk for BACKUP.
+  clickhouse26:
+    profiles: ['analytics']
+    image: clickhouse/clickhouse-server:26.3
+    mem_limit: 1g
+    environment:
+      CLICKHOUSE_USER: dbstudio
+      CLICKHOUSE_PASSWORD: dbstudio_test
+      CLICKHOUSE_DB: dbstudio
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
+    ports: ['127.0.0.1:18123:8123', '127.0.0.1:18443:8443']
+    volumes:
+      - ./certs:/certs:ro
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ['CMD-SHELL', 'clickhouse-client -q "SELECT 1"']
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
+  # Oldest supported ClickHouse (23.8).
+  clickhouse23:
+    profiles: ['extra']
+    image: clickhouse/clickhouse-server:23.8
+    mem_limit: 1g
+    environment:
+      CLICKHOUSE_USER: dbstudio
+      CLICKHOUSE_PASSWORD: dbstudio_test
+      CLICKHOUSE_DB: dbstudio
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
+    ports: ['127.0.0.1:18023:8123']
+    volumes:
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./certs:/certs:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ['CMD-SHELL', 'clickhouse-client -q "SELECT 1"']
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
+  # CockroachDB 25.4 single node, secure (docker/certs/cockroach); SQL also accepted without TLS.
+  # Login root with client.root.crt; the tests create dbstudio / dbstudio_test.
+  cockroach:
+    profiles: ['newsql']
+    image: cockroachdb/cockroach:v25.4.20
+    mem_limit: 768m
+    command:
+      - start-single-node
+      - --certs-dir=/certs
+      - --cache=64MiB
+      - --max-sql-memory=128MiB
+      - --accept-sql-without-tls
+    environment:
+      COCKROACH_SKIP_KEY_PERMISSION_CHECK: 'true'
+    ports: ['127.0.0.1:26258:26257']
+    volumes: ['./certs/cockroach:/certs:ro']
+    healthcheck:
+      test: ['CMD-SHELL', "cockroach sql --certs-dir=/certs -e 'SELECT 1'"]
+      interval: 3s
+      timeout: 10s
+      retries: 40
+      start_period: 15s
+
+  # TiDB 8.5 with the in-process unistore (no PD / TiKV). Root without a password; the tests
+  # create dbstudio / dbstudio_test. The image has no mysql client: health = status endpoint.
+  tidb:
+    profiles: ['newsql']
+    image: pingcap/tidb:v8.5.7
+    mem_limit: 768m
+    command: ['--store=unistore', '--path=']
+    ports: ['127.0.0.1:34000:4000']
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:10080/status >/dev/null']
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
+  # YugabyteDB 2025.2 (YSQL on 5433), single node, tserver trimmed to ~1 GB. Heavy.
+  yugabyte:
+    profiles: ['heavy']
+    image: yugabytedb/yugabyte:2025.2.8.1-b8
+    mem_limit: 2g
+    command:
+      - bin/yugabyted
+      - start
+      - --background=false
+      - --tserver_flags=memory_limit_hard_bytes=1073741824,yb_num_shards_per_tserver=1,ysql_num_shards_per_tserver=1
+    ports: ['127.0.0.1:54333:5433']
+    healthcheck:
+      test: ['CMD-SHELL', "bin/ysqlsh -h $$(hostname) -c 'SELECT 1'"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 60s
 
 volumes:
   target-oracle:
