@@ -19,7 +19,18 @@ changed spot is marked `DBStudio patch`:
    `ColumnData::Numeric` instead of `f64`.
 4. **NTLM on Unix** (`Cargo.toml`): the `winauth` feature also enables `sspi-rs`, with `sspi`
    bumped to 0.23 (0.18 pins `crypto-bigint =0.7.0-rc.18`, which conflicts with `russh`).
+5. **PLP byte limit** (`src/tds/context.rs`, `src/tds/codec/column_data/{plp,string,binary}.rs`,
+   `src/tds/codec/token/token_row.rs`, `src/tds/stream/query.rs`, `src/client.rs`,
+   `src/result.rs`): `Client::set_plp_limit(Option<usize>)` caps the bytes kept of every PLP value
+   (`varchar(max)`, `nvarchar(max)`, `varbinary(max)`, `xml`). The excess is read off the wire in
+   64 KiB windows and dropped, so memory stays bounded; the connection stays in sync. A cut value
+   is reported by `QueryItem::Truncated(Truncated { column, total_bytes })`, emitted just before
+   its `Row`. UTF-16 cuts drop a dangling high surrogate, code-page cuts decode lossily. UDT
+   values and the connection default (`None`) are unaffected. Limitations: `QueryStream` queues
+   the `Truncated` notes and their row in a `pending` list; `columns()` (peek-ahead) stops while
+   that list is non-empty instead of reading past the queued row, and the limit also applies to
+   output parameters and other PLP values read while it is set (callers reset it to `None`).
 
 Updating: copy the new upstream `src`, re-apply the marked spots (`grep -rn "DBStudio patch"`),
 run `cargo test -p dbstudio-driver-mssql` with `DBSTUDIO_IT=1` against `mssql2022`. Candidates for
-an upstream pull request: 1 and 2.
+an upstream pull request: 1, 2 and 5.

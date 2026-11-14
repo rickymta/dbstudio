@@ -712,8 +712,9 @@ impl<B: LeaseBackend> Lease for ActorLease<B> {
             if g.closed {
                 return Err(closed_error());
             }
-            // A running statement proves the connection is alive.
-            if g.busy {
+            // A running statement proves the connection is alive; an open result set must
+            // not be disturbed (the pending-result timeout covers a dead connection).
+            if g.busy || g.state.pending_result.is_some() {
                 return Ok(());
             }
         }
@@ -781,8 +782,11 @@ async fn run_actor<B: LeaseBackend>(
     tuning: LeaseTuning,
 ) {
     let mut pending_deadline: Option<Instant> = None;
+    // When the last real command arrived. A keepalive `Ping` does not move it, so a forgotten
+    // lease is still closed after `idle_ttl` however often the keepalive pings it.
+    let mut last_activity = Instant::now();
     loop {
-        let idle_deadline = tuning.idle_ttl.map(|d| Instant::now() + d);
+        let idle_deadline = tuning.idle_ttl.map(|d| last_activity + d);
         // `Instant` far in the future stands for "no deadline" in the guarded branches.
         let far = Instant::now() + Duration::from_secs(86_400 * 365);
         let cmd = tokio::select! {
@@ -810,10 +814,14 @@ async fn run_actor<B: LeaseBackend>(
             }
         };
         let Some(cmd) = cmd else { break };
+        if !matches!(cmd, Cmd::Ping(_)) {
+            last_activity = Instant::now();
+        }
 
         // Every command except a fetch drops the pending result first.
-        let is_fetch = matches!(cmd, Cmd::Fetch { .. });
-        if !is_fetch && pending_deadline.take().is_some() {
+        // A fetch continues it and a keepalive ping must not destroy it.
+        let keeps_pending = matches!(cmd, Cmd::Fetch { .. } | Cmd::Ping(_));
+        if !keeps_pending && pending_deadline.take().is_some() {
             let _ = backend.discard_result().await;
             shared.lock().state.pending_result = None;
         }
@@ -1181,6 +1189,25 @@ mod tests {
             StatementOutcome::Rows(rs) => (rs.rows.len() as u64, rs.truncated),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_keepalive_ping_keeps_the_pending_result() {
+        let (lease, discards, _) = lease(10);
+        let req = request("select", Some(3));
+        let id = req.query_id;
+        lease
+            .execute(req, &mut CollectingSink::new())
+            .await
+            .unwrap();
+        assert_eq!(lease.state().pending_result, Some(id));
+        lease.ping().await.unwrap();
+        assert_eq!(lease.state().pending_result, Some(id));
+        assert_eq!(discards.load(Ordering::SeqCst), 0);
+        // The result is still fetchable after the ping.
+        let mut sink = CollectingSink::new();
+        lease.fetch_more(id, 3, None, &mut sink).await.unwrap();
+        assert_eq!(row_count(sink), (3, true));
     }
 
     #[tokio::test]
@@ -1585,9 +1612,29 @@ mod tests {
         let lease = ActorLease::spawn_with(fake, LeaseOptions::default(), tuning).unwrap();
         for _ in 0..4 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            lease.ping().await.unwrap();
+            lease
+                .execute(request("select", None), &mut CollectingSink::new())
+                .await
+                .unwrap();
         }
         assert_eq!(closes.load(Ordering::SeqCst), 0);
         assert!(!lease.state().broken);
+    }
+
+    #[tokio::test]
+    async fn keepalive_pings_do_not_renew_the_idle_limit() {
+        let (fake, _, _, closes) = Fake::new(1);
+        let tuning = LeaseTuning {
+            idle_ttl: Some(Duration::from_millis(250)),
+            ..LeaseTuning::default()
+        };
+        let lease = ActorLease::spawn_with(fake, LeaseOptions::default(), tuning).unwrap();
+        for _ in 0..3 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = lease.ping().await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(closes.load(Ordering::SeqCst), 1, "idle_ttl still applies");
+        assert!(lease.state().broken);
     }
 }

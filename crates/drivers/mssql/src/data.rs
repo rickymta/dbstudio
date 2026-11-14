@@ -278,6 +278,7 @@ pub async fn fetch_table(
             .unwrap_or(DEFAULT_BATCH)
             .clamp(1, 100_000),
         timeout: None,
+        full_lob: false,
     };
     // READ COMMITTED explicitly (design 3.1), whatever the pooled connection had.
     let mut conn = conn;
@@ -339,6 +340,7 @@ pub async fn count_table(sess: &MssqlSession, req: TableCountRequest) -> Result<
         max_rows: None,
         batch_size: 10,
         timeout: None,
+        full_lob: false,
     };
     let mut sink = CollectingSink::new();
     run_on(sess, conn, req.query_id, &sql, &params, &mut sink)
@@ -354,14 +356,22 @@ pub async fn count_table(sess: &MssqlSession, req: TableCountRequest) -> Result<
     }
 }
 
-/// SQL of a whole-table read for export (no paging).
+/// SQL of a whole-table read for export (no paging). Large columns are read whole (no `LEFT`
+/// / `SUBSTRING` cap): the run is started with `RunParams::full_lob`.
 pub(crate) fn stream_sql(
     obj: &ObjRef,
     req: &TableStreamRequest,
     info: &TableInfo,
-    lob_limit: usize,
 ) -> Result<String> {
-    let cols = info.select_list(&req.columns, lob_limit);
+    let cols = if req.columns.is_empty() {
+        "*".to_string()
+    } else {
+        req.columns
+            .iter()
+            .map(|c| quote(c))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let where_ = where_clause(&req.filters, req.raw_where.as_deref())?;
     let order = if req.order_by_key && !info.key.is_empty() {
         order_by(&[], &info.key)
@@ -542,7 +552,7 @@ mod tests {
             columns: vec![],
         };
         assert_eq!(
-            stream_sql(&obj, &req, &info, 100).unwrap(),
+            stream_sql(&obj, &req, &info).unwrap(),
             "SELECT [a], [b]]] FROM [dbo].[t] WHERE ([a] IS NULL) ORDER BY [id]"
         );
         let req = TableStreamRequest {
@@ -552,7 +562,7 @@ mod tests {
             ..req
         };
         assert_eq!(
-            stream_sql(&obj, &req, &TableInfo::default(), 100).unwrap(),
+            stream_sql(&obj, &req, &TableInfo::default()).unwrap(),
             "SELECT * FROM [dbo].[t]"
         );
         let info = TableInfo {
@@ -568,6 +578,11 @@ mod tests {
             "[a], LEFT([b], 10) AS [b], SUBSTRING(CAST([c] AS VARBINARY(MAX)), 1, 10) AS [c]"
         );
         assert_eq!(info.select_list(&["b".into()], 9), "LEFT([b], 10) AS [b]");
+        // An export read never wraps large columns.
+        assert_eq!(
+            stream_sql(&obj, &req, &info).unwrap(),
+            "SELECT * FROM [dbo].[t]"
+        );
     }
 
     #[test]

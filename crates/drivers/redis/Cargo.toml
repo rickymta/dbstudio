@@ -11,12 +11,13 @@ authors.workspace = true
 dbstudio-core.workspace = true
 dbstudio-sql.workspace = true
 async-trait.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "net"] }
 uuid.workspace = true
 redis.workspace = true
 rustls = { workspace = true, features = ["ring"] }
 
 [dev-dependencies]
+dbstudio-ssh.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [lints]

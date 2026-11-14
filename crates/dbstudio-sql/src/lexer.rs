@@ -155,6 +155,8 @@ impl Rules {
             // identifiers, comments `--`, `#` and `/* */`, `$tag$` heredocs.
             ScriptDialect::ClickHouse => {
                 r.ch = true;
+                // ClickHouse supports nested multi-line comments.
+                r.nested_comments = true;
                 r.backtick = true;
                 r.backslash = true;
                 r.ident_backslash = true;
@@ -537,8 +539,24 @@ impl<'a> Lexer<'a> {
             }
             return (TokenKind::Number, j, None);
         }
-        if self.at(j).is_some_and(is_word_start) {
-            while j < n && (self.chars[j].is_alphanumeric() || self.chars[j] == '_') {
+        // ClickHouse heredoc tags are ASCII words only.
+        let ascii = self.rules.ch;
+        let start_ok = |c: char| {
+            if ascii {
+                c.is_ascii_alphabetic() || c == '_'
+            } else {
+                is_word_start(c)
+            }
+        };
+        let cont_ok = |c: char| {
+            if ascii {
+                c.is_ascii_alphanumeric() || c == '_'
+            } else {
+                c.is_alphanumeric() || c == '_'
+            }
+        };
+        if self.at(j).is_some_and(start_ok) {
+            while j < n && cont_ok(self.chars[j]) {
                 j += 1;
             }
         }

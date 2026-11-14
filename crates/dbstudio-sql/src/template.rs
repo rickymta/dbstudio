@@ -164,6 +164,23 @@ fn sql(
         )
     };
     let clickhouse = matches!(d, ScriptDialect::ClickHouse);
+    // Warnings written into the generated text (comments only, the statement is unchanged).
+    let warning = if clickhouse && !key.is_empty() {
+        // The primary key of a MergeTree table does not identify one row.
+        "-- ClickHouse primary keys are not unique: every row with this key is affected.\n"
+    } else if matches!(d, ScriptDialect::Cql)
+        && details.columns.iter().any(|c| {
+            c.extra
+                .as_deref()
+                .is_some_and(|e| e.to_ascii_lowercase().contains("clustering"))
+                && !key.iter().any(|k| k.name == c.name)
+        })
+    {
+        // Only the partition key is addressed: the whole partition goes.
+        "-- The clustering columns are not in the WHERE: this affects the whole partition.\n"
+    } else {
+        ""
+    };
     match template {
         ScriptTemplate::Select => {
             let cols = if all.is_empty() {
@@ -212,21 +229,21 @@ fn sql(
                 .collect();
             if clickhouse {
                 format!(
-                    "ALTER TABLE {table}\n  UPDATE {}\n{where_clause};",
+                    "{warning}ALTER TABLE {table}\n  UPDATE {}\n{where_clause};",
                     assignments.join(", ")
                 )
             } else {
                 format!(
-                    "UPDATE {table}\nSET {}\n{where_clause};",
+                    "{warning}UPDATE {table}\nSET {}\n{where_clause};",
                     assignments.join(",\n    ")
                 )
             }
         }
         ScriptTemplate::Delete => {
             if clickhouse {
-                format!("ALTER TABLE {table}\n  DELETE\n{where_clause};")
+                format!("{warning}ALTER TABLE {table}\n  DELETE\n{where_clause};")
             } else {
-                format!("DELETE FROM {table}\n{where_clause};")
+                format!("{warning}DELETE FROM {table}\n{where_clause};")
             }
         }
     }
@@ -476,8 +493,8 @@ mod tests {
             [
                 "SELECT\n  `id`,\n  `user name`,\n  `e-mail`\nFROM `default`.`my table`\nLIMIT 100;",
                 "INSERT INTO `default`.`my table` (`id`, `user name`, `e-mail`)\nVALUES (:id, :user_name, :e_mail);",
-                "ALTER TABLE `default`.`my table`\n  UPDATE `user name` = :user_name, `e-mail` = :e_mail\nWHERE `id` = :id;",
-                "ALTER TABLE `default`.`my table`\n  DELETE\nWHERE `id` = :id;",
+                "-- ClickHouse primary keys are not unique: every row with this key is affected.\nALTER TABLE `default`.`my table`\n  UPDATE `user name` = :user_name, `e-mail` = :e_mail\nWHERE `id` = :id;",
+                "-- ClickHouse primary keys are not unique: every row with this key is affected.\nALTER TABLE `default`.`my table`\n  DELETE\nWHERE `id` = :id;",
             ],
         ),
     ];
@@ -715,5 +732,31 @@ mod tests {
             generate(d, &det, &root, ScriptTemplate::Select),
             "SELECT\n  *\nFROM \"public\".\"my table\"\nLIMIT 100;"
         );
+    }
+
+    #[test]
+    fn warnings_for_non_unique_keys() {
+        let (d, p) = case("cql");
+        let mut det = details(&p, true);
+        det.columns[1].extra = Some("clustering".into());
+        let del = generate(d, &det, &p, ScriptTemplate::Delete);
+        assert!(
+            del.starts_with("-- The clustering columns are not in the WHERE"),
+            "{del}"
+        );
+        assert!(del.ends_with("WHERE \"id\" = :id;"), "{del}");
+        det.columns[1].primary_key = true;
+        det.indexes.clear();
+        let del = generate(d, &det, &p, ScriptTemplate::Delete);
+        assert!(del.starts_with("DELETE FROM"), "{del}");
+        let (d, p) = case("ch");
+        let upd = generate(d, &details(&p, true), &p, ScriptTemplate::Update);
+        assert!(
+            upd.starts_with("-- ClickHouse primary keys are not unique"),
+            "{upd}"
+        );
+        let a = crate::analyze(d, &upd);
+        assert_eq!(a.statements.len(), 1);
+        assert_eq!(a.statements[0].destructive, None);
     }
 }
