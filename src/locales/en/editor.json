@@ -33,7 +33,10 @@
     "connect": "Connect",
     "reconnect": "Reconnect",
     "broken": "The connection was lost. Reconnect to keep working.",
-    "leaseFailed": "Could not open a connection for this editor: {{message}}"
+    "leaseFailed": "Could not open a connection for this editor: {{message}}",
+    "sessionLost": "The connection session was lost.",
+    "reconnected": "Reconnected.",
+    "reconnectFailed": "Could not reconnect: {{message}}"
   },
   "results": {
     "empty": "No results yet",

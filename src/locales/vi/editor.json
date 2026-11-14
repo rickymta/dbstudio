@@ -33,7 +33,10 @@
     "connect": "Kết nối",
     "reconnect": "Kết nối lại",
     "broken": "Kết nối đã bị mất. Hãy kết nối lại để tiếp tục.",
-    "leaseFailed": "Không mở được kết nối riêng cho tab này: {{message}}"
+    "leaseFailed": "Không mở được kết nối riêng cho tab này: {{message}}",
+    "sessionLost": "Phiên kết nối đã mất.",
+    "reconnected": "Đã kết nối lại.",
+    "reconnectFailed": "Không kết nối lại được: {{message}}"
   },
   "results": {
     "empty": "Chưa có kết quả",

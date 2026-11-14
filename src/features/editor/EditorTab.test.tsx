@@ -1,9 +1,11 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { polyfillLayoutApis } from '@/features/data/testUtils';
 import { Providers } from '@/app/providers';
 import { StatusBar } from '@/app/StatusBar';
+import { Toaster } from '@/components/ui/Toast';
+import { useToastStore } from '@/components/ui/toastStore';
 import i18n from '@/lib/i18n';
 import { ipc } from '@/lib/ipc';
 import { mockSetSqlFileToOpen } from '@/lib/mock/history';
@@ -383,5 +385,55 @@ describe('transaction cell of the status bar', () => {
     );
     act(() => useTabsStore.getState().activate('welcome'));
     await waitFor(() => expect(screen.queryByTestId('status-transaction')).toBeNull());
+  });
+});
+
+describe('lost session (F2d)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('Run reports a lost session with a reconnect button, not "Nothing to run"', async () => {
+    useToastStore.setState({ toasts: [] });
+    const { session } = await mountEditor('SELECT 1');
+    render(<Toaster />);
+    vi.spyOn(ipc, 'scriptAnalyze').mockRejectedValue({
+      kind: 'notFound',
+      message: `session ${session.sessionId}`,
+    });
+    const reconnect = vi.spyOn(ipc, 'sessionReconnect');
+    await run();
+    expect(await screen.findByText('The connection session was lost.')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing to run.')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(reconnect).toHaveBeenCalledWith(session.sessionId));
+    expect(await screen.findByText('Reconnected.')).toBeInTheDocument();
+  });
+
+  it('Explain reports a lost session too', async () => {
+    useToastStore.setState({ toasts: [] });
+    await mountEditor('SELECT 1');
+    render(<Toaster />);
+    vi.spyOn(ipc, 'scriptAnalyze').mockRejectedValue({ kind: 'notFound', message: 'gone' });
+    await userEvent.click(screen.getByRole('button', { name: /^Explain/ }));
+    expect(await screen.findByText('The connection session was lost.')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing to run.')).toBeNull();
+  });
+
+  it('shows the real message of any other analysis error', async () => {
+    useToastStore.setState({ toasts: [] });
+    await mountEditor('SELECT 1');
+    render(<Toaster />);
+    vi.spyOn(ipc, 'scriptAnalyze').mockRejectedValue({ kind: 'other', message: 'parser exploded' });
+    await run();
+    expect(await screen.findByText('parser exploded')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing to run.')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
+  });
+
+  it('still says "Nothing to run" when the analysis works but nothing is selected', async () => {
+    useToastStore.setState({ toasts: [] });
+    await mountEditor('   ');
+    render(<Toaster />);
+    await run();
+    expect(await screen.findByText('Nothing to run.')).toBeInTheDocument();
   });
 });

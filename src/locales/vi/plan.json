@@ -19,7 +19,12 @@
     "exportSvg": "Xuất sơ đồ SVG",
     "exportPng": "Xuất sơ đồ PNG",
     "exported": "Đã lưu sơ đồ vào {{path}}",
-    "cancel": "Huỷ"
+    "cancel": "Huỷ",
+    "more": "Thêm thao tác",
+    "layoutVertical": "Bố cục dọc",
+    "layoutHorizontal": "Bố cục ngang",
+    "minimap": "Bản đồ thu nhỏ",
+    "reconnect": "Kết nối lại"
   },
   "views": {
     "label": "Kiểu xem kế hoạch",
@@ -39,7 +44,9 @@
     "format": "Định dạng",
     "capturedAt": "Chụp lúc {{time}}",
     "server": "Máy chủ {{version}}",
-    "layoutFailed": "Không dàn được sơ đồ: {{message}}"
+    "layoutFailed": "Không dàn được sơ đồ: {{message}}",
+    "sessionLost": "Phiên kết nối đã mất",
+    "sessionLostHint": "Kết nối tới máy chủ đã bị mất. Hãy kết nối lại rồi chạy lại."
   },
   "summary": {
     "totalCost": "Tổng chi phí",
@@ -105,6 +112,11 @@
     "msSqlShowplanXml": "SQL Server showplan XML",
     "oraclePlanRows": "Oracle plan rows",
     "mongoExplain": "MongoDB explain"
+  },
+  "inspector": {
+    "expand": "Mở bảng chi tiết",
+    "collapse": "Thu gọn bảng chi tiết",
+    "resize": "Đổi độ rộng bảng chi tiết"
   },
   "analyzeConfirm": {
     "title": "Chạy câu lệnh với ANALYZE?",

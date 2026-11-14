@@ -1,19 +1,42 @@
-import { Copy, GitCompare, X, FileDown, FolderOpen, Play, RefreshCw, Gauge } from 'lucide-react';
-import { lazy, Suspense, useCallback, useState, type FC } from 'react';
+import {
+  Copy,
+  Ellipsis,
+  GitCompare,
+  X,
+  FileDown,
+  FolderOpen,
+  Play,
+  PlugZap,
+  RefreshCw,
+  Gauge,
+  type LucideIcon,
+} from 'lucide-react';
+import { lazy, Suspense, useCallback, useRef, useState, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/DropdownMenu';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { IconButton } from '@/components/ui/IconButton';
 import { Spinner } from '@/components/ui/Spinner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { toast } from '@/components/ui/toastStore';
 import { ipc, toIpcError } from '@/lib/ipc';
+import { isSessionLost, reconnectSession } from '@/stores/sessionRecovery';
 import type { PlanTabPayload } from '@/stores/tabs';
 import { openPlanFile } from './open';
 import { PlanCompare } from './PlanCompare';
 import { PlanDetails } from './PlanDetails';
 import { PlanGraph } from './PlanGraph';
+import { PlanInspector } from './PlanInspector';
+import { useInspectorPrefs } from './planPrefs';
+import { useElementWidth } from './useElementWidth';
 import {
   explainErrorMessage,
   flatten,
@@ -26,6 +49,14 @@ import {
 } from './planModel';
 import { PlanTable } from './PlanTable';
 import { cancelPlan, runPlan, usePlanStore } from './planStore';
+
+/** Plan area narrower than this: the inspector starts collapsed. */
+const INSPECTOR_AUTO_COLLAPSE_PX = 1100;
+/** Secondary stats (planning time, operator count) are dropped below this width. */
+const STATS_MIN_PX = 900;
+/** Below: secondary actions live in the ⋯ menu; up to ICON_ONLY_MAX_PX: icon-only buttons. */
+const MENU_MAX_PX = 1100;
+const ICON_ONLY_MAX_PX = 1280;
 
 const PlanRaw = lazy(() => import('./PlanRaw'));
 
@@ -50,6 +81,17 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
   const [comparing, setComparing] = useState(false);
   const [confirm, setConfirm] = useState<'analyze' | 'rerun' | null>(null);
   const [writes, setWrites] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // `null` (not measured yet) counts as roomy.
+  const width = useElementWidth(rootRef) ?? Number.POSITIVE_INFINITY;
+  const inspector = useInspectorPrefs();
+  const inspectorCollapsed =
+    inspector.choice === 'open'
+      ? false
+      : inspector.choice === 'collapsed'
+        ? true
+        : width < INSPECTOR_AUTO_COLLAPSE_PX;
+  const [reconnecting, setReconnecting] = useState(false);
 
   const onSelect = useCallback((id: number) => select(planId, id), [select, planId]);
   const onToggle = useCallback(
@@ -68,7 +110,7 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
 
   if (!entry) {
     return (
-      <div className="flex h-full items-center justify-center" data-testid="plan-tab">
+      <div ref={rootRef} className="flex h-full items-center justify-center" data-testid="plan-tab">
         <EmptyState title={t('status.noPlan')} />
       </div>
     );
@@ -82,19 +124,79 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
       if (w) setConfirm(kind);
       else void runPlan(planId, { analyze: true });
     });
+  const saveRaw = () => {
+    if (!entry.raw) return;
+    void ipc
+      .planFileSave(entry.raw)
+      .then((path) => path && toast.success(t('toolbar.saved', { path })))
+      .catch((e) => toast.error(toIpcError(e).message));
+  };
+  const copyRaw = () => {
+    if (!entry.raw) return;
+    void navigator.clipboard
+      ?.writeText(entry.raw.text)
+      .then(() => toast.success(t('toolbar.copied')));
+  };
+  const secondary: {
+    key: string;
+    label: string;
+    icon: LucideIcon;
+    disabled: boolean;
+    onClick: () => void;
+  }[] = [
+    {
+      key: 'save',
+      label: t('toolbar.save'),
+      icon: FileDown,
+      disabled: !entry.raw,
+      onClick: saveRaw,
+    },
+    {
+      key: 'open',
+      label: t('toolbar.open'),
+      icon: FolderOpen,
+      disabled: false,
+      onClick: () => void openPlanFile({ sessionId, connectionId }),
+    },
+    {
+      key: 'compare',
+      label: t('compare.open'),
+      icon: GitCompare,
+      disabled: !tree,
+      onClick: () => setComparing(true),
+    },
+    {
+      key: 'copyRaw',
+      label: t('toolbar.copyRaw'),
+      icon: Copy,
+      disabled: !entry.raw,
+      onClick: copyRaw,
+    },
+  ];
+  const showStats = width >= STATS_MIN_PX;
   const header = (
-    <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-border px-3 py-1.5 text-xs">
-      <span className="min-w-0 max-w-[40ch] truncate font-mono" title={entry.statement}>
+    <div
+      className="flex h-9 shrink-0 flex-nowrap items-center gap-x-3 overflow-hidden border-b border-border px-3 text-xs"
+      data-testid="plan-header"
+    >
+      <span className="min-w-0 flex-1 truncate font-mono" title={entry.statement}>
         {entry.statement.replace(/\s+/g, ' ')}
       </span>
       {entry.raw && (
-        <Badge tone={entry.raw.analyzed ? 'success' : 'neutral'}>
+        <Badge
+          tone={entry.raw.analyzed ? 'success' : 'neutral'}
+          className="shrink-0 whitespace-nowrap"
+        >
           {entry.raw.analyzed ? t('status.analyzed') : t('status.estimated')}
         </Badge>
       )}
-      {entry.raw?.rolledBack && <Badge tone="warning">{t('status.rolledBack')}</Badge>}
-      {entry.raw && (
-        <span className="text-muted-foreground">
+      {entry.raw?.rolledBack && (
+        <Badge tone="warning" className="shrink-0 whitespace-nowrap">
+          {t('status.rolledBack')}
+        </Badge>
+      )}
+      {entry.raw && showStats && (
+        <span className="shrink-0 whitespace-nowrap text-muted-foreground">
           {t(`format.${entry.raw.format}`)}
           {entry.raw.serverVersion
             ? ` · ${t('status.server', { version: entry.raw.serverVersion })}`
@@ -102,9 +204,9 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
         </span>
       )}
       {tree && (
-        <>
+        <span className="flex shrink-0 items-center gap-x-3">
           <Stat label={t('summary.totalCost')} value={formatCost(tree.totals.totalCost)} />
-          {tree.totals.planningTimeMs != null && (
+          {showStats && tree.totals.planningTimeMs != null && (
             <Stat
               label={t('summary.planning')}
               value={formatDuration(tree.totals.planningTimeMs)}
@@ -117,10 +219,10 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
             />
           )}
           <Stat label={t('summary.rows')} value={formatCount(tree.totals.rows)} />
-          <Stat label={t('summary.nodes')} value={formatCount(tree.nodeCount)} />
-        </>
+          {showStats && <Stat label={t('summary.nodes')} value={formatCount(tree.nodeCount)} />}
+        </span>
       )}
-      <span className="ml-auto flex items-center gap-1">
+      <span className="flex shrink-0 items-center gap-1">
         {entry.request && (
           <>
             <Button
@@ -149,45 +251,60 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
             )}
           </>
         )}
-        <Button
-          size="sm"
-          disabled={!entry.raw}
-          onClick={() => {
-            if (!entry.raw) return;
-            const raw = entry.raw;
-            void ipc
-              .planFileSave(raw)
-              .then((path) => path && toast.success(t('toolbar.saved', { path })))
-              .catch((e) => toast.error(toIpcError(e).message));
-          }}
-        >
-          <FileDown size={13} />
-          {t('toolbar.save')}
-        </Button>
-        <Button size="sm" onClick={() => void openPlanFile({ sessionId, connectionId })}>
-          <FolderOpen size={13} />
-          {t('toolbar.open')}
-        </Button>
-        <Button size="sm" disabled={!tree} onClick={() => setComparing(true)}>
-          <GitCompare size={13} />
-          {t('compare.open')}
-        </Button>
-        <Button
-          size="sm"
-          disabled={!entry.raw}
-          onClick={() => {
-            if (!entry.raw) return;
-            void navigator.clipboard
-              ?.writeText(entry.raw.text)
-              .then(() => toast.success(t('toolbar.copied')));
-          }}
-        >
-          <Copy size={13} />
-          {t('toolbar.copyRaw')}
-        </Button>
+        {width >= MENU_MAX_PX &&
+          secondary.map(({ key, label, icon: Icon, disabled, onClick }) =>
+            width < ICON_ONLY_MAX_PX ? (
+              <IconButton
+                key={key}
+                label={label}
+                icon={<Icon size={13} />}
+                disabled={disabled}
+                onClick={onClick}
+              />
+            ) : (
+              <Button key={key} size="sm" disabled={disabled} onClick={onClick}>
+                <Icon size={13} />
+                {label}
+              </Button>
+            ),
+          )}
+        {width < MENU_MAX_PX && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label={t('toolbar.more')}
+                title={t('toolbar.more')}
+              >
+                <Ellipsis size={14} />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {secondary.map(({ key, label, icon: Icon, disabled, onClick }) => (
+                <DropdownMenuItem key={key} disabled={disabled} onSelect={onClick}>
+                  <Icon size={13} />
+                  {label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </span>
     </div>
   );
+
+  const reconnect = () => {
+    setReconnecting(true);
+    const stale = entry.sessionId;
+    void reconnectSession(stale, entry.connectionId)
+      .then((info) => {
+        usePlanStore.getState().patch(planId, { sessionId: info.sessionId, leaseId: null });
+        void runPlan(planId);
+      })
+      .catch((e: unknown) => toast.error(toIpcError(e).message))
+      .finally(() => setReconnecting(false));
+  };
 
   let body;
   if (entry.status === 'loading' && !entry.raw) {
@@ -200,18 +317,31 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
   } else if (entry.status === 'error') {
     body = (
       <div className="flex flex-1 items-center justify-center">
-        <EmptyState
-          title={t('status.failed')}
-          description={entry.error ? explainErrorMessage(t, entry.error) : undefined}
-          action={
-            entry.request && (
-              <Button onClick={() => void runPlan(planId)}>
-                <Play size={13} />
-                {t('toolbar.rerun')}
+        {entry.error && isSessionLost(entry.error) ? (
+          <EmptyState
+            title={t('status.sessionLost')}
+            description={t('status.sessionLostHint')}
+            action={
+              <Button variant="primary" disabled={reconnecting} onClick={reconnect}>
+                {reconnecting ? <Spinner size={12} /> : <PlugZap size={13} />}
+                {t('toolbar.reconnect')}
               </Button>
-            )
-          }
-        />
+            }
+          />
+        ) : (
+          <EmptyState
+            title={t('status.failed')}
+            description={entry.error ? explainErrorMessage(t, entry.error) : undefined}
+            action={
+              entry.request && (
+                <Button onClick={() => void runPlan(planId)}>
+                  <Play size={13} />
+                  {t('toolbar.rerun')}
+                </Button>
+              )
+            }
+          />
+        )}
       </div>
     );
   } else {
@@ -296,14 +426,24 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
               </TabsContent>
             )}
           </div>
-          {tree && <PlanDetails tree={tree} selected={selected} onSelect={onSelect} />}
+          {tree && (
+            <PlanInspector
+              collapsed={inspectorCollapsed}
+              onCollapsedChange={(c) => inspector.choose(c ? 'collapsed' : 'open')}
+              width={inspector.width}
+              onWidthChange={inspector.resize}
+              badge={tree.warnings.length}
+            >
+              <PlanDetails tree={tree} selected={selected} onSelect={onSelect} />
+            </PlanInspector>
+          )}
         </div>
       </Tabs>
     );
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="plan-tab">
+    <div ref={rootRef} className="flex h-full min-h-0 flex-col" data-testid="plan-tab">
       {header}
       {body}
       {comparing && <PlanCompare planId={planId} open onOpenChange={setComparing} />}

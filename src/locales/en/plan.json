@@ -19,7 +19,12 @@
     "exportSvg": "Export diagram as SVG",
     "exportPng": "Export diagram as PNG",
     "exported": "Diagram saved to {{path}}",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "more": "More actions",
+    "layoutVertical": "Vertical layout",
+    "layoutHorizontal": "Horizontal layout",
+    "minimap": "Minimap",
+    "reconnect": "Reconnect"
   },
   "views": {
     "label": "Plan views",
@@ -39,7 +44,9 @@
     "format": "Format",
     "capturedAt": "Captured {{time}}",
     "server": "Server {{version}}",
-    "layoutFailed": "The diagram could not be laid out: {{message}}"
+    "layoutFailed": "The diagram could not be laid out: {{message}}",
+    "sessionLost": "The connection session was lost",
+    "sessionLostHint": "The connection to the server is gone. Reconnect, then run again."
   },
   "summary": {
     "totalCost": "Total cost",
@@ -105,6 +112,11 @@
     "msSqlShowplanXml": "SQL Server showplan XML",
     "oraclePlanRows": "Oracle plan rows",
     "mongoExplain": "MongoDB explain"
+  },
+  "inspector": {
+    "expand": "Show the details panel",
+    "collapse": "Collapse the details panel",
+    "resize": "Resize the details panel"
   },
   "analyzeConfirm": {
     "title": "Run the statement with ANALYZE?",
