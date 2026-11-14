@@ -6,7 +6,7 @@
 //
 // Không bao giờ push. Chỉ in lệnh push gợi ý.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -100,7 +100,16 @@ function nextVersion(current, arg) {
 
 const ENV = {
   ...process.env,
-  PATH: `${process.env.PATH}:${join(homedir(), '.cargo/bin')}`,
+  // cargo có thể không nằm trên PATH (rustup qua Homebrew): thử thêm thư mục toolchain mặc định.
+  PATH: [
+    process.env.PATH,
+    join(homedir(), '.cargo/bin'),
+    ...(existsSync(join(homedir(), '.rustup/toolchains'))
+      ? readdirSync(join(homedir(), '.rustup/toolchains'))
+          .filter((d) => d.startsWith('stable'))
+          .map((d) => join(homedir(), '.rustup/toolchains', d, 'bin'))
+      : []),
+  ].join(':'),
 };
 function run(cmd, args, { allowFail = false } = {}) {
   const r = spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', env: ENV });
