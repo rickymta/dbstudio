@@ -7,4 +7,6 @@ coverage/
 .DS_Store
 src-tauri/gen/
 .claude/worktrees/
+# Build output kept outside the worktrees (e.g. clippy with another toolchain).
+.claude/target*/
 .env*.local

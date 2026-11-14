@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, master, develop]
   pull_request:
   # Weekly run of the heavy / old-version service groups (`integration-extra`).
   schedule:
@@ -17,6 +17,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Version in tauri.conf.json, package.json and Cargo.toml must stay identical (see docs/release.md).
+  version-sync:
+    name: Version files in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node scripts/release.mjs --check
+
   check:
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

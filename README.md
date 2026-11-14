@@ -41,6 +41,11 @@ autostart, OS notifications, PNG/PDF export on the WebView), Windows and Linux, 
 against a domain, Azure SQL, the Oracle integration tests against a running database (so also
 Oracle backup/restore), ClickHouse 23.8, and CI on GitHub. Details: [docs/roadmap.md](docs/roadmap.md).
 
+## Releases
+
+Tagging `vX.Y.Z` builds installers for macOS, Windows and Linux and publishes a GitHub Release
+(`pnpm release patch|minor|major`): [docs/release.md](docs/release.md) (Vietnamese).
+
 ## Layout
 
 | Path                        | Purpose                                                                                                                     |
