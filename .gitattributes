@@ -1,0 +1,6 @@
+# Keep LF in the working tree on every OS. Golden / snapshot fixtures are compared byte for byte,
+# and a Windows checkout with core.autocrlf would otherwise turn them into CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

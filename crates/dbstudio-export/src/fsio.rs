@@ -199,7 +199,13 @@ impl Output {
                 file.sync_all()?;
             }
             Some(Inner::External) => {
-                File::open(&self.tmp)?.sync_all()?;
+                // fsync needs a handle with write access on Windows (FlushFileBuffers): a
+                // read-only `File::open` fails there with "Access is denied". The handle is
+                // closed before the rename below.
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&self.tmp)?
+                    .sync_all()?;
             }
             None => return Err(Error::Other("output already finished".into())),
         }
