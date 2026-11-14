@@ -24,6 +24,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        # bash on every OS (Git Bash on Windows) so cargo output can be teed into check.log.
+        shell: bash
     steps:
       - uses: actions/checkout@v5
 
@@ -54,13 +58,17 @@ jobs:
       - run: pnpm build
 
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee -a check.log
       # Also lint with every optional feature switched on (dev-bridge and friends).
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings 2>&1 | tee -a check.log
+      - run: cargo test --workspace 2>&1 | tee -a check.log
       # Keep the debug-only dev bridge feature compiling and tested.
-      - run: cargo clippy -p dbstudio --features dev-bridge --all-targets -- -D warnings
-      - run: cargo test -p dbstudio --features dev-bridge
+      - run: cargo clippy -p dbstudio --features dev-bridge --all-targets -- -D warnings 2>&1 | tee -a check.log
+      - run: cargo test -p dbstudio --features dev-bridge 2>&1 | tee -a check.log
+
+      - name: Summarize failures
+        if: failure()
+        run: bash .github/scripts/annotate-failures.sh check.log "check (${{ matrix.os }})"
 
   # Integration tests, one matrix entry per group of services so the CI machine never runs every
   # database at once (see docker/compose.test.yml: new services live in profiles and a profile is
@@ -186,21 +194,9 @@ jobs:
           } 2>&1 | tee it.log
 
       # Turn failing tests into annotations (readable without downloading logs).
-      # One multi-line annotation per failing test (its captured output; GitHub keeps 10 per step).
       - name: Summarize failing tests
         if: failure()
-        shell: bash
-        run: |
-          [ -f it.log ] || exit 0
-          awk '/^---- .* stdout ----$/ { if (b != "") print b; b = $0; n = 1; next }
-               b != "" && (/^failures:$/ || /^test result:/) { print b; b = ""; next }
-               b != "" && n < 40 { b = b "\x01" $0; n++ }
-               END { if (b != "") print b }' it.log | head -10 \
-            | while IFS= read -r block; do
-                msg=${block//%/%25}; msg=${msg//$'\r'/}; msg=${msg//$'\x01'/%0A}
-                echo "::error title=integration::$msg"
-              done
-          grep -E "^test .* FAILED$" it.log | head -40 || true
+        run: bash .github/scripts/annotate-failures.sh it.log integration
 
       # The Oracle driver needs Instant Client (a Linux build of it lives in the oracle-it image),
       # so its tests run in a container on the compose network instead of on the runner.
@@ -291,21 +287,9 @@ jobs:
           } 2>&1 | tee it.log
 
       # Turn failing tests into annotations (readable without downloading logs).
-      # One multi-line annotation per failing test (its captured output; GitHub keeps 10 per step).
       - name: Summarize failing tests
         if: failure()
-        shell: bash
-        run: |
-          [ -f it.log ] || exit 0
-          awk '/^---- .* stdout ----$/ { if (b != "") print b; b = $0; n = 1; next }
-               b != "" && (/^failures:$/ || /^test result:/) { print b; b = ""; next }
-               b != "" && n < 40 { b = b "\x01" $0; n++ }
-               END { if (b != "") print b }' it.log | head -10 \
-            | while IFS= read -r block; do
-                msg=${block//%/%25}; msg=${msg//$'\r'/}; msg=${msg//$'\x01'/%0A}
-                echo "::error title=integration::$msg"
-              done
-          grep -E "^test .* FAILED$" it.log | head -40 || true
+        run: bash .github/scripts/annotate-failures.sh it.log integration
 
       - name: Container logs (on failure)
         if: failure()
