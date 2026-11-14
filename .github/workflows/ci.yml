@@ -102,9 +102,10 @@ jobs:
               cargo test -p dbstudio-export --test it_newdb -- clickhouse --test-threads=2
               cargo test -p dbstudio-backup --test it_newdb -- clickhouse --test-threads=2
           # CockroachDB and TiDB: the flavour tests live in the PostgreSQL / MySQL driver crates
-          # (test targets `it_flavor` / `it_tidb`).
+          # (test targets `it_flavor` / `it_tidb`). mysql8 only lends its mysqldump / mysql client
+          # to the TiDB native backup test (docker exec shim).
           - group: newsql
-            services: cockroach tidb sshd
+            services: cockroach tidb mysql8 sshd
             profile: newsql
             strict: cockroach,tidb,sshd
             test: |
@@ -185,13 +186,21 @@ jobs:
           } 2>&1 | tee it.log
 
       # Turn failing tests into annotations (readable without downloading logs).
+      # One multi-line annotation per failing test (its captured output; GitHub keeps 10 per step).
       - name: Summarize failing tests
         if: failure()
         shell: bash
         run: |
           [ -f it.log ] || exit 0
-          grep -E "^test .* FAILED|panicked at|^thread '.*' panicked" -A 3 it.log | grep -v '^--$' | head -60 \
-            | while IFS= read -r line; do echo "::error title=integration::${line//%/%25}"; done
+          awk '/^---- .* stdout ----$/ { if (b != "") print b; b = $0; n = 1; next }
+               b != "" && (/^failures:$/ || /^test result:/) { print b; b = ""; next }
+               b != "" && n < 40 { b = b "\x01" $0; n++ }
+               END { if (b != "") print b }' it.log | head -10 \
+            | while IFS= read -r block; do
+                msg=${block//%/%25}; msg=${msg//$'\r'/}; msg=${msg//$'\x01'/%0A}
+                echo "::error title=integration::$msg"
+              done
+          grep -E "^test .* FAILED$" it.log | head -40 || true
 
       # The Oracle driver needs Instant Client (a Linux build of it lives in the oracle-it image),
       # so its tests run in a container on the compose network instead of on the runner.
@@ -282,13 +291,21 @@ jobs:
           } 2>&1 | tee it.log
 
       # Turn failing tests into annotations (readable without downloading logs).
+      # One multi-line annotation per failing test (its captured output; GitHub keeps 10 per step).
       - name: Summarize failing tests
         if: failure()
         shell: bash
         run: |
           [ -f it.log ] || exit 0
-          grep -E "^test .* FAILED|panicked at|^thread '.*' panicked" -A 3 it.log | grep -v '^--$' | head -60 \
-            | while IFS= read -r line; do echo "::error title=integration::${line//%/%25}"; done
+          awk '/^---- .* stdout ----$/ { if (b != "") print b; b = $0; n = 1; next }
+               b != "" && (/^failures:$/ || /^test result:/) { print b; b = ""; next }
+               b != "" && n < 40 { b = b "\x01" $0; n++ }
+               END { if (b != "") print b }' it.log | head -10 \
+            | while IFS= read -r block; do
+                msg=${block//%/%25}; msg=${msg//$'\r'/}; msg=${msg//$'\x01'/%0A}
+                echo "::error title=integration::$msg"
+              done
+          grep -E "^test .* FAILED$" it.log | head -40 || true
 
       - name: Container logs (on failure)
         if: failure()

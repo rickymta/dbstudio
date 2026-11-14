@@ -1057,6 +1057,18 @@ pub(crate) mod testing {
 
     use super::*;
 
+    /// Decrements `counter` when it is positive; true when it did (a pending failure to inject).
+    fn take_one(counter: &AtomicUsize) -> bool {
+        let mut n = counter.load(Ordering::SeqCst);
+        while n > 0 {
+            match counter.compare_exchange_weak(n, n - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return true,
+                Err(current) => n = current,
+            }
+        }
+        false
+    }
+
     /// What the mock driver observed.
     #[derive(Debug, Default)]
     pub struct Probe {
@@ -1161,12 +1173,7 @@ pub(crate) mod testing {
             if self.require_password && secret.is_none() {
                 return Err(Error::Authentication("password required".into()));
             }
-            if self
-                .probe
-                .connect_failures
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                .is_ok()
-            {
+            if take_one(&self.probe.connect_failures) {
                 return Err(Error::Connection("connection refused".into()));
             }
             self.probe.connects.fetch_add(1, Ordering::SeqCst);
@@ -1181,12 +1188,7 @@ pub(crate) mod testing {
     #[async_trait]
     impl Session for MockSession {
         async fn ping(&self) -> Result<()> {
-            if self
-                .probe
-                .ping_timeouts
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                .is_ok()
-            {
+            if take_one(&self.probe.ping_timeouts) {
                 return Err(Error::Timeout);
             }
             if self.birth <= self.probe.killed_through.load(Ordering::SeqCst) {

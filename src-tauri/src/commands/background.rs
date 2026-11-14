@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use super::blocking;
-use crate::background::{Autostart, NoAutostart, TauriAutostart};
+#[cfg(any(test, feature = "dev-bridge"))]
+use crate::background::NoAutostart;
+use crate::background::{Autostart, TauriAutostart};
 use crate::state::AppState;
 
 /// What the settings page shows and stores.
@@ -51,12 +53,14 @@ pub(crate) async fn set_with(
     get_with(state, autostart).await
 }
 
-/// [`get_with`] without autostart support.
+/// [`get_with`] without autostart support (dev bridge and tests).
+#[cfg(any(test, feature = "dev-bridge"))]
 pub(crate) async fn get_impl(state: &AppState) -> Result<BackgroundSettings> {
     get_with(state, &NoAutostart).await
 }
 
-/// [`set_with`] without autostart support.
+/// [`set_with`] without autostart support (dev bridge and tests).
+#[cfg(any(test, feature = "dev-bridge"))]
 pub(crate) async fn set_impl(
     state: &AppState,
     settings: BackgroundSettings,
