@@ -89,6 +89,27 @@ fn map_error(map: &OffsetMap, error: Error) -> Error {
     }
 }
 
+/// Fill the limits the request left open from the settings: `editor_max_rows` caps the rows
+/// kept per result set and `query_timeout_ms` (when not 0) bounds the statement. Values the
+/// caller set win. A settings read failure leaves the request as it was.
+pub(crate) async fn apply_editor_limits(state: &AppState, query: &mut dbstudio_core::QueryRequest) {
+    if query.max_rows.is_some() && query.timeout_ms.is_some() {
+        return;
+    }
+    let svc = state.connections.clone();
+    match blocking(move || svc.settings()).await {
+        Ok(settings) => {
+            if query.max_rows.is_none() {
+                query.max_rows = Some(u64::from(settings.editor_max_rows));
+            }
+            if query.timeout_ms.is_none() && settings.query_timeout_ms > 0 {
+                query.timeout_ms = Some(settings.query_timeout_ms);
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "cannot read the editor limits from the settings"),
+    }
+}
+
 /// Run a script on a pooled connection of the session: guard (steps 1-4), then the driver with
 /// events streamed through `emit`.
 pub(crate) async fn execute_impl<F>(
@@ -145,6 +166,7 @@ where
     };
     let map = guarded.bound.map;
     query.text = guarded.bound.text;
+    apply_editor_limits(state, &mut query).await;
     let counter = RowCounter::default();
     let seen = counter.clone();
     let mut emit = emit;
@@ -183,10 +205,41 @@ pub(crate) async fn lease_open_impl(
     state.leases.register(session_id, lease)
 }
 
-/// Reopen a lease that broke with its session (package E); the lease keeps its id.
+/// Reopen a lease whose connection broke (lost session, failed keepalive, idle limit); the lease
+/// keeps its id, database, schema and auto-commit mode. `transaction_lost` tells the tab that a
+/// transaction was open when the connection broke. A healthy lease is returned unchanged.
+/// Concurrent calls for one lease are serialised: the later ones get the first one's result
+/// (a second reopen would throw away the connection the first just made).
 pub(crate) async fn lease_reopen_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseReopened> {
-    let _ = (state, lease_id);
-    Err(Error::Unsupported("lease_reopen".into()))
+    let (session_id, options) = state.leases.reopen_options(lease_id)?;
+    let gate = state.leases.reopen_gate(lease_id);
+    let mut last = gate.lock().await;
+    if !state.leases.needs_reopen(lease_id)? {
+        if let Some(done) = last.as_ref() {
+            return Ok(done.clone());
+        }
+        return Ok(LeaseReopened {
+            lease: LeaseInfo {
+                lease_id,
+                session_id,
+                state: state.leases.state_of(lease_id)?,
+            },
+            transaction_lost: false,
+        });
+    }
+    let session = state.sessions.get(session_id)?;
+    let fresh = session.open_lease(options).await?;
+    let transaction_lost = state.leases.replace(lease_id, fresh).await?;
+    let done = LeaseReopened {
+        lease: LeaseInfo {
+            lease_id,
+            session_id,
+            state: state.leases.state_of(lease_id)?,
+        },
+        transaction_lost,
+    };
+    *last = Some(done.clone());
+    Ok(done)
 }
 
 /// Result of `script_generate`.
@@ -199,16 +252,98 @@ pub struct ScriptGenerated {
     pub dialect: ScriptDialect,
 }
 
-/// Generate a `SELECT` / `INSERT` / `UPDATE` / `DELETE` template for a table (package E, on top
-/// of `dbstudio_sql::template`).
+/// Description of the table at `path` for the template generator. Document stores have no
+/// `table_details`: their columns come from the inferred schema model.
+async fn template_details(
+    session: &dyn dbstudio_core::Session,
+    dialect: ScriptDialect,
+    path: &ObjectPath,
+) -> Result<dbstudio_core::TableDetails> {
+    use dbstudio_core::{IndexDetail, ObjectKind, SchemaModelRequest};
+    match dialect {
+        ScriptDialect::RedisCli => Err(Error::Unsupported("script_generate".into())),
+        ScriptDialect::MongoShell => {
+            let name = path
+                .last()
+                .map(|s| s.name.clone())
+                .ok_or_else(|| Error::Invalid("script_generate needs a collection path".into()))?;
+            // The scope is the database: everything up to its segment.
+            let end = path
+                .segments
+                .iter()
+                .position(|s| s.kind == ObjectKind::Database)
+                .map_or(0, |i| i + 1);
+            let scope = ObjectPath {
+                segments: path.segments[..end].to_vec(),
+            };
+            let model = session
+                .schema_model(SchemaModelRequest {
+                    scope,
+                    tables: vec![path.clone()],
+                    include_views: true,
+                    include_comments: false,
+                    detail: Default::default(),
+                    sample_size: None,
+                })
+                .await?;
+            let table = model
+                .tables
+                .into_iter()
+                .find(|t| t.name == name)
+                .ok_or_else(|| Error::NotFound(format!("collection {name}")))?;
+            let mut indexes = Vec::new();
+            if !table.primary_key.is_empty() {
+                indexes.push(IndexDetail {
+                    name: "_id_".into(),
+                    columns: table.primary_key.clone(),
+                    unique: true,
+                    primary: true,
+                    method: None,
+                    definition: None,
+                    partial: false,
+                });
+            }
+            for (i, key) in table.unique_keys.iter().enumerate() {
+                indexes.push(IndexDetail {
+                    name: format!("unique_{i}"),
+                    columns: key.clone(),
+                    unique: true,
+                    primary: false,
+                    method: None,
+                    definition: None,
+                    partial: false,
+                });
+            }
+            Ok(dbstudio_core::TableDetails {
+                path: table.path,
+                kind: table.kind,
+                comment: table.comment,
+                columns: table.columns,
+                indexes,
+                foreign_keys: Vec::new(),
+                estimated_rows: table.estimated_rows,
+                size_bytes: None,
+            })
+        }
+        _ => session.table_details(path).await,
+    }
+}
+
+/// Generate a `SELECT` / `INSERT` / `UPDATE` / `DELETE` template for a table (on top of
+/// `dbstudio_sql::template`).
 pub(crate) async fn script_generate_impl(
     state: &AppState,
     session_id: Uuid,
     path: ObjectPath,
     template: ScriptTemplate,
 ) -> Result<ScriptGenerated> {
-    let _ = (state, session_id, path, template);
-    Err(Error::Unsupported("script_generate".into()))
+    let session = state.sessions.get(session_id)?;
+    let dialect = session.script_dialect();
+    let details = template_details(&*session, dialect, &path).await?;
+    Ok(ScriptGenerated {
+        text: dbstudio_sql::template::generate(dialect, &details, &path, template),
+        dialect,
+    })
 }
 
 pub(crate) async fn lease_close_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseCloseReport> {
@@ -273,6 +408,7 @@ where
     };
     let map = guarded.bound.map;
     query.text = guarded.bound.text;
+    apply_editor_limits(state, &mut query).await;
     let counter = RowCounter::default();
     let seen = counter.clone();
     let mut emit = emit;
@@ -293,7 +429,7 @@ where
     state.leases.notify_state(lease_id);
     Ok(ExecuteResult {
         summary: result?,
-        state: Some(lease.state()),
+        state: state.leases.state_of(lease_id).ok(),
         history_id,
     })
 }
@@ -319,7 +455,7 @@ where
     let summary = result?;
     Ok(ExecuteResult {
         summary,
-        state: Some(lease.state()),
+        state: state.leases.state_of(lease_id).ok(),
         history_id: None,
     })
 }
@@ -339,7 +475,7 @@ pub(crate) async fn lease_discard_result_impl(
     let result = lease.discard_result().await;
     notify_on_error(state, lease_id, &result);
     result?;
-    Ok(lease.state())
+    state.leases.state_of(lease_id)
 }
 
 pub(crate) async fn lease_cancel_impl(
@@ -364,7 +500,7 @@ pub(crate) async fn lease_begin_impl(
     let result = lease.begin(options).await;
     notify_on_error(state, lease_id, &result);
     result?;
-    Ok(lease.state())
+    state.leases.state_of(lease_id)
 }
 
 pub(crate) async fn lease_commit_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseState> {
@@ -372,7 +508,7 @@ pub(crate) async fn lease_commit_impl(state: &AppState, lease_id: Uuid) -> Resul
     let result = lease.commit().await;
     notify_on_error(state, lease_id, &result);
     result?;
-    Ok(lease.state())
+    state.leases.state_of(lease_id)
 }
 
 pub(crate) async fn lease_rollback_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseState> {
@@ -380,7 +516,7 @@ pub(crate) async fn lease_rollback_impl(state: &AppState, lease_id: Uuid) -> Res
     let result = lease.rollback().await;
     notify_on_error(state, lease_id, &result);
     result?;
-    Ok(lease.state())
+    state.leases.state_of(lease_id)
 }
 
 pub(crate) async fn lease_set_auto_commit_impl(
@@ -392,7 +528,7 @@ pub(crate) async fn lease_set_auto_commit_impl(
     let result = lease.set_auto_commit(auto_commit).await;
     notify_on_error(state, lease_id, &result);
     result?;
-    Ok(lease.state())
+    state.leases.state_of(lease_id)
 }
 
 pub(crate) async fn lease_set_context_impl(
@@ -404,11 +540,11 @@ pub(crate) async fn lease_set_context_impl(
     let result = lease.set_context(context).await;
     notify_on_error(state, lease_id, &result);
     result?;
-    Ok(lease.state())
+    state.leases.state_of(lease_id)
 }
 
 pub(crate) fn lease_state_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseState> {
-    Ok(state.leases.get(lease_id)?.state())
+    state.leases.state_of(lease_id)
 }
 
 /// Decode file bytes as UTF-8, dropping a BOM.
@@ -1290,6 +1426,229 @@ mod tests {
             .await
             .unwrap_err();
         assert!(history(&m.state).is_empty());
+    }
+
+    #[tokio::test]
+    async fn lease_reopen_keeps_the_id_and_reports_a_lost_transaction() {
+        let m = mock();
+        m.probe
+            .rich
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let sid = open(&m.state, profile(DbKind::Postgres, false, None, "app")).await;
+        let idle = lease_open_impl(
+            &m.state,
+            sid,
+            LeaseOptions {
+                database: Some("app".into()),
+                schema: Some("s1".into()),
+                auto_commit: false,
+            },
+        )
+        .await
+        .unwrap();
+        let in_tx = lease_open_impl(&m.state, sid, LeaseOptions::default())
+            .await
+            .unwrap();
+        m.state
+            .leases
+            .get(in_tx.lease_id)
+            .unwrap()
+            .begin(TxOptions::default())
+            .await
+            .unwrap();
+        // A healthy lease is returned as it is.
+        let same = lease_reopen_impl(&m.state, idle.lease_id).await.unwrap();
+        assert_eq!(same.lease.lease_id, idle.lease_id);
+        assert!(!same.transaction_lost);
+        let opens = m
+            .probe
+            .lease_opens
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(opens, 2, "nothing was reopened");
+
+        // The connections die; the keepalive notices and marks both leases lost.
+        m.probe.kill_all();
+        m.state.leases.keepalive_tick(Duration::ZERO).await;
+        assert!(m.state.leases.state_of(idle.lease_id).unwrap().broken);
+
+        let back = lease_reopen_impl(&m.state, idle.lease_id).await.unwrap();
+        assert_eq!(back.lease.lease_id, idle.lease_id);
+        assert_eq!(back.lease.session_id, sid);
+        assert!(!back.transaction_lost);
+        assert!(!back.lease.state.broken);
+        assert_eq!(back.lease.state.schema.as_deref(), Some("s1"));
+        assert!(!back.lease.state.auto_commit);
+
+        let back = lease_reopen_impl(&m.state, in_tx.lease_id).await.unwrap();
+        assert!(back.transaction_lost, "the open transaction was lost");
+        assert_eq!(back.lease.state.transaction, dbstudio_core::TxStatus::Idle);
+        // Once reopened the lease is healthy: asking again changes nothing and reports the
+        // first outcome.
+        let again = lease_reopen_impl(&m.state, in_tx.lease_id).await.unwrap();
+        assert!(again.transaction_lost);
+        assert_eq!(m.state.leases.count_for_session(sid), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_reopens_of_one_lease_share_one_new_connection() {
+        let m = mock();
+        m.probe
+            .rich
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let sid = open(&m.state, profile(DbKind::Postgres, false, None, "app")).await;
+        let lease = lease_open_impl(&m.state, sid, LeaseOptions::default())
+            .await
+            .unwrap();
+        m.state
+            .leases
+            .get(lease.lease_id)
+            .unwrap()
+            .begin(TxOptions::default())
+            .await
+            .unwrap();
+        m.probe.kill_all();
+        m.state.leases.keepalive_tick(Duration::ZERO).await;
+        let before = m
+            .probe
+            .lease_opens
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let (a, b, c) = tokio::join!(
+            lease_reopen_impl(&m.state, lease.lease_id),
+            lease_reopen_impl(&m.state, lease.lease_id),
+            lease_reopen_impl(&m.state, lease.lease_id)
+        );
+        let after = m
+            .probe
+            .lease_opens
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(after, before + 1, "one new connection, not three");
+        for done in [a.unwrap(), b.unwrap(), c.unwrap()] {
+            assert!(
+                done.transaction_lost,
+                "every caller learns the transaction is gone"
+            );
+            assert!(!done.lease.state.broken);
+        }
+    }
+
+    #[tokio::test]
+    async fn script_generate_reads_the_table_and_uses_the_session_dialect() {
+        let m = mock();
+        m.probe
+            .rich
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let sid = open(&m.state, profile(DbKind::Postgres, false, None, "app")).await;
+        let path = ObjectPath::root()
+            .child(dbstudio_core::ObjectKind::Database, "app")
+            .child(dbstudio_core::ObjectKind::Table, "items");
+        for template in [
+            ScriptTemplate::Select,
+            ScriptTemplate::Insert,
+            ScriptTemplate::Update,
+            ScriptTemplate::Delete,
+        ] {
+            let got = script_generate_impl(&m.state, sid, path.clone(), template)
+                .await
+                .unwrap();
+            let session = m.state.sessions.get(sid).unwrap();
+            let details = session.table_details(&path).await.unwrap();
+            assert_eq!(got.dialect, session.script_dialect());
+            assert_eq!(
+                got.text,
+                dbstudio_sql::template::generate(got.dialect, &details, &path, template)
+            );
+        }
+        // Redis has no tables to template.
+        *m.probe.dialect.lock().unwrap() = Some(ScriptDialect::RedisCli);
+        let sid = open(&m.state, profile(DbKind::Postgres, false, None, "app")).await;
+        let e = script_generate_impl(&m.state, sid, path, ScriptTemplate::Select)
+            .await
+            .unwrap_err();
+        assert_eq!(e.kind(), "unsupported");
+    }
+
+    #[tokio::test]
+    async fn only_a_password_the_user_typed_stays_in_memory() {
+        let m = mock();
+        // Stored in the keychain: read again on reconnect, not kept in the session.
+        let mut stored = profile(DbKind::Postgres, false, None, "app");
+        stored.save_password = true;
+        let saved = connections::save_impl(
+            &m.state,
+            stored,
+            SecretChange::Set {
+                value: Secret::new("keychain-pw"),
+            },
+        )
+        .await
+        .unwrap();
+        let info = sessions::open_impl(&m.state, saved.config.id, None)
+            .await
+            .unwrap();
+        assert!(
+            m.state
+                .sessions
+                .remembered_secret(info.session_id)
+                .is_none()
+        );
+        // Typed at the prompt: kept for the life of the session.
+        let saved = connections::save_impl(
+            &m.state,
+            profile(DbKind::Postgres, false, None, "app"),
+            SecretChange::Keep,
+        )
+        .await
+        .unwrap();
+        let info = sessions::open_impl(&m.state, saved.config.id, Some(Secret::new("typed")))
+            .await
+            .unwrap();
+        assert_eq!(
+            m.state
+                .sessions
+                .remembered_secret(info.session_id)
+                .unwrap()
+                .expose(),
+            "typed"
+        );
+        // A manual reconnect re-reads the profile and the keychain.
+        let again = sessions::reconnect_impl(&m.state, info.session_id, None)
+            .await
+            .unwrap();
+        assert_eq!(again.session_id, info.session_id);
+        assert_eq!(
+            m.probe.last_secret.lock().unwrap().clone(),
+            Some(Some("typed".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn editor_limits_come_from_the_settings_unless_the_request_sets_them() {
+        let m = mock();
+        let sid = open(&m.state, profile(DbKind::Postgres, false, None, "app")).await;
+        // Defaults: 1000 rows, no timeout.
+        run(&m.state, sid, request("select 1")).await.unwrap();
+        assert_eq!(*m.probe.last_limits.lock().unwrap(), (Some(1_000), None));
+        crate::commands::app::settings_set_impl(
+            &m.state,
+            dbstudio_store::AppSettings {
+                editor_max_rows: 500,
+                query_timeout_ms: 7_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        run(&m.state, sid, request("select 2")).await.unwrap();
+        assert_eq!(
+            *m.probe.last_limits.lock().unwrap(),
+            (Some(500), Some(7_000))
+        );
+        // What the caller set wins.
+        let mut explicit = request("select 3");
+        explicit.query.max_rows = Some(5);
+        explicit.query.timeout_ms = Some(100);
+        run(&m.state, sid, explicit).await.unwrap();
+        assert_eq!(*m.probe.last_limits.lock().unwrap(), (Some(5), Some(100)));
     }
 
     #[tokio::test]

@@ -520,6 +520,7 @@ const GUARDS: Record<string, Record<string, Guard>> = {
         state: oneOf(...SESSION_HEALTH),
         attempt: num,
         leasesBroken: arrayOf(str),
+        leasesReopened: arrayOf(str),
       },
       { error: isIpcError },
     ),

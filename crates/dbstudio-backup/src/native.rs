@@ -96,15 +96,22 @@ fn known_dirs() -> Vec<PathBuf> {
     out
 }
 
-fn probe(path: &Path, tool: NativeTool) -> (Option<String>, Option<String>) {
+/// `--version` of a tool; with `timeout` a tool that does not answer in time is killed.
+fn probe_with_timeout(
+    path: &Path,
+    tool: NativeTool,
+    timeout: Option<Duration>,
+) -> (Option<String>, Option<String>) {
     if matches!(tool, NativeTool::Expdp | NativeTool::Impdp) {
         // Data Pump has no `--version`.
         return (None, None);
     }
-    let out = std::process::Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .output();
+    let mut command = std::process::Command::new(path);
+    command.arg("--version").stdin(Stdio::null());
+    let out = match timeout {
+        None => command.output(),
+        Some(limit) => run_with_deadline(command, limit),
+    };
     match out {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
@@ -114,6 +121,66 @@ fn probe(path: &Path, tool: NativeTool) -> (Option<String>, Option<String>) {
         Ok(o) => (None, Some(format!("`--version` failed with {}", o.status))),
         Err(e) => (None, Some(format!("cannot run {}: {e}", path.display()))),
     }
+}
+
+/// Run `command` capturing its output; kill it when it has not finished within `limit`.
+fn run_with_deadline(
+    mut command: std::process::Command,
+    limit: Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read as _;
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(out) = stdout.as_mut() {
+            let _ = out.take(64 * 1024).read_to_end(&mut buf);
+        }
+        buf
+    });
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the tool did not answer in time",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = reader.join().unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    })
+}
+
+/// Probe only `tools` (same search order as [`detect_tools`]); every `--version` runs with
+/// `timeout` and is killed when it hangs. Used by the diagnostics page.
+pub fn detect_selected(
+    tools: &[NativeTool],
+    overrides: &BTreeMap<NativeTool, String>,
+    timeout: Duration,
+) -> Vec<NativeToolInfo> {
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    detect_impl(
+        overrides,
+        &path_dirs,
+        &known_dirs(),
+        Some(tools),
+        Some(timeout),
+    )
 }
 
 /// Probe the native tools (configured path, then `PATH`, then well-known directories).
@@ -130,8 +197,19 @@ pub fn detect_in(
     path_dirs: &[PathBuf],
     known: &[PathBuf],
 ) -> Vec<NativeToolInfo> {
+    detect_impl(overrides, path_dirs, known, None, None)
+}
+
+fn detect_impl(
+    overrides: &BTreeMap<NativeTool, String>,
+    path_dirs: &[PathBuf],
+    known: &[PathBuf],
+    only: Option<&[NativeTool]>,
+    timeout: Option<Duration>,
+) -> Vec<NativeToolInfo> {
     NativeTool::ALL
         .into_iter()
+        .filter(|tool| only.is_none_or(|list| list.contains(tool)))
         .filter_map(|tool| {
             let binary = tool.binary()?;
             let mut found: Option<(PathBuf, ToolSource)> = None;
@@ -158,7 +236,7 @@ pub fn detect_in(
             }
             Some(match found {
                 Some((path, source)) => {
-                    let (version, probe_problem) = probe(&path, tool);
+                    let (version, probe_problem) = probe_with_timeout(&path, tool, timeout);
                     NativeToolInfo {
                         tool,
                         path: Some(path.to_string_lossy().into_owned()),
@@ -1366,6 +1444,68 @@ mod tests {
             infos
                 .iter()
                 .all(|i| i.tool != NativeTool::MsSqlServerBackup)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_selected_probes_only_the_asked_tools_and_kills_a_hanging_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let overrides = BTreeMap::from([
+            (
+                NativeTool::PgDump,
+                script("pg_dump", "echo 'pg_dump (PostgreSQL) 16.4'"),
+            ),
+            // Would hang on a terminal read if stdin were inherited, and never ends.
+            (NativeTool::Psql, script("psql", "read x; sleep 30")),
+            (
+                NativeTool::MySqlDump,
+                script("mysqldump", "touch ran-mysqldump"),
+            ),
+        ]);
+        let started = std::time::Instant::now();
+        let got = detect_selected(
+            &[NativeTool::PgDump, NativeTool::Psql],
+            &overrides,
+            Duration::from_secs(3),
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        let tools: Vec<_> = got.iter().map(|i| i.tool).collect();
+        assert_eq!(
+            tools,
+            [NativeTool::PgDump, NativeTool::Psql],
+            "only the asked tools"
+        );
+        assert_eq!(
+            got[0].version.as_deref(),
+            Some("pg_dump (PostgreSQL) 16.4"),
+            "{:?}",
+            got[0]
+        );
+        assert!(got[0].problem.is_none());
+        assert!(
+            got[1]
+                .problem
+                .as_deref()
+                .unwrap()
+                .contains("not answer in time"),
+            "{:?}",
+            got[1]
+        );
+        assert!(
+            !dir.path().join("ran-mysqldump").exists(),
+            "an unasked tool is never run"
         );
     }
 }
