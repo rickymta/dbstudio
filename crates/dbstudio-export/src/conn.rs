@@ -55,11 +55,13 @@ impl Conn {
                     lease: Some(lease),
                     database,
                 };
-                if let Err(e) = conn.prepare(tx).await {
-                    conn.close().await;
-                    return Err(e);
+                match conn.prepare(tx).await {
+                    Ok(note) => Ok((conn, note)),
+                    Err(e) => {
+                        conn.close().await;
+                        Err(e)
+                    }
                 }
-                Ok((conn, None))
             }
             Err(Error::Unsupported(_)) => Ok((
                 Conn {
@@ -75,9 +77,13 @@ impl Conn {
 
     /// UTC session time (values are exported the same whatever the server's zone), then the
     /// transaction.
-    async fn prepare(&self, tx: Option<TxOptions>) -> Result<()> {
+    ///
+    /// A server that has no transactions at all (`Unsupported`, e.g. a standalone MongoDB) is
+    /// not an error: the job runs without a snapshot and the returned note says so. Any other
+    /// failure to start the transaction stays an error.
+    async fn prepare(&self, tx: Option<TxOptions>) -> Result<Option<String>> {
         let Some(lease) = self.lease.as_deref() else {
-            return Ok(());
+            return Ok(None);
         };
         let set_zone = match self.session.script_dialect() {
             ScriptDialect::MySql { .. } => Some("SET time_zone = '+00:00'"),
@@ -90,9 +96,17 @@ impl Conn {
                 .await?;
         }
         if let Some(opts) = tx {
-            lease.begin(opts).await?;
+            match lease.begin(opts).await {
+                Ok(()) => {}
+                Err(Error::Unsupported(_)) => {
+                    return Ok(Some(
+                        "the server has no transactions: no consistent snapshot".into(),
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
         }
-        Ok(())
+        Ok(None)
     }
 
     pub fn session(&self) -> &Arc<dyn Session> {

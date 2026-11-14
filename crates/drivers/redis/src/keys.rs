@@ -1,8 +1,8 @@
 //! Reading one key: type, TTL, metadata and a page of its entries.
 
 use dbstudio_core::{
-    Error, KeyEntries, KeyReadRequest, KeyValuePage, ObjectKind, Result, StreamEntry, Value,
-    decode_key_name,
+    Error, KeyEntries, KeyReadRequest, KeyScanPage, KeyScanRequest, KeyValuePage, ObjectKind,
+    Result, StreamEntry, Value, decode_key_name, encode_key_name,
 };
 
 use crate::conn::Shared;
@@ -260,6 +260,36 @@ impl Shared {
             encoding,
             entries,
             next_cursor,
+        })
+    }
+
+    /// One page of raw key names: `SCAN cursor [MATCH p] COUNT n [TYPE t]` (the cursor is the
+    /// server cursor, `None` at the end). A page may be empty while the scan goes on, and a key
+    /// can appear on more than one page (inherent to `SCAN`).
+    pub async fn scan_keys(&self, req: KeyScanRequest) -> Result<KeyScanPage> {
+        let db = db_of(&req.database, self.default_db)?;
+        let mut cmd = redis::cmd("SCAN");
+        cmd.arg(
+            req.cursor
+                .as_deref()
+                .filter(|c| !c.is_empty())
+                .unwrap_or("0"),
+        );
+        if let Some(p) = req
+            .pattern
+            .as_deref()
+            .filter(|p| !p.is_empty() && *p != "*")
+        {
+            cmd.arg("MATCH").arg(p);
+        }
+        cmd.arg("COUNT").arg(req.count.clamp(1, 10_000));
+        if let Some(t) = req.type_filter.as_deref().filter(|t| !t.is_empty()) {
+            cmd.arg("TYPE").arg(t);
+        }
+        let (next, keys): (String, Vec<Vec<u8>>) = self.run(db, &cmd).await?;
+        Ok(KeyScanPage {
+            keys: keys.iter().map(|k| encode_key_name(k)).collect(),
+            next_cursor: (next != "0").then_some(next),
         })
     }
 

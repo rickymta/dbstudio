@@ -22,18 +22,44 @@ mod conn;
 mod engine;
 mod fsio;
 mod import;
+mod keys;
 mod values;
 mod writers;
 
 pub use engine::{run_export, run_export_tuned};
 pub use fsio::cleanup_orphans;
 
+/// Orphan temporary files older than this are removed.
+const ORPHAN_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+/// Delay before the startup cleanup touches the disk, so it never competes with startup.
+const STARTUP_CLEANUP_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Remove orphan temporary export files left in the recently used export directories
-/// (`export.recentDirs` setting) by a crash. Called once, in the background, after startup.
-///
-/// Contract scaffold of the backlog contract v2: package X implements it (it does nothing now).
+/// (`export.recentDirs` setting) by a crash. Called once after startup: the list is read right
+/// away, the directories are visited on a background thread 10 seconds later (only files named
+/// `.<name>.dbstudio-tmp-<id>` older than an hour are removed). Directories that no longer exist
+/// leave the list the next time an export records its directory.
 pub fn startup_cleanup(store: &dbstudio_store::Store) {
-    let _ = store;
+    let Ok(dirs) = store.export_recent_dirs() else {
+        return;
+    };
+    if dirs.is_empty() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("export-orphan-cleanup".into())
+        .spawn(move || {
+            std::thread::sleep(STARTUP_CLEANUP_DELAY);
+            cleanup_dirs(&dirs, ORPHAN_MIN_AGE);
+        });
+    drop(spawned);
+}
+
+/// Run [`cleanup_orphans`] over `dirs`; returns the number of files removed.
+fn cleanup_dirs(dirs: &[String], older_than: std::time::Duration) -> usize {
+    dirs.iter()
+        .map(|d| cleanup_orphans(std::path::Path::new(d), older_than))
+        .sum()
 }
 pub use import::{preview_import, run_import};
 
@@ -359,6 +385,49 @@ pub struct ExportReport {
     pub bytes: u64,
     /// Non fatal problems.
     pub warnings: Vec<String>,
+    /// Objects of a SQL export with the phases written for each (partial restore). Empty for
+    /// the other formats.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub object_list: Vec<ExportedObject>,
+}
+
+/// Phase of an object in a SQL export; matches `phase=` of the `-- dbstudio:object` markers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportPhase {
+    /// Structure created before the data.
+    Pre,
+    /// Rows.
+    Data,
+    /// Indexes, constraints and other structure created after the data.
+    Post,
+}
+
+impl ExportPhase {
+    /// Value written after `phase=` in the marker lines.
+    pub fn marker(self) -> &'static str {
+        match self {
+            ExportPhase::Pre => "pre",
+            ExportPhase::Data => "data",
+            ExportPhase::Post => "post",
+        }
+    }
+}
+
+/// An object of a SQL export (one `-- dbstudio:object` block group).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedObject {
+    /// Kind of the object (`table`, `view`, `sequence`...).
+    pub kind: dbstudio_core::ObjectKind,
+    /// Schema (or keyspace / database) it belongs to, when it has one.
+    pub schema: Option<String>,
+    /// Object name.
+    pub name: String,
+    /// Phases present in the script, in file order.
+    pub phases: Vec<ExportPhase>,
+    /// Rows written (data phase).
+    pub rows: Option<u64>,
 }
 
 /// Description of the object a [`TableWriter`] is about to receive.
@@ -425,6 +494,10 @@ pub trait TableWriter: ResultSink {
     }
     /// Non fatal problems noticed while writing (cut cells...).
     fn warnings(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Objects written with their phases (SQL writer only); call before [`TableWriter::finish`].
+    fn objects(&mut self) -> Vec<ExportedObject> {
         Vec::new()
     }
 }
@@ -762,6 +835,7 @@ mod tests {
             rows: 10,
             bytes: 2048,
             warnings: vec!["truncated cell".into()],
+            object_list: vec![],
         }
     }
 
@@ -912,6 +986,34 @@ mod tests {
             dialect: ScriptDialect::Postgres,
             reporter: Arc::new(Reporter(CancelToken::default())),
         }
+    }
+
+    #[test]
+    fn cleanup_visits_every_recent_dir_and_spares_other_files() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        for d in [&a, &b] {
+            std::fs::write(d.path().join(".out.csv.dbstudio-tmp-1"), "x").unwrap();
+            std::fs::write(d.path().join("keep.csv"), "x").unwrap();
+            std::fs::write(d.path().join(".hidden"), "x").unwrap();
+        }
+        let dirs: Vec<String> = [a.path(), b.path(), &a.path().join("missing")]
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        // Fresh files are spared with the real age limit.
+        assert_eq!(cleanup_dirs(&dirs, ORPHAN_MIN_AGE), 0);
+        assert_eq!(cleanup_dirs(&dirs, std::time::Duration::ZERO), 2);
+        for d in [&a, &b] {
+            assert!(d.path().join("keep.csv").exists());
+            assert!(d.path().join(".hidden").exists());
+            assert!(!d.path().join(".out.csv.dbstudio-tmp-1").exists());
+        }
+    }
+
+    #[test]
+    fn startup_cleanup_without_directories_does_nothing() {
+        let store = dbstudio_store::Store::open_in_memory().unwrap();
+        startup_cleanup(&store);
     }
 
     #[test]

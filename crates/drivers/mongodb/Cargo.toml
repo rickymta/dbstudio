@@ -22,6 +22,7 @@ chrono.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+dbstudio-ssh.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [lints]

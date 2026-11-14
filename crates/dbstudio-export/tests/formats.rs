@@ -888,3 +888,109 @@ async fn the_sql_script_does_not_depend_on_the_session_modes() {
         "{sql}"
     );
 }
+
+#[tokio::test]
+async fn sql_script_marks_the_boundaries_of_every_object() {
+    use dbstudio_export::ExportPhase;
+    let dir = tempfile::tempdir().unwrap();
+    let session = FakeSession::with_tables(&[("orders", 3)]);
+    let report = run_export(
+        context(session, Recorder::new()),
+        spec(
+            tables(&["orders"]),
+            ExportContent::Both,
+            ExportFormat::Sql(SqlOptions::default()),
+            &dir.path().join("m.sql"),
+        ),
+    )
+    .await
+    .unwrap();
+    let sql = String::from_utf8(read(&report.files[0])).unwrap();
+    let pos = |needle: &str| {
+        sql.find(needle)
+            .unwrap_or_else(|| panic!("{needle} in\n{sql}"))
+    };
+    let pre = r#"-- dbstudio:object kind=table schema="public" name="orders" phase=pre"#;
+    let data = r#"-- dbstudio:object kind=table schema="public" name="orders" phase=data"#;
+    let post = r#"-- dbstudio:object kind=table schema="public" name="orders" phase=post"#;
+    assert!(pos(pre) < pos("CREATE TABLE"));
+    assert!(pos("CREATE TABLE") < pos("-- dbstudio:common"));
+    assert!(pos("BEGIN;") < pos(data) && pos(data) < pos("INSERT INTO"));
+    // The commit is framing, not part of the data block; the index belongs to its table.
+    assert!(pos("INSERT INTO") < sql.rfind("-- dbstudio:common").unwrap());
+    assert!(sql.rfind("-- dbstudio:common").unwrap() < pos("COMMIT;"));
+    assert!(pos("COMMIT;") < pos(post) && pos(post) < pos("CREATE INDEX"));
+    assert_eq!(sql.matches("-- dbstudio:object").count(), 3, "{sql}");
+    // The report lists the object with the phases written and the rows.
+    assert_eq!(report.object_list.len(), 1);
+    let o = &report.object_list[0];
+    assert_eq!(
+        (o.name.as_str(), o.schema.as_deref()),
+        ("orders", Some("public"))
+    );
+    assert_eq!(
+        o.phases,
+        [ExportPhase::Pre, ExportPhase::Data, ExportPhase::Post]
+    );
+    assert_eq!(o.rows, Some(3));
+}
+
+#[tokio::test]
+async fn cql_and_clickhouse_scripts_have_no_transactions() {
+    use dbstudio_core::{DbKind, ScriptDialect};
+    let dir = tempfile::tempdir().unwrap();
+    for (dialect, kind, per_row) in [
+        (ScriptDialect::Cql, DbKind::Cassandra, true),
+        (ScriptDialect::ClickHouse, DbKind::ClickHouse, false),
+    ] {
+        let session = FakeSession::with_tables(&[("orders", 5)]);
+        let mut ctx = context(session, Recorder::new());
+        ctx.dialect = dialect;
+        ctx.kind = kind;
+        let report = run_export(
+            ctx,
+            spec(
+                tables(&["orders"]),
+                ExportContent::Data,
+                ExportFormat::Sql(SqlOptions::default()),
+                &dir.path().join(format!("{kind:?}.sql")),
+            ),
+        )
+        .await
+        .unwrap();
+        let sql = String::from_utf8(read(&report.files[0])).unwrap();
+        assert!(!sql.contains("BEGIN") && !sql.contains("COMMIT"), "{sql}");
+        let inserts = sql.matches("INSERT INTO").count();
+        assert_eq!(inserts, if per_row { 5 } else { 1 }, "{dialect:?}\n{sql}");
+        assert!(sql.contains("-- dbstudio:object kind=table"));
+    }
+}
+
+#[tokio::test]
+async fn cockroach_scripts_skip_the_replication_role_switch() {
+    use dbstudio_core::DbKind;
+    let dir = tempfile::tempdir().unwrap();
+    let mut texts = Vec::new();
+    for kind in [DbKind::Postgres, DbKind::CockroachDb] {
+        let session = FakeSession::with_tables(&[("orders", 1)]);
+        let mut ctx = context(session, Recorder::new());
+        ctx.kind = kind;
+        let report = run_export(
+            ctx,
+            spec(
+                tables(&["orders"]),
+                ExportContent::Both,
+                ExportFormat::Sql(SqlOptions {
+                    disable_fk_checks: true,
+                    ..SqlOptions::default()
+                }),
+                &dir.path().join(format!("{kind:?}.sql")),
+            ),
+        )
+        .await
+        .unwrap();
+        texts.push(String::from_utf8(read(&report.files[0])).unwrap());
+    }
+    assert!(texts[0].contains("session_replication_role"));
+    assert!(!texts[1].contains("session_replication_role"));
+}

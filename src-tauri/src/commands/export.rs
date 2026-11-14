@@ -130,9 +130,15 @@ pub(crate) async fn start_impl(state: &AppState, mut spec: ExportSpec) -> Result
     if let Some(dir) = dest.parent() {
         // Leftovers of an export that was killed (an hour old at least: it may be running).
         dbstudio_export::cleanup_orphans(dir, std::time::Duration::from_secs(3600));
+        // Remembered so the startup cleanup also visits this directory (`export.recentDirs`).
+        let _ = state
+            .connections
+            .store()
+            .export_recent_dirs_record(&dir.to_string_lossy());
     }
 
     let job = open_job_session(state, spec.connection_id).await?;
+    remember_dialect(spec.connection_id, job.session.script_dialect());
     let title = format!(
         "Export {} → {}",
         job.config.name,
@@ -182,23 +188,58 @@ pub(crate) async fn preset_delete_impl(state: &AppState, id: Uuid) -> Result<()>
     blocking(move || svc.store().presets_delete(id)).await
 }
 
-/// SQL dialect of a connection for the import preview: the open session's own dialect, else the
-/// one its profile implies. `None` when the connection is unknown (the preview then guesses).
-async fn preview_dialect(state: &AppState, connection_id: Uuid) -> Option<ScriptDialect> {
+/// Script dialect last seen per connection (not persisted). Refreshed by every export / import /
+/// preview that has a live session and by `remember_dialect`, which the session opener calls.
+fn last_dialects() -> &'static std::sync::Mutex<std::collections::HashMap<Uuid, ScriptDialect>> {
+    static MAP: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<Uuid, ScriptDialect>>,
+    > = std::sync::OnceLock::new();
+    MAP.get_or_init(Default::default)
+}
+
+/// Remember the dialect a connection's session reported, so a later import preview (when the
+/// session is closed) can still split a MariaDB / ANSI_QUOTES script correctly.
+pub(crate) fn remember_dialect(connection_id: Uuid, dialect: ScriptDialect) {
+    if let Ok(mut map) = last_dialects().lock() {
+        map.insert(connection_id, dialect);
+    }
+}
+
+fn last_dialect(connection_id: Uuid) -> Option<ScriptDialect> {
+    last_dialects().lock().ok()?.get(&connection_id).copied()
+}
+
+/// Dialect a connection kind implies when nothing better is known.
+fn dialect_for_kind(kind: DbKind) -> Option<ScriptDialect> {
+    Some(match kind {
+        DbKind::Postgres | DbKind::CockroachDb | DbKind::YugabyteDb => ScriptDialect::Postgres,
+        DbKind::MySql | DbKind::TiDb => ScriptDialect::mysql(false, true),
+        DbKind::SqlServer => ScriptDialect::MsSql,
+        DbKind::Oracle => ScriptDialect::Oracle,
+        DbKind::Cassandra | DbKind::ScyllaDb => ScriptDialect::Cql,
+        DbKind::ClickHouse => ScriptDialect::ClickHouse,
+        _ => return None,
+    })
+}
+
+/// SQL dialect of a connection for the import preview, and whether it is only a guess: the open
+/// session's own dialect, else the one remembered from its last session, else the one its profile
+/// kind implies (guess). `None` when the connection is unknown (the preview then guesses from the
+/// file).
+async fn preview_dialect(state: &AppState, connection_id: Uuid) -> Option<(ScriptDialect, bool)> {
     if let Some((_, session)) = state.sessions.find_by_connection(connection_id) {
-        return Some(session.script_dialect());
+        let dialect = session.script_dialect();
+        remember_dialect(connection_id, dialect);
+        return Some((dialect, false));
+    }
+    if let Some(dialect) = last_dialect(connection_id) {
+        return Some((dialect, false));
     }
     let svc = state.connections.clone();
     let profile = blocking(move || svc.get_profile(connection_id))
         .await
         .ok()?;
-    Some(match profile.config.kind {
-        DbKind::Postgres => ScriptDialect::Postgres,
-        DbKind::MySql => ScriptDialect::mysql(false, true),
-        DbKind::SqlServer => ScriptDialect::MsSql,
-        DbKind::Oracle => ScriptDialect::Oracle,
-        _ => return None,
-    })
+    dialect_for_kind(profile.config.kind).map(|d| (d, true))
 }
 
 /// Only files the user picked in a dialog can be previewed.
@@ -210,12 +251,23 @@ pub(crate) async fn import_preview_impl(
         .grants
         .check(Path::new(&request.file), Purpose::Read)?;
     let mut request = request;
+    let mut guessed = false;
     if request.dialect.is_none() {
-        if let Some(id) = request.connection_id {
-            request.dialect = preview_dialect(state, id).await;
+        match request.connection_id {
+            Some(id) => match preview_dialect(state, id).await {
+                Some((dialect, g)) => {
+                    request.dialect = Some(dialect);
+                    guessed = g;
+                }
+                None => guessed = true,
+            },
+            None => guessed = true,
         }
     }
-    dbstudio_export::preview_import(request).await
+    let sql = matches!(request.format, ImportFormat::Sql { .. });
+    let mut preview = dbstudio_export::preview_import(request).await?;
+    preview.dialect_guessed = sql && guessed;
+    Ok(preview)
 }
 
 /// Destructive statements of a SQL file (stops after [`MAX_LISTED`]).
@@ -327,6 +379,7 @@ pub(crate) async fn import_start_impl(
     spec.file = file.to_string_lossy().into_owned();
     let job = open_job_session(state, spec.connection_id).await?;
     let dialect = job.session.script_dialect();
+    remember_dialect(spec.connection_id, dialect);
     let checked = match crate::guard::ensure_writable(&job.config, "import") {
         Ok(()) => confirm_import(state, &job.config, dialect, &spec, &file, confirm.as_ref()).await,
         Err(e) => Err(e),
@@ -519,6 +572,59 @@ mod tests {
         s.grants.grant(&file, Purpose::Read).unwrap();
         let preview = import_preview_impl(&s, req).await.unwrap();
         assert_eq!(preview.columns, ["a"]);
+    }
+
+    #[tokio::test]
+    async fn preview_remembers_the_dialect_of_a_closed_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.sql");
+        std::fs::write(&file, "INSERT INTO t VALUES (1);\n").unwrap();
+        let s = state();
+        s.grants.grant(&file, Purpose::Read).unwrap();
+        let sql = || ImportFormat::Sql {
+            continue_on_error: false,
+        };
+        let request = |id: Option<Uuid>| ImportPreviewRequest {
+            file: file.to_string_lossy().into_owned(),
+            format: sql(),
+            rows: 10,
+            dialect: None,
+            connection_id: id,
+        };
+        // Unknown connection: the preview guesses and says so.
+        let unknown = Uuid::new_v4();
+        assert!(preview_dialect(&s, unknown).await.is_none());
+        let p = import_preview_impl(&s, request(Some(unknown)))
+            .await
+            .unwrap();
+        assert!(p.dialect_guessed);
+        // A MariaDB session was open earlier: its dialect is used, not guessed.
+        let id = Uuid::new_v4();
+        let mariadb = ScriptDialect::mysql(true, true);
+        remember_dialect(id, mariadb);
+        assert_eq!(preview_dialect(&s, id).await, Some((mariadb, false)));
+        let p = import_preview_impl(&s, request(Some(id))).await.unwrap();
+        assert!(!p.dialect_guessed);
+        assert_eq!(p.statements_preview.len(), 1);
+        // The request's own dialect always wins.
+        let mut explicit = request(None);
+        explicit.dialect = Some(ScriptDialect::Postgres);
+        assert!(
+            !import_preview_impl(&s, explicit)
+                .await
+                .unwrap()
+                .dialect_guessed
+        );
+        // Kinds map to dialects.
+        assert_eq!(
+            dialect_for_kind(DbKind::TiDb),
+            Some(ScriptDialect::mysql(false, true))
+        );
+        assert_eq!(
+            dialect_for_kind(DbKind::ClickHouse),
+            Some(ScriptDialect::ClickHouse)
+        );
+        assert_eq!(dialect_for_kind(DbKind::Redis), None);
     }
 
     fn config(production: bool) -> ConnectionConfig {

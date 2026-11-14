@@ -26,6 +26,10 @@ pub struct ExportPreset {
     pub updated_at: String,
 }
 
+const RECENT_DIRS_KEY: &str = "export.recentDirs";
+/// Most directories remembered in `export.recentDirs`.
+pub const RECENT_DIRS_MAX: usize = 20;
+
 const COLUMNS: &str = "id, name, connection_id, spec, created_at, updated_at";
 
 fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ExportPreset>> {
@@ -135,6 +139,47 @@ impl Store {
         })
     }
 
+    /// Directories recent exports were written to (`export.recentDirs` setting), most recent
+    /// first. Unreadable data gives an empty list.
+    pub fn export_recent_dirs(&self) -> Result<Vec<String>> {
+        let text: Option<String> = self
+            .lock()
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![RECENT_DIRS_KEY],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        Ok(text
+            .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
+            .unwrap_or_default())
+    }
+
+    /// Remember `dir` as the most recent export directory (deduplicated, at most
+    /// [`RECENT_DIRS_MAX`]). Directories that no longer exist are dropped from the list.
+    pub fn export_recent_dirs_record(&self, dir: &str) -> Result<Vec<String>> {
+        if dir.trim().is_empty() {
+            return Err(Error::Invalid("export directory is empty".into()));
+        }
+        let mut list: Vec<String> = vec![dir.to_string()];
+        for d in self.export_recent_dirs()? {
+            if d != dir && std::path::Path::new(&d).is_dir() {
+                list.push(d);
+            }
+        }
+        list.truncate(RECENT_DIRS_MAX);
+        let json = serde_json::to_string(&list).map_err(invalid)?;
+        self.lock()
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![RECENT_DIRS_KEY, json],
+            )
+            .map_err(db_err)?;
+        Ok(list)
+    }
+
     /// Delete a preset; an unknown id is `NotFound`.
     pub fn presets_delete(&self, id: Uuid) -> Result<()> {
         let n = self
@@ -178,6 +223,37 @@ mod tests {
             )
             .unwrap();
         id
+    }
+
+    #[test]
+    fn recent_dirs_are_deduplicated_capped_and_pruned() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.export_recent_dirs().unwrap().is_empty());
+        let root = std::env::temp_dir();
+        let a = root.to_string_lossy().into_owned();
+        let gone = root.join("dbstudio-definitely-missing-dir");
+        let gone = gone.to_string_lossy().into_owned();
+        store.export_recent_dirs_record(&gone).unwrap();
+        assert_eq!(
+            store.export_recent_dirs().unwrap(),
+            std::slice::from_ref(&gone)
+        );
+        // Recording another directory drops the one that no longer exists.
+        let list = store.export_recent_dirs_record(&a).unwrap();
+        assert_eq!(list, std::slice::from_ref(&a));
+        let list = store.export_recent_dirs_record(&a).unwrap();
+        assert_eq!(list, std::slice::from_ref(&a));
+        assert!(store.export_recent_dirs_record(" ").is_err());
+        // Cap.
+        let dirs: Vec<tempfile::TempDir> = (0..25).map(|_| tempfile::tempdir().unwrap()).collect();
+        for d in &dirs {
+            store
+                .export_recent_dirs_record(&d.path().to_string_lossy())
+                .unwrap();
+        }
+        let list = store.export_recent_dirs().unwrap();
+        assert_eq!(list.len(), RECENT_DIRS_MAX);
+        assert_eq!(list[0], dirs[24].path().to_string_lossy());
     }
 
     #[test]

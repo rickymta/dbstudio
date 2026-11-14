@@ -39,7 +39,7 @@ pub async fn run_export_tuned(
         return Err(Error::Cancelled);
     }
     if matches!(spec.source, ExportSource::Keys { .. }) {
-        return Err(Error::Unsupported("export_keys".into()));
+        return crate::keys::export_keys(&ctx, &spec, &tuning).await;
     }
     // Refuse a query that is not a single read-only statement before anything reaches the
     // server (no snapshot transaction, no catalog lookups).
@@ -333,8 +333,17 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, _warnings: &mut Vec<String
 
 /// Destination path of the output: a `.zip` when several files are produced.
 fn output_path(spec: &ExportSpec, work: &Work, warnings: &mut Vec<String>) -> PathBuf {
+    output_path_for(spec, work.files, warnings)
+}
+
+/// [`output_path`] for an export that produces `files` files.
+pub(crate) fn output_path_for(
+    spec: &ExportSpec,
+    files: usize,
+    warnings: &mut Vec<String>,
+) -> PathBuf {
     let dest = PathBuf::from(&spec.destination.path);
-    let zip_needed = work.files > 1;
+    let zip_needed = files > 1;
     let is_zip = dest
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
@@ -438,6 +447,8 @@ async fn run(
         overwrite: spec.destination.overwrite,
         zip: work.files > 1,
         tuning: *tuning,
+        flatten_fields: spec.values.flatten_fields.clone(),
+        kind: ctx.kind,
     })?;
     let mut progress = Progress::new(&*ctx.reporter, work);
     let is_sql = matches!(spec.format, ExportFormat::Sql(_));
@@ -539,6 +550,7 @@ async fn run(
     }
     progress.phase("finish", None);
     warnings.extend(writer.warnings());
+    let object_list = writer.objects();
     let files = writer.finish()?;
     let bytes: u64 = files
         .iter()
@@ -554,6 +566,7 @@ async fn run(
         rows: rows_total,
         bytes,
         warnings: std::mem::take(warnings),
+        object_list,
     })
 }
 
@@ -712,6 +725,8 @@ fn is_sql_dialect(d: ScriptDialect) -> bool {
             | ScriptDialect::MySql { .. }
             | ScriptDialect::MsSql
             | ScriptDialect::Oracle
+            | ScriptDialect::Cql
+            | ScriptDialect::ClickHouse
     )
 }
 
