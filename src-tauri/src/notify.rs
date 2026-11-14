@@ -2,6 +2,16 @@
 //! `AppSettings.language` (`System` follows the OS locale). Independent of the frontend i18n
 //! files so notifications work while the window is closed.
 //!
-//! Contract scaffold of the backlog contract v2 (OS locale detection uses the `sys-locale`
-//! crate declared in the workspace): package B fills the table and the lookup in; this module
-//! is empty on purpose so `lib.rs` does not change again.
+//! The table lives in `dbstudio_backup::notify` so the command line prints the same texts;
+//! this module only reads the setting.
+
+pub use dbstudio_backup::notify::{
+    Lang, RunFacts, backup_failed, backup_succeeded, quit_busy, resolve_language,
+};
+use dbstudio_store::Store;
+
+/// Language of notifications now: the stored setting (defaults when it cannot be read).
+pub fn current_language(store: &Store) -> Lang {
+    let language = store.get_settings().map(|s| s.language).unwrap_or_default();
+    dbstudio_backup::notify::language_for(language)
+}

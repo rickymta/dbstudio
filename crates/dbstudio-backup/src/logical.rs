@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use dbstudio_core::{
     CancelToken, ColumnMeta, DdlOptions, EndOutcome, Error, JobProgress, JobReporter, Lease,
-    LeaseOptions, ModelDetail, ObjectKind, ObjectPath, QueryRequest, Result, ResultSink,
-    SchemaModelRequest, ScriptDialect, Session, StatementEnd, TxOptions, Value,
+    LeaseOptions, ObjectKind, ObjectPath, QueryRequest, Result, ResultSink, ScriptDialect,
+    Session, StatementEnd, TxOptions, Value,
 };
 use dbstudio_export::{
     ExportContent, ExportContext, ExportDestination, ExportFormat, ExportSource, ExportSpec,
@@ -22,6 +22,8 @@ use dbstudio_export::{
 };
 use dbstudio_sql::StreamSplitter;
 use serde_json::{Value as Json, json};
+
+use crate::partial::{self, Marker, Selection};
 use uuid::Uuid;
 
 use crate::container::{Scanned, SpoolEntry};
@@ -82,6 +84,26 @@ pub(crate) struct Dump {
     pub rows: u64,
 }
 
+/// The nonce the writer put in its first marker (the prologue, written before any data, so it
+/// cannot be forged by row values).
+fn marker_nonce(file: &Path) -> Option<String> {
+    let f = File::open(file).ok()?;
+    for line in BufReader::new(f).lines().take(50) {
+        let line = line.ok()?;
+        if line.starts_with("-- dbstudio:") {
+            let at = line.find(" nonce=")? + " nonce=".len();
+            return Some(
+                line[at..]
+                    .split_whitespace()
+                    .next()?
+                    .trim_matches('"')
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
 /// Source of the export for `targets` (all in `database`).
 fn export_source(database: &str, targets: &[ObjectPath]) -> Result<ExportSource> {
     let db_path = ObjectPath::root().child(ObjectKind::Database, database);
@@ -115,52 +137,6 @@ fn export_source(database: &str, targets: &[ObjectPath]) -> Result<ExportSource>
     ))
 }
 
-/// Names of the tables and views of `source` for the preamble (best effort).
-async fn list_objects(session: &dyn Session, source: &ExportSource) -> Vec<Json> {
-    let (scope, tables) = match source {
-        ExportSource::Database { path } | ExportSource::Schema { path } => {
-            (path.clone(), Vec::new())
-        }
-        ExportSource::Tables { paths } => (
-            paths.first().cloned().map(scope_of).unwrap_or_default(),
-            paths.clone(),
-        ),
-        _ => return Vec::new(),
-    };
-    let req = SchemaModelRequest {
-        scope,
-        tables,
-        include_views: true,
-        include_comments: false,
-        detail: ModelDetail::Keys,
-        sample_size: None,
-    };
-    match session.schema_model(req).await {
-        Ok(m) => m
-            .tables
-            .iter()
-            .map(|t| {
-                let name = match &t.schema {
-                    Some(s) => format!("{s}.{}", t.name),
-                    None => t.name.clone(),
-                };
-                json!({"name": name, "kind": if t.kind == ObjectKind::View { "view" } else { "table" }})
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    }
-}
-
-fn scope_of(mut path: ObjectPath) -> ObjectPath {
-    while matches!(
-        path.segments.last().map(|s| s.kind),
-        Some(ObjectKind::Table | ObjectKind::View | ObjectKind::Folder)
-    ) {
-        path.segments.pop();
-    }
-    path
-}
-
 /// Dump the objects of `database` selected by `targets` (empty = the whole database).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn dump(
@@ -175,9 +151,21 @@ pub(crate) async fn dump(
     reporter: &Arc<dyn JobReporter>,
 ) -> Result<Dump> {
     let sd = session.script_dialect();
+    match sd {
+        ScriptDialect::MongoShell => {
+            return crate::nosql::dump_mongo(
+                session, spool, database, targets, content, source, reporter,
+            )
+            .await;
+        }
+        ScriptDialect::RedisCli => {
+            return crate::nosql::dump_redis(session, spool, database, content, source, reporter)
+                .await;
+        }
+        _ => {}
+    }
     let dname = dialect_name(sd)?;
     let src = export_source(database, targets)?;
-    let objects = list_objects(session.as_ref(), &src).await;
     let mut ddl = ddl.clone();
     if matches!(sd, ScriptDialect::MySql { .. }) {
         // MySQL names carry the database; a restore into another name must not.
@@ -213,7 +201,7 @@ pub(crate) async fn dump(
     let mut entry = crate::ops::spool_entry_from_file(DUMP_ENTRY, &file)?;
     entry.rows = report.rows;
     let preamble = json!({
-        "formatVersion": 2,
+        "formatVersion": 3,
         "engine": "logical",
         "createdAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "database": database,
@@ -225,7 +213,8 @@ pub(crate) async fn dump(
             ExportContent::Both => "both",
         },
         "dumpFile": DUMP_ENTRY,
-        "objects": objects,
+        "objects": report.object_list,
+        "markerNonce": marker_nonce(&file),
         "tables": report.objects,
         "warnings": report.warnings,
         "unsupported": UNSUPPORTED_SCOPE,
@@ -243,7 +232,7 @@ pub(crate) async fn dump(
 // ---------------------------------------------------------------------------------------------
 
 /// Discards result sets, remembers affected rows.
-struct NullSink;
+pub(crate) struct NullSink;
 
 impl ResultSink for NullSink {
     fn on_columns(&mut self, _: Vec<ColumnMeta>) -> Result<()> {
@@ -346,12 +335,17 @@ pub fn clean_statements(
     let q = dbstudio_sql::Dialect::new(sd);
     match sd {
         ScriptDialect::Postgres => {
+            // Version 3 objects carry `schema`; earlier files only `name = "schema.table"`.
             let mut schemas: Vec<String> = pre["objects"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|o| o["name"].as_str())
-                .filter_map(|n| n.split_once('.').map(|(s, _)| s.to_string()))
+                .filter_map(|o| match o["schema"].as_str() {
+                    Some(s) => Some(s.to_string()),
+                    None => o["name"]
+                        .as_str()
+                        .and_then(|n| n.split_once('.').map(|(s, _)| s.to_string())),
+                })
                 .collect();
             schemas.sort();
             schemas.dedup();
@@ -434,9 +428,19 @@ pub(crate) async fn restore(
     session: &Arc<dyn Session>,
     scanned: &Scanned,
     spec: &crate::RestoreSpec,
-    reporter: &dyn JobReporter,
+    reporter_arc: &Arc<dyn JobReporter>,
 ) -> Result<crate::RestoreOutcome> {
+    let reporter: &dyn JobReporter = reporter_arc.as_ref();
     let pre = &scanned.preamble;
+    match pre["engine"].as_str() {
+        Some("logical-mongo") => {
+            return crate::nosql::restore_mongo(session, scanned, spec, reporter_arc).await;
+        }
+        Some("logical-redis") => {
+            return crate::nosql::restore_redis(session, scanned, spec, reporter_arc).await;
+        }
+        _ => {}
+    }
     let src_dialect = pre["dialect"].as_str().unwrap_or("");
     let sd = session.script_dialect();
     if dialect_name(sd).is_err() || !same_family(src_dialect, sd) {
@@ -444,12 +448,36 @@ pub(crate) async fn restore(
             "this backup was made from {src_dialect}; restore it into a server of the same kind"
         )));
     }
-    if !spec.objects.is_empty() {
+    let selection = if spec.objects.is_empty() {
+        None
+    } else if pre["formatVersion"].as_u64().unwrap_or(1) < 3 {
         return Err(Error::Unsupported(
-            "restoring selected objects is not available for integrated backups; restore the whole backup"
+            "this backup was written before selected objects could be restored; restore the \
+             whole backup"
                 .into(),
         ));
-    }
+    } else {
+        let objects: Vec<crate::BackupObject> =
+            serde_json::from_value(pre["objects"].clone()).unwrap_or_default();
+        let sel = Selection::resolve(&objects, &spec.objects)?;
+        if !sel.support.is_empty() {
+            reporter.log(&format!(
+                "also restoring supporting objects: {}",
+                sel.support.join(", ")
+            ));
+        }
+        // Without the file's nonce a marker cannot be told from data: whole restore only.
+        let nonce = pre["markerNonce"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| {
+                Error::Unsupported(
+                    "this backup has no marker token; restore the whole backup".into(),
+                )
+            })?
+            .to_string();
+        Some((sel, nonce))
+    };
     let target_db = spec
         .target_database
         .clone()
@@ -523,25 +551,31 @@ pub(crate) async fn restore(
         &target,
         &cancel,
         sd,
-        pre,
         &clean,
         dump_path,
         spec,
+        selection.as_ref().map(|(s, n)| (s, n.as_str())),
         single_tx,
         &mut progress,
         reporter,
     )
     .await;
     target.close().await;
-    let errors = result?;
+    let (errors, rows_run) = result?;
     let rows = scanned
         .manifest
         .entries
         .iter()
         .find(|e| e.path == dump_name)
         .map_or(0, |e| e.rows);
+    let (objects, rows) = match &selection {
+        // Rows of a partial restore are the ones of the chosen objects.
+        Some((sel, _)) => selected_counts(pre, sel),
+        None => (pre["tables"].as_u64().unwrap_or(0) as u32, rows),
+    };
+    let _ = rows_run;
     Ok(crate::RestoreOutcome {
-        objects: pre["tables"].as_u64().unwrap_or(0) as u32,
+        objects,
         rows: if errors.is_empty() { rows } else { 0 },
         errors,
     })
@@ -552,14 +586,14 @@ async fn run_script(
     target: &Target,
     cancel: &CancelToken,
     sd: ScriptDialect,
-    pre: &Json,
     clean: &[String],
     path: &Path,
     spec: &crate::RestoreSpec,
+    selection: Option<(&Selection, &str)>,
     single_tx: bool,
     progress: &mut JobProgress,
     reporter: &dyn JobReporter,
-) -> Result<Vec<RowError>> {
+) -> Result<(Vec<RowError>, u64)> {
     // Same session state as the export: values are written in UTC.
     let zone = match sd {
         ScriptDialect::MySql { .. } => Some("SET time_zone = '+00:00'"),
@@ -584,7 +618,6 @@ async fn run_script(
             target.run(cancel, sql.clone()).await?;
         }
     }
-    let _ = pre;
     let file =
         File::open(path).map_err(|e| Error::Other(format!("cannot read the script: {e}")))?;
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -595,12 +628,31 @@ async fn run_script(
     let (mut n, mut bytes) = (0u64, 0u64);
     let mut line = String::new();
     let mut eof = false;
+    // Partial restore: the block the next statements belong to.
+    let mut gate = Gate::default();
     while !eof {
         line.clear();
         let read = reader
             .read_line(&mut line)
             .map_err(|e| Error::Other(format!("cannot read the script: {e}")))?;
         bytes += read as u64;
+        if let Some((sel, nonce)) = selection {
+            if read > 0 && partial::looks_like_marker(&line) {
+                // A marker only counts between statements: the same text inside a string
+                // literal is data.
+                let boundary = splitter
+                    .clone()
+                    .finish()
+                    .iter()
+                    .all(|s| partial::only_comments(s));
+                if boundary {
+                    if let Some(m) = partial::parse_marker(&line, nonce) {
+                        gate = Gate::of(&m, sel);
+                        continue;
+                    }
+                }
+            }
+        }
         let statements = if read == 0 {
             eof = true;
             splitter.clone().finish()
@@ -613,6 +665,25 @@ async fn run_script(
             }
             if cancel.is_cancelled() {
                 return Err(Error::Cancelled);
+            }
+            if let Some((sel, _)) = selection {
+                if !gate.run {
+                    continue;
+                }
+                if gate.post {
+                    if let Some((schema, table)) = partial::referenced_table(&stmt) {
+                        if !sel.has_table(schema.as_deref(), &table) {
+                            reporter.log(&format!(
+                                "skipped a constraint that references {}, which is not restored",
+                                match &schema {
+                                    Some(s) => format!("{s}.{table}"),
+                                    None => table.clone(),
+                                }
+                            ));
+                            continue;
+                        }
+                    }
+                }
             }
             n += 1;
             match target.run(cancel, stmt).await {
@@ -648,7 +719,58 @@ async fn run_script(
     progress.rows_done = n;
     progress.bytes_done = bytes;
     reporter.progress(progress);
-    Ok(errors)
+    Ok((errors, n))
+}
+
+/// Which statements of the script run during a partial restore.
+struct Gate {
+    run: bool,
+    post: bool,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        // Statements before the first marker (the script prologue) always run.
+        Gate {
+            run: true,
+            post: false,
+        }
+    }
+}
+
+impl Gate {
+    fn of(marker: &Marker, sel: &Selection) -> Gate {
+        match marker {
+            Marker::Common => Gate::default(),
+            Marker::Object {
+                kind,
+                schema,
+                name,
+                phase,
+            } => Gate {
+                run: sel.includes(*kind, schema, name),
+                post: *phase == crate::BackupPhase::Post,
+            },
+        }
+    }
+}
+
+/// Objects and rows of the chosen tables (from the preamble).
+fn selected_counts(pre: &Json, sel: &Selection) -> (u32, u64) {
+    let objects: Vec<crate::BackupObject> =
+        serde_json::from_value(pre["objects"].clone()).unwrap_or_default();
+    let mut n = 0;
+    let mut rows = 0;
+    for o in objects.iter().filter(|o| {
+        matches!(
+            o.kind,
+            ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView
+        ) && sel.includes(o.kind, &o.schema, &o.name)
+    }) {
+        n += 1;
+        rows += o.rows.unwrap_or(0);
+    }
+    (n, rows)
 }
 
 fn script_dialect_of(sd: ScriptDialect) -> ScriptDialect {
@@ -687,7 +809,7 @@ mod tests {
             ExportSource::Schema { .. }
         ));
         assert!(export_source("app", &[s.clone(), s]).is_err());
-        assert_eq!(scope_of(t).segments.len(), 1);
+        drop(t);
     }
 
     #[test]
@@ -725,6 +847,28 @@ mod tests {
                 "CREATE SCHEMA \"public\""
             ]
         );
+    }
+
+    #[test]
+    fn a_marker_inside_a_literal_is_not_at_a_boundary() {
+        // Row data with a real line break followed by a forged marker line.
+        let mut sp = StreamSplitter::new(ScriptDialect::Postgres);
+        let first = sp.push("INSERT INTO t VALUES ('x\n");
+        assert!(first.is_empty());
+        let forged = "-- dbstudio:object kind=table name=\"t\" phase=data nonce=abc\n";
+        assert!(partial::looks_like_marker(forged));
+        let at_boundary = sp
+            .clone()
+            .finish()
+            .iter()
+            .all(|s| partial::only_comments(s));
+        assert!(!at_boundary, "inside a string literal");
+        // Between statements it is one.
+        let mut sp = StreamSplitter::new(ScriptDialect::Postgres);
+        assert_eq!(sp.push("SELECT 1;\n").len(), 1);
+        assert!(sp.finish().iter().all(|s| partial::only_comments(s)));
+        // And without the file's nonce it is plain text either way.
+        assert!(partial::parse_marker(forged, "0123456789abcdef").is_none());
     }
 
     #[test]

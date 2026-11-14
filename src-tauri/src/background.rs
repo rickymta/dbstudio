@@ -14,6 +14,7 @@ use tauri::{AppHandle, Manager, Window, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::host::Host;
+use crate::notify::{Lang, RunFacts};
 use crate::state::AppState;
 
 /// Label of the main window.
@@ -178,11 +179,9 @@ pub fn request_quit(app: &AppHandle) {
         QuitDecision::Ask => {
             QUIT_ASKED_AT.store(now, Ordering::SeqCst);
             show_main_window(app);
-            let body = format!(
-                "{} background job(s) are running. Choose Quit again within {QUIT_CONFIRM_SECS} s to stop them and exit.",
-                active.len()
-            );
-            if let Err(e) = state.host.notify("DBStudio is busy", &body) {
+            let lang = crate::notify::current_language(state.connections.store());
+            let (title, body) = crate::notify::quit_busy(lang, active.len(), QUIT_CONFIRM_SECS);
+            if let Err(e) = state.host.notify(&title, &body) {
                 tracing::warn!(error = %e, "cannot show the quit warning");
             }
         }
@@ -260,50 +259,28 @@ impl Autostart for NoAutostart {
 
 /// Title and body of the OS notification for a finished run, honouring the job's policy.
 /// `None` when nothing should be shown.
-pub fn notification_for(job: &BackupJob, run: &BackupRun) -> Option<(String, String)> {
+pub fn notification_for(lang: Lang, job: &BackupJob, run: &BackupRun) -> Option<(String, String)> {
     match run.status {
-        RunStatus::Succeeded if job.notify.on_success => Some((
-            "DBStudio backup".into(),
-            format!(
-                "{}: finished{}",
-                job.name,
-                run.size_bytes
-                    .map(|b| format!(" ({})", human_size(b)))
-                    .unwrap_or_default()
-            ),
+        RunStatus::Succeeded if job.notify.on_success => Some(crate::notify::backup_succeeded(
+            lang,
+            &job.name,
+            RunFacts {
+                size_bytes: run.size_bytes,
+                duration_ms: run.duration_ms,
+            },
         )),
-        RunStatus::Failed if job.notify.on_failure => Some((
-            "DBStudio backup failed".into(),
-            format!(
-                "{}: {}",
-                job.name,
-                run.error
-                    .as_ref()
-                    .map_or("unknown error", |e| e.message.as_str())
-            ),
+        RunStatus::Failed if job.notify.on_failure => Some(crate::notify::backup_failed(
+            lang,
+            &job.name,
+            run.error.as_ref().map(|e| e.message.as_str()),
         )),
         _ => None,
     }
 }
 
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut v = bytes as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < UNITS.len() - 1 {
-        v /= 1024.0;
-        i += 1;
-    }
-    if i == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{v:.1} {}", UNITS[i])
-    }
-}
-
 /// Show the notification for `run` (failures to show are only logged).
-pub fn notify_run(host: &dyn Host, job: &BackupJob, run: &BackupRun) {
-    if let Some((title, body)) = notification_for(job, run) {
+pub fn notify_run(host: &dyn Host, lang: Lang, job: &BackupJob, run: &BackupRun) {
+    if let Some((title, body)) = notification_for(lang, job, run) {
         if let Err(e) = host.notify(&title, &body) {
             tracing::warn!(error = %e, "cannot show the backup notification");
         }
@@ -401,22 +378,24 @@ mod tests {
     #[test]
     fn notifications_follow_the_policy() {
         let all = job(NotifyPolicy::default());
-        let (_, body) = notification_for(&all, &run(RunStatus::Succeeded)).unwrap();
+        let (_, body) = notification_for(Lang::En, &all, &run(RunStatus::Succeeded)).unwrap();
         assert_eq!(body, "nightly: finished (3.0 MB)");
-        let (title, body) = notification_for(&all, &run(RunStatus::Failed)).unwrap();
+        let (title, body) = notification_for(Lang::En, &all, &run(RunStatus::Failed)).unwrap();
         assert!(title.contains("failed") && body == "nightly: disk full");
-        assert!(notification_for(&all, &run(RunStatus::Cancelled)).is_none());
+        let (title, body) = notification_for(Lang::Vi, &all, &run(RunStatus::Failed)).unwrap();
+        assert!(title.contains("thất bại") && body == "nightly: disk full");
+        assert!(notification_for(Lang::En, &all, &run(RunStatus::Cancelled)).is_none());
         let quiet_ok = job(NotifyPolicy {
             on_success: false,
             on_failure: true,
         });
-        assert!(notification_for(&quiet_ok, &run(RunStatus::Succeeded)).is_none());
-        assert!(notification_for(&quiet_ok, &run(RunStatus::Failed)).is_some());
+        assert!(notification_for(Lang::En, &quiet_ok, &run(RunStatus::Succeeded)).is_none());
+        assert!(notification_for(Lang::En, &quiet_ok, &run(RunStatus::Failed)).is_some());
         let quiet_fail = job(NotifyPolicy {
             on_success: true,
             on_failure: false,
         });
-        assert!(notification_for(&quiet_fail, &run(RunStatus::Failed)).is_none());
+        assert!(notification_for(Lang::En, &quiet_fail, &run(RunStatus::Failed)).is_none());
     }
 
     #[test]
@@ -433,8 +412,24 @@ mod tests {
     }
 
     #[test]
-    fn human_sizes() {
-        assert_eq!(human_size(10), "10 B");
-        assert_eq!(human_size(1536), "1.5 KB");
+    fn the_fake_host_receives_vietnamese_text_when_the_setting_says_so() {
+        use dbstudio_core::DriverRegistry;
+        use dbstudio_store::{AppSettings, UiLanguage};
+
+        let (state, _s, host) = crate::state::testing::test_state_with_host(DriverRegistry::new());
+        let store = state.connections.store();
+        let settings = AppSettings {
+            language: UiLanguage::Vi,
+            ..AppSettings::default()
+        };
+        store.set_settings(settings).unwrap();
+        let lang = crate::notify::current_language(store);
+        let j = job(NotifyPolicy::default());
+        notify_run(host.as_ref(), lang, &j, &run(RunStatus::Succeeded));
+        notify_run(host.as_ref(), lang, &j, &run(RunStatus::Failed));
+        let seen = host.notifications.lock().unwrap().clone();
+        assert_eq!(seen[0].0, "Sao lưu DBStudio");
+        assert_eq!(seen[0].1, "nightly: đã hoàn tất (3.0 MB)");
+        assert_eq!(seen[1].0, "Sao lưu DBStudio thất bại");
     }
 }
