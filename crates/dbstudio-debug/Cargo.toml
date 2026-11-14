@@ -12,12 +12,14 @@ dbstudio-core.workspace = true
 dbstudio-sql.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["sync", "rt", "time"] }
+tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
+sha2.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 dbstudio-core = { workspace = true, features = ["testing"] }
-tokio.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+dbstudio-driver-postgres = { path = "../drivers/postgres" }
 
 [features]
 # Package O: prototype of the Oracle DBMS_DEBUG routine debugger (spike).
