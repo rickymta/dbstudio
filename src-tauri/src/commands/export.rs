@@ -191,8 +191,9 @@ pub(crate) async fn preset_delete_impl(state: &AppState, id: Uuid) -> Result<()>
 /// Script dialect last seen per connection (not persisted). Refreshed by every export / import /
 /// preview that has a live session and by `remember_dialect`, which the session opener calls.
 fn last_dialects() -> &'static std::sync::Mutex<std::collections::HashMap<Uuid, ScriptDialect>> {
-    static MAP: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<Uuid, ScriptDialect>>> =
-        std::sync::OnceLock::new();
+    static MAP: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<Uuid, ScriptDialect>>,
+    > = std::sync::OnceLock::new();
     MAP.get_or_init(Default::default)
 }
 
@@ -225,10 +226,7 @@ fn dialect_for_kind(kind: DbKind) -> Option<ScriptDialect> {
 /// session's own dialect, else the one remembered from its last session, else the one its profile
 /// kind implies (guess). `None` when the connection is unknown (the preview then guesses from the
 /// file).
-async fn preview_dialect(
-    state: &AppState,
-    connection_id: Uuid,
-) -> Option<(ScriptDialect, bool)> {
+async fn preview_dialect(state: &AppState, connection_id: Uuid) -> Option<(ScriptDialect, bool)> {
     if let Some((_, session)) = state.sessions.find_by_connection(connection_id) {
         let dialect = session.script_dialect();
         remember_dialect(connection_id, dialect);
@@ -596,7 +594,9 @@ mod tests {
         // Unknown connection: the preview guesses and says so.
         let unknown = Uuid::new_v4();
         assert!(preview_dialect(&s, unknown).await.is_none());
-        let p = import_preview_impl(&s, request(Some(unknown))).await.unwrap();
+        let p = import_preview_impl(&s, request(Some(unknown)))
+            .await
+            .unwrap();
         assert!(p.dialect_guessed);
         // A MariaDB session was open earlier: its dialect is used, not guessed.
         let id = Uuid::new_v4();
@@ -609,10 +609,21 @@ mod tests {
         // The request's own dialect always wins.
         let mut explicit = request(None);
         explicit.dialect = Some(ScriptDialect::Postgres);
-        assert!(!import_preview_impl(&s, explicit).await.unwrap().dialect_guessed);
+        assert!(
+            !import_preview_impl(&s, explicit)
+                .await
+                .unwrap()
+                .dialect_guessed
+        );
         // Kinds map to dialects.
-        assert_eq!(dialect_for_kind(DbKind::TiDb), Some(ScriptDialect::mysql(false, true)));
-        assert_eq!(dialect_for_kind(DbKind::ClickHouse), Some(ScriptDialect::ClickHouse));
+        assert_eq!(
+            dialect_for_kind(DbKind::TiDb),
+            Some(ScriptDialect::mysql(false, true))
+        );
+        assert_eq!(
+            dialect_for_kind(DbKind::ClickHouse),
+            Some(ScriptDialect::ClickHouse)
+        );
         assert_eq!(dialect_for_kind(DbKind::Redis), None);
     }
 
