@@ -63,6 +63,16 @@ fn cleanup_dirs(dirs: &[String], older_than: std::time::Duration) -> usize {
 }
 pub use import::{preview_import, run_import};
 
+/// A NULL text with a delimiter, quote or line break in it cannot be told from data: refuse it.
+pub(crate) fn check_null_text(null_text: &str, delimiter: char, quote: char) -> Result<()> {
+    if null_text.contains([delimiter, quote, '\n', '\r']) {
+        return Err(dbstudio_core::Error::Invalid(
+            "the NULL text must not contain the delimiter, the quote or a line break".into(),
+        ));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------------------------
@@ -329,6 +339,19 @@ pub struct ValueFormat {
     pub binary: BinaryFormat,
     /// Mongo CSV/XLSX dotted paths; empty = top-level keys of the first 1000 documents.
     pub flatten_fields: Vec<String>,
+    /// Mongo CSV / XLSX: write values that are not plain strings or numbers (ObjectId, Date,
+    /// Decimal128, binary, sub-documents, arrays) as Extended JSON text, so that importing the
+    /// file back restores their types. On by default; `false` writes their plain text.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub ejson_cells: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 impl Default for ValueFormat {
@@ -336,6 +359,7 @@ impl Default for ValueFormat {
         ValueFormat {
             binary: BinaryFormat::Base64,
             flatten_fields: Vec::new(),
+            ejson_cells: true,
         }
     }
 }
@@ -389,6 +413,10 @@ pub struct ExportReport {
     /// the other formats.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub object_list: Vec<ExportedObject>,
+    /// Token carried by every `-- dbstudio:object` / `-- dbstudio:common` marker of the script;
+    /// a reader accepts only markers with this token, at a statement boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_nonce: Option<String>,
 }
 
 /// Phase of an object in a SQL export; matches `phase=` of the `-- dbstudio:object` markers.
@@ -499,6 +527,10 @@ pub trait TableWriter: ResultSink {
     /// Objects written with their phases (SQL writer only); call before [`TableWriter::finish`].
     fn objects(&mut self) -> Vec<ExportedObject> {
         Vec::new()
+    }
+    /// Random token of the file's `-- dbstudio:` markers (SQL writer only).
+    fn nonce(&self) -> Option<String> {
+        None
     }
 }
 
@@ -836,6 +868,7 @@ mod tests {
             bytes: 2048,
             warnings: vec!["truncated cell".into()],
             object_list: vec![],
+            marker_nonce: None,
         }
     }
 
@@ -992,7 +1025,12 @@ mod tests {
     fn cleanup_visits_every_recent_dir_and_spares_other_files() {
         let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         for d in [&a, &b] {
-            std::fs::write(d.path().join(".out.csv.dbstudio-tmp-1"), "x").unwrap();
+            std::fs::write(
+                d.path()
+                    .join(".out.csv.dbstudio-tmp-0123456789abcdef0123456789abcdef"),
+                "x",
+            )
+            .unwrap();
             std::fs::write(d.path().join("keep.csv"), "x").unwrap();
             std::fs::write(d.path().join(".hidden"), "x").unwrap();
         }
@@ -1006,7 +1044,11 @@ mod tests {
         for d in [&a, &b] {
             assert!(d.path().join("keep.csv").exists());
             assert!(d.path().join(".hidden").exists());
-            assert!(!d.path().join(".out.csv.dbstudio-tmp-1").exists());
+            assert!(
+                !d.path()
+                    .join(".out.csv.dbstudio-tmp-0123456789abcdef0123456789abcdef")
+                    .exists()
+            );
         }
     }
 

@@ -28,6 +28,7 @@ pub(crate) struct FlattenWriter {
     /// Configured paths; empty = detect from the first documents.
     paths: Vec<String>,
     binary: BinaryFormat,
+    ejson: bool,
     state: State,
     warnings: Vec<String>,
     late_warnings: usize,
@@ -56,11 +57,17 @@ enum State {
 }
 
 impl FlattenWriter {
-    pub fn new(inner: Box<dyn TableWriter>, paths: Vec<String>, binary: BinaryFormat) -> Self {
+    pub fn new(
+        inner: Box<dyn TableWriter>,
+        paths: Vec<String>,
+        binary: BinaryFormat,
+        ejson: bool,
+    ) -> Self {
         FlattenWriter {
             inner,
             paths,
             binary,
+            ejson,
             state: State::Idle,
             warnings: Vec::new(),
             late_warnings: 0,
@@ -102,7 +109,7 @@ impl FlattenWriter {
                     top_level(doc, k)
                 };
                 match found {
-                    Some(v) => leaf(v, self.binary),
+                    Some(v) => leaf(v, self.binary, self.ejson),
                     None => Value::Null,
                 }
             })
@@ -237,8 +244,26 @@ pub(crate) fn resolve_path<'a>(doc: &'a Value, path: &str) -> Option<&'a Value> 
 
 /// Cell for a value found in a document: scalars stay typed, documents and arrays become
 /// relaxed EJSON text.
-fn leaf(v: &Value, binary: BinaryFormat) -> Value {
+fn leaf(v: &Value, binary: BinaryFormat, ejson: bool) -> Value {
     match v {
+        // Types a plain text cell would flatten (ObjectId, Decimal128, Date, binary): Extended
+        // JSON keeps them recoverable.
+        Value::Decimal(_) | Value::Timestamp(_) | Value::Bytes(_) if ejson => {
+            let mut s = String::new();
+            write_json(&mut s, v, binary, ExtendedJson::Relaxed, None, 0);
+            Value::Text(s)
+        }
+        Value::Ext(e)
+            if ejson
+                && matches!(
+                    e.ty.as_str(),
+                    "objectId" | "decimal128" | "decimal" | "date"
+                ) =>
+        {
+            let mut s = String::new();
+            write_json(&mut s, v, binary, ExtendedJson::Relaxed, None, 0);
+            Value::Text(s)
+        }
         Value::Document(_) | Value::Array(_) => {
             let mut s = String::new();
             write_json(&mut s, v, binary, ExtendedJson::Relaxed, None, 0);
@@ -460,6 +485,7 @@ mod tests {
             Box::new(Probe(Arc::clone(&log))),
             paths.iter().map(|p| p.to_string()).collect(),
             BinaryFormat::Base64,
+            false,
         );
         (w, log)
     }
@@ -587,5 +613,31 @@ mod tests {
         w.begin_object(&doc_meta()).unwrap();
         w.end_object().unwrap();
         assert_eq!(log.lock().unwrap().headers, [["_id"]]);
+    }
+
+    #[test]
+    fn typed_values_become_extended_json_text_when_asked() {
+        let oid = Value::Ext(ExtValue::new("objectId", "507f1f77bcf86cd799439011"));
+        let t = |v: &Value, on| match leaf(v, BinaryFormat::Base64, on) {
+            Value::Text(s) => s,
+            other => format!("{other:?}"),
+        };
+        assert_eq!(t(&oid, true), "{\"$oid\":\"507f1f77bcf86cd799439011\"}");
+        assert_eq!(
+            t(&Value::Decimal("1.50".into()), true),
+            "{\"$numberDecimal\":\"1.50\"}"
+        );
+        assert_eq!(
+            t(&Value::Timestamp("2020-01-02T03:04:05.000Z".into()), true),
+            "{\"$date\":\"2020-01-02T03:04:05.000Z\"}"
+        );
+        assert!(t(&Value::Bytes(vec![1]), true).starts_with("{\"$binary\""));
+        // Off: the plain value is kept (the CSV writer prints its text).
+        assert_eq!(leaf(&oid, BinaryFormat::Base64, false), oid);
+        // Numbers and strings are never wrapped.
+        assert_eq!(
+            leaf(&Value::Int(5), BinaryFormat::Base64, true),
+            Value::Int(5)
+        );
     }
 }

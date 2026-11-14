@@ -36,6 +36,8 @@ pub(crate) struct WriterConfig {
     pub tuning: ExportTuning,
     /// Dotted paths for document sources in CSV / XLSX (empty = detect).
     pub flatten_fields: Vec<String>,
+    /// Document sources in CSV / XLSX: typed values as Extended JSON text.
+    pub ejson_cells: bool,
     /// Database product (flavours of one dialect differ in what they accept).
     pub kind: DbKind,
 }
@@ -48,6 +50,7 @@ pub(crate) fn create_writer(cfg: WriterConfig) -> Result<Box<dyn TableWriter>> {
             inner,
             cfg.flatten_fields.clone(),
             cfg.binary,
+            cfg.ejson_cells,
         ))
     };
     Ok(match cfg.format.clone() {

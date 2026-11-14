@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use dbstudio_core::{
     ConfirmationGrant, ConfirmationRequest, ConnectionConfig, DbKind, DestructiveStatement, Error,
-    JobId, JobKind, JobReporter, OnConflict, ScriptDialect, Session, TextRange,
+    JobId, JobKind, JobReporter, OnConflict, PutMode, ScriptDialect, Session, TextRange,
 };
 use dbstudio_export::{
     ExportContext, ExportFormat, ExportSpec, ImportFormat, ImportPreview, ImportPreviewRequest,
-    ImportSpec,
+    ImportSpec, ImportTarget,
 };
 use dbstudio_store::ExportPreset;
 use tauri::State;
@@ -128,13 +128,17 @@ pub(crate) async fn start_impl(state: &AppState, mut spec: ExportSpec) -> Result
     }
     spec.destination.path = dest.to_string_lossy().into_owned();
     if let Some(dir) = dest.parent() {
-        // Leftovers of an export that was killed (an hour old at least: it may be running).
-        dbstudio_export::cleanup_orphans(dir, std::time::Duration::from_secs(3600));
-        // Remembered so the startup cleanup also visits this directory (`export.recentDirs`).
-        let _ = state
-            .connections
-            .store()
-            .export_recent_dirs_record(&dir.to_string_lossy());
+        // Leftovers of an export that was killed (an hour old at least: it may be running), and
+        // the directory is remembered so the startup cleanup also visits it
+        // (`export.recentDirs`). Disk access stays off the async threads.
+        let dir = dir.to_path_buf();
+        let svc = state.connections.clone();
+        let _ = blocking(move || {
+            dbstudio_export::cleanup_orphans(&dir, std::time::Duration::from_secs(3600));
+            svc.store()
+                .export_recent_dirs_record(&dir.to_string_lossy())
+        })
+        .await;
     }
 
     let job = open_job_session(state, spec.connection_id).await?;
@@ -339,7 +343,15 @@ async fn confirm_import(
         }
         _ => Vec::new(),
     };
-    let overwrite = spec.on_conflict == Some(OnConflict::Update);
+    // Rows overwritten on conflict, or Redis keys replaced.
+    let overwrite = spec.on_conflict == Some(OnConflict::Update)
+        || matches!(
+            spec.target,
+            ImportTarget::Keys {
+                mode: PutMode::Replace,
+                ..
+            }
+        );
     if statements.is_empty() && !overwrite {
         return Ok(());
     }
@@ -690,6 +702,62 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn replacing_redis_keys_on_production_needs_a_typed_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("k.ndjson");
+        std::fs::write(&file, "{}\n").unwrap();
+        let s = state();
+        let keys = |mode| {
+            let mut spec = import_spec(
+                file.to_str().unwrap(),
+                ImportFormat::Json {
+                    layout: JsonLayout::Ndjson,
+                },
+            );
+            spec.target = ImportTarget::Keys {
+                database: ObjectPath::root().child(ObjectKind::Database, "0"),
+                mode,
+            };
+            spec
+        };
+        let dialect = ScriptDialect::RedisCli;
+        // Not production, or keeping existing keys: no question.
+        confirm_import(
+            &s,
+            &config(false),
+            dialect,
+            &keys(PutMode::Replace),
+            &file,
+            None,
+        )
+        .await
+        .unwrap();
+        confirm_import(
+            &s,
+            &config(true),
+            dialect,
+            &keys(PutMode::IfAbsent),
+            &file,
+            None,
+        )
+        .await
+        .unwrap();
+        // Overwriting keys of a production database is confirmed.
+        assert!(matches!(
+            confirm_import(
+                &s,
+                &config(true),
+                dialect,
+                &keys(PutMode::Replace),
+                &file,
+                None
+            )
+            .await,
+            Err(Error::ConfirmationRequired(_))
+        ));
     }
 
     #[tokio::test]

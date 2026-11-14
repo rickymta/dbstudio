@@ -33,6 +33,10 @@ const READ_COUNT: u32 = 1000;
 pub(crate) const MAX_STRING_BYTES: u64 = 512 * 1024 * 1024;
 /// Keys per `apply_changes` call of the import.
 const IMPORT_BATCH: usize = 200;
+/// Rows of the export are handed to the writer when they add up to this many bytes.
+const EXPORT_FLUSH_BYTES: usize = 16 * 1024 * 1024;
+/// Keys of one `apply_changes` call stop growing at this many bytes of record text.
+const IMPORT_BATCH_BYTES: usize = 8 * 1024 * 1024;
 /// Individual warnings kept before the rest is summarised.
 const MAX_WARNINGS: usize = 20;
 
@@ -207,6 +211,7 @@ pub(crate) async fn export_keys(
         zip: false,
         tuning: *tuning,
         flatten_fields: Vec::new(),
+        ejson_cells: false,
         kind: ctx.kind,
     })?;
     let session = ctx.session.as_ref();
@@ -246,6 +251,7 @@ pub(crate) async fn export_keys(
             })
             .await?;
         let mut batch: Vec<Vec<Value>> = Vec::with_capacity(page.keys.len());
+        let mut batch_bytes = 0usize;
         for name in page.keys {
             if cancel.is_cancelled() {
                 return Err(Error::Cancelled);
@@ -259,7 +265,17 @@ pub(crate) async fn export_keys(
                     if groups > 0 {
                         groups_skipped += 1;
                     }
-                    batch.push(record_row(&record)?);
+                    let row = record_row(&record)?;
+                    batch_bytes += match &row[1] {
+                        Value::Json(t) => t.len(),
+                        _ => 0,
+                    } + record.key.len();
+                    batch.push(row);
+                    // Big values go to the writer at once instead of piling up in memory.
+                    if batch_bytes >= EXPORT_FLUSH_BYTES {
+                        flush_rows(ctx, &mut *writer, &mut batch, &mut rows, &mut progress)?;
+                        batch_bytes = 0;
+                    }
                 }
                 Err(Skip::Gone) => gone += 1,
                 Err(Skip::Other(reason)) => {
@@ -273,14 +289,7 @@ pub(crate) async fn export_keys(
                 }
             }
         }
-        if !batch.is_empty() {
-            let n = batch.len() as u64;
-            writer.on_rows(batch)?;
-            rows += n;
-            progress.rows_done = rows;
-            progress.bytes_done = writer.bytes();
-            ctx.reporter.progress(&progress);
-        }
+        flush_rows(ctx, &mut *writer, &mut batch, &mut rows, &mut progress)?;
         cursor = page.next_cursor;
         if cursor.is_none() {
             break;
@@ -303,6 +312,11 @@ pub(crate) async fn export_keys(
             "{groups_skipped} stream(s) have consumer groups, which are not exported"
         ));
     }
+    warnings.push(
+        "Redis keys are read one by one while the server keeps running: the file is not a \
+         consistent snapshot"
+            .into(),
+    );
     progress.objects_done = 1;
     progress.phase = "finish".into();
     ctx.reporter.progress(&progress);
@@ -323,10 +337,30 @@ pub(crate) async fn export_keys(
         bytes,
         warnings,
         object_list: Vec::new(),
+        marker_nonce: None,
     })
 }
 
 use crate::ExportSource;
+
+/// Hand the collected rows to the writer and report progress.
+fn flush_rows(
+    ctx: &ExportContext,
+    writer: &mut dyn crate::TableWriter,
+    batch: &mut Vec<Vec<Value>>,
+    rows: &mut u64,
+    progress: &mut JobProgress,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    *rows += batch.len() as u64;
+    writer.on_rows(std::mem::take(batch))?;
+    progress.rows_done = *rows;
+    progress.bytes_done = writer.bytes();
+    ctx.reporter.progress(progress);
+    Ok(())
+}
 
 /// Read one key into a record. The outer error aborts the export; the inner one skips the key.
 async fn read_one(
@@ -401,6 +435,7 @@ pub(crate) async fn import_keys(
         ..JobProgress::default()
     };
     let mut pending: Vec<(u64, KeyChange)> = Vec::new();
+    let mut pending_bytes = 0usize;
     loop {
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
@@ -410,13 +445,20 @@ pub(crate) async fn import_keys(
         if let Some((line, text)) = record {
             report.rows_read += 1;
             match prepare(&text, *mode) {
-                Ok(Some(change)) => pending.push((line, change)),
+                Ok(Some(change)) => {
+                    pending_bytes += text.len();
+                    pending.push((line, change));
+                }
                 Ok(None) => report.skipped += 1,
                 Err(message) => row_failed(&mut report, spec.max_errors, line, message)?,
             }
         }
-        if pending.len() >= IMPORT_BATCH || (done && !pending.is_empty()) {
+        if pending.len() >= IMPORT_BATCH
+            || pending_bytes >= IMPORT_BATCH_BYTES
+            || (done && !pending.is_empty())
+        {
             flush(ctx, database, &mut pending, &mut report, spec.max_errors).await?;
+            pending_bytes = 0;
             progress.rows_done = report.rows_read;
             ctx.reporter.progress(&progress);
         }
@@ -434,13 +476,12 @@ fn prepare(text: &str, mode: PutMode) -> std::result::Result<Option<KeyChange>, 
     decode_key_name(&record.key).map_err(|e| e.message())?;
     let ttl_ms = match record.expire_at_ms {
         None => None,
-        Some(at) => {
-            let left = at - now_ms();
-            if left <= 0 {
-                return Ok(None);
-            }
-            Some(left as u64)
-        }
+        Some(at) => match at.checked_sub(now_ms()).and_then(|l| u64::try_from(l).ok()) {
+            Some(left) if left > 0 => Some(left),
+            // Already expired (or a nonsensical date in the past): not imported.
+            _ if at <= now_ms() => return Ok(None),
+            _ => return Err("the expiry date is out of range".into()),
+        },
     };
     Ok(Some(KeyChange::Put {
         key: record.key,
@@ -487,7 +528,7 @@ async fn flush(
     report: &mut ImportReport,
     max_errors: u32,
 ) -> Result<()> {
-    let batch = std::mem::take(pending);
+    let mut batch = std::mem::take(pending);
     let set = |changes: Vec<KeyChange>| {
         ChangeSet::Keys(KeyChangeSet {
             database: database.clone(),
@@ -511,6 +552,13 @@ async fn flush(
             return Ok(());
         }
         Err(Error::Cancelled) => return Err(Error::Cancelled),
+        // The driver stops at the first failing change: the ones before it were written. They
+        // are not sent again (with `IfAbsent` a second send would count them as skipped).
+        Err(Error::ChangeFailed { applied, .. }) => {
+            let done = (applied as usize).min(batch.len());
+            report.inserted += done as u64;
+            batch.drain(..done);
+        }
         Err(_) => {}
     }
     for (line, change) in batch {

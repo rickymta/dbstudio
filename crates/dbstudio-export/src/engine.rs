@@ -448,6 +448,7 @@ async fn run(
         zip: work.files > 1,
         tuning: *tuning,
         flatten_fields: spec.values.flatten_fields.clone(),
+        ejson_cells: spec.values.ejson_cells,
         kind: ctx.kind,
     })?;
     let mut progress = Progress::new(&*ctx.reporter, work);
@@ -551,6 +552,7 @@ async fn run(
     progress.phase("finish", None);
     warnings.extend(writer.warnings());
     let object_list = writer.objects();
+    let marker_nonce = writer.nonce();
     let files = writer.finish()?;
     let bytes: u64 = files
         .iter()
@@ -567,6 +569,7 @@ async fn run(
         bytes,
         warnings: std::mem::take(warnings),
         object_list,
+        marker_nonce,
     })
 }
 
