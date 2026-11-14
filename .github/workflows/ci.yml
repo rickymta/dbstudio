@@ -25,7 +25,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux dependencies for Tauri 2
         if: matrix.os == 'ubuntu-latest'
@@ -36,7 +36,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -113,7 +113,7 @@ jobs:
               cargo test -p dbstudio-export --test it_newdb -- cockroach tidb --test-threads=2
               cargo test -p dbstudio-backup --test it_newdb -- cockroach tidb --test-threads=2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux dependencies for Tauri 2
         run: |
@@ -123,7 +123,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -170,7 +170,20 @@ jobs:
           DBSTUDIO_IT_CLICKHOUSE_TLS_PORT: '18443'
           DBSTUDIO_IT_COCKROACH_PORT: '26258'
           DBSTUDIO_IT_TIDB_PORT: '34000'
-        run: ${{ matrix.test }}
+        shell: bash
+        run: |
+          set -o pipefail
+          { ${{ matrix.test }}
+          } 2>&1 | tee it.log
+
+      # Turn failing tests into annotations (readable without downloading logs).
+      - name: Summarize failing tests
+        if: failure()
+        shell: bash
+        run: |
+          [ -f it.log ] || exit 0
+          grep -E "^test .* FAILED|panicked at|^thread '.*' panicked" -A 3 it.log | grep -v '^--$' | head -60 \
+            | while IFS= read -r line; do echo "::error title=integration::${line//%/%25}"; done
 
       # The Oracle driver needs Instant Client (a Linux build of it lives in the oracle-it image),
       # so its tests run in a container on the compose network instead of on the runner.
@@ -212,7 +225,7 @@ jobs:
               cargo test -p dbstudio-driver-cassandra -- --test-threads=2
               cargo test -p dbstudio-driver-clickhouse -- --test-threads=2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux dependencies for Tauri 2
         run: |
@@ -222,7 +235,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -254,7 +267,20 @@ jobs:
           DBSTUDIO_IT_CASSANDRA41_PORT: '19041'
           DBSTUDIO_IT_SCYLLA62_PORT: '19061'
           DBSTUDIO_IT_CLICKHOUSE23_PORT: '18023'
-        run: ${{ matrix.test }}
+        shell: bash
+        run: |
+          set -o pipefail
+          { ${{ matrix.test }}
+          } 2>&1 | tee it.log
+
+      # Turn failing tests into annotations (readable without downloading logs).
+      - name: Summarize failing tests
+        if: failure()
+        shell: bash
+        run: |
+          [ -f it.log ] || exit 0
+          grep -E "^test .* FAILED|panicked at|^thread '.*' panicked" -A 3 it.log | grep -v '^--$' | head -60 \
+            | while IFS= read -r line; do echo "::error title=integration::${line//%/%25}"; done
 
       - name: Container logs (on failure)
         if: failure()
