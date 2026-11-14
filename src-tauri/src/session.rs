@@ -1637,7 +1637,9 @@ mod tests {
             username: "u".into(),
             auth: SshAuth::Password,
             keepalive_secs: None,
-            connect_timeout_ms: Some(2000),
+            // Windows retries SYN on a closed loopback port for ~2 s before refusing: leave room
+            // for the refusal so the error stays `Connection`, not `Timeout`.
+            connect_timeout_ms: Some(10_000),
         });
         let err = m.open(&cfg, None).await.unwrap_err();
         assert!(matches!(err, Error::Connection(_)), "{err:?}");

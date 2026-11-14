@@ -584,7 +584,13 @@ async fn switch_database(port: u16) {
     while lease.state().running.is_none() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    lease.cancel(id).await.unwrap();
+    // `running` is set before the server has the query, so a single early cancel can land before
+    // the query starts and be ignored: cancel again until the statement ends (bounded).
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !runner.is_finished() && std::time::Instant::now() < deadline {
+        lease.cancel(id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
     assert!(runner.await.unwrap().is_err());
     lease.close().await.unwrap();
 }
