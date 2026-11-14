@@ -439,16 +439,22 @@ impl Importer<'_> {
         if let Some(sp) = &sp {
             self.run_sql(sp.create.clone()).await?;
         }
-        let error = match self.insert_rows(&rows).await {
-            Ok(c) => {
-                if let Some(release) = sp.as_ref().and_then(|s| s.release.clone()) {
-                    self.run_sql(release).await?;
+        // CQL has no multi-row statement and no rollback: rows go one by one, each counted as it
+        // is written (a batch retried after a partial write would count rows twice).
+        let error = if matches!(self.dialect, ScriptDialect::Cql) {
+            Error::Other(String::new())
+        } else {
+            match self.insert_rows(&rows).await {
+                Ok(c) => {
+                    if let Some(release) = sp.as_ref().and_then(|s| s.release.clone()) {
+                        self.run_sql(release).await?;
+                    }
+                    self.add(c);
+                    return Ok(());
                 }
-                self.add(c);
-                return Ok(());
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(e) => e,
             }
-            Err(Error::Cancelled) => return Err(Error::Cancelled),
-            Err(e) => e,
         };
         if self.in_tx() && sp.is_none() {
             // Nothing to roll back to: report the statement as a whole.
@@ -653,6 +659,12 @@ async fn run_rows(
 ) -> Result<ImportReport> {
     if !is_sql_dialect(ctx.dialect) {
         return Err(Error::Unsupported("import_dialect".into()));
+    }
+    if matches!(spec.mode, ImportMode::SingleTransaction) && !has_transactions(ctx.dialect) {
+        return Err(Error::Invalid(
+            "this database has no transactions: import in batches instead of a single transaction"
+                .into(),
+        ));
     }
     let path = PathBuf::from(&spec.file);
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);

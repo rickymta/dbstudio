@@ -910,9 +910,19 @@ async fn sql_script_marks_the_boundaries_of_every_object() {
         sql.find(needle)
             .unwrap_or_else(|| panic!("{needle} in\n{sql}"))
     };
-    let pre = r#"-- dbstudio:object kind=table schema="public" name="orders" phase=pre"#;
-    let data = r#"-- dbstudio:object kind=table schema="public" name="orders" phase=data"#;
-    let post = r#"-- dbstudio:object kind=table schema="public" name="orders" phase=post"#;
+    let nonce = report.marker_nonce.clone().expect("nonce");
+    let pre = format!(
+        r#"-- dbstudio:object nonce={nonce} kind=table schema="public" name="orders" phase=pre"#
+    );
+    let pre = pre.as_str();
+    let data = format!(
+        r#"-- dbstudio:object nonce={nonce} kind=table schema="public" name="orders" phase=data"#
+    );
+    let data = data.as_str();
+    let post = format!(
+        r#"-- dbstudio:object nonce={nonce} kind=table schema="public" name="orders" phase=post"#
+    );
+    let post = post.as_str();
     assert!(pos(pre) < pos("CREATE TABLE"));
     assert!(pos("CREATE TABLE") < pos("-- dbstudio:common"));
     assert!(pos("BEGIN;") < pos(data) && pos(data) < pos("INSERT INTO"));
@@ -962,7 +972,7 @@ async fn cql_and_clickhouse_scripts_have_no_transactions() {
         assert!(!sql.contains("BEGIN") && !sql.contains("COMMIT"), "{sql}");
         let inserts = sql.matches("INSERT INTO").count();
         assert_eq!(inserts, if per_row { 5 } else { 1 }, "{dialect:?}\n{sql}");
-        assert!(sql.contains("-- dbstudio:object kind=table"));
+        assert!(sql.contains("-- dbstudio:object nonce="));
     }
 }
 

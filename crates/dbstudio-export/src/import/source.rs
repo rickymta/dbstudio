@@ -240,6 +240,9 @@ impl CsvSource {
         header: bool,
         null_text: Option<String>,
     ) -> Result<CsvSource> {
+        if let Some(t) = &null_text {
+            crate::check_null_text(t, delimiter, quote)?;
+        }
         let delim = ascii_byte(delimiter, "delimiter")?;
         let quote = ascii_byte(quote, "quote")?;
         let file = File::open(path).map_err(|e| io_err(path, e))?;

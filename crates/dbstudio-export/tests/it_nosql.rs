@@ -793,6 +793,85 @@ async fn mongo_body(s: Arc<dyn Session>, db: &str) {
     // A leading-zero code stays text, an empty cell leaves the field out.
     assert!(docs[0].contains("\"code\":Text(\"007\")"), "{docs:?}");
     assert!(!docs[1].contains("address"), "{docs:?}");
+
+    // `Update` from CSV only sets the columns of the file: other fields survive.
+    let before = documents(&*s, db, "people").await;
+    let status = dir.path().join("status.csv");
+    std::fs::write(&status, "_id,status,address.zip\n1,active,100000\n").unwrap();
+    let mut upd = import_spec(
+        &status,
+        ImportFormat::Csv {
+            delimiter: ',',
+            quote: '"',
+            header: true,
+            encoding: TextEncoding::Utf8,
+            null_text: None,
+        },
+        ImportTarget::Existing {
+            table: coll_path(db, "people"),
+        },
+    );
+    upd.on_conflict = Some(OnConflict::Update);
+    let r = run_import(mongo_ctx(s.clone()), upd)
+        .await
+        .unwrap_or_else(|e| panic!("csv update: {e}"));
+    assert_eq!(r.updated, 1, "{r:?}");
+    let after = documents(&*s, db, "people").await;
+    let doc1 = after
+        .iter()
+        .find(|d| d.contains("\"name\":Text(\"Ann\")"))
+        .unwrap();
+    assert!(doc1.contains("\"status\":Text(\"active\")"), "{doc1}");
+    // The nested path is set inside the existing sub-document: `city` and `geo` are still there.
+    assert!(
+        doc1.contains("\"zip\":Int(100000)") && doc1.contains("\"city\":Text(\"Hue\")"),
+        "{doc1}"
+    );
+    assert!(
+        doc1.contains("\"tags\":[Text(\"a\"),Text(\"b\")]"),
+        "{doc1}"
+    );
+    assert_eq!(after.len(), before.len());
+
+    // CSV round trip keeps types: ObjectId, Date, Decimal128, Int64, sub-documents, arrays.
+    let rt = dir.path().join("rt.csv");
+    let report = run_export(
+        mongo_ctx(s.clone()),
+        export_spec(
+            db,
+            "people_copy",
+            ExportFormat::Csv(CsvOptions {
+                encoding: TextEncoding::Utf8,
+                ..CsvOptions::default()
+            }),
+            ValueFormat::default(),
+            &rt,
+        ),
+    )
+    .await
+    .unwrap();
+    let back = import_spec(
+        Path::new(&report.files[0]),
+        ImportFormat::Csv {
+            delimiter: ',',
+            quote: '"',
+            header: true,
+            encoding: TextEncoding::Utf8,
+            null_text: None,
+        },
+        ImportTarget::New {
+            parent: ObjectPath::root().child(ObjectKind::Database, db),
+            name: "csv_back".into(),
+            columns: vec![],
+        },
+    );
+    run_import(mongo_ctx(s.clone()), back)
+        .await
+        .unwrap_or_else(|e| panic!("csv back: {e}"));
+    assert_eq!(
+        documents(&*s, db, "csv_back").await,
+        documents(&*s, db, "people_copy").await
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -896,10 +975,9 @@ async fn redis_20mb_strings_round_trip() {
         }
     };
     let want = (read("big:text").await, read("big:bytes").await);
-    assert!(
-        want.0.starts_with("t20971524:") || want.0.starts_with("t2097"),
-        "{want:?}"
-    );
+    // 1_747_627 x "héllo wörld " = 24,466,778 bytes of UTF-8.
+    assert!(want.0.starts_with("t24466778:"), "{want:?}");
+    assert!(want.1.starts_with("b20971520:"), "{want:?}");
     let dir = tempfile::tempdir().unwrap();
     let report = run_export(
         redis_ctx(s.clone()),

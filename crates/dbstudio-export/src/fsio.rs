@@ -236,6 +236,19 @@ impl Drop for Output {
     }
 }
 
+/// `.<name>.dbstudio-tmp-<32 hex digits>`: exactly what [`temp_path`] generates.
+fn is_temp_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.') else {
+        return false;
+    };
+    match rest.rsplit_once(".dbstudio-tmp-") {
+        Some((stem, id)) => {
+            !stem.is_empty() && id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+        }
+        None => false,
+    }
+}
+
 /// Remove temporary export files (`.name.dbstudio-tmp-<id>`) in `dir` that were last written
 /// more than `older_than` ago: leftovers of an export that was killed. Returns how many files
 /// were removed.
@@ -246,7 +259,7 @@ pub fn cleanup_orphans(dir: &Path, older_than: std::time::Duration) -> usize {
     let mut removed = 0;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !(name.starts_with('.') && name.contains(".dbstudio-tmp-")) {
+        if !is_temp_name(&name) {
             continue;
         }
         let old = entry
@@ -344,12 +357,17 @@ mod tests {
     #[test]
     fn orphans_are_removed_when_old_enough() {
         let dir = tempfile::tempdir().unwrap();
-        let orphan = dir.path().join(".data.csv.dbstudio-tmp-abc");
+        let orphan = dir
+            .path()
+            .join(".data.csv.dbstudio-tmp-0123456789abcdef0123456789abcdef");
         std::fs::write(&orphan, "x").unwrap();
         let other = dir.path().join("data.csv");
         std::fs::write(&other, "x").unwrap();
         let hidden = dir.path().join(".gitignore");
         std::fs::write(&hidden, "x").unwrap();
+        // Lookalikes are the user's files: only the exact generated pattern is removed.
+        let lookalike = dir.path().join(".notes.dbstudio-tmp-keepme");
+        std::fs::write(&lookalike, "x").unwrap();
         // Too young: kept (it may belong to an export that is running).
         assert_eq!(
             cleanup_orphans(dir.path(), std::time::Duration::from_secs(3600)),
@@ -357,7 +375,7 @@ mod tests {
         );
         assert!(orphan.exists());
         assert_eq!(cleanup_orphans(dir.path(), std::time::Duration::ZERO), 1);
-        assert!(!orphan.exists() && other.exists() && hidden.exists());
+        assert!(!orphan.exists() && other.exists() && hidden.exists() && lookalike.exists());
         assert_eq!(
             cleanup_orphans(&dir.path().join("missing"), std::time::Duration::ZERO),
             0

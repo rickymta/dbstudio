@@ -124,18 +124,59 @@ fn date_json(out: &mut String, iso: &str) {
     out.push('}');
 }
 
-/// A text cell as a JSON literal when it is a scalar one, otherwise as a string.
+/// Keys of the Extended JSON scalar wrappers a text cell may carry (`{"$oid": "..."}`).
+const EJSON_WRAPPERS: [&str; 15] = [
+    "$oid",
+    "$date",
+    "$numberInt",
+    "$numberLong",
+    "$numberDouble",
+    "$numberDecimal",
+    "$binary",
+    "$uuid",
+    "$timestamp",
+    "$regularExpression",
+    "$symbol",
+    "$code",
+    "$minKey",
+    "$maxKey",
+    "$undefined",
+];
+
+/// The value is plain JSON, or uses only Extended JSON scalar wrappers for its `$` keys.
+/// Operators such as `{"$ne": 1}` or `{"a": {"$gt": 1}}` are not accepted anywhere.
+fn ejson_safe(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Array(items) => items.iter().all(ejson_safe),
+        serde_json::Value::Object(o) => {
+            if o.len() == 1 && o.keys().all(|k| EJSON_WRAPPERS.contains(&k.as_str())) {
+                return true;
+            }
+            o.iter().all(|(k, v)| !k.starts_with('$') && ejson_safe(v))
+        }
+        _ => true,
+    }
+}
+
+/// Whether a text cell is a JSON literal that becomes a typed value: numbers (integers only when
+/// they fit 64 bits), booleans, `null`, Extended JSON wrappers, and objects / arrays built from
+/// them (what the CSV / XLSX export writes for sub-documents and arrays). Anything else is a
+/// string.
+fn is_json_literal(trimmed: &str) -> bool {
+    let digits = trimmed.strip_prefix('-').unwrap_or(trimmed);
+    let integer = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(serde_json::Value::Number(_)) => !integer || trimmed.parse::<i64>().is_ok(),
+        Ok(serde_json::Value::Bool(_) | serde_json::Value::Null) => true,
+        Ok(v @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) => ejson_safe(&v),
+        _ => false,
+    }
+}
+
+/// A text cell as a JSON literal when it is one (see [`is_json_literal`]), otherwise as a string.
 fn text_leaf(t: &str, out: &mut String) {
     let trimmed = t.trim();
-    let scalar = match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::Null) => {
-            true
-        }
-        // `{"$oid": ...}`-style wrappers: one key starting with `$`.
-        Ok(serde_json::Value::Object(o)) => o.len() == 1 && o.keys().all(|k| k.starts_with('$')),
-        _ => false,
-    };
-    if scalar {
+    if is_json_literal(trimmed) {
         out.push_str(trimmed);
     } else {
         json_string(out, t);
@@ -227,7 +268,10 @@ fn plan_paths(
 /// A pending document and the line it came from.
 struct Pending {
     line: u64,
+    /// The whole document as Extended JSON (`$document` mode).
     text: String,
+    /// Cells for the column mode of `Update` (one per mapped path).
+    cells: Option<Vec<EditValue>>,
 }
 
 /// Where documents come from.
@@ -236,6 +280,9 @@ enum Input {
     Rows {
         src: Box<dyn RowSource>,
         paths: Vec<(usize, Vec<String>, Transform)>,
+        /// `Update` from CSV / XLSX: send plain columns so the driver `$set`s the given paths
+        /// and keeps every other field of the document.
+        columns_mode: bool,
     },
 }
 
@@ -245,11 +292,57 @@ impl Input {
             Input::Records(r) => Ok(r.next()?.map(|(line, text)| Pending {
                 line,
                 text: text.trim().to_string(),
+                cells: None,
             })),
-            Input::Rows { src, paths } => Ok(src.next_row()?.map(|row| Pending {
-                line: row.line,
-                text: document_text(paths, &row.cells),
+            Input::Rows {
+                src,
+                paths,
+                columns_mode,
+            } => Ok(src.next_row()?.map(|row| {
+                if *columns_mode {
+                    let cells = paths
+                        .iter()
+                        .map(|(i, _, t)| {
+                            let cell = row
+                                .cells
+                                .get(*i)
+                                .cloned()
+                                .unwrap_or(EditValue::Value(Value::Null));
+                            match apply_transform(cell, *t) {
+                                EditValue::Value(Value::Null) => EditValue::Default,
+                                // Same typing as the `$document` mode.
+                                EditValue::Text(t) if is_json_literal(t.trim()) => {
+                                    EditValue::Value(Value::Json(t.trim().to_string()))
+                                }
+                                other => other,
+                            }
+                        })
+                        .collect();
+                    Pending {
+                        line: row.line,
+                        text: String::new(),
+                        cells: Some(cells),
+                    }
+                } else {
+                    Pending {
+                        line: row.line,
+                        text: document_text(paths, &row.cells),
+                        cells: None,
+                    }
+                }
             })),
+        }
+    }
+
+    /// Dotted field paths of the column mode.
+    fn update_columns(&self) -> Option<Vec<String>> {
+        match self {
+            Input::Rows {
+                paths,
+                columns_mode: true,
+                ..
+            } => Some(paths.iter().map(|(_, p, _)| p.join(".")).collect()),
+            _ => None,
         }
     }
 }
@@ -301,6 +394,18 @@ pub(crate) async fn run(
         }
     };
 
+    let on_conflict = spec.on_conflict.unwrap_or(OnConflict::Error);
+    let single = matches!(spec.mode, ImportMode::SingleTransaction);
+    // A failed write aborts a MongoDB transaction: a failing document cannot be skipped or
+    // tolerated inside one, so these combinations are refused before anything runs.
+    if single && (on_conflict == OnConflict::Skip || spec.max_errors > 0) {
+        return Err(Error::Invalid(
+            "a single transaction cannot skip duplicates or tolerate errors: use batches, or \
+             set `max_errors` to 0 with the default conflict policy"
+                .into(),
+        ));
+    }
+    let columns_mode = on_conflict == OnConflict::Update;
     let (open_path, format) = (path.clone(), spec.format.clone());
     let mapping = spec.mapping.clone();
     let mut input = tokio::task::spawn_blocking(move || -> Result<Input> {
@@ -311,7 +416,11 @@ pub(crate) async fn run(
             ImportFormat::Csv { .. } | ImportFormat::Xlsx { .. } => {
                 let src = source::open(&open_path, &format, false)?;
                 let paths = plan_paths(&mapping, src.columns())?;
-                Input::Rows { src, paths }
+                Input::Rows {
+                    src,
+                    paths,
+                    columns_mode,
+                }
             }
             ImportFormat::Sql { .. } => {
                 return Err(Error::Invalid("a SQL script has no rows".into()));
@@ -321,11 +430,10 @@ pub(crate) async fn run(
     .await
     .map_err(|e| Error::Other(format!("import task failed: {e}")))??;
 
-    let on_conflict = spec.on_conflict.unwrap_or(OnConflict::Error);
+    let update_columns = input.update_columns();
     let database = database_of(&collection);
     let (conn, _) = Conn::open(Arc::clone(&ctx.session), database.clone(), None).await?;
     let conn = Arc::new(conn);
-    let single = matches!(spec.mode, ImportMode::SingleTransaction);
     let batch_rows = match spec.mode {
         ImportMode::SingleTransaction => MAX_BATCH,
         ImportMode::Batches { rows } => (rows.max(1) as usize).min(MAX_BATCH),
@@ -336,6 +444,7 @@ pub(crate) async fn run(
         cancel,
         collection,
         on_conflict,
+        update_columns,
         max_errors: spec.max_errors,
         report: ImportReport::default(),
         progress: JobProgress {
@@ -399,6 +508,8 @@ struct State<'a> {
     cancel: &'a CancelToken,
     collection: ObjectPath,
     on_conflict: OnConflict,
+    /// Field paths when rows go as plain columns (`Update` from CSV / XLSX).
+    update_columns: Option<Vec<String>>,
     max_errors: u32,
     report: ImportReport,
     progress: JobProgress,
@@ -441,15 +552,22 @@ impl State<'_> {
         while !batch.is_empty() {
             let rows: Vec<Vec<EditValue>> = batch
                 .iter()
-                .map(|p| vec![EditValue::Value(Value::Json(p.text.clone()))])
+                .map(|p| match &p.cells {
+                    Some(cells) => cells.clone(),
+                    None => vec![EditValue::Value(Value::Json(p.text.clone()))],
+                })
                 .collect();
+            let columns = self
+                .update_columns
+                .clone()
+                .unwrap_or_else(|| vec![DOC_COLUMN.to_string()]);
             let lease = self
                 .conn
                 .lease()
                 .ok_or_else(|| Error::Unsupported("leases".into()))?;
             let req = BulkInsertRequest {
                 table: self.collection.clone(),
-                columns: vec![DOC_COLUMN.to_string()],
+                columns,
                 rows,
                 on_conflict: self.on_conflict,
                 conflict_columns: Vec::new(),
@@ -588,5 +706,42 @@ mod tests {
             Some((3, "E11000 duplicate key (code 11000)".into()))
         );
         assert_eq!(failing_row("connection reset"), None);
+    }
+
+    #[test]
+    fn only_real_ejson_wrappers_and_safe_numbers_are_typed() {
+        let leaf = |t: &str| {
+            let mut out = String::new();
+            text_leaf(t, &mut out);
+            out
+        };
+        assert_eq!(
+            leaf(r#"{"$oid":"507f1f77bcf86cd799439011"}"#),
+            r#"{"$oid":"507f1f77bcf86cd799439011"}"#
+        );
+        assert_eq!(
+            leaf(r#"{"$numberDecimal":"1.5"}"#),
+            r#"{"$numberDecimal":"1.5"}"#
+        );
+        assert_eq!(
+            leaf(r#"{"$date":"2020-01-01T00:00:00Z"}"#),
+            r#"{"$date":"2020-01-01T00:00:00Z"}"#
+        );
+        // Objects and arrays built from plain JSON and wrappers become values; operators nested
+        // anywhere do not.
+        assert_eq!(
+            leaf(r#"[1,{"$oid":"507f1f77bcf86cd799439011"}]"#),
+            r#"[1,{"$oid":"507f1f77bcf86cd799439011"}]"#
+        );
+        assert_eq!(leaf(r#"{"city":"Hue"}"#), r#"{"city":"Hue"}"#);
+        assert_eq!(leaf(r#"{"a":{"$gt":1}}"#), r#""{\"a\":{\"$gt\":1}}""#);
+        // Operators and unknown `$` keys are plain strings.
+        assert_eq!(leaf(r#"{"$ne": 1}"#), r#""{\"$ne\": 1}""#);
+        assert_eq!(leaf(r#"{"$where":"x"}"#), r#""{\"$where\":\"x\"}""#);
+        // Integers beyond 64 bits keep every digit as text.
+        assert_eq!(leaf("9223372036854775807"), "9223372036854775807");
+        assert_eq!(leaf("18446744073709551616"), r#""18446744073709551616""#);
+        assert_eq!(leaf("-9223372036854775809"), r#""-9223372036854775809""#);
+        assert_eq!(leaf("1.5e3"), "1.5e3");
     }
 }
