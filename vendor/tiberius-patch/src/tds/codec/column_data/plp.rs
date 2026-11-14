@@ -15,6 +15,20 @@ pub(crate) async fn decode<R>(src: &mut R, len: usize) -> crate::Result<Option<V
 where
     R: SqlReadBytes + Unpin,
 {
+    Ok(decode_limited(src, len, None).await?.0)
+}
+
+// DBStudio patch: like `decode`, but keeps at most `limit` bytes of a PLP value. The rest is read
+// off the wire and dropped in small windows, so memory stays bounded. The second tuple field is
+// the full value size in bytes when the value was cut.
+pub(crate) async fn decode_limited<R>(
+    src: &mut R,
+    len: usize,
+    limit: Option<usize>,
+) -> crate::Result<(Option<Vec<u8>>, Option<u64>)>
+where
+    R: SqlReadBytes + Unpin,
+{
     match len {
         // Fixed size
         len if len < 0xffff => {
@@ -22,7 +36,7 @@ where
 
             match len {
                 // NULL
-                0xffff => Ok(None),
+                0xffff => Ok((None, None)),
                 _ => {
                     let mut data = Vec::new();
                     crate::sql_read_bytes::read_bytes_into(
@@ -33,7 +47,7 @@ where
                     )
                     .await?;
 
-                    Ok(Some(data))
+                    Ok((Some(data), None))
                 }
             }
         }
@@ -43,7 +57,7 @@ where
 
             let mut data = match len {
                 // NULL
-                0xffffffffffffffff => return Ok(None),
+                0xffffffffffffffff => return Ok((None, None)),
                 // Unknown size
                 0xfffffffffffffffe => Vec::new(),
                 // Known size. `len` is an untrusted 64-bit wire value; cap the
@@ -51,6 +65,9 @@ where
                 // `Vec` capacity-overflow panic for values near u64::MAX).
                 _ => Vec::with_capacity((len as usize).min(super::MAX_PREALLOC)),
             };
+            let cap = limit.unwrap_or(usize::MAX);
+            let mut total: u64 = 0;
+            let mut scratch: Vec<u8> = Vec::new();
 
             loop {
                 let chunk_size = src.read_u32_le().await? as usize;
@@ -63,6 +80,30 @@ where
                 // unbounded on the wire. Cap the running total so a hostile
                 // server cannot stream chunks forever and exhaust memory on
                 // a single value.
+                // DBStudio patch: past the caller's limit, keep what fits and skip the rest.
+                if limit.is_some() {
+                    let keep = cap.saturating_sub(data.len()).min(chunk_size);
+                    if keep > 0 {
+                        crate::sql_read_bytes::read_bytes_into(
+                            src,
+                            &mut data,
+                            keep,
+                            super::MAX_PREALLOC,
+                        )
+                        .await?;
+                    }
+                    let mut skip = chunk_size - keep;
+                    while skip > 0 {
+                        let step = skip.min(64 * 1024);
+                        scratch.clear();
+                        crate::sql_read_bytes::read_bytes_into(src, &mut scratch, step, step)
+                            .await?;
+                        skip -= step;
+                    }
+                    total = total.saturating_add(chunk_size as u64);
+                    continue;
+                }
+
                 if data.len().saturating_add(chunk_size) > super::MAX_PLP_SIZE {
                     return Err(crate::Error::Protocol(
                         format!(
@@ -84,7 +125,8 @@ where
                 .await?;
             }
 
-            Ok(Some(data))
+            let truncated = (limit.is_some() && total > data.len() as u64).then_some(total);
+            Ok((Some(data), truncated))
         }
     }
 }

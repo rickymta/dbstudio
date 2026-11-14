@@ -92,6 +92,8 @@ pub struct QueryStream<'a> {
     token_stream: Peekable<BoxStream<'a, crate::Result<ReceivedToken>>>,
     columns: Option<Arc<Vec<Column>>>,
     result_set_index: Option<usize>,
+    // DBStudio patch: items queued ahead of the next token (`Truncated` notes before their row).
+    pending: std::collections::VecDeque<QueryItem>,
 }
 
 impl<'a> Debug for QueryStream<'a> {
@@ -111,6 +113,7 @@ impl<'a> QueryStream<'a> {
             token_stream: token_stream.peekable(),
             columns: None,
             result_set_index: None,
+            pending: std::collections::VecDeque::new(),
         }
     }
 
@@ -292,7 +295,7 @@ where
                 // a result set on the fly rather than discard a leading row.
                 current.get_or_insert_with(Vec::new).push(row);
             }
-            QueryItem::Info(_) | QueryItem::Done(_) => {}
+            QueryItem::Info(_) | QueryItem::Done(_) | QueryItem::Truncated(_) => {}
         }
     }
 
@@ -383,6 +386,18 @@ pub enum QueryItem {
     Info(ServerMessage),
     /// End of a statement with its row count. DBStudio patch.
     Done(DoneInfo),
+    /// A PLP value of the next row was cut at the limit of `Client::set_plp_limit`. DBStudio patch.
+    Truncated(Truncated),
+}
+
+/// A `varchar(max)` / `nvarchar(max)` / `varbinary(max)` / `xml` value cut at the PLP limit.
+/// DBStudio patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Truncated {
+    /// Zero-based column of the row that follows.
+    pub column: usize,
+    /// Full size of the value on the wire, in bytes.
+    pub total_bytes: u64,
 }
 
 impl QueryItem {
@@ -444,6 +459,9 @@ impl<'a> Stream for QueryStream<'a> {
         let this = self.get_mut();
 
         loop {
+            if let Some(item) = this.pending.pop_front() {
+                return Poll::Ready(Some(Ok(item)));
+            }
             let token = match ready!(this.token_stream.poll_next_unpin(cx)) {
                 Some(res) => res?,
                 None => return Poll::Ready(None),
@@ -479,13 +497,21 @@ impl<'a> Stream for QueryStream<'a> {
                     let columns = columns.clone();
                     let result_index = this.result_set_index.unwrap_or(0);
 
+                    // DBStudio patch: report cut PLP values before the row that holds them.
+                    for &(column, total_bytes) in &data.truncated {
+                        this.pending
+                            .push_back(QueryItem::Truncated(Truncated {
+                                column,
+                                total_bytes,
+                            }));
+                    }
                     let row = Row {
                         columns,
                         data,
                         result_index,
                     };
-
-                    Poll::Ready(Some(Ok(QueryItem::Row(row))))
+                    this.pending.push_back(QueryItem::Row(row));
+                    continue;
                 }
                 ReceivedToken::Info(info) => Poll::Ready(Some(Ok(QueryItem::Info(ServerMessage {
                     number: info.number,

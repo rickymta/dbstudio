@@ -71,7 +71,7 @@ impl Settings {
             Some("windows") | Some("ntlm") => AuthKind::Windows,
             Some("integrated") | Some("sspi") => AuthKind::Integrated,
             Some(other) => {
-                return Err(Error::Other(format!(
+                return Err(Error::Invalid(format!(
                     "invalid auth `{other}` (expected sql, windows or integrated)"
                 )));
             }
@@ -82,7 +82,7 @@ impl Settings {
                 .parse::<usize>()
                 .ok()
                 .filter(|n| (1..=32).contains(n))
-                .ok_or_else(|| Error::Other(format!("invalid pool_max `{v}` (expected 1-32)")))?,
+                .ok_or_else(|| Error::Invalid(format!("invalid pool_max `{v}` (expected 1-32)")))?,
         };
         let max_lob_bytes = match opt("max_lob_bytes") {
             None => DEFAULT_MAX_LOB_BYTES,
@@ -90,7 +90,7 @@ impl Settings {
                 .parse::<usize>()
                 .ok()
                 .filter(|n| *n >= 1)
-                .ok_or_else(|| Error::Other(format!("invalid max_lob_bytes `{v}`")))?,
+                .ok_or_else(|| Error::Invalid(format!("invalid max_lob_bytes `{v}`")))?,
         };
         let strict = opt("encrypt").is_some_and(|v| v.eq_ignore_ascii_case("strict"));
         let user = cfg.username.clone().filter(|u| !u.is_empty());

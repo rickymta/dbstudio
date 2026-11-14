@@ -209,7 +209,29 @@ fn message_text(m: &ServerMessage) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Run one batch with the PLP byte cap of the connection (`max_lob_bytes`) armed in the tiberius
+/// fork, so a huge `varchar(max)` cell is cut on the wire instead of being loaded whole.
 async fn run_batch(
+    conn: &mut Conn,
+    batch: &Batch,
+    p: &RunParams,
+    ctl: &Control,
+    deadline: Option<Instant>,
+    gate: Option<&mut Gate>,
+    out: &mut dyn Out,
+    totals: &mut Totals,
+) -> Result<BatchEnd> {
+    // Wire bytes: `nvarchar` is 2 bytes per character, so keep twice the cell limit and let
+    // `value::decode` do the exact cut on a character boundary.
+    conn.client
+        .set_plp_limit(Some(conn.lob_limit.saturating_mul(2)));
+    let r = run_batch_inner(conn, batch, p, ctl, deadline, gate, out, totals).await;
+    conn.client.set_plp_limit(None);
+    r
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_batch_inner(
     conn: &mut Conn,
     batch: &Batch,
     p: &RunParams,
@@ -254,6 +276,10 @@ async fn run_batch(
     let mut sink_error: Option<Error> = None;
     let mut open: Option<OpenSet> = None;
     let mut carry: Option<tiberius::Row> = None;
+    // Cells of the next row cut by the PLP cap, and the same kept with a carried row.
+    let mut row_trunc: Vec<usize> = Vec::new();
+    let mut carry_trunc: Vec<usize> = Vec::new();
+    let mut col_names: Vec<String> = Vec::new();
     let mut drain_armed = false;
 
     // Begin stopping: remember why, fire the attention and bound the wait for its answer.
@@ -283,6 +309,7 @@ async fn run_batch(
     loop {
         // Rows kept back at a pause are processed before reading further.
         let item = if let Some(row) = carry.take() {
+            row_trunc = std::mem::take(&mut carry_trunc);
             Some(Ok(QueryItem::Row(row)))
         } else {
             tokio::select! {
@@ -334,6 +361,7 @@ async fn run_batch(
         };
         match item {
             QueryItem::Metadata(m) => {
+                col_names = m.columns().iter().map(|c| c.name().to_string()).collect();
                 if reason.is_some() {
                     continue;
                 }
@@ -353,16 +381,31 @@ async fn run_batch(
                     limit: p.max_rows.unwrap_or(u64::MAX),
                 });
             }
+            QueryItem::Truncated(t) => {
+                if reason.is_none() {
+                    row_trunc.push(t.column);
+                    let name = col_names.get(t.column).map_or("?", String::as_str);
+                    emit!(out.message(format!(
+                        "column {name} truncated at {} bytes (value has {} bytes)",
+                        conn.lob_limit, t.total_bytes
+                    )));
+                }
+            }
             QueryItem::Row(row) => {
                 if reason.is_some() {
+                    row_trunc.clear();
                     continue;
                 }
-                let Some(set) = open.as_mut() else { continue };
+                let Some(set) = open.as_mut() else {
+                    row_trunc.clear();
+                    continue;
+                };
                 if set.count >= set.limit {
                     // One row beyond the limit: more data exists.
                     match gate.as_deref_mut() {
                         Some(g) => {
                             carry = Some(row);
+                            carry_trunc = std::mem::take(&mut row_trunc);
                             let set = open.take().expect("set is open");
                             emit!(finish_set(out, set, true, totals));
                             emit!(out.paused());
@@ -396,7 +439,13 @@ async fn run_batch(
                     }
                     continue;
                 }
-                let cells: Vec<Value> = row.into_iter().map(|d| value::decode(d, lob)).collect();
+                let mut cells: Vec<Value> =
+                    row.into_iter().map(|d| value::decode(d, lob)).collect();
+                for col in row_trunc.drain(..) {
+                    if let Some(cell) = cells.get_mut(col) {
+                        value::mark_truncated(cell);
+                    }
+                }
                 set.buf.push(cells);
                 set.count += 1;
                 if set.buf.len() >= batch_size {

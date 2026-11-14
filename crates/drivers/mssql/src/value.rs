@@ -129,6 +129,21 @@ pub fn decode(data: ColumnData<'static>, lob_limit: usize) -> Value {
     }
 }
 
+/// Flag a text or binary cell that the PLP cap already cut on the wire as truncated.
+pub fn mark_truncated(cell: &mut Value) {
+    match std::mem::replace(cell, Value::Null) {
+        Value::Text(s) => *cell = Value::Ext(ExtValue::new("truncatedText", &s)),
+        Value::Bytes(b) => {
+            use base64::Engine as _;
+            *cell = Value::Ext(ExtValue::new(
+                "truncatedBytes",
+                base64::engine::general_purpose::STANDARD.encode(&b),
+            ));
+        }
+        other => *cell = other,
+    }
+}
+
 fn text(s: String, limit: usize) -> Value {
     if s.len() <= limit {
         return Value::Text(s);

@@ -13,7 +13,24 @@ where
 {
     use VarLenType::*;
 
-    let data = super::plp::decode(src, len).await?;
+    // DBStudio patch: honour the per-request PLP byte limit.
+    let limit = src.context().plp_limit();
+    let (mut data, truncated) = super::plp::decode_limited(src, len, limit).await?;
+    if let Some(total) = truncated {
+        src.context_mut().note_plp_truncated(total);
+        // The cut may split a character: keep whole code units / lossy-decode below.
+        if let Some(buf) = data.as_mut() {
+            if !matches!(ty, BigChar | BigVarChar) {
+                buf.truncate(buf.len() & !1);
+                if buf.len() >= 2 {
+                    let last = u16::from_le_bytes([buf[buf.len() - 2], buf[buf.len() - 1]]);
+                    if (0xD800..0xDC00).contains(&last) {
+                        buf.truncate(buf.len() - 2);
+                    }
+                }
+            }
+        }
+    }
 
     match (data, ty) {
         // Codepages other than UTF
@@ -23,10 +40,15 @@ where
                 .ok_or_else(|| Error::Protocol("string column missing collation".into()))?;
             let encoder = collation.encoding()?;
 
-            let s = encoder
-                .decode_without_bom_handling_and_without_replacement(buf.as_ref())
-                .ok_or_else(|| Error::Encoding("invalid sequence".into()))?
-                .to_string();
+            let s = if truncated.is_some() {
+                // DBStudio patch: a cut may end inside a multi-byte character.
+                encoder.decode_without_bom_handling(buf.as_ref()).0.to_string()
+            } else {
+                encoder
+                    .decode_without_bom_handling_and_without_replacement(buf.as_ref())
+                    .ok_or_else(|| Error::Encoding("invalid sequence".into()))?
+                    .to_string()
+            };
 
             Ok(Some(s.into()))
         }

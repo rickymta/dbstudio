@@ -94,6 +94,9 @@ pub(crate) struct Context {
     /// connect time. Defaults to `false` (strict decoding).
     lossy_utf16: bool,
     attention: Arc<AttentionShared>,
+    // DBStudio patch: byte cap for PLP values (`varchar(max)`, ...) and the pending truncation note.
+    plp_limit: Option<usize>,
+    plp_truncated: Option<u64>,
 }
 
 impl Context {
@@ -117,7 +120,26 @@ impl Context {
             command_timeout: None,
             lossy_utf16: false,
             attention: Arc::new(AttentionShared::default()),
+            plp_limit: None,
+            plp_truncated: None,
         }
+    }
+
+    // DBStudio patch: PLP value limit accessors.
+    pub(crate) fn plp_limit(&self) -> Option<usize> {
+        self.plp_limit
+    }
+
+    pub(crate) fn set_plp_limit(&mut self, limit: Option<usize>) {
+        self.plp_limit = limit;
+    }
+
+    pub(crate) fn note_plp_truncated(&mut self, total: u64) {
+        self.plp_truncated = Some(total);
+    }
+
+    pub(crate) fn take_plp_truncated(&mut self) -> Option<u64> {
+        self.plp_truncated.take()
     }
 
     pub(crate) fn attention(&self) -> Arc<AttentionShared> {
