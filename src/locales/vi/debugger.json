@@ -1,1 +1,249 @@
-{}
+{
+  "button": {
+    "debug": "Debug",
+    "group": "Debug",
+    "options": "Tuỳ chọn debug"
+  },
+  "command": {
+    "debug": "Debug",
+    "resume": "Tiếp tục",
+    "pause": "Tạm dừng",
+    "stop": "Dừng",
+    "rerun": "Chạy lại",
+    "stepOver": "Bước qua",
+    "stepInto": "Bước vào",
+    "smartStepInto": "Bước vào thông minh",
+    "forceStepInto": "Ép bước vào",
+    "stepOut": "Bước ra",
+    "runToCursor": "Chạy tới con trỏ",
+    "forceRunToCursor": "Ép chạy tới con trỏ",
+    "evaluate": "Tính biểu thức",
+    "showExecutionPoint": "Về điểm đang chạy",
+    "toggleBreakpoint": "Bật/tắt breakpoint dòng",
+    "viewBreakpoints": "Xem breakpoint",
+    "muteBreakpoints": "Tắt tạm mọi breakpoint"
+  },
+  "toolbar": {
+    "session": "Phiên debug",
+    "steps": "Điều khiển bước",
+    "settings": "Cài đặt debugger"
+  },
+  "options": {
+    "txMode": "Transaction",
+    "txWrap": "Bọc trong transaction (debugger sở hữu)",
+    "txLease": "Theo chế độ transaction của tab",
+    "endAction": "Khi phiên kết thúc",
+    "endAsk": "Hỏi (Commit hay Rollback)",
+    "endRollback": "Luôn rollback",
+    "endCommit": "Luôn commit",
+    "endKeep": "Giữ transaction mở",
+    "stopOnEntry": "Dừng ở câu đầu tiên",
+    "breakOnError": "Dừng khi có lỗi",
+    "inlineValues": "Hiện giá trị ngay trên dòng",
+    "keymap": "Bộ phím tắt",
+    "keymapJetBrains": "JetBrains",
+    "keymapVsCode": "VS Code",
+    "routineStatus": "Trạng thái debug routine...",
+    "routineProbe": "Trạng thái debug routine (mở để kiểm tra)"
+  },
+  "window": {
+    "label": "Cửa sổ công cụ Debug",
+    "debugger": "Debugger",
+    "console": "Console",
+    "txOwned": "Transaction debug",
+    "ttl": "Phiên kết thúc sau {{time}}",
+    "close": "Đóng",
+    "stopAndClose": "Dừng và đóng"
+  },
+  "host": {
+    "tabs": "Bảng phía dưới",
+    "results": "Kết quả",
+    "debug": "Debug",
+    "live": "Phiên đang chạy",
+    "readOnly": "Đang debug - dừng để sửa"
+  },
+  "status": {
+    "starting": "Đang khởi động...",
+    "running": "Đang chạy (câu {{step}})",
+    "evaluating": "Đang tính...",
+    "paused": "Đã dừng",
+    "at": "ở dòng {{line}} (câu {{step}}/{{total}})",
+    "pause": {
+      "entry": "ở đầu script",
+      "step": "sau một bước",
+      "runToCursor": "tại con trỏ",
+      "pause": "theo yêu cầu tạm dừng",
+      "routineEntry": "vào routine",
+      "breakpoint": "breakpoint",
+      "error": "lỗi: {{message}}",
+      "blocked": "bị chặn: {{message}}",
+      "confirmation": "chờ xác nhận",
+      "awaitingEnd": "hết script"
+    },
+    "terminated": {
+      "finished": "Đã chạy xong",
+      "stopped": "Đã dừng",
+      "error": "Kết thúc do lỗi",
+      "leaseLost": "Mất kết nối",
+      "sessionClosed": "Phiên đã đóng",
+      "ttl": "Kết thúc: dừng quá lâu"
+    }
+  },
+  "banner": {
+    "txWarn": "Transaction đã mở {{time}} khi đang dừng - có thể đang giữ khoá.",
+    "rollbackStop": "Rollback và dừng",
+    "continue": "Tiếp tục",
+    "confirmation": "Có câu lệnh cần bạn xác nhận trước khi chạy.",
+    "confirm": "Xác nhận...",
+    "blocked": "Bị chặn: {{message}}",
+    "awaitingEnd": "Hết script: chọn cách xử lý transaction.",
+    "chooseEnd": "Commit hoặc rollback...",
+    "report": "Kết thúc sau {{steps}} câu ({{outcome}}).",
+    "committed": "đã commit",
+    "rolledBack": "đã rollback",
+    "noTx": "không có transaction"
+  },
+  "frames": {
+    "title": "Frames",
+    "empty": "Không có frame.",
+    "notSteppable": "(không bước vào được)"
+  },
+  "variables": {
+    "title": "Variables",
+    "prompt": "Tính biểu thức (Enter) hoặc thêm watch (Shift+Enter)",
+    "empty": "Chưa có biến.",
+    "expand": "Mở rộng",
+    "collapse": "Thu gọn",
+    "setValue": "Giá trị mới của {{name}}",
+    "menu": {
+      "setValue": "Đặt giá trị",
+      "copyValue": "Sao chép giá trị",
+      "copyName": "Sao chép tên",
+      "addWatch": "Thêm vào Watches",
+      "inspect": "Xem chi tiết"
+    }
+  },
+  "watches": {
+    "title": "Watches",
+    "add": "Thêm watch",
+    "remove": "Xoá watch",
+    "edit": "Sửa watch",
+    "new": "Biểu thức watch mới",
+    "empty": "Chưa có watch. Nhấn + để thêm.",
+    "pending": "...",
+    "skipped": "bỏ qua: {{reason}}"
+  },
+  "console": {
+    "title": "Console",
+    "filter": "Hiện",
+    "filters": {
+      "results": "Kết quả",
+      "messages": "Message",
+      "errors": "Lỗi",
+      "log": "Log"
+    },
+    "clear": "Xoá console",
+    "empty": "Chưa có gì.",
+    "prompt": "Tính biểu thức trong ngữ cảnh đang dừng",
+    "promptEnded": "Phiên đã kết thúc",
+    "rows": "{{n}} dòng",
+    "affected": "{{n}} dòng bị ảnh hưởng",
+    "done": "xong",
+    "truncatedAt": "Đã cắt ở {{n}} dòng",
+    "source": {
+      "notice": "NOTICE",
+      "print": "PRINT",
+      "dbmsOutput": "DBMS_OUTPUT",
+      "log": "log",
+      "info": "debugger"
+    }
+  },
+  "grid": {
+    "label": "Kết quả",
+    "rows": "{{n}} dòng",
+    "truncated": "đã cắt bớt",
+    "expand": "Mở rộng (thêm {{n}})",
+    "collapse": "Thu gọn",
+    "copy": "Sao chép",
+    "copied": "Đã sao chép dạng TSV",
+    "copyFailed": "Không sao chép được",
+    "empty": "Không có dòng"
+  },
+  "breakpoint": {
+    "enabled": "Bật",
+    "suspend": "Dừng lại",
+    "condition": "Điều kiện",
+    "conditionHint": "Biểu thức SQL, vd id = 5",
+    "logMessage": "Thông điệp log",
+    "logHint": "Văn bản với {expr}",
+    "hitCount": "Dừng ở lần chạm thứ N",
+    "remove": "Xoá",
+    "more": "Thêm...",
+    "line": "Dòng {{line}}",
+    "popoverTitle": "Breakpoint ở dòng {{line}}"
+  },
+  "breakpoints": {
+    "title": "Breakpoint",
+    "empty": "Chưa có breakpoint. Nhấn vào lề trái của editor để thêm.",
+    "select": "Chọn một breakpoint.",
+    "groupScript": "Script",
+    "groupRoutine": "Routine {{name}}",
+    "toggle": "Bật breakpoint ở dòng {{line}}",
+    "removeAll": "Xoá tất cả",
+    "mute": "Tắt tạm breakpoint",
+    "unmute": "Bật lại breakpoint"
+  },
+  "gutter": {
+    "breakpoint": "Breakpoint dòng {{line}}",
+    "kind": {
+      "on": "đang bật",
+      "cond": "có điều kiện",
+      "off": "đã tắt",
+      "log": "chỉ ghi log",
+      "unverified": "chưa xác minh"
+    }
+  },
+  "evaluate": {
+    "title": "Tính biểu thức",
+    "expression": "Biểu thức",
+    "placeholder": "Biểu thức cần tính (Ctrl/Cmd+Enter)",
+    "evaluate": "Tính",
+    "addWatch": "Thêm vào Watches",
+    "history": "Lịch sử"
+  },
+  "end": {
+    "title": "Kết thúc transaction debug",
+    "description": "Debugger đã mở một transaction. Commit giữ thay đổi; Rollback huỷ chúng.",
+    "commit": "Commit",
+    "rollback": "Rollback",
+    "keep": "Giữ mở cho tab"
+  },
+  "smart": {
+    "title": "Bước vào thông minh",
+    "description": "Chọn routine cần bước vào."
+  },
+  "support": {
+    "title": "Debug routine",
+    "unknown": "Chưa kiểm tra.",
+    "available": "Có thể bước vào routine.",
+    "needsExtension": "Máy chủ có extension debugger nhưng database này chưa tạo. Chạy:",
+    "needsServerConfig": "Máy chủ phải nạp sẵn thư viện debugger (cần khởi động lại).",
+    "noPermission": "Tài khoản của bạn không đủ quyền debug routine.",
+    "unsupported": "Nơi này không hỗ trợ debug routine.",
+    "insert": "Chèn câu lệnh vào editor"
+  },
+  "inspect": {
+    "title": "Giá trị của {{name}}"
+  },
+  "source": {
+    "label": "Nguồn của {{signature}}",
+    "backToScript": "Về script"
+  },
+  "toast": {
+    "closedRollback": "Phiên debug kết thúc cùng tab; transaction đã được rollback."
+  },
+  "actions": {
+    "close": "Đóng",
+    "cancel": "Huỷ"
+  }
+}
