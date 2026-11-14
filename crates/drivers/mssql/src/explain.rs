@@ -209,6 +209,7 @@ pub(crate) async fn explain_on(
         max_rows: None,
         batch_size: 1000,
         timeout: req.timeout_ms.map(Duration::from_millis),
+        full_lob: false,
     };
     let quiet = RunParams {
         timeout: None,

@@ -119,6 +119,9 @@ impl MssqlSession {
                 .unwrap_or(DEFAULT_BATCH)
                 .clamp(1, 100_000),
             timeout: req.timeout_ms.map(Duration::from_millis),
+            // A request without a row limit is an export-style read: keep large values whole
+            // (the editor always sets `max_rows`, so interactive reads keep the cap).
+            full_lob: req.max_rows.is_none(),
         }
     }
 

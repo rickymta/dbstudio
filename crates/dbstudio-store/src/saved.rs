@@ -200,6 +200,24 @@ impl Store {
                 }
             }
         }
+        // Folder names are unique among the children of one parent (the top level included).
+        let clash: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM saved_query_folders
+                     WHERE parent_id IS ?1 AND id <> ?2 AND name = ?3 COLLATE NOCASE)",
+                params![
+                    folder.parent_id.map(|p| p.to_string()),
+                    folder.id.to_string(),
+                    name
+                ],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if clash {
+            return Err(Error::Invalid(format!(
+                "a folder named `{name}` already exists in this location"
+            )));
+        }
         conn.execute(
             "INSERT INTO saved_query_folders (id, name, parent_id, sort_order)
              VALUES (?1, ?2, ?3, ?4)
@@ -439,5 +457,42 @@ mod tests {
         };
         let s = Store::open(&path).unwrap();
         assert_eq!(s.saved_snapshot().unwrap().queries[0].id, id);
+    }
+
+    #[test]
+    fn renaming_a_folder_keeps_its_content_and_refuses_a_sibling_name() {
+        let s = Store::open_in_memory().unwrap();
+        let reports = s.saved_save_folder(&folder("Reports", None)).unwrap();
+        let other = s.saved_save_folder(&folder("Other", None)).unwrap();
+        let q = s.saved_save_query(&query("q", Some(reports.id))).unwrap();
+        // Rename (upsert by id).
+        let renamed = s
+            .saved_save_folder(&SavedFolder {
+                name: "  Monthly ".into(),
+                ..reports.clone()
+            })
+            .unwrap();
+        assert_eq!(renamed.name, "Monthly");
+        let snap = s.saved_snapshot().unwrap();
+        assert!(snap.folders.iter().any(|f| f.name == "Monthly"));
+        assert_eq!(snap.queries[0].folder_id, Some(q.folder_id.unwrap()));
+        // Same name as a sibling (case-insensitive): refused.
+        let err = s
+            .saved_save_folder(&SavedFolder {
+                name: "other".into(),
+                ..renamed.clone()
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)), "{err:?}");
+        // Saving the folder under its own name again is not a clash with itself.
+        s.saved_save_folder(&renamed).unwrap();
+        // The same name under another parent is fine.
+        s.saved_save_folder(&folder("Monthly", Some(other.id)))
+            .unwrap();
+        // A new top-level folder with an existing name is refused too.
+        assert!(matches!(
+            s.saved_save_folder(&folder("Monthly", None)),
+            Err(Error::Invalid(_))
+        ));
     }
 }

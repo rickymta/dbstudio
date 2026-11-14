@@ -483,3 +483,83 @@ async fn closed_target_port_closes_that_connection_only() {
     .unwrap();
     assert_eq!(roundtrip(&t_ok, b"fine").await, b"fine");
 }
+
+/// Minimal SOCKS5 client: no-auth greeting, then CONNECT to a domain name. Returns the reply
+/// code and the connected socket.
+async fn socks5_connect(proxy: SocketAddr, host: &str, port: u16) -> (u8, TcpStream) {
+    let mut c = TcpStream::connect(proxy).await.unwrap();
+    c.write_all(&[5, 1, 0]).await.unwrap();
+    let mut method = [0u8; 2];
+    c.read_exact(&mut method).await.unwrap();
+    assert_eq!(method, [5, 0]);
+    let mut req = vec![5, 1, 0, 3, host.len() as u8];
+    req.extend_from_slice(host.as_bytes());
+    req.extend_from_slice(&port.to_be_bytes());
+    c.write_all(&req).await.unwrap();
+    let mut reply = [0u8; 10];
+    c.read_exact(&mut reply).await.unwrap();
+    (reply[1], c)
+}
+
+#[tokio::test]
+async fn socks5_proxy_serves_only_allowed_destinations() {
+    let s = start_server().await;
+    let (echo, _e) = echo_server().await;
+    let t = Tunnel::open_socks5(
+        &cfg(s.addr, SshAuth::Password),
+        Some(&Secret::new(PASSWORD)),
+        vec![("LocalHost".into(), echo.port())],
+        &trusted(&s),
+    )
+    .await
+    .unwrap();
+    assert!(t.local_addr().ip().is_loopback());
+    // Allowed (name compared without case): the original host name travels to the server.
+    let (code, mut c) = socks5_connect(t.local_addr(), "localhost", echo.port()).await;
+    assert_eq!(code, 0);
+    c.write_all(b"via socks").await.unwrap();
+    let mut got = [0u8; 9];
+    tokio::time::timeout(Duration::from_secs(5), c.read_exact(&mut got))
+        .await
+        .expect("echo timed out")
+        .unwrap();
+    assert_eq!(&got, b"via socks");
+    // Another port or host is refused with "connection not allowed".
+    let (code, _) = socks5_connect(t.local_addr(), "localhost", echo.port() ^ 1).await;
+    assert_eq!(code, 2);
+    let (code, _) = socks5_connect(t.local_addr(), "example.com", echo.port()).await;
+    assert_eq!(code, 2);
+    // A second client works while the first one is still open.
+    let (code, _) = socks5_connect(t.local_addr(), "localhost", echo.port()).await;
+    assert_eq!(code, 0);
+}
+
+#[tokio::test]
+async fn socks5_proxy_rejects_other_commands_and_clients() {
+    let s = start_server().await;
+    let (echo, _e) = echo_server().await;
+    let t = Tunnel::open_socks5(
+        &cfg(s.addr, SshAuth::Password),
+        Some(&Secret::new(PASSWORD)),
+        vec![("localhost".into(), echo.port())],
+        &trusted(&s),
+    )
+    .await
+    .unwrap();
+    // BIND (cmd 2) is not supported.
+    let mut c = TcpStream::connect(t.local_addr()).await.unwrap();
+    c.write_all(&[5, 1, 0]).await.unwrap();
+    let mut m = [0u8; 2];
+    c.read_exact(&mut m).await.unwrap();
+    c.write_all(&[5, 2, 0, 1, 127, 0, 0, 1, 0, 80])
+        .await
+        .unwrap();
+    let mut reply = [0u8; 10];
+    c.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[1], 7);
+    // A client offering only username/password gets "no acceptable method".
+    let mut c = TcpStream::connect(t.local_addr()).await.unwrap();
+    c.write_all(&[5, 1, 2]).await.unwrap();
+    c.read_exact(&mut m).await.unwrap();
+    assert_eq!(m, [5, 0xff]);
+}

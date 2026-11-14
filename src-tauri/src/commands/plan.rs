@@ -7,6 +7,7 @@ use dbstudio_core::{
     ExplainRequest, RawPlan, ScriptDialect, StatementClass, TextRange,
 };
 use dbstudio_plan::{PlanError, PlanRules, PlanTree};
+use dbstudio_store::NewPlanHistory;
 use serde::Serialize;
 use tauri::State;
 use uuid::Uuid;
@@ -81,66 +82,55 @@ fn impure_call(word: &str) -> bool {
 }
 
 /// Whether `text` calls an impure function or has a top-level `INTO` (outside strings,
-/// comments and quoted identifiers).
-fn has_impure_calls(text: &str) -> bool {
-    let b = text.as_bytes();
-    let (mut i, mut depth) = (0usize, 0u32);
-    while i < b.len() {
-        match b[i] {
-            b'(' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' => {
-                depth = depth.saturating_sub(1);
-                i += 1;
-            }
-            b'#' => {
-                while i < b.len() && b[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'-' if b.get(i + 1) == Some(&b'-') => {
-                while i < b.len() && b[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if b.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
-                    i += 1;
-                }
-                i += 2;
-            }
-            q @ (b'\'' | b'"' | b'`') => {
-                i += 1;
-                while i < b.len() {
-                    if b[i] == b'\\' && q == b'\'' {
-                        i += 2;
-                        continue;
-                    }
-                    if b[i] == q {
-                        if b.get(i + 1) == Some(&q) {
-                            i += 2;
-                            continue;
-                        }
-                        break;
-                    }
-                    i += 1;
-                }
-                i += 1;
-            }
-            c if c.is_ascii_alphabetic() || c == b'_' => {
-                let start = i;
-                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
-                    i += 1;
-                }
-                let word = text[start..i].to_ascii_lowercase();
-                if impure_call(&word) || (depth == 0 && word == "into") {
+/// comments and quoted identifiers, as the dialect's own lexer sees them).
+fn has_impure_calls(dialect: ScriptDialect, text: &str) -> bool {
+    any_word(dialect, text, |word, depth| {
+        impure_call(word) || (depth == 0 && word == "into")
+    })
+}
+
+/// Whether a statement the classifier did not understand contains a keyword that changes or
+/// destroys data, outside strings, comments and quoted identifiers.
+fn has_destructive_keyword(dialect: ScriptDialect, text: &str) -> bool {
+    any_word(dialect, text, |word, _| {
+        matches!(
+            word,
+            "drop"
+                | "truncate"
+                | "alter"
+                | "delete"
+                | "update"
+                | "insert"
+                | "merge"
+                | "grant"
+                | "create"
+                | "rename"
+        )
+    })
+}
+
+/// Calls `f(lowercase word, parenthesis depth)` for every bare word of `text` (the dialect's
+/// lexer skips strings, comments and quoted identifiers: `#` starts a comment only where the
+/// dialect says so, `\'` escapes only where it is allowed) until `f` returns true.
+fn any_word(dialect: ScriptDialect, text: &str, mut f: impl FnMut(&str, u32) -> bool) -> bool {
+    use dbstudio_sql::lexer::{TokenKind, tokenize};
+    let chars: Vec<char> = text.chars().collect();
+    let mut depth = 0u32;
+    for token in tokenize(dialect, text) {
+        let (start, end) = (token.range.start as usize, token.range.end as usize);
+        let Some(slice) = chars.get(start..end) else {
+            continue;
+        };
+        match token.kind {
+            TokenKind::Punct if slice == ['('] => depth += 1,
+            TokenKind::Punct if slice == [')'] => depth = depth.saturating_sub(1),
+            TokenKind::Word => {
+                let word: String = slice.iter().collect::<String>().to_ascii_lowercase();
+                if f(&word, depth) {
                     return true;
                 }
             }
-            _ => i += 1,
+            _ => {}
         }
     }
     false
@@ -181,7 +171,7 @@ pub(crate) fn check_explain(
         .collect();
     let pure_read = analysis.problems.is_empty()
         && stmt.class == StatementClass::Read
-        && !has_impure_calls(&text);
+        && !has_impure_calls(dialect, &text);
     if pure_read {
         return Ok(());
     }
@@ -216,10 +206,19 @@ pub(crate) fn check_explain(
             },
             text: text.chars().take(2000).collect(),
             // Plain writes have no "destructive" reason; the statement is listed so the
-            // dialog shows what will run.
-            reason: stmt
-                .destructive
-                .unwrap_or(dbstudio_core::DestructiveReason::UpdateWithoutWhere),
+            // dialog shows what will run. A statement the classifier did not understand is
+            // scanned for destructive keywords instead.
+            reason: stmt.destructive.unwrap_or_else(|| {
+                if matches!(
+                    stmt.class,
+                    StatementClass::Unknown | StatementClass::Procedural
+                ) && has_destructive_keyword(dialect, &text)
+                {
+                    dbstudio_core::DestructiveReason::KeywordScan
+                } else {
+                    dbstudio_core::DestructiveReason::Write
+                }
+            }),
         }],
         expires_in_ms,
     })))
@@ -246,6 +245,7 @@ pub(crate) async fn explain_impl(
         &target,
         confirm.as_ref(),
     )?;
+    let database = request.database.clone();
     let raw = match lease_id {
         Some(lease_id) => state.leases.get(lease_id)?.explain(request).await?,
         None => session.explain(request).await?,
@@ -255,11 +255,65 @@ pub(crate) async fn explain_impl(
         Ok(tree) => (Some(tree), None),
         Err(e) => (None, Some(e.to_string())),
     };
+    record_history(
+        state,
+        config.id,
+        session.script_dialect(),
+        database,
+        &raw,
+        tree.as_ref(),
+    )
+    .await;
     Ok(PlanResult {
         raw,
         tree,
         parse_error,
     })
+}
+
+/// Keep the plan in the plan history when the setting is on. Never fails the explain: a
+/// storage problem or an oversized plan is only logged.
+async fn record_history(
+    state: &AppState,
+    connection_id: Uuid,
+    dialect: ScriptDialect,
+    database: Option<String>,
+    raw: &RawPlan,
+    tree: Option<&PlanTree>,
+) {
+    let svc = state.connections.clone();
+    let statement = dbstudio_sql::redact::redact(dialect, &raw.statement);
+    if statement != raw.statement {
+        // The plan text repeats the statement's literals (filters, index conditions), so a
+        // statement that carried a secret cannot be kept with its plan: skip it entirely
+        // rather than store the secret.
+        tracing::debug!("plan not kept in the history: the statement contains a secret");
+        return;
+    }
+    let mut raw_plan = raw.clone();
+    raw_plan.statement = statement.clone();
+    let entry = NewPlanHistory {
+        connection_id: Some(connection_id),
+        database,
+        statement,
+        raw_plan,
+        total_cost: tree.and_then(|t| t.totals.total_cost),
+        total_ms: tree.and_then(|t| t.totals.execution_time_ms),
+        warnings: tree.map_or(0, |t| u32::try_from(t.warnings.len()).unwrap_or(u32::MAX)),
+    };
+    let result = blocking(move || {
+        let settings = svc.settings()?;
+        if !settings.plan_history_enabled {
+            return Ok(false);
+        }
+        svc.store()
+            .plan_history_add(&entry, settings.plan_history_max_per_connection)
+            .map(|_| true)
+    })
+    .await;
+    if let Err(e) = result {
+        tracing::debug!(error = %e, "plan not kept in the history");
+    }
 }
 
 pub(crate) fn parse_impl(
@@ -705,11 +759,233 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(e, Error::ReadOnlyViolation { .. }), "{e:?}");
-        // A plain EXPLAIN reaches the driver (the mock has none).
-        let e = explain_impl(&state, session_id, None, req("select 1", false), None, None)
+        // A plain EXPLAIN reaches the driver.
+        let done = explain_impl(&state, session_id, None, req("select 1", false), None, None)
             .await
-            .unwrap_err();
-        assert!(matches!(e, Error::Unsupported(_)), "{e:?}");
+            .unwrap();
+        assert!(done.tree.is_some());
         let _ = probe;
+    }
+
+    async fn state_with_session(read_only: bool, production: bool) -> (AppState, Uuid, Uuid) {
+        let (driver, _) = crate::session::testing::MockDriver::new(DbKind::Postgres);
+        let mut registry = DriverRegistry::new();
+        registry.register(driver);
+        let (state, _, _) = test_state_with_host(registry);
+        let profile = dbstudio_store::ConnectionProfile {
+            config: config(read_only, production),
+            group_id: None,
+            color: None,
+            save_password: false,
+            has_password: false,
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let saved = crate::commands::connections::save_impl(
+            &state,
+            profile,
+            dbstudio_store::SecretChange::Keep,
+        )
+        .await
+        .unwrap();
+        let session_id = crate::commands::sessions::open_impl(&state, saved.config.id, None)
+            .await
+            .unwrap()
+            .session_id;
+        (state, session_id, saved.config.id)
+    }
+
+    #[tokio::test]
+    async fn explained_plans_land_in_the_history_with_redacted_statements() {
+        let (state, sid, conn) = state_with_session(false, false).await;
+        assert!(
+            history_list_impl(&state, None, 10, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        explain_impl(&state, sid, None, req("select 1", false), None, None)
+            .await
+            .unwrap();
+        let mut analyzed = req("select 2", true);
+        analyzed.database = Some("shop".into());
+        explain_impl(&state, sid, None, analyzed, None, None)
+            .await
+            .unwrap();
+        let list = history_list_impl(&state, Some(conn), 10, None)
+            .await
+            .unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].statement, "select 2");
+        assert!(list[0].analyze);
+        assert_eq!(list[0].database.as_deref(), Some("shop"));
+        assert_eq!(list[0].connection_id, Some(conn));
+        assert!(list[0].total_cost.is_some());
+        assert!(list[0].warnings >= 1, "the spill fixture has warnings");
+        let json = serde_json::to_value(&list[0]).unwrap();
+        assert!(json.get("rawPlan").is_none(), "the list has no raw plans");
+        let record = history_get_impl(&state, list[0].id).await.unwrap();
+        assert_eq!(record.raw_plan.statement, "select 2");
+        assert_eq!(record.entry, list[0]);
+        history_delete_impl(&state, list[0].id).await.unwrap();
+        assert_eq!(history_clear_impl(&state, Some(conn)).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn statements_with_secrets_never_reach_the_history() {
+        let (driver, probe) = crate::session::testing::MockDriver::new(DbKind::Postgres);
+        *probe.dialect.lock().unwrap() = Some(ScriptDialect::Postgres);
+        let mut registry = DriverRegistry::new();
+        registry.register(driver);
+        let (state, _, _) = test_state_with_host(registry);
+        let saved = crate::commands::connections::save_impl(
+            &state,
+            dbstudio_store::ConnectionProfile {
+                config: config(false, false),
+                group_id: None,
+                color: None,
+                save_password: false,
+                has_password: false,
+                sort_order: 0,
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            dbstudio_store::SecretChange::Keep,
+        )
+        .await
+        .unwrap();
+        let sid = crate::commands::sessions::open_impl(&state, saved.config.id, None)
+            .await
+            .unwrap()
+            .session_id;
+        explain_impl(&state, sid, None, req("select 1", false), None, None)
+            .await
+            .unwrap();
+        explain_impl(
+            &state,
+            sid,
+            None,
+            req("select PASSWORD('hunter2')", false),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let list = history_list_impl(&state, None, 10, None).await.unwrap();
+        assert_eq!(list.len(), 1, "the statement with a secret is not kept");
+        let record = history_get_impl(&state, list[0].id).await.unwrap();
+        assert!(!serde_json::to_string(&record).unwrap().contains("hunter2"));
+    }
+
+    #[tokio::test]
+    async fn the_history_respects_its_settings() {
+        let (state, sid, conn) = state_with_session(false, false).await;
+        crate::commands::app::settings_set_impl(
+            &state,
+            dbstudio_store::AppSettings {
+                plan_history_max_per_connection: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        for i in 0..13 {
+            explain_impl(
+                &state,
+                sid,
+                None,
+                req(&format!("select {i}"), false),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let list = history_list_impl(&state, Some(conn), 100, None)
+            .await
+            .unwrap();
+        assert_eq!(list.len(), 10, "trimmed to the setting");
+        assert_eq!(list[0].statement, "select 12");
+        // Off: nothing more is recorded, and the explain still works.
+        crate::commands::app::settings_set_impl(
+            &state,
+            dbstudio_store::AppSettings {
+                plan_history_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        explain_impl(&state, sid, None, req("select off", false), None, None)
+            .await
+            .unwrap();
+        let list = history_list_impl(&state, Some(conn), 100, None)
+            .await
+            .unwrap();
+        assert!(list.iter().all(|e| e.statement != "select off"));
+    }
+
+    #[test]
+    fn the_keyword_scan_follows_the_dialect_lexer() {
+        let pg = ScriptDialect::Postgres;
+        let my = ScriptDialect::mysql(false, true);
+        for text in [
+            "frobnicate; DELETE FROM t",
+            "x drop y",
+            "call p(); truncate t",
+            "alter session set x = 1",
+            "update t set a = 1",
+            "frobnicate insert",
+            "x merge y",
+            "grant all",
+            "create thing",
+            "rename a to b",
+        ] {
+            assert!(has_destructive_keyword(pg, text), "{text}");
+        }
+        for text in [
+            "frobnicate t",
+            "frobnicate 'delete' -- drop",
+            "frobnicate \"update\" /* truncate */",
+            "deleted updates dropbox",
+        ] {
+            assert!(!has_destructive_keyword(pg, text), "{text}");
+        }
+        // `#` starts a comment in MySQL only; backticks quote there only.
+        assert!(has_destructive_keyword(pg, "frobnicate # drop"));
+        assert!(!has_destructive_keyword(my, "frobnicate # drop"));
+        assert!(!has_destructive_keyword(my, "frobnicate `alter`"));
+    }
+
+    #[test]
+    fn a_backslash_does_not_hide_an_impure_call_where_it_is_no_escape() {
+        let pg = ScriptDialect::Postgres;
+        let my = ScriptDialect::mysql(false, true);
+        // PostgreSQL: the string is `a\`, `nextval` is a real call.
+        assert!(has_impure_calls(pg, "SELECT 'a\\', nextval('s')"));
+        // MySQL with backslash escapes: `\'` stays inside the string.
+        assert!(!has_impure_calls(my, "SELECT 'a\\', nextval('s')"));
+        assert!(has_impure_calls(pg, "SELECT * INTO t2 FROM t"));
+        assert!(!has_impure_calls(pg, "SELECT (SELECT 1 INTO x) -- nextval"));
+    }
+
+    #[test]
+    fn a_plain_write_is_listed_as_write_on_production() {
+        let prod = config(false, true);
+        let Err(Error::ConfirmationRequired(c)) = check_explain(
+            &ConfirmTokens::new(),
+            ScriptDialect::Postgres,
+            &prod,
+            &req("UPDATE t SET a=1 WHERE id=1", true),
+            "session:1",
+            None,
+        ) else {
+            panic!("expected a confirmation");
+        };
+        assert_eq!(
+            c.statements[0].reason,
+            dbstudio_core::DestructiveReason::Write
+        );
     }
 }
