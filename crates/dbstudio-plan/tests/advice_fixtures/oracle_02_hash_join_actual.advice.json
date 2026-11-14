@@ -1,0 +1,42 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewFilter",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 3,
+        "text": null,
+        "unit": "rows",
+        "value": 1200000.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      3
+    ],
+    "params": {
+      "rows": "1200000",
+      "table": "SHOP.ORDERS"
+    },
+    "rule": "fullScanReview",
+    "severity": "critical",
+    "share": 0.581,
+    "statementRange": null,
+    "table": "SHOP.ORDERS"
+  }
+]

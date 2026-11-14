@@ -1,0 +1,49 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewJoinStrategy",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "loops",
+        "nodeId": 4,
+        "text": null,
+        "unit": "count",
+        "value": 25000.0
+      },
+      {
+        "actual": true,
+        "key": "innerTime",
+        "nodeId": 4,
+        "text": null,
+        "unit": "ms",
+        "value": 95.0
+      }
+    ],
+    "fromWarnings": [
+      "nestedLoopManyRows"
+    ],
+    "nodeIds": [
+      2
+    ],
+    "params": {
+      "loops": "25000"
+    },
+    "rule": "nestedLoopInnerScan",
+    "severity": "info",
+    "share": 0.975,
+    "statementRange": null,
+    "table": null
+  }
+]

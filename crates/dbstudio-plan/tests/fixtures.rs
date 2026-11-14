@@ -165,6 +165,13 @@ const EXPECTED: &[Expectation] = &[
         &[],
     ),
     (
+        "mssql_07_missing_index_convert.xml",
+        true,
+        3,
+        Some(38.6),
+        &["0:nestedLoopManyRows:warning"],
+    ),
+    (
         "mysql_json_01_fullscan.json",
         false,
         1,
@@ -299,6 +306,7 @@ const EXPECTED: &[Expectation] = &[
     ),
     ("oracle_05_update_estimated.json", false, 3, Some(3.0), &[]),
     ("oracle_06_union_view_actual.json", true, 5, Some(95.0), &[]),
+    ("oracle_07_skip_scan.json", true, 3, Some(48200.0), &[]),
     ("pg_01_seqscan_filter.json", false, 1, Some(2923.84), &[]),
     (
         "pg_02_hashjoin_agg_analyze.json",

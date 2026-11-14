@@ -1,0 +1,151 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "statistics",
+        "label": "refreshStatistics",
+        "lock": "none",
+        "scope": "object",
+        "sql": "BEGIN DBMS_STATS.GATHER_TABLE_STATS(ownname => 'SHOP', tabname => 'ORDER_LINES', method_opt => 'FOR ALL COLUMNS SIZE AUTO', cascade => TRUE); END;\n/",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "estimatedRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 5.0
+      },
+      {
+        "actual": true,
+        "key": "actualRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 5400.0
+      },
+      {
+        "actual": true,
+        "key": "misestimateFactor",
+        "nodeId": 0,
+        "text": null,
+        "unit": "ratio",
+        "value": 1080.0
+      }
+    ],
+    "fromWarnings": [
+      "misestimate"
+    ],
+    "nodeIds": [
+      0,
+      1
+    ],
+    "params": {
+      "actual": "5400",
+      "direction": "under",
+      "estimated": "5",
+      "factor": "1080",
+      "table": "SHOP.ORDER_LINES"
+    },
+    "rule": "staleStatistics",
+    "severity": "critical",
+    "share": 1.0,
+    "statementRange": null,
+    "table": "SHOP.ORDER_LINES"
+  },
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewFilter",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 3,
+        "text": null,
+        "unit": "rows",
+        "value": 3000000.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      3
+    ],
+    "params": {
+      "rows": "3000000",
+      "table": "SHOP.ORDER_LINES"
+    },
+    "rule": "fullScanReview",
+    "severity": "critical",
+    "share": 0.517,
+    "statementRange": null,
+    "table": "SHOP.ORDER_LINES"
+  },
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "explainPgaTarget",
+        "lock": null,
+        "scope": "server",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "workAreaExecution",
+        "nodeId": 1,
+        "text": "1 PASS",
+        "unit": null,
+        "value": null
+      },
+      {
+        "actual": true,
+        "key": "tempsegSize",
+        "nodeId": 1,
+        "text": null,
+        "unit": "bytes",
+        "value": 52428800.0
+      }
+    ],
+    "fromWarnings": [
+      "spillToDisk"
+    ],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "execution": "1 PASS",
+      "table": "SHOP.ORDER_LINES",
+      "tempsegBytes": "52428800"
+    },
+    "rule": "hashSpill",
+    "severity": "info",
+    "share": 0.376,
+    "statementRange": null,
+    "table": "SHOP.ORDER_LINES"
+  }
+]

@@ -4,8 +4,14 @@ use dbstudio_core::PlanFormat;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
+use serde_json::{Value, json};
+
 use crate::build::{finish, join_conditions};
-use crate::{PlanError, PlanNode, PlanNodeKind, PlanObject, PlanTotals, PlanTree, RawRef};
+use crate::json::fmt_num;
+use crate::{
+    NodePredicate, PlanError, PlanNode, PlanNodeKind, PlanObject, PlanTotals, PlanTree,
+    PredicateRole, RawRef,
+};
 
 /// A minimal element tree (text nodes are not needed: showplan keeps everything in attributes).
 #[derive(Debug, Default)]
@@ -44,6 +50,17 @@ impl X {
             }
         }
         None
+    }
+
+    /// Every descendant named one of `names` that is not below a `RelOp` boundary.
+    fn find_all_local<'a>(&'a self, names: &[&str], out: &mut Vec<&'a X>) {
+        for k in &self.kids {
+            if names.contains(&k.name.as_str()) {
+                out.push(k);
+            } else if k.name != "RelOp" {
+                k.find_all_local(names, out);
+            }
+        }
     }
 
     fn find_any(&self, name: &str) -> Option<&X> {
@@ -158,6 +175,13 @@ pub(crate) fn parse(text: &str) -> Result<PlanTree, PlanError> {
         if let Some(w) = qp.child("Warnings") {
             let names: Vec<&str> = w.kids.iter().map(|k| k.name.as_str()).collect();
             n.put("Plan warnings", names.join(", "));
+            warning_details(&mut n, w);
+        }
+        if let Some(m) = qp.child("MissingIndexes") {
+            let list = missing_indexes(m);
+            if !list.is_empty() {
+                n.put("missingIndexes", Value::Array(list).to_string());
+            }
         }
         first.get_or_insert((qp, *stmt));
         roots.push(n);
@@ -238,6 +262,308 @@ fn unbracket(s: &str) -> String {
         .to_string()
 }
 
+/// `MissingIndexes` of a query plan as `[{impact, database, schema, table, equality[],
+/// inequality[], include[]}]` (names without brackets).
+fn missing_indexes(m: &X) -> Vec<Value> {
+    let mut out = Vec::new();
+    for g in m.kids.iter().filter(|k| k.name == "MissingIndexGroup") {
+        let impact = g.num("Impact").unwrap_or(0.0);
+        for mi in g.kids.iter().filter(|k| k.name == "MissingIndex") {
+            let cols = |usage: &str| -> Vec<String> {
+                mi.kids
+                    .iter()
+                    .filter(|c| c.name == "ColumnGroup" && c.attr("Usage") == Some(usage))
+                    .flat_map(|c| c.kids.iter().filter(|x| x.name == "Column"))
+                    .filter_map(|c| c.attr("Name").map(unbracket))
+                    .collect()
+            };
+            out.push(json!({
+                "impact": impact,
+                "database": mi.attr("Database").map(unbracket),
+                "schema": mi.attr("Schema").map(unbracket),
+                "table": mi.attr("Table").map(unbracket).unwrap_or_default(),
+                "equality": cols("EQUALITY"),
+                "inequality": cols("INEQUALITY"),
+                "include": cols("INCLUDE"),
+            }));
+        }
+    }
+    out
+}
+
+/// Details of a `Warnings` element (query level or operator level) that the advisor needs:
+/// the attributes of `PlanAffectingConvert`, `ColumnsWithNoStatistics`, `MemoryGrantWarning`,
+/// the spill counters and the `NoJoinPredicate` flag.
+fn warning_details(n: &mut PlanNode, w: &X) {
+    if matches!(w.attr("NoJoinPredicate"), Some("1" | "true")) {
+        n.put("NoJoinPredicate", "true");
+    }
+    let converts: Vec<Value> = w
+        .kids
+        .iter()
+        .filter(|k| k.name == "PlanAffectingConvert")
+        .map(|k| {
+            json!({
+                "issue": k.attr("ConvertIssue").unwrap_or_default(),
+                "expression": k.attr("Expression").unwrap_or_default(),
+            })
+        })
+        .collect();
+    if !converts.is_empty() {
+        n.put("planAffectingConvert", Value::Array(converts).to_string());
+    }
+    let no_stats: Vec<Value> = w
+        .kids
+        .iter()
+        .filter(|k| k.name == "ColumnsWithNoStatistics")
+        .flat_map(|k| k.kids.iter().filter(|c| c.name == "ColumnReference"))
+        .map(|c| {
+            json!({
+                "database": c.attr("Database").map(unbracket),
+                "schema": c.attr("Schema").map(unbracket),
+                "table": c.attr("Table").map(unbracket),
+                "column": c.attr("Column").map(unbracket).unwrap_or_default(),
+            })
+        })
+        .collect();
+    if !no_stats.is_empty() {
+        n.put(
+            "columnsWithNoStatistics",
+            Value::Array(no_stats).to_string(),
+        );
+    }
+    if let Some(g) = w.child("MemoryGrantWarning") {
+        n.put(
+            "memoryGrantWarning",
+            g.attr("GrantWarningKind").unwrap_or(""),
+        );
+        for (attr, key) in [
+            ("RequestedMemory", "requestedMemoryKb"),
+            ("GrantedMemory", "grantedMemoryKb"),
+            ("MaxUsedMemory", "maxUsedMemoryKb"),
+        ] {
+            if let Some(v) = g.attr(attr) {
+                n.put(key, v);
+            }
+        }
+    }
+    if let Some(s) = w.child("SpillToTempDb") {
+        if let Some(l) = s.attr("SpillLevel") {
+            n.put("spillLevel", l);
+        }
+    }
+    for kind in [
+        "SortSpillDetails",
+        "HashSpillDetails",
+        "ExchangeSpillDetails",
+    ] {
+        if let Some(d) = w.child(kind) {
+            n.put("spillKind", kind);
+            for (attr, key) in [
+                ("WritesToTempDb", "spillWritesToTempDb"),
+                ("ReadsFromTempDb", "spillReadsFromTempDb"),
+                ("GrantedMemoryKb", "spillGrantedMemoryKb"),
+                ("UsedMemoryKb", "spillUsedMemoryKb"),
+            ] {
+                if let Some(v) = d.attr(attr) {
+                    n.put(key, v);
+                }
+            }
+        }
+    }
+}
+
+fn bracket(name: &str) -> String {
+    format!("[{}]", name.replace(']', "]]"))
+}
+
+/// `[alias].[Column]` for a `ColumnReference` (alias, else table, as qualifier).
+fn column_text(c: &X) -> Option<String> {
+    let col = c.attr("Column").map(unbracket)?;
+    let q = c
+        .attr("Alias")
+        .or_else(|| c.attr("Table"))
+        .map(unbracket)
+        .filter(|q| !q.is_empty());
+    Some(match q {
+        Some(q) => format!("{}.{}", bracket(&q), bracket(&col)),
+        None => bracket(&col),
+    })
+}
+
+fn is_computed(c: &X) -> bool {
+    matches!(c.attr("ComputedColumn"), Some("1" | "true"))
+}
+
+fn scalar_string(x: &X) -> Option<String> {
+    let op = if x.name == "ScalarOperator" {
+        Some(x)
+    } else {
+        x.find_any("ScalarOperator")
+    };
+    op.and_then(|s| s.attr("ScalarString")).map(str::to_string)
+}
+
+/// `col op value` texts of the seek keys of an index operator (`Prefix`, `StartRange`,
+/// `EndRange`); ranges without column names (older plans) give nothing.
+fn seek_texts(op_el: &X) -> Vec<String> {
+    let Some(sp) = op_el.find_local("SeekPredicates") else {
+        return Vec::new();
+    };
+    let mut parts = Vec::new();
+    sp.find_all_local(&["Prefix", "StartRange", "EndRange"], &mut parts);
+    let mut out = Vec::new();
+    for p in parts {
+        let op = match p.attr("ScanType").unwrap_or("EQ") {
+            "EQ" => "=",
+            "GT" => ">",
+            "GE" => ">=",
+            "LT" => "<",
+            "LE" => "<=",
+            _ => continue,
+        };
+        let cols: Vec<&X> = p
+            .child("RangeColumns")
+            .map(|c| {
+                c.kids
+                    .iter()
+                    .filter(|k| k.name == "ColumnReference")
+                    .collect()
+            })
+            .unwrap_or_default();
+        let exprs: Vec<String> = p
+            .child("RangeExpressions")
+            .map(|c| c.kids.iter().filter_map(scalar_string).collect())
+            .unwrap_or_default();
+        for (c, e) in cols.iter().zip(exprs.iter()) {
+            let Some(col) = column_text(c) else { continue };
+            // `[db].[s].[t].[c] as [a].[c]`: a column of the outer side of a join.
+            let value = e.rsplit_once(" as ").map_or(e.as_str(), |(_, a)| a);
+            let text = format!("{col}{op}{value}");
+            if !out.contains(&text) {
+                out.push(text);
+            }
+        }
+    }
+    out
+}
+
+/// Conditions of the operator element with their roles.
+fn node_predicates(op_el: &X, kind: PlanNodeKind) -> Vec<NodePredicate> {
+    let mut out = Vec::new();
+    let mut add = |role: PredicateRole, text: String| {
+        if !text.is_empty() && !out.iter().any(|p: &NodePredicate| p.text == text) {
+            out.push(NodePredicate { role, text });
+        }
+    };
+    let join = matches!(
+        kind,
+        PlanNodeKind::NestedLoopJoin | PlanNodeKind::HashJoin | PlanNodeKind::MergeJoin
+    );
+    for t in seek_texts(op_el) {
+        add(PredicateRole::IndexCond, t);
+    }
+    let own = |key: &str| {
+        op_el
+            .find_local(key)
+            .and_then(scalar_string)
+            .filter(|s| !s.is_empty())
+    };
+    if let Some(t) = own("Predicate") {
+        add(
+            if join {
+                PredicateRole::JoinFilter
+            } else {
+                PredicateRole::Filter
+            },
+            t,
+        );
+    }
+    for key in ["ProbeResidual", "Residual"] {
+        if let Some(t) = own(key) {
+            add(PredicateRole::JoinFilter, t);
+        }
+    }
+    // Equi join keys: probe = build (hash), outer = inner (merge).
+    let key_columns = |name: &str| -> Vec<&X> {
+        op_el
+            .find_local(name)
+            .map(|k| {
+                k.kids
+                    .iter()
+                    .filter(|c| c.name == "ColumnReference")
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for (left, right) in [
+        ("HashKeysProbe", "HashKeysBuild"),
+        ("OuterSideJoinColumns", "InnerSideJoinColumns"),
+    ] {
+        for (l, r) in key_columns(left).iter().zip(key_columns(right).iter()) {
+            if let (Some(l), Some(r)) = (column_text(l), column_text(r)) {
+                add(PredicateRole::JoinCond, format!("{l}={r}"));
+            }
+        }
+    }
+    if let Some(ob) = op_el.find_local("OrderBy") {
+        for c in ob.kids.iter().filter(|k| k.name == "OrderByColumn") {
+            let Some(cr) = c.child("ColumnReference") else {
+                continue;
+            };
+            let Some(col) = column_text(cr) else { continue };
+            // A computed column is not a column of a table: spell it as an expression.
+            let col = if is_computed(cr) {
+                format!("computed({col})")
+            } else {
+                col
+            };
+            let dir = if c.attr("Ascending") == Some("0") {
+                " DESC"
+            } else {
+                ""
+            };
+            add(PredicateRole::SortKey, format!("{col}{dir}"));
+        }
+    }
+    if let Some(g) = op_el.find_local("GroupBy") {
+        for c in g.kids.iter().filter(|k| k.name == "ColumnReference") {
+            if let Some(col) = column_text(c) {
+                add(PredicateRole::GroupKey, col);
+            }
+        }
+    }
+    out
+}
+
+/// `alias.Column, ...` of an `OutputList` (columns only).
+fn output_list(rel: &X) -> String {
+    let mut seen: Vec<String> = Vec::new();
+    for c in rel
+        .child("OutputList")
+        .map(|o| o.kids.iter().filter(|k| k.name == "ColumnReference"))
+        .into_iter()
+        .flatten()
+    {
+        let Some(col) = c.attr("Column").map(unbracket) else {
+            continue;
+        };
+        let q = c
+            .attr("Alias")
+            .or_else(|| c.attr("Table"))
+            .map(unbracket)
+            .filter(|q| !q.is_empty());
+        let text = match q {
+            Some(q) => format!("{q}.{col}"),
+            None => col,
+        };
+        if !seen.contains(&text) {
+            seen.push(text);
+        }
+    }
+    seen.join(", ")
+}
+
 fn rel_op(rel: &X) -> PlanNode {
     let physical = rel.attr("PhysicalOp").unwrap_or("?");
     let logical = rel.attr("LogicalOp").unwrap_or("");
@@ -291,6 +617,7 @@ fn rel_op(rel: &X) -> PlanNode {
             }
         }
         n.condition = join_conditions(conds);
+        n.predicates = node_predicates(op_el, kind);
         n.put("Operator", op_el.name.clone());
         for (k, v) in &op_el.attrs {
             n.put(k, v.clone());
@@ -340,6 +667,14 @@ fn rel_op(rel: &X) -> PlanNode {
                     n.put(key, crate::json::fmt_num(sum(key)));
                 }
             }
+            // Rows read and thrown away by a predicate, per execution (the same unit as the
+            // other engines' "Rows Removed by Filter").
+            if threads.iter().any(|t| t.attr("ActualRowsRead").is_some()) {
+                let removed = sum("ActualRowsRead") - rows;
+                if removed > 0.0 && loops > 0.0 {
+                    n.put("Rows Removed by Filter", fmt_num(removed / loops));
+                }
+            }
         }
     }
     if let Some(w) = rel.child("Warnings") {
@@ -354,7 +689,9 @@ fn rel_op(rel: &X) -> PlanNode {
         }
         let all: Vec<&str> = w.kids.iter().map(|k| k.name.as_str()).collect();
         n.put("Warnings", all.join(", "));
+        warning_details(&mut n, w);
     }
+    n.put("Output", output_list(rel));
     let mut kids = Vec::new();
     for k in &rel.kids {
         if k.name != "RelOp" && !NON_OPERATOR.contains(&k.name.as_str()) {
