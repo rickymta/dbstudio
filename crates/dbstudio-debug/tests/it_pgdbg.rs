@@ -348,11 +348,31 @@ fn step_of(text: &str, targets: &[&str]) -> Step {
     }
 }
 
+/// Whether `pg16dbg` answers (probed once per process). Missing container: skip, unless
+/// `DBSTUDIO_IT_STRICT` lists `pg16dbg` (the `debug` CI group), where it is a failure.
+async fn pgdbg_reachable() -> bool {
+    static PROBE: OnceCell<bool> = OnceCell::const_new();
+    *PROBE
+        .get_or_init(|| async {
+            match try_connect(pgdbg_port(), "dbstudio", "dbstudio", PASSWORD).await {
+                Ok(_) => true,
+                Err(e) if dbstudio_core::testing::it_strict_for("pg16dbg") => {
+                    panic!("pg16dbg is strict but not reachable: {e}")
+                }
+                Err(e) => {
+                    eprintln!("skip: pg16dbg not reachable ({e})");
+                    false
+                }
+            }
+        })
+        .await
+}
+
 macro_rules! it {
     ($name:ident, $body:expr) => {
         #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
         async fn $name() {
-            if enabled() {
+            if enabled() && pgdbg_reachable().await {
                 $body.await
             }
         }
