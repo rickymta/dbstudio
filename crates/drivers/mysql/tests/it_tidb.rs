@@ -355,7 +355,7 @@ async fn ansi_quotes_follow_the_lease_sql_mode() {
         assert!(ansi_of(&*s), "[{}] ANSI_QUOTES is on after SET", t.name);
         // `script_analyze` reports it in the dialect.
         let analysis = dbstudio_sql::analyze(s.script_dialect(), "SELECT \"a\" FROM t");
-        let json = serde_json::to_value(&analysis.dialect).unwrap();
+        let json = serde_json::to_value(analysis.dialect).unwrap();
         assert_eq!(json["ansiQuotes"], true, "[{}] {json}", t.name);
         run("SET SESSION sql_mode = 'ANSI'").await;
         assert!(ansi_of(&*s), "[{}] ANSI implies ANSI_QUOTES", t.name);

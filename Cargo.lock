@@ -1725,6 +1725,7 @@ dependencies = [
  "dbstudio-core",
  "dbstudio-plan",
  "dbstudio-sql",
+ "dbstudio-ssh",
  "mysql_async",
  "rustls",
  "serde",
