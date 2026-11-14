@@ -1,9 +1,22 @@
 [
   {
-    "actions": [],
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "shortLock",
+        "params": {
+          "index": "status_1",
+          "table": "orders"
+        },
+        "scope": "object",
+        "sql": "db.getSiblingDB(\"shop\").orders.createIndex({ status: 1 }, { name: \"status_1\" })",
+        "template": false
+      }
+    ],
     "basis": "none",
     "caveats": [
-      "noDdlForDialect",
+      "writeOverhead",
       "estimatedOnly"
     ],
     "confidence": "low",
@@ -14,6 +27,7 @@
     ],
     "params": {
       "columns": "status",
+      "index": "status_1",
       "table": "shop.orders"
     },
     "rule": "mongoCollscan",

@@ -1,9 +1,19 @@
 [
   {
-    "actions": [],
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "ALTER TABLE `plan_fx_orders` ADD INDEX `ix_plan_fx_orders_status` (`status`), ALGORITHM=INPLACE, LOCK=NONE;",
+        "template": false
+      }
+    ],
     "basis": "cost",
     "caveats": [
-      "noDdlForDialect",
+      "writeOverhead",
+      "onlineDdlMayFail",
       "estimatedOnly"
     ],
     "confidence": "medium",
@@ -42,6 +52,7 @@
     "params": {
       "columns": "status",
       "examined": "100270",
+      "index": "ix_plan_fx_orders_status",
       "kept": "10027",
       "selectivity": "10%",
       "table": "plan_fx_orders"

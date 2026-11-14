@@ -311,3 +311,50 @@ fn translation_keys_of_the_corpus() {
         &json!({"rules": rules, "evidence": evidence, "caveats": caveats, "actions": actions}),
     );
 }
+
+/// Captured plans of the browser mock (`src/lib/mock/plan.ts`); the advice the engine gives for
+/// each is written to `src/lib/mock/planAdvice.json`, so the mock never drifts from the backend.
+const MOCK_PLANS: [&str; 10] = [
+    "pg_02_hashjoin_agg_analyze.json",
+    "pg_08_cte_subplan.json",
+    "mysql_json_02_join_group.json",
+    "mysql_tree_01_analyze_join.txt",
+    "mssql_01_clustered_scan_estimated.xml",
+    "mssql_03_parallel_hash_join_actual.xml",
+    "oracle_01_full_scan_estimated.json",
+    "oracle_04_group_by_spill_actual.json",
+    "mongo_01_collscan_planner.json",
+    "mongo_03_collscan_sort_disk_stats.json",
+];
+
+#[test]
+fn mock_advice_matches_the_engine() {
+    let cases = corpus();
+    let mut map = serde_json::Map::new();
+    for file in MOCK_PLANS {
+        let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
+        let c = cases
+            .iter()
+            .find(|c| c.name == stem)
+            .unwrap_or_else(|| panic!("mock plan {file} is not in the corpus"));
+        map.insert(
+            file.to_string(),
+            serde_json::to_value(&tree_of(c).advice).unwrap(),
+        );
+    }
+    let mut text = serde_json::to_string_pretty(&Value::Object(map)).unwrap();
+    text.push('\n');
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src/lib/mock/planAdvice.json");
+    if dbstudio_core::testing::updating() {
+        std::fs::write(&path, &text).unwrap();
+        return;
+    }
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    // The file is formatted by prettier after being written: compare the data, not the layout.
+    let old: Value = serde_json::from_str(&old).unwrap_or(Value::Null);
+    assert_eq!(
+        old,
+        serde_json::from_str::<Value>(&text).unwrap(),
+        "src/lib/mock/planAdvice.json is stale; run `UPDATE_FIXTURES=1 cargo test -p dbstudio-plan --test advice` then `pnpm prettier --write src/lib/mock/planAdvice.json`"
+    );
+}

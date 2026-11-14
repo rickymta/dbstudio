@@ -40,10 +40,20 @@
     "table": "plan_fx_items"
   },
   {
-    "actions": [],
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "ALTER TABLE `plan_fx_items` ADD INDEX `ix_plan_fx_items_qty_sku` (`qty`, `sku`), ALGORITHM=INPLACE, LOCK=NONE;",
+        "template": false
+      }
+    ],
     "basis": "time",
     "caveats": [
-      "noDdlForDialect"
+      "writeOverhead",
+      "onlineDdlMayFail"
     ],
     "confidence": "medium",
     "evidence": [
@@ -78,6 +88,7 @@
     ],
     "params": {
       "columns": "qty, sku",
+      "index": "ix_plan_fx_items_qty_sku",
       "rows": "40000",
       "table": "plan_fx_items"
     },

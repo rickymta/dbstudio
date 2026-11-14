@@ -54,7 +54,9 @@
     "basis": "time",
     "caveats": [
       "indexKeysFromSeek",
-      "noDdlForDialect"
+      "writeOverhead",
+      "onlineDdlMayFail",
+      "coveredByAnotherIndex"
     ],
     "confidence": "medium",
     "evidence": [
@@ -94,6 +96,7 @@
     "params": {
       "columns": "CustomerId",
       "include": "Total, Note",
+      "index": "IX_Orders_CustomerId",
       "loops": "25000",
       "table": "dbo.Orders",
       "usedIndex": "IX_Orders_CustomerId"
@@ -105,11 +108,21 @@
     "table": "dbo.Orders"
   },
   {
-    "actions": [],
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "CREATE NONCLUSTERED INDEX [IX_Orders_CustomerId_Code_OrderDate] ON [dbo].[Orders] ([CustomerId], [Code], [OrderDate]) INCLUDE ([Total], [Note]) WITH (ONLINE = ON);",
+        "template": false
+      }
+    ],
     "basis": "time",
     "caveats": [
       "missingIndexHint",
-      "noDdlForDialect",
+      "writeOverhead",
+      "onlineDdlMayFail",
       "metadataUnavailable"
     ],
     "confidence": "low",
@@ -132,6 +145,7 @@
       "columns": "CustomerId, Code, OrderDate",
       "impact": "94.3",
       "include": "Total, Note",
+      "index": "IX_Orders_CustomerId_Code_OrderDate",
       "table": "dbo.Orders"
     },
     "rule": "mssqlMissingIndex",

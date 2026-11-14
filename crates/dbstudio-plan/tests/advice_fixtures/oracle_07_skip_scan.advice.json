@@ -1,9 +1,19 @@
 [
   {
-    "actions": [],
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "blocksWrites",
+        "scope": "object",
+        "sql": "CREATE INDEX IX_ORDERS_STATUS_TOTAL ON SHOP.ORDERS (STATUS, TOTAL);",
+        "template": false
+      }
+    ],
     "basis": "time",
     "caveats": [
-      "noDdlForDialect"
+      "writeOverhead",
+      "offlineIndexBuild"
     ],
     "confidence": "medium",
     "evidence": [
@@ -32,6 +42,7 @@
     "params": {
       "columns": "STATUS, TOTAL",
       "examined": "410000",
+      "index": "IX_ORDERS_STATUS_TOTAL",
       "kept": "12000",
       "table": "SHOP.ORDERS",
       "usedIndex": "IX_ORDERS_CUST_STATUS"
@@ -46,7 +57,9 @@
     "actions": [],
     "basis": "time",
     "caveats": [
-      "noDdlForDialect"
+      "writeOverhead",
+      "offlineIndexBuild",
+      "coveredByAnotherIndex"
     ],
     "confidence": "medium",
     "evidence": [
@@ -73,6 +86,7 @@
     ],
     "params": {
       "columns": "STATUS",
+      "index": "IX_ORDERS_STATUS",
       "scan": "INDEX SKIP SCAN",
       "table": "SHOP.ORDERS",
       "usedIndex": "IX_ORDERS_CUST_STATUS"

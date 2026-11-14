@@ -610,7 +610,7 @@ fn index_for_filter(cx: &Cx<'_>, info: &StmtInfo, node: &PlanNode, out: &mut Vec
     let rules = cx.ctx.rules;
     let sel = st.selectivity();
     if st.examined.or(st.kept).unwrap_or(0.0) < rules.filter_min_examined
-        || sel.is_some_and(|s| s > rules.filter_max_selectivity)
+        || sel.is_some_and(|s| s > rules.filter_max_selectivity + 1e-3)
     {
         return;
     }

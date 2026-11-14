@@ -1,11 +1,20 @@
 [
   {
-    "actions": [],
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "none",
+        "scope": "object",
+        "sql": "CREATE INDEX `ix_orders_amount_created` ON `orders` (`amount`, `created` DESC);",
+        "template": false
+      }
+    ],
     "basis": "time",
     "caveats": [
       "descendingIndexIgnored",
       "indexForSortSpill",
-      "noDdlForDialect"
+      "writeOverhead"
     ],
     "confidence": "medium",
     "evidence": [
@@ -34,6 +43,7 @@
     ],
     "params": {
       "columns": "amount, created DESC",
+      "index": "ix_orders_amount_created",
       "rows": "100000",
       "table": "orders"
     },

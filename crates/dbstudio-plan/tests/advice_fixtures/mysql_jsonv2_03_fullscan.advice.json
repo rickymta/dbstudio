@@ -2,17 +2,21 @@
   {
     "actions": [
       {
-        "kind": "check",
-        "label": "reviewFilter",
-        "lock": null,
-        "scope": "query",
-        "sql": null,
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "shortLock",
+        "scope": "object",
+        "sql": "ALTER TABLE `dbstudio`.`plan_fx_orders` ADD INDEX `ix_plan_fx_orders_status` (`status`), ALGORITHM=INPLACE, LOCK=NONE;",
         "template": false
       }
     ],
     "basis": "cost",
-    "caveats": [],
-    "confidence": "low",
+    "caveats": [
+      "writeOverhead",
+      "onlineDdlMayFail",
+      "estimatedOnly"
+    ],
+    "confidence": "medium",
     "evidence": [
       {
         "actual": false,
@@ -21,6 +25,22 @@
         "text": null,
         "unit": "rows",
         "value": 100270.0
+      },
+      {
+        "actual": false,
+        "key": "rowsKept",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 10027.000149413943
+      },
+      {
+        "actual": false,
+        "key": "selectivity",
+        "nodeId": 1,
+        "text": null,
+        "unit": "pct",
+        "value": 10.000000149011612
       }
     ],
     "fromWarnings": [
@@ -30,10 +50,14 @@
       1
     ],
     "params": {
-      "rows": "100270",
+      "columns": "status",
+      "examined": "100270",
+      "index": "ix_plan_fx_orders_status",
+      "kept": "10027.0001",
+      "selectivity": "10%",
       "table": "dbstudio.plan_fx_orders"
     },
-    "rule": "fullScanReview",
+    "rule": "indexForFilter",
     "severity": "warning",
     "share": 1.0,
     "statementRange": null,

@@ -516,15 +516,22 @@ fn merge(list: Vec<Finished>) -> Vec<Finished> {
     // Prefix folding.
     let mut drop = vec![false; out.len()];
     let mut extend: Vec<(usize, usize)> = Vec::new();
+    let mut covered: Vec<usize> = Vec::new();
     for i in 0..out.len() {
         for j in 0..out.len() {
-            if i == j || drop[i] || drop[j] {
+            if i == j || drop[i] || drop[j] || covered.contains(&i) {
                 continue;
             }
             let (Some((ti, ki)), Some((tj, kj))) = (&out[i].index_keys, &out[j].index_keys) else {
                 continue;
             };
             if ti == tj && ki.len() < kj.len() && kj[..ki.len()] == ki[..] {
+                if keeps_own_advice(out[i].advice.rule) {
+                    // The rule explains more than "add an index": keep the card, but its DDL is
+                    // redundant with the wider index.
+                    covered.push(i);
+                    continue;
+                }
                 drop[i] = true;
                 extend.push((j, i));
             }
@@ -548,11 +555,26 @@ fn merge(list: Vec<Finished>) -> Vec<Finished> {
         }
         add_caveat(&mut target.caveats, caveat("coversOtherAdvice", false));
     }
+    for i in covered {
+        let a = &mut out[i].advice;
+        a.actions
+            .retain(|x| x.kind != ActionKind::CreateIndex && x.label_key != "materializeIndex");
+        a.caveats.retain(|c| c.key != "noDdlForDialect");
+        add_caveat(&mut a.caveats, caveat("coveredByAnotherIndex", false));
+    }
     out.into_iter()
         .zip(drop)
         .filter(|(_, d)| !*d)
         .map(|(f, _)| f)
         .collect()
+}
+
+/// Rules whose advice is about more than the index DDL, so prefix folding must not delete them.
+fn keeps_own_advice(rule: AdviceRule) -> bool {
+    matches!(
+        rule,
+        AdviceRule::OracleIndexSkipScan | AdviceRule::MssqlKeyLookup
+    )
 }
 
 fn placeholder() -> Finished {

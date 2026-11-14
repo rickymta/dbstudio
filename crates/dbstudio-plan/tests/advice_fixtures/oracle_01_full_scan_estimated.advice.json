@@ -1,9 +1,19 @@
 [
   {
-    "actions": [],
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "blocksWrites",
+        "scope": "object",
+        "sql": "CREATE INDEX IX_ORDERS_STATUS ON SHOP.ORDERS (STATUS);",
+        "template": false
+      }
+    ],
     "basis": "cost",
     "caveats": [
-      "noDdlForDialect",
+      "writeOverhead",
+      "offlineIndexBuild",
       "estimatedOnly",
       "metadataUnavailable"
     ],
@@ -26,6 +36,7 @@
     ],
     "params": {
       "columns": "STATUS",
+      "index": "IX_ORDERS_STATUS",
       "kept": "1200000",
       "table": "SHOP.ORDERS"
     },

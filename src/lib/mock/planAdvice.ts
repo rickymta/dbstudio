@@ -1,10 +1,11 @@
 // Sample Query Advisor output for the captured plans of `plan.ts`. The real engine
 // (crates/dbstudio-plan `advice`) produces this shape; the browser mock has no engine, so these
-// are hand-written but cover the variety the UI must render: every confidence level, a
+// are partly hand-written (and partly generated, see below) but cover the variety the UI must render: every confidence level, a
 // "needs verification" caveat, a template action, every scope, a statement range and
 // advice without any node.
 
 import type { AdviceAction, AdviceReport, PlanAdvice } from '../types';
+import generated from './planAdvice.json';
 
 const createIndex = (sql: string, index: string, table: string): AdviceAction => ({
   kind: 'createIndex',
@@ -415,8 +416,8 @@ const mongoActual: PlanAdvice[] = [
   },
 ];
 
-/** Advice by plan file name (the same keys as `planTrees.json`). */
-export const SAMPLE_ADVICE: Record<string, PlanAdvice[]> = {
+/** Hand-written advice by plan file name (the same keys as `planTrees.json`). */
+const HAND_WRITTEN: Record<string, PlanAdvice[]> = {
   'pg_02_hashjoin_agg_analyze.json': pgActual,
   'pg_08_cte_subplan.json': pgEstimated,
   'mysql_json_02_join_group.json': mysqlJson,
@@ -428,6 +429,23 @@ export const SAMPLE_ADVICE: Record<string, PlanAdvice[]> = {
   'mongo_01_collscan_planner.json': mongoEstimated,
   'mongo_03_collscan_sort_disk_stats.json': mongoActual,
 };
+
+/**
+ * What the Rust engine produces for each mock plan (`planAdvice.json`, rewritten by
+ * `UPDATE_FIXTURES=1 cargo test -p dbstudio-plan --test advice`).
+ */
+const GENERATED = generated as unknown as Record<string, PlanAdvice[]>;
+
+/**
+ * Advice by plan file name. The engine output wins; a plan the engine finds nothing to say
+ * about keeps its hand-written sample so the UI still shows every kind of card.
+ */
+export const SAMPLE_ADVICE: Record<string, PlanAdvice[]> = Object.fromEntries(
+  Object.entries(HAND_WRITTEN).map(([file, hand]) => {
+    const real = GENERATED[file] ?? [];
+    return [file, real.length > 0 ? real : hand];
+  }),
+);
 
 /** Tier-2 report of the mock: the same advice, with the catalog "checked" for one fake table. */
 export function sampleReport(advice: PlanAdvice[]): AdviceReport {

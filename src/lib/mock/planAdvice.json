@@ -1,0 +1,737 @@
+{
+  "mongo_01_collscan_planner.json": [
+    {
+      "actions": [
+        {
+          "kind": "createIndex",
+          "labelKey": "createIndex",
+          "lock": "shortLock",
+          "params": {
+            "index": "status_1",
+            "table": "orders"
+          },
+          "scope": "object",
+          "sql": "db.getSiblingDB(\"shop\").orders.createIndex({ status: 1 }, { name: \"status_1\" })",
+          "template": false
+        }
+      ],
+      "caveats": [
+        {
+          "key": "writeOverhead",
+          "params": {},
+          "verify": false
+        },
+        {
+          "key": "estimatedOnly",
+          "params": {},
+          "verify": true
+        }
+      ],
+      "confidence": "low",
+      "evidence": [],
+      "fingerprint": "mongocollscan|shop.orders|status",
+      "fromWarnings": [],
+      "id": "mongoCollscan:3a2e9e5b",
+      "impact": {
+        "basis": "none",
+        "score": 0.008,
+        "share": null
+      },
+      "nodeIds": [0],
+      "params": {
+        "columns": "status",
+        "index": "status_1",
+        "table": "shop.orders"
+      },
+      "rule": "mongoCollscan",
+      "severity": "warning",
+      "statementRange": null,
+      "table": {
+        "alias": null,
+        "database": "shop",
+        "name": "orders",
+        "path": null,
+        "schema": "shop"
+      }
+    }
+  ],
+  "mongo_03_collscan_sort_disk_stats.json": [
+    {
+      "actions": [
+        {
+          "kind": "createIndex",
+          "labelKey": "createIndex",
+          "lock": "shortLock",
+          "params": {
+            "index": "kind_1_ts_-1",
+            "table": "events"
+          },
+          "scope": "object",
+          "sql": "db.getSiblingDB(\"shop\").events.createIndex({ kind: 1, ts: -1 }, { name: \"kind_1_ts_-1\" })",
+          "template": false
+        }
+      ],
+      "caveats": [
+        {
+          "key": "writeOverhead",
+          "params": {},
+          "verify": false
+        }
+      ],
+      "confidence": "high",
+      "evidence": [
+        {
+          "actual": true,
+          "key": "rowsRead",
+          "nodeId": 1,
+          "text": null,
+          "unit": "rows",
+          "value": 250000.0
+        },
+        {
+          "actual": true,
+          "key": "rowsKept",
+          "nodeId": 1,
+          "text": null,
+          "unit": "rows",
+          "value": 250000.0
+        },
+        {
+          "actual": true,
+          "key": "selectivity",
+          "nodeId": 1,
+          "text": null,
+          "unit": "pct",
+          "value": 100.0
+        },
+        {
+          "actual": true,
+          "key": "selfTime",
+          "nodeId": 1,
+          "text": null,
+          "unit": "ms",
+          "value": 950.0
+        },
+        {
+          "actual": false,
+          "key": "sortKey",
+          "nodeId": 0,
+          "text": "ts DESC",
+          "unit": null,
+          "value": null
+        }
+      ],
+      "fingerprint": "mongocollscan|shop.events|kind,ts",
+      "fromWarnings": ["fullScanLargeTable", "spillToDisk"],
+      "id": "mongoCollscan:a3b61d88",
+      "impact": {
+        "basis": "time",
+        "score": 1.2056451612903225,
+        "share": 0.927
+      },
+      "nodeIds": [1, 0],
+      "params": {
+        "columns": "kind, ts DESC",
+        "examined": "250000",
+        "index": "kind_1_ts_-1",
+        "kept": "250000",
+        "table": "shop.events"
+      },
+      "rule": "mongoCollscan",
+      "severity": "critical",
+      "statementRange": null,
+      "table": {
+        "alias": null,
+        "database": "shop",
+        "name": "events",
+        "path": null,
+        "schema": "shop"
+      }
+    }
+  ],
+  "mssql_01_clustered_scan_estimated.xml": [],
+  "mssql_03_parallel_hash_join_actual.xml": [],
+  "mysql_json_02_join_group.json": [
+    {
+      "actions": [
+        {
+          "kind": "statistics",
+          "labelKey": "refreshStatistics",
+          "lock": "none",
+          "params": {
+            "table": "plan_fx_orders"
+          },
+          "scope": "object",
+          "sql": "ANALYZE TABLE `plan_fx_orders`;",
+          "template": false
+        },
+        {
+          "kind": "hint",
+          "labelKey": "compareForceIndex",
+          "lock": null,
+          "params": {},
+          "scope": "query",
+          "sql": "SELECT ... FROM `plan_fx_orders` FORCE INDEX (`created`) WHERE ...;",
+          "template": true
+        }
+      ],
+      "caveats": [
+        {
+          "key": "optimizerLikelyRight",
+          "params": {},
+          "verify": false
+        },
+        {
+          "key": "estimatedOnly",
+          "params": {},
+          "verify": true
+        }
+      ],
+      "confidence": "low",
+      "evidence": [
+        {
+          "actual": false,
+          "key": "possibleKeys",
+          "nodeId": 3,
+          "text": "customer_id, created",
+          "unit": null,
+          "value": null
+        },
+        {
+          "actual": false,
+          "key": "rowsRead",
+          "nodeId": 3,
+          "text": null,
+          "unit": "rows",
+          "value": 100270.0
+        },
+        {
+          "actual": false,
+          "key": "selectivity",
+          "nodeId": 3,
+          "text": null,
+          "unit": "pct",
+          "value": 50.0
+        }
+      ],
+      "fingerprint": "mysqlpossiblekeysunused|.plan_fx_orders|customer_id,created",
+      "fromWarnings": ["fullScanLargeTable"],
+      "id": "mysqlPossibleKeysUnused:ed55048c",
+      "impact": {
+        "basis": "cost",
+        "score": 0.14611976199518925,
+        "share": 0.365
+      },
+      "nodeIds": [3],
+      "params": {
+        "index": "created",
+        "keys": "customer_id, created",
+        "selectivity": "50%",
+        "table": "plan_fx_orders"
+      },
+      "rule": "mysqlPossibleKeysUnused",
+      "severity": "warning",
+      "statementRange": null,
+      "table": {
+        "alias": "o",
+        "database": null,
+        "name": "plan_fx_orders",
+        "path": null,
+        "schema": null
+      }
+    }
+  ],
+  "mysql_tree_01_analyze_join.txt": [
+    {
+      "actions": [
+        {
+          "kind": "check",
+          "labelKey": "reviewJoinStrategy",
+          "lock": null,
+          "params": {},
+          "scope": "query",
+          "sql": null,
+          "template": false
+        }
+      ],
+      "caveats": [],
+      "confidence": "low",
+      "evidence": [
+        {
+          "actual": true,
+          "key": "loops",
+          "nodeId": 6,
+          "text": null,
+          "unit": "count",
+          "value": 58079.0
+        },
+        {
+          "actual": true,
+          "key": "innerTime",
+          "nodeId": 6,
+          "text": null,
+          "unit": "ms",
+          "value": 34.150452
+        }
+      ],
+      "fingerprint": "nestedloopinnerscan||",
+      "fromWarnings": ["nestedLoopManyRows"],
+      "id": "nestedLoopInnerScan:cf7f6461",
+      "impact": {
+        "basis": "time",
+        "score": 0.18673548387096775,
+        "share": 0.778
+      },
+      "nodeIds": [3],
+      "params": {
+        "loops": "58079"
+      },
+      "rule": "nestedLoopInnerScan",
+      "severity": "info",
+      "statementRange": null,
+      "table": null
+    },
+    {
+      "actions": [
+        {
+          "kind": "check",
+          "labelKey": "reviewFilter",
+          "lock": null,
+          "params": {},
+          "scope": "query",
+          "sql": null,
+          "template": false
+        }
+      ],
+      "caveats": [],
+      "confidence": "low",
+      "evidence": [
+        {
+          "actual": true,
+          "key": "rowsRead",
+          "nodeId": 5,
+          "text": null,
+          "unit": "rows",
+          "value": 100270.0
+        }
+      ],
+      "fingerprint": "fullscanreview|.plan_fx_orders|",
+      "fromWarnings": ["fullScanLargeTable"],
+      "id": "fullScanReview:304ac3f7",
+      "impact": {
+        "basis": "time",
+        "score": 0.0670967741935484,
+        "share": 0.168
+      },
+      "nodeIds": [5],
+      "params": {
+        "rows": "100270",
+        "table": "plan_fx_orders"
+      },
+      "rule": "fullScanReview",
+      "severity": "warning",
+      "statementRange": null,
+      "table": {
+        "alias": "o",
+        "database": null,
+        "name": "plan_fx_orders",
+        "path": null,
+        "schema": null
+      }
+    }
+  ],
+  "oracle_01_full_scan_estimated.json": [
+    {
+      "actions": [
+        {
+          "kind": "createIndex",
+          "labelKey": "createIndex",
+          "lock": "blocksWrites",
+          "params": {
+            "index": "IX_ORDERS_STATUS",
+            "table": "ORDERS"
+          },
+          "scope": "object",
+          "sql": "CREATE INDEX IX_ORDERS_STATUS ON SHOP.ORDERS (STATUS);",
+          "template": false
+        }
+      ],
+      "caveats": [
+        {
+          "key": "writeOverhead",
+          "params": {},
+          "verify": false
+        },
+        {
+          "key": "offlineIndexBuild",
+          "params": {},
+          "verify": true
+        },
+        {
+          "key": "estimatedOnly",
+          "params": {},
+          "verify": true
+        },
+        {
+          "key": "metadataUnavailable",
+          "params": {},
+          "verify": true
+        }
+      ],
+      "confidence": "low",
+      "evidence": [
+        {
+          "actual": false,
+          "key": "rowsKept",
+          "nodeId": 1,
+          "text": null,
+          "unit": "rows",
+          "value": 1200000.0
+        }
+      ],
+      "fingerprint": "indexforfilter|shop.orders|status",
+      "fromWarnings": ["fullScanLargeTable"],
+      "id": "indexForFilter:38855be7",
+      "impact": {
+        "basis": "cost",
+        "score": 0.52,
+        "share": 1.0
+      },
+      "nodeIds": [1],
+      "params": {
+        "columns": "STATUS",
+        "index": "IX_ORDERS_STATUS",
+        "kept": "1200000",
+        "table": "SHOP.ORDERS"
+      },
+      "rule": "indexForFilter",
+      "severity": "critical",
+      "statementRange": null,
+      "table": {
+        "alias": null,
+        "database": null,
+        "name": "ORDERS",
+        "path": null,
+        "schema": "SHOP"
+      }
+    }
+  ],
+  "oracle_04_group_by_spill_actual.json": [
+    {
+      "actions": [
+        {
+          "kind": "statistics",
+          "labelKey": "refreshStatistics",
+          "lock": "none",
+          "params": {
+            "table": "ORDER_LINES"
+          },
+          "scope": "object",
+          "sql": "BEGIN DBMS_STATS.GATHER_TABLE_STATS(ownname => 'SHOP', tabname => 'ORDER_LINES', method_opt => 'FOR ALL COLUMNS SIZE AUTO', cascade => TRUE); END;\n/",
+          "template": false
+        }
+      ],
+      "caveats": [],
+      "confidence": "medium",
+      "evidence": [
+        {
+          "actual": false,
+          "key": "estimatedRows",
+          "nodeId": 0,
+          "text": null,
+          "unit": "rows",
+          "value": 5.0
+        },
+        {
+          "actual": true,
+          "key": "actualRows",
+          "nodeId": 0,
+          "text": null,
+          "unit": "rows",
+          "value": 5400.0
+        },
+        {
+          "actual": true,
+          "key": "misestimateFactor",
+          "nodeId": 0,
+          "text": null,
+          "unit": "ratio",
+          "value": 1080.0
+        }
+      ],
+      "fingerprint": "stalestatistics|shop.order_lines|",
+      "fromWarnings": ["misestimate"],
+      "id": "staleStatistics:f2b93c1f",
+      "impact": {
+        "basis": "time",
+        "score": 0.9099999999999999,
+        "share": 1.0
+      },
+      "nodeIds": [0, 1],
+      "params": {
+        "actual": "5400",
+        "direction": "under",
+        "estimated": "5",
+        "factor": "1080",
+        "table": "SHOP.ORDER_LINES"
+      },
+      "rule": "staleStatistics",
+      "severity": "critical",
+      "statementRange": null,
+      "table": {
+        "alias": "OL",
+        "database": null,
+        "name": "ORDER_LINES",
+        "path": null,
+        "schema": "SHOP"
+      }
+    },
+    {
+      "actions": [
+        {
+          "kind": "check",
+          "labelKey": "reviewFilter",
+          "lock": null,
+          "params": {},
+          "scope": "query",
+          "sql": null,
+          "template": false
+        }
+      ],
+      "caveats": [],
+      "confidence": "low",
+      "evidence": [
+        {
+          "actual": true,
+          "key": "rowsRead",
+          "nodeId": 3,
+          "text": null,
+          "unit": "rows",
+          "value": 3000000.0
+        }
+      ],
+      "fingerprint": "fullscanreview|shop.order_lines|",
+      "fromWarnings": ["fullScanLargeTable"],
+      "id": "fullScanReview:27e59e9f",
+      "impact": {
+        "basis": "time",
+        "score": 0.26896551724137935,
+        "share": 0.517
+      },
+      "nodeIds": [3],
+      "params": {
+        "rows": "3000000",
+        "table": "SHOP.ORDER_LINES"
+      },
+      "rule": "fullScanReview",
+      "severity": "critical",
+      "statementRange": null,
+      "table": {
+        "alias": "OL",
+        "database": null,
+        "name": "ORDER_LINES",
+        "path": null,
+        "schema": "SHOP"
+      }
+    },
+    {
+      "actions": [
+        {
+          "kind": "check",
+          "labelKey": "explainPgaTarget",
+          "lock": null,
+          "params": {},
+          "scope": "server",
+          "sql": null,
+          "template": false
+        }
+      ],
+      "caveats": [],
+      "confidence": "low",
+      "evidence": [
+        {
+          "actual": false,
+          "key": "workAreaExecution",
+          "nodeId": 1,
+          "text": "1 PASS",
+          "unit": null,
+          "value": null
+        },
+        {
+          "actual": true,
+          "key": "tempsegSize",
+          "nodeId": 1,
+          "text": null,
+          "unit": "bytes",
+          "value": 52428800.0
+        }
+      ],
+      "fingerprint": "hashspill|shop.order_lines|hash group by:order_lines",
+      "fromWarnings": ["spillToDisk"],
+      "id": "hashSpill:f080187f",
+      "impact": {
+        "basis": "time",
+        "score": 0.09020689655172413,
+        "share": 0.376
+      },
+      "nodeIds": [1],
+      "params": {
+        "execution": "1 PASS",
+        "table": "SHOP.ORDER_LINES",
+        "tempsegBytes": "52428800"
+      },
+      "rule": "hashSpill",
+      "severity": "info",
+      "statementRange": null,
+      "table": {
+        "alias": "OL",
+        "database": null,
+        "name": "ORDER_LINES",
+        "path": null,
+        "schema": "SHOP"
+      }
+    }
+  ],
+  "pg_02_hashjoin_agg_analyze.json": [],
+  "pg_08_cte_subplan.json": [
+    {
+      "actions": [
+        {
+          "kind": "rewrite",
+          "labelKey": "keysetPagination",
+          "lock": null,
+          "params": {},
+          "scope": "query",
+          "sql": "WHERE (created) > (:last_created)\nORDER BY created\nLIMIT 20",
+          "template": true
+        }
+      ],
+      "caveats": [
+        {
+          "key": "keysetNeedsUniqueOrder",
+          "params": {},
+          "verify": false
+        }
+      ],
+      "confidence": "high",
+      "evidence": [
+        {
+          "actual": false,
+          "key": "offset",
+          "nodeId": null,
+          "text": null,
+          "unit": "rows",
+          "value": 50000.0
+        }
+      ],
+      "fingerprint": "largeoffset||offset",
+      "fromWarnings": [],
+      "id": "largeOffset:c416ee94",
+      "impact": {
+        "basis": "none",
+        "score": 0.02,
+        "share": null
+      },
+      "nodeIds": [],
+      "params": {
+        "offset": "50000"
+      },
+      "rule": "largeOffset",
+      "severity": "warning",
+      "statementRange": {
+        "end": 108,
+        "start": 96
+      },
+      "table": null
+    },
+    {
+      "actions": [
+        {
+          "kind": "check",
+          "labelKey": "reviewFilter",
+          "lock": null,
+          "params": {},
+          "scope": "query",
+          "sql": null,
+          "template": false
+        }
+      ],
+      "caveats": [],
+      "confidence": "low",
+      "evidence": [
+        {
+          "actual": false,
+          "key": "rowsRead",
+          "nodeId": 2,
+          "text": null,
+          "unit": "rows",
+          "value": 152867.0
+        }
+      ],
+      "fingerprint": "fullscanreview|.orders|",
+      "fromWarnings": ["fullScanLargeTable"],
+      "id": "fullScanReview:36cd01ea",
+      "impact": {
+        "basis": "cost",
+        "score": 0.004903163846721512,
+        "share": 0.02
+      },
+      "nodeIds": [2],
+      "params": {
+        "rows": "152867",
+        "table": "orders"
+      },
+      "rule": "fullScanReview",
+      "severity": "info",
+      "statementRange": null,
+      "table": {
+        "alias": null,
+        "database": null,
+        "name": "orders",
+        "path": null,
+        "schema": null
+      }
+    },
+    {
+      "actions": [
+        {
+          "kind": "rewrite",
+          "labelKey": "rewriteNotExists",
+          "lock": null,
+          "params": {},
+          "scope": "query",
+          "sql": "NOT EXISTS (SELECT 1 FROM banned WHERE id = customer_id)",
+          "template": true
+        }
+      ],
+      "caveats": [
+        {
+          "key": "semanticsDiffer",
+          "params": {},
+          "verify": true
+        }
+      ],
+      "confidence": "low",
+      "evidence": [],
+      "fingerprint": "notinsubquery||customer_id|id",
+      "fromWarnings": [],
+      "id": "notInSubquery:0f639146",
+      "impact": {
+        "basis": "none",
+        "score": 0.0048,
+        "share": null
+      },
+      "nodeIds": [],
+      "params": {
+        "column": "customer_id"
+      },
+      "rule": "notInSubquery",
+      "severity": "info",
+      "statementRange": {
+        "end": 69,
+        "start": 39
+      },
+      "table": null
+    }
+  ]
+}
