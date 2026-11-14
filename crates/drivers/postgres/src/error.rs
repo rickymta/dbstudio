@@ -41,6 +41,10 @@ fn format_db_message(db: &DbError) -> String {
     if let Some(hint) = db.hint() {
         msg.push_str("\nHINT: ");
         msg.push_str(hint);
+    } else if db.code().code() == "40001" {
+        // serialization_failure: CockroachDB (and PostgreSQL at higher isolation) ask the
+        // client to run the whole transaction again.
+        msg.push_str("\nHINT: retry transaction");
     }
     msg
 }

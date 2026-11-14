@@ -27,6 +27,9 @@ use crate::sql::{non_folder_segments, qualified, quote_ident, quote_literal};
 /// Ordered DDL of the objects in a scope.
 pub(crate) async fn generate(session: &PostgresSession, req: DdlRequest) -> Result<Vec<DdlItem>> {
     let target = Target::parse(&req)?;
+    if session.shared.flavor().is_cockroach() {
+        return crate::ddl_crdb::generate(session, &req, &target).await;
+    }
     let database = target
         .database
         .clone()
@@ -55,8 +58,8 @@ pub(crate) async fn generate(session: &PostgresSession, req: DdlRequest) -> Resu
 // ---------------------------------------------------------------------------------------------
 
 /// Object categories a selection can name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Cat {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Cat {
     Relation,
     Sequence,
     Routine,
@@ -64,17 +67,17 @@ enum Cat {
 }
 
 #[derive(Debug)]
-struct Target {
-    database: Option<String>,
-    schema: Option<String>,
+pub(crate) struct Target {
+    pub(crate) database: Option<String>,
+    pub(crate) schema: Option<String>,
     /// `Some` when the request names objects; everything else is left out (except dependencies).
-    selection: Option<BTreeSet<(Cat, String, String)>>,
+    pub(crate) selection: Option<BTreeSet<(Cat, String, String)>>,
     /// The scope itself is one object (FKs to other tables are kept).
     single: bool,
 }
 
 impl Target {
-    fn parse(req: &DdlRequest) -> Result<Target> {
+    pub(crate) fn parse(req: &DdlRequest) -> Result<Target> {
         use ObjectKind as K;
         let segs = non_folder_segments(&req.scope);
         let mut selection: BTreeSet<(Cat, String, String)> = BTreeSet::new();
@@ -135,7 +138,7 @@ impl Target {
         })
     }
 
-    fn wants(&self, cat: Cat, schema: &str, name: &str) -> bool {
+    pub(crate) fn wants(&self, cat: Cat, schema: &str, name: &str) -> bool {
         match &self.selection {
             None => true,
             Some(s) => s.contains(&(cat, schema.to_string(), name.to_string())),

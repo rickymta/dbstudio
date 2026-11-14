@@ -2,7 +2,7 @@
 //! [`dbstudio_core::lease_kit`].
 //!
 //! * The connection lives outside the pool and is owned by one actor task.
-//! * Cancelling sends a protocol cancel request (`CancelToken`) on a short-lived connection; the
+//! * Cancelling sends a protocol cancel request (`CancelHandle`) on a short-lived connection; the
 //!   statement then fails with `57014` which is reported as `Error::Cancelled`. A cancel inside a
 //!   transaction block leaves it aborted (`TxStatus::Failed`), as PostgreSQL does.
 //! * PostgreSQL cannot report the transaction state cheaply, so it is tracked from the
@@ -15,13 +15,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+use crate::conn::CancelHandle;
 use async_trait::async_trait;
 use dbstudio_core::lease_kit::{ActorLease, Canceller, LeaseBackend};
 use dbstudio_core::{
     Error, ExecSummary, IsolationLevel, Lease, LeaseContext, LeaseOptions, QueryRequest, Result,
     ResultSink, TxControl, TxOptions, TxStatus,
 };
-use tokio_postgres::CancelToken;
 
 use crate::conn::{Conn, Shared};
 use crate::error::map_error;
@@ -44,12 +44,13 @@ pub(crate) async fn open(session: &PostgresSession, opts: LeaseOptions) -> Resul
         .unwrap_or_else(|| shared.login_db.clone());
     let conn = shared.open_dedicated(&database).await?;
     let mut backend = PgBackend {
-        token: conn.cancel.clone(),
+        token: Arc::new(Mutex::new(conn.cancel.clone())),
         shared,
         conn: Some(conn),
         database: database.clone(),
         auto_commit: opts.auto_commit,
         pending: None,
+        search_path_set: false,
         pending_query: None,
         current: Arc::new(Mutex::new(None)),
     };
@@ -65,16 +66,21 @@ pub(crate) async fn open(session: &PostgresSession, opts: LeaseOptions) -> Resul
     Ok(Box::new(ActorLease::spawn(backend, initial)?))
 }
 
+type SharedToken = Arc<Mutex<CancelHandle>>;
+
 /// The request running right now (id and cancellation state).
 type CurrentCall = Arc<Mutex<Option<(Uuid, Arc<Running>)>>>;
 
 struct PgBackend {
     shared: Arc<Shared>,
     conn: Option<Conn>,
-    token: CancelToken,
+    /// Cancel handle of the current connection (replaced when the database changes).
+    token: SharedToken,
     database: String,
     auto_commit: bool,
     pending: Option<PendingCursor>,
+    /// A search path was set (by `set_context`, `opts.schema` or a script).
+    search_path_set: bool,
     /// Request the pending result belongs to.
     pending_query: Option<Uuid>,
     /// Cancellation state of the call that is running right now, with its request id.
@@ -83,8 +89,14 @@ struct PgBackend {
 
 struct PgCanceller {
     shared: Arc<Shared>,
-    token: CancelToken,
+    token: SharedToken,
     current: CurrentCall,
+}
+
+impl PgCanceller {
+    fn token(&self) -> CancelHandle {
+        self.token.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 }
 
 #[async_trait]
@@ -96,7 +108,7 @@ impl Canceller for PgCanceller {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         match running {
-            Some((_, running)) => running.send_cancel(&self.shared, &self.token).await,
+            Some((_, running)) => running.send_cancel(&self.shared, &self.token()).await,
             None => Ok(()),
         }
     }
@@ -110,7 +122,7 @@ impl Canceller for PgCanceller {
         match running {
             // The gate inside `Running` serialises this with the end of that very request.
             Some((id, running)) if id == query_id => {
-                running.send_cancel(&self.shared, &self.token).await
+                running.send_cancel(&self.shared, &self.token()).await
             }
             _ => Ok(()),
         }
@@ -136,6 +148,10 @@ fn isolation_sql(level: IsolationLevel) -> Result<&'static str> {
 }
 
 impl PgBackend {
+    fn token(&self) -> CancelHandle {
+        self.token.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     fn conn(&mut self) -> Result<&mut Conn> {
         match self.conn.as_mut() {
             Some(c) if !c.client.is_closed() => Ok(c),
@@ -151,7 +167,34 @@ impl PgBackend {
         }
     }
 
+    /// Move the lease to database `db`: `SET database` on CockroachDB, a new connection (same
+    /// TLS, read-only mode and search path) on PostgreSQL and YugabyteDB.
+    async fn switch_database(&mut self, db: &str) -> Result<()> {
+        if self.shared.flavor().is_cockroach() {
+            let sql = format!("SET database = {}", quote_ident(db));
+            self.conn()?
+                .client
+                .batch_execute(&sql)
+                .await
+                .map_err(map_error)?;
+            self.database = db.to_string();
+            return Ok(());
+        }
+        let schema = self.query_schema().await.filter(|_| self.search_path_set);
+        let conn = self.shared.open_dedicated(db).await?;
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = conn.cancel.clone();
+        // Dropping the previous connection closes it.
+        self.conn = Some(conn);
+        self.database = db.to_string();
+        if let Some(schema) = schema {
+            // The schema may not exist in the new database: keep the default then.
+            let _ = self.set_search_path(&schema).await;
+        }
+        Ok(())
+    }
+
     async fn set_search_path(&mut self, schema: &str) -> Result<()> {
+        self.search_path_set = true;
         let sql = format!("SET search_path TO {}", quote_ident(schema));
         self.conn()?
             .client
@@ -340,14 +383,18 @@ impl LeaseBackend for PgBackend {
     }
 
     async fn set_context(&mut self, ctx: LeaseContext) -> Result<()> {
-        self.drop_pending().await;
-        if let Some(db) = ctx.database.as_deref() {
-            if db != self.database {
-                return Err(Error::Unsupported(
-                    "switching database on PostgreSQL (open the editor on that database)".into(),
+        if let Some(db) = ctx.database.as_deref().filter(|d| *d != self.database) {
+            // A user transaction or an open result cannot move to another database.
+            let in_txn = self.conn.as_ref().is_some_and(|c| c.in_txn);
+            let own_txn = self.pending.as_ref().is_some_and(PendingCursor::own_txn);
+            if (in_txn && !own_txn) || self.pending.is_some() {
+                return Err(Error::Busy(
+                    "finish the open transaction or result before switching database".into(),
                 ));
             }
+            self.switch_database(db).await?;
         }
+        self.drop_pending().await;
         if let Some(schema) = ctx.schema.as_deref() {
             self.set_search_path(schema).await?;
         }
@@ -375,10 +422,10 @@ impl LeaseBackend for PgBackend {
         self.drop_pending().await;
         self.conn()?;
         let running = self.begin_call(req.query_id);
-        let token = self.token.clone();
+        let token = self.token();
         let timeout = req.timeout_ms;
         let conn = self.conn.as_mut().ok_or_else(lost)?;
-        let work = crate::explain::explain_on_lease(conn, &req);
+        let work = crate::explain::explain_on_lease(conn, &req, self.shared.flavor());
         let result = match timeout {
             Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), work).await {
                 Ok(r) => r,
@@ -428,7 +475,11 @@ impl LeaseBackend for PgBackend {
         if self.conn.as_ref().is_some_and(|c| c.failed) {
             return Ok(None);
         }
-        Ok(self.query_schema().await.map(|schema| LeaseContext {
+        let schema = self.query_schema().await;
+        if schema.is_some() {
+            self.search_path_set = true;
+        }
+        Ok(schema.map(|schema| LeaseContext {
             database: None,
             schema: Some(schema),
         }))

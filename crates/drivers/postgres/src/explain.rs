@@ -15,6 +15,7 @@ use tokio_postgres::types::{FromSql, Type};
 
 use crate::conn::Conn;
 use crate::error::map_error;
+use crate::flavor::Flavor;
 use crate::session::PostgresSession;
 
 const SAVEPOINT: &str = "SAVEPOINT dbstudio_explain";
@@ -37,7 +38,14 @@ pub(crate) async fn explain(session: &PostgresSession, req: ExplainRequest) -> R
     // Registered under the query id, so `Session::cancel` reaches this statement.
     let (running, _unregister) = session.register(Some(req.query_id), &conn);
     let token = conn.cancel.clone();
-    let work = run(&mut conn, &req, &statement, offset, false);
+    let work = run(
+        &mut conn,
+        &req,
+        &statement,
+        offset,
+        false,
+        session.shared.flavor(),
+    );
     let result = match req.timeout_ms {
         Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), work).await {
             Ok(r) => r,
@@ -65,13 +73,17 @@ pub(crate) async fn explain(session: &PostgresSession, req: ExplainRequest) -> R
 /// runs under a savepoint that is always rolled back, so the transaction keeps everything that
 /// came before and never ends up aborted by the explain itself; outside one, `ANALYZE` uses its
 /// own `BEGIN` .. `ROLLBACK`. Timeout and cancellation are the caller's job.
-pub(crate) async fn explain_on_lease(conn: &mut Conn, req: &ExplainRequest) -> Result<RawPlan> {
+pub(crate) async fn explain_on_lease(
+    conn: &mut Conn,
+    req: &ExplainRequest,
+    flavor: Flavor,
+) -> Result<RawPlan> {
     let (statement, offset) = single_statement(&req.text)?;
     if req.analyze && !analyzable(&statement) {
         return Err(Error::Unsupported("explain_analyze_ddl".into()));
     }
     let nested = conn.in_txn;
-    let result = run(conn, req, &statement, offset, nested).await;
+    let result = run(conn, req, &statement, offset, nested, flavor).await;
     if result.is_err() && !nested && conn.in_txn {
         // A failed ANALYZE left its own `BEGIN` open: it is not the user's transaction.
         let _ = conn.client.batch_execute("ROLLBACK").await;
@@ -89,22 +101,33 @@ async fn run(
     statement: &str,
     offset: u32,
     nested: bool,
+    flavor: Flavor,
 ) -> Result<RawPlan> {
-    let (version_num, version) = server_version(conn).await?;
-    let mut options = vec!["FORMAT JSON".to_string()];
-    if req.analyze {
-        options.push("ANALYZE".into());
-        if req.options.buffers {
-            options.push("BUFFERS".into());
+    let cockroach = flavor.is_cockroach();
+    let (version_num, version) = server_version(conn, flavor).await?;
+    let prefix = if cockroach {
+        // CockroachDB has no JSON plan: the verbose text tree is the plan.
+        if req.analyze {
+            "EXPLAIN ANALYZE (VERBOSE) ".to_string()
+        } else {
+            "EXPLAIN (VERBOSE) ".to_string()
         }
-    }
-    if req.options.verbose {
-        options.push("VERBOSE".into());
-    }
-    if req.options.settings && version_num >= 120_000 {
-        options.push("SETTINGS".into());
-    }
-    let prefix = format!("EXPLAIN ({}) ", options.join(", "));
+    } else {
+        let mut options = vec!["FORMAT JSON".to_string()];
+        if req.analyze {
+            options.push("ANALYZE".into());
+            if req.options.buffers {
+                options.push("BUFFERS".into());
+            }
+        }
+        if req.options.verbose {
+            options.push("VERBOSE".into());
+        }
+        if req.options.settings && version_num >= 120_000 {
+            options.push("SETTINGS".into());
+        }
+        format!("EXPLAIN ({}) ", options.join(", "))
+    };
     let sql = format!("{prefix}{statement}");
 
     if nested {
@@ -131,7 +154,11 @@ async fn run(
                 .map_err(map_error)?;
         }
     }
-    let fetched = fetch_text(conn, &sql).await;
+    let fetched = if cockroach {
+        fetch_lines(conn, &sql).await
+    } else {
+        fetch_text(conn, &sql).await
+    };
     if nested {
         // Also after an error: the savepoint rollback revives a transaction the failed
         // statement aborted.
@@ -154,7 +181,11 @@ async fn run(
         conn.in_txn = false;
     }
     Ok(RawPlan {
-        format: PlanFormat::PostgresJson,
+        format: if cockroach {
+            PlanFormat::CockroachText
+        } else {
+            PlanFormat::PostgresJson
+        },
         text,
         statement: statement.to_string(),
         analyzed: req.analyze,
@@ -166,7 +197,28 @@ async fn run(
 }
 
 /// `(server_version_num, short server_version)`.
-async fn server_version(conn: &Conn) -> Result<(u32, String)> {
+async fn server_version(conn: &Conn, flavor: Flavor) -> Result<(u32, String)> {
+    if flavor.is_cockroach() {
+        // `server_version` of CockroachDB is the PostgreSQL version it imitates.
+        let rows = conn
+            .client
+            .simple_query("SELECT version()")
+            .await
+            .map_err(map_error)?;
+        for m in rows {
+            if let SimpleQueryMessage::Row(r) = m {
+                let full = r.get(0).unwrap_or("");
+                let short = full
+                    .split(" v")
+                    .nth(1)
+                    .and_then(|v| v.split_whitespace().next())
+                    .unwrap_or("")
+                    .to_string();
+                return Ok((0, short));
+            }
+        }
+        return Ok((0, String::new()));
+    }
     let rows = conn
         .client
         .simple_query(
@@ -211,6 +263,21 @@ async fn fetch_text(conn: &Conn, sql: &str) -> Result<String> {
         .first()
         .ok_or_else(|| Error::Other("EXPLAIN returned no plan".into()))?;
     Ok(row.try_get::<_, PlanJson>(0).map_err(map_error)?.0)
+}
+
+/// Run a CockroachDB EXPLAIN (one text column `info`, one row per line) and join the lines.
+async fn fetch_lines(conn: &Conn, sql: &str) -> Result<String> {
+    // Extended protocol: the server itself refuses several statements in one text.
+    let stmt = conn.client.prepare(sql).await.map_err(map_error)?;
+    let rows = conn.client.query(&stmt, &[]).await.map_err(map_error)?;
+    let mut lines = Vec::with_capacity(rows.len());
+    for row in &rows {
+        lines.push(row.try_get::<_, String>(0).map_err(map_error)?);
+    }
+    if lines.is_empty() {
+        return Err(Error::Other("EXPLAIN returned no plan".into()));
+    }
+    Ok(lines.join("\n"))
 }
 
 /// Exactly one statement of `text`: its text and the character offset where it starts.

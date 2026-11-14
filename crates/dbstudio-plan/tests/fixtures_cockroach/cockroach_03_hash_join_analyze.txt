@@ -1,0 +1,82 @@
+planning time: 2ms
+execution time: 22ms
+distribution: local
+vectorized: true
+plan type: custom
+rows decoded from KV: 8,000 (332 KiB, 8,000 KVs, 2 gRPC calls)
+cumulative time spent in KV: 17ms
+maximum memory usage: 760 KiB
+DistSQL network usage: 0 B (0 messages)
+sql cpu time: 7ms
+isolation level: serializable
+priority: normal
+quality of service: regular
+
+• group (hash)
+│ columns: (grp, count)
+│ sql nodes: n1
+│ actual row count: 50
+│ vectorized batch count: 1
+│ execution time: 2ms
+│ estimated max memory allocated: 190 KiB
+│ estimated max sql temp disk usage: 0 B
+│ sql cpu time: 2ms
+│ estimated row count: 50
+│ aggregate 0: count_rows()
+│ group by: grp
+│
+└── • project
+    │ columns: (grp)
+    │
+    └── • hash join (inner)
+        │ columns: (grp, name, column16)
+        │ sql nodes: n1
+        │ actual row count: 2,000
+        │ vectorized batch count: 6
+        │ execution time: 1ms
+        │ estimated max memory allocated: 160 KiB
+        │ sql cpu time: 1ms
+        │ estimated row count: 2,000
+        │ equality: (name) = (column16)
+        │
+        ├── • scan
+        │     columns: (grp, name)
+        │     sql nodes: n1
+        │     kv nodes: n1
+        │     actual row count: 6,000
+        │     vectorized batch count: 6
+        │     KV time: 5ms
+        │     KV rows decoded: 6,000
+        │     KV pairs read: 6,000
+        │     KV bytes read: 264 KiB
+        │     KV gRPC calls: 1
+        │     estimated max memory allocated: 320 KiB
+        │     sql cpu time: 603µs
+        │     MVCC step count (ext/int): 6,000/6,000
+        │     MVCC seek count (ext/int): 5/5
+        │     estimated row count: 6,000 (100% of the table; stats collected 15 seconds ago)
+        │     table: big@big_pkey
+        │     spans: FULL SCAN
+        │
+        └── • render
+            │ columns: (column16)
+            │ render column16: 'n' || bid::STRING
+            │
+            └── • scan
+                  columns: (bid)
+                  sql nodes: n1
+                  kv nodes: n1
+                  actual row count: 2,000
+                  vectorized batch count: 2
+                  KV time: 12ms
+                  KV rows decoded: 2,000
+                  KV pairs read: 2,000
+                  KV bytes read: 68 KiB
+                  KV gRPC calls: 1
+                  estimated max memory allocated: 90 KiB
+                  sql cpu time: 4ms
+                  MVCC step count (ext/int): 2,000/2,000
+                  MVCC seek count (ext/int): 5/5
+                  estimated row count: 2,000 (100% of the table; stats collected 14 seconds ago)
+                  table: ords@ords_pkey
+                  spans: FULL SCAN

@@ -4,11 +4,56 @@ use dbstudio_core::{Error, ObjectKind, ObjectPath, Result};
 use tokio_postgres::Client;
 
 use crate::error::map_error;
+use crate::flavor::Flavor;
 use crate::sql::{non_folder_segments, qualified, quote_ident, quote_literal};
 
-pub async fn object_ddl(client: &Client, path: &ObjectPath) -> Result<String> {
+/// `SHOW CREATE <what> <qualified name>` (CockroachDB), the text ends with `;`.
+async fn show_create(client: &Client, what: &str, qname: &str, missing: Error) -> Result<String> {
+    let row = client
+        .query_opt(&format!("SHOW CREATE {what} {qname}"), &[])
+        .await
+        .map_err(|e| match e.as_db_error().map(|d| d.code().code()) {
+            // undefined_table / undefined_function / invalid_schema_name
+            Some("42P01" | "42883" | "3F000") => missing,
+            _ => map_error(e),
+        })?
+        .ok_or_else(|| Error::NotFound(format!("{what} {qname} not found")))?;
+    let text: String = row.get(1);
+    let text = text.trim_end().trim_end_matches(';').trim_end();
+    Ok(format!("{text};\n"))
+}
+
+pub async fn object_ddl(client: &Client, path: &ObjectPath, flavor: Flavor) -> Result<String> {
     use ObjectKind as K;
     let segs = non_folder_segments(path);
+    if flavor.is_cockroach() {
+        let crdb = match segs.as_slice() {
+            [(K::Database, _), (K::Schema, s), (K::Table, t)] => {
+                Some(("TABLE", *s, t.to_string(), "table"))
+            }
+            [(K::Database, _), (K::Schema, s), (K::View, v)] => {
+                Some(("TABLE", *s, v.to_string(), "view"))
+            }
+            [(K::Database, _), (K::Schema, s), (K::Sequence, q)] => {
+                Some(("SEQUENCE", *s, q.to_string(), "sequence"))
+            }
+            [(K::Database, _), (K::Schema, s), (K::Function, f)] => {
+                // The tree name is `name(args)`; SHOW CREATE FUNCTION takes the bare name.
+                let bare = f.split('(').next().unwrap_or(f).to_string();
+                Some(("FUNCTION", *s, bare, "routine"))
+            }
+            _ => None,
+        };
+        if let Some((what, schema, name, label)) = crdb {
+            return show_create(
+                client,
+                what,
+                &qualified(schema, &name),
+                not_found(label, schema, &name),
+            )
+            .await;
+        }
+    }
     match segs.as_slice() {
         [(K::Database, _), (K::Schema, s), (K::Table, t)] => table_ddl(client, s, t).await,
         [(K::Database, _), (K::Schema, s), (K::View, v)] => view_ddl(client, s, v, false).await,

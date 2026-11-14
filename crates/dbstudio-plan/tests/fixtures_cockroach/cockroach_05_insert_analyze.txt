@@ -1,0 +1,42 @@
+planning time: 2ms
+execution time: 11ms
+distribution: local
+vectorized: true
+plan type: custom
+maximum memory usage: 40 KiB
+DistSQL network usage: 0 B (0 messages)
+isolation level: serializable
+priority: normal
+quality of service: regular
+
+• insert
+│ columns: ()
+│ sql nodes: n1
+│ actual row count: 200
+│ vectorized batch count: 1
+│ execution time: 8ms
+│ estimated row count: 0 (missing stats)
+│ into: ords(oid, bid, qty)
+│ auto commit
+│
+└── • render
+    │ columns: ("?column?", generate_series, "?column?")
+    │ render ?column?: generate_series + 100000
+    │ render ?column?: 1
+    │ render generate_series: generate_series
+    │
+    └── • project set
+        │ columns: (generate_series)
+        │ sql nodes: n1
+        │ actual row count: 200
+        │ vectorized batch count: 8
+        │ execution time: 2ms
+        │ estimated row count: 10
+        │ render 0: generate_series(1, 200)
+        │
+        └── • emptyrow
+              columns: ()
+              sql nodes: n1
+              actual row count: 1
+              vectorized batch count: 1
+              execution time: 3µs

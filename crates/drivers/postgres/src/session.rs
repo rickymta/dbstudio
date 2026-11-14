@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::conn::CancelHandle;
 use async_trait::async_trait;
 use dbstudio_core::{
     ApplyResult, ChangeSet, DdlItem, DdlRequest, Editability, ExplainRequest, Lease, LeaseOptions,
@@ -13,7 +14,6 @@ use dbstudio_core::{
     Error, ExecSummary, ObjectKind, ObjectNode, ObjectPath, ObjectSearchRequest, QueryRequest,
     Result, ResultSink, ServerInfo, Session, TableCountRequest, TableDataRequest, TableDetails,
 };
-use tokio_postgres::CancelToken;
 use uuid::Uuid;
 
 use crate::conn::{PooledConn, Shared};
@@ -25,7 +25,7 @@ use crate::{browse, ddl, details};
 
 struct Registration {
     running: Arc<Running>,
-    token: CancelToken,
+    token: CancelHandle,
 }
 
 /// A live PostgreSQL server session (several pooled connections behind one object).
@@ -36,7 +36,8 @@ pub struct PostgresSession {
     keys: Mutex<KeyCache>,
 }
 
-type KeyCache = HashMap<(String, String, String), (Instant, Vec<String>)>;
+/// Key columns per table plus whether the key is CockroachDB's hidden `rowid`.
+type KeyCache = HashMap<(String, String, String), (Instant, Vec<String>, bool)>;
 
 const KEY_CACHE_TTL: Duration = Duration::from_secs(30);
 
@@ -123,23 +124,28 @@ impl PostgresSession {
         }
     }
 
-    /// Key columns used to make paging deterministic.
-    async fn table_key(&self, conn: &PooledConn, rel: &details::Relation) -> Vec<String> {
+    /// Key columns used to make paging deterministic, and whether the key is the hidden
+    /// `rowid` column of a CockroachDB table without primary key (it is then added to the
+    /// selected columns so that the grid can edit the rows).
+    async fn table_key(&self, conn: &PooledConn, rel: &details::Relation) -> (Vec<String>, bool) {
         let id = (rel.database.clone(), rel.schema.clone(), rel.name.clone());
         if let Ok(map) = self.keys.lock() {
-            if let Some((at, cols)) = map.get(&id) {
+            if let Some((at, cols, hidden)) = map.get(&id) {
                 if at.elapsed() < KEY_CACHE_TTL {
-                    return cols.clone();
+                    return (cols.clone(), *hidden);
                 }
             }
         }
         let cols = details::key_columns(&conn.client, &rel.schema, &rel.name)
             .await
             .unwrap_or_default();
+        let hidden = self.shared.flavor().is_cockroach()
+            && cols == ["rowid"]
+            && details::is_hidden_column(&conn.client, &rel.schema, &rel.name, "rowid").await;
         if let Ok(mut map) = self.keys.lock() {
-            map.insert(id, (Instant::now(), cols.clone()));
+            map.insert(id, (Instant::now(), cols.clone(), hidden));
         }
-        cols
+        (cols, hidden)
     }
 
     fn forget_key(&self, rel: &details::Relation) {
@@ -166,6 +172,12 @@ impl PostgresSession {
 impl Session for PostgresSession {
     fn script_dialect(&self) -> ScriptDialect {
         ScriptDialect::Postgres
+    }
+
+    fn capabilities(&self) -> Option<dbstudio_core::Capabilities> {
+        let flavor = self.shared.flavor();
+        // Plain PostgreSQL keeps the descriptor's table.
+        (flavor != crate::flavor::Flavor::Postgres).then(|| flavor.capabilities())
     }
 
     async fn open_lease(&self, opts: LeaseOptions) -> Result<Box<dyn Lease>> {
@@ -224,11 +236,34 @@ impl Session for PostgresSession {
         conn.finish().await;
         let full: String = row.get(1);
         let short = full.split_whitespace().next().unwrap_or(&full).to_string();
+        let flavor = self.shared.flavor();
+        let full_version: String = row.get(0);
+        let version = match flavor {
+            crate::flavor::Flavor::Cockroach { .. } => full_version
+                .split(" v")
+                .nth(1)
+                .and_then(|r| r.split_whitespace().next())
+                .unwrap_or(&short)
+                .to_string(),
+            _ => short,
+        };
         let mut info = ServerInfo {
-            product: "PostgreSQL".to_string(),
-            version: short,
+            product: flavor.product().to_string(),
+            version,
             ..Default::default()
         };
+        info.extra.insert("flavor".into(), flavor.id().into());
+        if flavor.kind() != self.shared.profile_kind()
+            && matches!(
+                self.shared.profile_kind(),
+                dbstudio_core::DbKind::Postgres
+                    | dbstudio_core::DbKind::CockroachDb
+                    | dbstudio_core::DbKind::YugabyteDb
+            )
+        {
+            // The profile names another kind than the server really is.
+            info.extra.insert("kindMismatch".into(), "true".into());
+        }
         info.extra
             .insert("fullVersion".into(), row.get::<_, String>(0));
         info.extra.insert("serverVersion".into(), full);
@@ -303,14 +338,20 @@ impl Session for PostgresSession {
 
     async fn object_ddl(&self, path: &ObjectPath) -> Result<String> {
         let mut conn = self.shared.acquire_catalog(self.database_of(path)).await?;
-        let r = ddl::object_ddl(&conn.client, path).await;
+        let r = ddl::object_ddl(&conn.client, path, self.shared.flavor()).await;
         conn.finish().await;
         r
     }
 
     async fn table_details(&self, path: &ObjectPath) -> Result<TableDetails> {
         let mut conn = self.shared.acquire_catalog(self.database_of(path)).await?;
-        let r = details::table_details(&conn.client, path, self.database_of(path)).await;
+        let r = details::table_details(
+            &conn.client,
+            path,
+            self.database_of(path),
+            self.shared.flavor(),
+        )
+        .await;
         conn.finish().await;
         r
     }
@@ -323,7 +364,7 @@ impl Session for PostgresSession {
         let target = details::resolve_relation(&req.table)?;
         let table = sql::qualified(&target.schema, &target.name);
         let mut conn = self.shared.acquire(&target.database).await?;
-        let key = self.table_key(&conn, &target).await;
+        let (key, hidden_rowid) = self.table_key(&conn, &target).await;
         let select = match sql::select_sql(
             &table,
             &req.filters,
@@ -338,6 +379,11 @@ impl Session for PostgresSession {
                 conn.finish().await;
                 return Err(e);
             }
+        };
+        let select = if hidden_rowid {
+            select.replacen("SELECT * FROM", "SELECT *, (rowid + 0) AS rowid FROM", 1)
+        } else {
+            select
         };
         let (running, _unregister) = self.register(Some(req.query_id), &conn);
         let started = Instant::now();
@@ -387,7 +433,7 @@ impl Session for PostgresSession {
             &req,
             &scope,
             &database,
-            self.shared.search_timeout,
+            self.shared.search_timeout(),
         )
         .await;
         if r.is_ok() || matches!(r, Err(Error::Query { .. } | Error::Timeout)) {
@@ -397,7 +443,7 @@ impl Session for PostgresSession {
     }
 
     async fn close(&self) -> Result<()> {
-        let active: Vec<(Arc<Running>, CancelToken)> = self
+        let active: Vec<(Arc<Running>, CancelHandle)> = self
             .running
             .lock()
             .map(|m| {
