@@ -467,6 +467,23 @@ impl Lease for MongoLease {
                 } else {
                     req.conflict_columns.clone()
                 };
+                if let Some(k) = keys.iter().find(|k| k.contains('.') || k.starts_with('$')) {
+                    return Err(bad(format!(
+                        "conflict column `{k}` is not supported (nested or operator names)"
+                    )));
+                }
+                if whole {
+                    // A replacement document cannot start with an operator ($...) field.
+                    if let Some(i) = docs
+                        .iter()
+                        .position(|d| d.keys().next().is_some_and(|k| k.starts_with('$')))
+                    {
+                        return Err(bad(format!(
+                            "row {}: a document cannot start with an operator ($...) field",
+                            i + 1
+                        )));
+                    }
+                }
                 for chunk in docs.chunks(500) {
                     let updates: Vec<Bson> = chunk
                         .iter()

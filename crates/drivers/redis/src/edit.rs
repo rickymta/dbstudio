@@ -461,6 +461,22 @@ async fn apply_one(
     }
     // Optimistic check of the list item the user saw; WATCH makes a later change abort EXEC.
     if let Some(c) = &p.list_check {
+        // Name a deleted or retyped key clearly instead of a raw WRONGTYPE error. (A UI that
+        // removes several items must send `ListRemoveAt` by descending index.)
+        let ty: String = redis::cmd("TYPE")
+            .arg(c.key.as_slice())
+            .query_async(conn)
+            .await
+            .map_err(q)?;
+        if ty != "list" {
+            let _ = redis::cmd("UNWATCH").query_async::<()>(conn).await;
+            let name = String::from_utf8_lossy(&c.key).into_owned();
+            return Err(if ty == "none" {
+                format!("key `{name}` does not exist")
+            } else {
+                format!("WRONGTYPE: key `{name}` is a {ty}, expected list")
+            });
+        }
         let current: Option<Vec<u8>> = redis::cmd("LINDEX")
             .arg(c.key.as_slice())
             .arg(c.index)

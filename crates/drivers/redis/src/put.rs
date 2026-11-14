@@ -1,6 +1,6 @@
 //! `KeyChange::Put`: write a whole key in a temporary key, then `RENAME` (or `RENAMENX`) it into
 //! place, so a reader never sees a half-written value. Big values go in chunks (strings by
-//! byte ranges via `APPEND`, collections by batches bounded in count and size).
+//! byte ranges via `SETRANGE`, collections by batches bounded in count and size).
 
 use std::ops::Range;
 
@@ -16,13 +16,13 @@ type Args = Vec<Vec<u8>>;
 /// One stream entry: id and `(field, value)` pairs.
 type StreamRow = (String, Vec<(Vec<u8>, Vec<u8>)>);
 
-/// Bytes of a string written per `APPEND`.
+/// Bytes of a string written per `SETRANGE`.
 const STRING_CHUNK: usize = 8 * 1024 * 1024;
 /// Most items (fields, members, entries) in one batch.
 const BATCH_ITEMS: usize = 1000;
 /// Rough byte budget of one batch.
 const BATCH_BYTES: usize = 4 * 1024 * 1024;
-/// Lifetime of an unfinished temporary key (cleans up after a crash), in ms.
+/// Lifetime of an unfinished temporary key (cleans up after a crash), renewed by every batch, in ms.
 const TEMP_GUARD_MS: u64 = 3_600_000;
 
 /// A validated `Put`, ready to run.
@@ -194,9 +194,12 @@ fn batches<'a>(body: &'a Body, tmp: &'a [u8]) -> Box<dyn Iterator<Item = Vec<Arg
             tmp.to_vec(),
             Vec::new(),
         ]])),
-        Body::String(v) => Box::new(v.chunks(STRING_CHUNK).enumerate().map(move |(i, c)| {
-            let name: &[u8] = if i == 0 { b"SET" } else { b"APPEND" };
-            let mut a = head(name, tmp);
+        // Chunks go in with `SETRANGE`, LAST chunk first: the first command allocates the whole
+        // string once and the others fill it in place (a growing `APPEND` can briefly need
+        // twice the memory while the server reallocates).
+        Body::String(v) => Box::new(v.chunks(STRING_CHUNK).enumerate().rev().map(move |(i, c)| {
+            let mut a = head(b"SETRANGE", tmp);
+            a.push((i * STRING_CHUNK).to_string().into_bytes());
             a.push(c.to_vec());
             vec![a]
         })),
@@ -267,6 +270,7 @@ fn batches<'a>(body: &'a Body, tmp: &'a [u8]) -> Box<dyn Iterator<Item = Vec<Arg
 async fn run_pipeline(
     conn: &mut MultiplexedConnection,
     cmds: &[Args],
+    tmp: &[u8],
 ) -> std::result::Result<(), String> {
     let mut pipe = redis::pipe();
     for c in cmds {
@@ -275,6 +279,9 @@ async fn run_pipeline(
             cmd.arg(a.as_slice());
         }
     }
+    // Every pipeline renews the lifetime of the temporary key: a crash leaves nothing behind
+    // for long, and a build that takes a long time never loses the key to the guard.
+    pipe.cmd("PEXPIRE").arg(tmp).arg(TEMP_GUARD_MS);
     pipe.query_async::<redis::Value>(conn)
         .await
         .map(|_| ())
@@ -293,31 +300,78 @@ async fn simple(
     c.query_async(conn).await.map_err(|e| map_err(e).message())
 }
 
+/// Hashtag-aware temporary key name: `<key>.__dbstudio_tmp.<uuid>`. The key stays the prefix (an
+/// ACL pattern such as `~app:*` that allows the key allows the temporary key too). In a cluster
+/// both must hash to the same slot for `RENAME`: when the key has no `{tag}` of its own, the
+/// tag `{<key>}` is added, which hashes like the whole key. A key that holds a `}` but no
+/// valid tag cannot be tagged this way and gets the plain name (fine outside a cluster).
+fn temp_name(key: &[u8], id: &str) -> Vec<u8> {
+    let has_tag = key
+        .iter()
+        .position(|b| *b == b'{')
+        .and_then(|open| key[open + 1..].iter().position(|b| *b == b'}'))
+        .is_some_and(|len| len > 0);
+    let mut name = key.to_vec();
+    name.extend_from_slice(TEMP_MARKER.as_bytes());
+    if !has_tag && !key.contains(&b'{') && !key.contains(&b'}') {
+        name.push(b'{');
+        name.extend_from_slice(key);
+        name.extend_from_slice(b"}.");
+    }
+    name.extend_from_slice(id.as_bytes());
+    name
+}
+
+/// Whether `key` is the temporary key of a `Put` (hidden by `scan_keys`).
+pub fn is_temp_key(key: &[u8]) -> bool {
+    let m = TEMP_MARKER.as_bytes();
+    key.windows(m.len()).any(|w| w == m)
+}
+
+/// Marker inside the names of temporary keys.
+pub const TEMP_MARKER: &str = ".__dbstudio_tmp.";
+
+impl PutPlan {
+    /// Command and length the finished temporary key must report, when it can be checked.
+    fn length_check(&self) -> Option<(&'static str, u64)> {
+        fn unique<'a>(items: impl Iterator<Item = &'a [u8]>) -> u64 {
+            items.collect::<std::collections::HashSet<_>>().len() as u64
+        }
+        match &self.body {
+            Body::String(v) => Some(("STRLEN", v.len() as u64)),
+            Body::List(v) => Some(("LLEN", v.len() as u64)),
+            Body::Hash(v) => Some(("HLEN", unique(v.iter().map(|(f, _)| f.as_slice())))),
+            Body::Set(v) => Some(("SCARD", unique(v.iter().map(Vec::as_slice)))),
+            Body::ZSet(v) => Some(("ZCARD", unique(v.iter().map(|(m, _)| m.as_slice())))),
+            Body::Stream(v) => Some(("XLEN", v.len() as u64)),
+            Body::Json(_) => None,
+        }
+    }
+}
+
 async fn build(
     conn: &mut MultiplexedConnection,
     tmp: &[u8],
     p: &PutPlan,
 ) -> std::result::Result<(), String> {
-    for (i, cmds) in batches(&p.body, tmp).enumerate() {
-        run_pipeline(conn, &cmds).await?;
-        if i == 0 {
-            // From now on a crash cannot leave the temporary key behind for good.
-            simple(
-                conn,
-                "PEXPIRE",
-                &[tmp, TEMP_GUARD_MS.to_string().as_bytes()],
-            )
-            .await?;
+    for cmds in batches(&p.body, tmp) {
+        run_pipeline(conn, &cmds, tmp).await?;
+    }
+    // The finished temporary key must hold exactly what was sent: it fails when the key was
+    // deleted or replaced by someone else half way (the guard expired, a FLUSH, a rename...).
+    if let Some((name, expected)) = p.length_check() {
+        let got = simple(conn, name, &[tmp]).await?;
+        if !matches!(got, redis::Value::Int(n) if n as u64 == expected) {
+            return Err(format!(
+                "the temporary key changed while it was being written ({name} = {got:?}, expected {expected}); nothing was applied"
+            ));
         }
     }
-    match p.ttl_ms {
-        Some(ms) => simple(conn, "PEXPIRE", &[tmp, ms.to_string().as_bytes()]).await?,
-        None => simple(conn, "PERSIST", &[tmp]).await?,
-    };
     Ok(())
 }
 
-/// Run one `Put`; the result is the affected count (0 = kept an existing key, `IfAbsent`).
+/// Run one `Put`; the result is the affected count (0 = kept an existing key, `IfAbsent`, or
+/// the key already expired).
 pub async fn put_key(
     conn: &mut MultiplexedConnection,
     p: &PutPlan,
@@ -328,30 +382,78 @@ pub async fn put_key(
             return Ok(0);
         }
     }
-    let tmp = format!("__dbstudio_put_{}__", Uuid::new_v4().simple()).into_bytes();
-    if let Err(e) = build(conn, &tmp, p).await {
-        let _ = simple(conn, "DEL", &[&tmp]).await;
-        return Err(e);
-    }
-    let done = match p.mode {
-        PutMode::Replace => simple(conn, "RENAME", &[&tmp, &p.key]).await.map(|_| 1),
-        PutMode::IfAbsent => match simple(conn, "RENAMENX", &[&tmp, &p.key]).await {
-            Ok(redis::Value::Int(1)) => Ok(1),
-            Ok(_) => Ok(0),
-            Err(e) => Err(e),
-        },
+    let tmp = temp_name(&p.key, &Uuid::new_v4().simple().to_string());
+    let outcome = match build(conn, &tmp, p).await {
+        Ok(()) => finish(conn, &tmp, p).await,
+        Err(e) => Err(e),
     };
-    match done {
+    match outcome {
         Ok(1) => Ok(1),
-        Ok(n) => {
-            // Another client created the key between EXISTS and RENAMENX: keep theirs.
+        other => {
+            // Kept an existing key, expired, or failed: no temporary key may stay.
             let _ = simple(conn, "DEL", &[&tmp]).await;
-            Ok(n)
+            other
         }
-        Err(e) => {
-            let _ = simple(conn, "DEL", &[&tmp]).await;
-            Err(e)
+    }
+}
+
+/// `MULTI; PEXPIRE|PERSIST tmp; RENAME[NX] tmp key; EXEC` in one block, so the TTL and the final
+/// name appear together.
+async fn finish(
+    conn: &mut MultiplexedConnection,
+    tmp: &[u8],
+    p: &PutPlan,
+) -> std::result::Result<u64, String> {
+    let q = |e: redis::RedisError| map_err(e).message();
+    redis::cmd("MULTI")
+        .query_async::<()>(conn)
+        .await
+        .map_err(q)?;
+    let ttl = match p.ttl_ms {
+        Some(ms) => {
+            let mut c = redis::cmd("PEXPIRE");
+            c.arg(tmp).arg(ms);
+            c
         }
+        None => {
+            let mut c = redis::cmd("PERSIST");
+            c.arg(tmp);
+            c
+        }
+    };
+    ttl.query_async::<redis::Value>(conn).await.map_err(q)?;
+    let verb = match p.mode {
+        PutMode::Replace => "RENAME",
+        PutMode::IfAbsent => "RENAMENX",
+    };
+    redis::cmd(verb)
+        .arg(tmp)
+        .arg(p.key.as_slice())
+        .query_async::<redis::Value>(conn)
+        .await
+        .map_err(q)?;
+    let exec: redis::Value = redis::cmd("EXEC").query_async(conn).await.map_err(q)?;
+    let redis::Value::Array(replies) = exec else {
+        return Err(format!("unexpected EXEC reply: {exec:?}"));
+    };
+    match replies.get(1) {
+        Some(redis::Value::ServerError(e)) => {
+            let text = format!("{e:?}").to_ascii_lowercase();
+            if text.contains("no such key") {
+                // The temporary key was gone before the rename: with a (very short) TTL it
+                // already expired, which is the outcome the TTL asks for; without one somebody
+                // removed it.
+                return match p.ttl_ms {
+                    Some(_) => Ok(0),
+                    None => Err("the temporary key disappeared before the rename".into()),
+                };
+            }
+            Err(format!("{e:?}"))
+        }
+        Some(redis::Value::Int(1)) | Some(redis::Value::Okay) => Ok(1),
+        Some(redis::Value::SimpleString(s)) if s == "OK" => Ok(1),
+        // RENAMENX: the key appeared since the EXISTS check; theirs stays.
+        _ => Ok(0),
     }
 }
 
@@ -406,9 +508,10 @@ mod tests {
         let p = PutPlan::new("k", &data, None, PutMode::Replace).unwrap();
         let all: Vec<_> = batches(&p.body, b"tmp").collect();
         assert_eq!(all.len(), 3);
-        assert_eq!(all[0][0][0], b"SET");
-        assert_eq!(all[1][0][0], b"APPEND");
-        assert_eq!(all[2][0][2].len(), 5);
+        // Last chunk first, so the string is allocated once at full size.
+        assert!(all.iter().all(|b| b[0][0] == b"SETRANGE"));
+        assert_eq!(all[0][0][3].len(), 5);
+        assert_eq!(all[2][0][2], b"0".to_vec());
     }
 
     #[test]
@@ -425,5 +528,28 @@ mod tests {
         let s = KeyData::String { value: t("v") };
         let text = preview_put("k", &s, Some(5000), PutMode::IfAbsent).unwrap();
         assert!(text.contains("PEXPIRE <temp> 5000") && text.ends_with("RENAMENX <temp> k"));
+    }
+
+    #[test]
+    fn temp_names_follow_the_key() {
+        let n = String::from_utf8(temp_name(b"app:user:1", "ID")).unwrap();
+        assert_eq!(n, "app:user:1.__dbstudio_tmp.{app:user:1}.ID");
+        // An existing tag is kept as is (same slot).
+        let n = String::from_utf8(temp_name(b"user:{42}:x", "ID")).unwrap();
+        assert_eq!(n, "user:{42}:x.__dbstudio_tmp.ID");
+        // No safe tag possible: plain name.
+        let n = String::from_utf8(temp_name(b"a}b", "ID")).unwrap();
+        assert_eq!(n, "a}b.__dbstudio_tmp.ID");
+        assert!(is_temp_key(&temp_name(b"k", "ID")));
+        assert!(!is_temp_key(b"normal:key"));
+    }
+
+    #[test]
+    fn length_check_counts_unique_items() {
+        let h = KeyData::Hash {
+            fields: vec![(t("a"), t("1")), (t("a"), t("2")), (t("b"), t("3"))],
+        };
+        let p = PutPlan::new("k", &h, None, PutMode::Replace).unwrap();
+        assert_eq!(p.length_check(), Some(("HLEN", 2)));
     }
 }

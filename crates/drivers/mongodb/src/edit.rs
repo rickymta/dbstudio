@@ -102,21 +102,27 @@ fn update_docs(set: &[FieldEdit], unset: &[Vec<String>]) -> Result<Document> {
 }
 
 /// Filter of a change: `{_id, <expected conditions>}`. A field that was present must still hold
-/// its original value; a field that was absent must still be absent.
+/// its original value (wrapped in `$eq`, so a regex or a sub-document with `$` keys is compared
+/// as a value, not read as an operator); a field that was absent must still be absent.
+///
+/// Limit: MongoDB equality on an array field also matches a document whose array merely
+/// CONTAINS the original array as an element, and a path through an array uses the usual
+/// membership semantics; for such fields the check is weaker than "unchanged".
 fn guarded_filter(id: &dbstudio_core::Value, expected: &[FieldOriginal]) -> Result<Document> {
     let mut q = doc! {"_id": value_to_bson(id)?};
     for e in expected {
         check_path(&e.path)?;
         let path = e.path.join(".");
         let cond = match &e.value {
-            None => Bson::Document(doc! {"$exists": false}),
+            None => doc! {"$exists": false},
             // `{f: null}` would also match a missing field.
             Some(v) => match value_to_bson(v)? {
-                Bson::Null => Bson::Document(doc! {"$type": "null"}),
-                b => b,
+                Bson::Null => doc! {"$type": "null"},
+                Bson::Undefined => doc! {"$type": "undefined"},
+                b => doc! {"$eq": b},
             },
         };
-        q.insert(path, cond);
+        q.insert(path, Bson::Document(cond));
     }
     Ok(q)
 }
@@ -505,7 +511,7 @@ mod tests {
         // Deletes run first; the update is second.
         assert_eq!(p[0], "db.getCollection(\"users\").deleteOne({\"_id\": 1})");
         assert!(
-            p[1].contains("{\"_id\": 1, \"a.b\": 1, \"c\": {\"$exists\": false}, \"n\": {\"$type\": \"null\"}}"),
+            p[1].contains("{\"_id\": 1, \"a.b\": {\"$eq\": 1}, \"c\": {\"$exists\": false}, \"n\": {\"$type\": \"null\"}}"),
             "{p:?}"
         );
     }
