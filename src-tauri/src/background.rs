@@ -240,9 +240,11 @@ impl Autostart for TauriAutostart {
 }
 
 /// No autostart support (tests and the scaffold-compatible command helpers).
+#[cfg(any(test, feature = "dev-bridge"))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoAutostart;
 
+#[cfg(any(test, feature = "dev-bridge"))]
 impl Autostart for NoAutostart {
     fn is_enabled(&self) -> Result<bool> {
         Ok(false)

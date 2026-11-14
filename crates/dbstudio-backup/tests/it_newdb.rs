@@ -401,23 +401,22 @@ async fn native(fx: &Fx) {
 async fn native_shim(fx: &Fx, rep: &Arc<Rep>) {
     use std::os::unix::fs::PermissionsExt;
     let shims = tempfile::tempdir().unwrap();
-    let port = fx.e.port();
     let (dump, restore, dump_tool, restore_tool, body) = match fx.e {
         E::TiDb => (
             "mysqldump",
             "mysql",
             NativeTool::MySqlDump,
             NativeTool::MySqlClient,
-            // Runs the client of the MySQL 8 container against the TiDB port of the host.
-            format!(
-                r#"#!/bin/bash
+            // Runs the client of the MySQL 8 container against the TiDB service on the compose
+            // network (`host.docker.internal` does not resolve on Linux runners).
+            r#"#!/bin/bash
 args=(); pw=""
 while [ $# -gt 0 ]; do case "$1" in
-  --defaults-extra-file=*) f="${{1#--defaults-extra-file=}}"; pw=$(sed -n 's/^password="\(.*\)"$//p' "$f"); shift;;
+  --defaults-extra-file=*) f="${1#--defaults-extra-file=}"; pw=$(sed -n 's/^password="\(.*\)"$//p' "$f"); shift;;
   -h|-P) shift 2;; --ssl-mode=*) shift;; *) args+=("$1"); shift;; esac; done
-exec docker exec -i -e MYSQL_PWD="$pw" dbstudio-test-mysql8-1 TOOL -h host.docker.internal -P {port} "${{args[@]}}"
+exec docker exec -i -e MYSQL_PWD="$pw" dbstudio-test-mysql8-1 TOOL -h tidb -P 4000 "${args[@]}"
 "#
-            ),
+            .to_string(),
         ),
         _ => (
             "ysql_dump",

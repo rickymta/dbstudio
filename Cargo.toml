@@ -8,7 +8,7 @@ edition = "2024"
 license = "MIT"
 rust-version = "1.94"
 authors = ["DBStudio contributors"]
-repository = "https://github.com/dbstudio/dbstudio"
+repository = "https://github.com/rickymta/dbstudio"
 
 [workspace.dependencies]
 dbstudio-core = { path = "crates/dbstudio-core" }
@@ -40,7 +40,6 @@ dbstudio-ssh = { path = "crates/dbstudio-ssh" }
 quick-xml = "0.42"
 rust_xlsxwriter = "0.102"
 calamine = "0.38"
-csv = "1.4"
 zip = "9.5"
 tar = "0.4"
 flate2 = "1.1"
@@ -69,7 +68,6 @@ clickhouse = { version = "0.15.3", default-features = false, features = ["lz4", 
 hyper-util = "0.1.21"
 hyper-rustls = { version = "0.27.10", default-features = false, features = ["ring"] }
 sys-locale = "0.3.2"
-fast-socks5 = "1.0.0"
 
 # Minimal fork of tiberius 0.13.0 (see vendor/tiberius-patch/DBSTUDIO-PATCH.md): INFO/DONE items,
 # cooperative attention (cancel) and exact money decoding.
