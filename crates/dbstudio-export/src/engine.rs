@@ -438,6 +438,7 @@ async fn run(
         overwrite: spec.destination.overwrite,
         zip: work.files > 1,
         tuning: *tuning,
+        flatten_fields: spec.values.flatten_fields.clone(),
     })?;
     let mut progress = Progress::new(&*ctx.reporter, work);
     let is_sql = matches!(spec.format, ExportFormat::Sql(_));

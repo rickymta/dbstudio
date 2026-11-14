@@ -1005,7 +1005,10 @@ mod tests {
             };
             let mut buf = String::new();
             // NULL, empty string, the NULL text itself as a string, plain text.
-            for (i, v) in [None, Some(""), Some(nt), Some("x")].into_iter().enumerate() {
+            for (i, v) in [None, Some(""), Some(nt), Some("x")]
+                .into_iter()
+                .enumerate()
+            {
                 if i > 0 {
                     buf.push(',');
                 }

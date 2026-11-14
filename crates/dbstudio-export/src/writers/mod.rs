@@ -8,6 +8,7 @@ use dbstudio_core::{ColumnDetail, ColumnMeta, ObjectKind, ObjectPath, Result, Sc
 use crate::{BinaryFormat, ExportContent, ExportFormat, ExportTuning, ObjectMeta, TableWriter};
 
 mod csv;
+mod flatten;
 mod json;
 mod sql;
 mod xlsx;
@@ -31,15 +32,25 @@ pub(crate) struct WriterConfig {
     /// The output is a zip archive holding several files.
     pub zip: bool,
     pub tuning: ExportTuning,
+    /// Dotted paths for document sources in CSV / XLSX (empty = detect).
+    pub flatten_fields: Vec<String>,
 }
 
 /// Open the writer of `cfg.format`; the temporary output file is created right away.
 pub(crate) fn create_writer(cfg: WriterConfig) -> Result<Box<dyn TableWriter>> {
+    // Tabular formats flatten document sources (a `$document` column) into columns.
+    let flat = |inner: Box<dyn TableWriter>| -> Box<dyn TableWriter> {
+        Box::new(flatten::FlattenWriter::new(
+            inner,
+            cfg.flatten_fields.clone(),
+            cfg.binary,
+        ))
+    };
     Ok(match cfg.format.clone() {
         ExportFormat::Sql(o) => Box::new(SqlWriter::create(&cfg, o)?),
-        ExportFormat::Csv(o) => Box::new(CsvWriter::create(&cfg, o)?),
+        ExportFormat::Csv(o) => flat(Box::new(CsvWriter::create(&cfg, o)?)),
         ExportFormat::Json(o) => Box::new(JsonWriter::create(&cfg, o)?),
-        ExportFormat::Xlsx(o) => Box::new(XlsxWriter::create(&cfg, o)?),
+        ExportFormat::Xlsx(o) => flat(Box::new(XlsxWriter::create(&cfg, o)?)),
     })
 }
 
