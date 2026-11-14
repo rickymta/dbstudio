@@ -204,12 +204,13 @@ CREATE INDEX idx_plan_history_conn ON plan_history(connection_id, created_at DES
     // v8: SQL debugger. Per-tab breakpoints/watches and routine breakpoints per connection.
     r##"ALTER TABLE editor_tabs ADD COLUMN debug_json TEXT;          -- NULL = nothing saved
 CREATE TABLE routine_breakpoints (
-    id            TEXT PRIMARY KEY NOT NULL,   -- Breakpoint.id
+    id            TEXT NOT NULL,               -- Breakpoint.id (unique per connection)
     connection_id TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
     signature     TEXT NOT NULL,
     source_hash   TEXT,
     body_json     TEXT NOT NULL,               -- RoutineBreakpoint (JSON: routine + sourceHash + breakpoint)
-    updated_at    TEXT NOT NULL
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (connection_id, id)
 );
 CREATE INDEX routine_breakpoints_conn ON routine_breakpoints(connection_id);"##,
 ];

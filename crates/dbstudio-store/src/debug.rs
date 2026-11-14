@@ -80,8 +80,8 @@ impl Store {
         )
         .map_err(db_err)?;
         for b in list {
-            // An id is global (primary key): a breakpoint id that belongs to another connection
-            // is replaced rather than failing the whole save.
+            // The key is (connection, id): a repeated id inside one list replaces the earlier one,
+            // an id used by another connection is left alone.
             let body =
                 serde_json::to_string(b).map_err(|e| Error::Storage(format!("breakpoint: {e}")))?;
             tx.execute(
@@ -175,6 +175,24 @@ mod tests {
             Err(Error::NotFound(_))
         ));
         assert_eq!(s.routine_breakpoints_get(b).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_same_breakpoint_id_on_two_connections_does_not_steal_it() {
+        let s = Store::open_in_memory().unwrap();
+        let (a, b) = (connection(&s, "a"), connection(&s, "b"));
+        s.routine_breakpoints_set(a, &[bp("same", "public.f()", 1)])
+            .unwrap();
+        s.routine_breakpoints_set(b, &[bp("same", "public.g()", 2)])
+            .unwrap();
+        assert_eq!(
+            s.routine_breakpoints_get(a).unwrap()[0].routine.signature,
+            "public.f()"
+        );
+        assert_eq!(
+            s.routine_breakpoints_get(b).unwrap()[0].routine.signature,
+            "public.g()"
+        );
     }
 
     #[test]
