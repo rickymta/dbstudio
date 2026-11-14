@@ -46,6 +46,29 @@ pub(crate) async fn table_select(core: &Core, req: &TableStreamRequest) -> Resul
     ))
 }
 
+fn already(inserted: u64) -> String {
+    if inserted > 0 {
+        format!(" ({inserted} rows were already inserted by earlier batches)")
+    } else {
+        String::new()
+    }
+}
+
+/// Tell the caller how many rows are in the table already when a later batch fails.
+fn annotate(e: Error, inserted: u64) -> Error {
+    if inserted == 0 {
+        return e;
+    }
+    match e {
+        Error::Query { message, position } => Error::Query {
+            message: format!("{message}{}", already(inserted)),
+            position,
+        },
+        Error::Other(m) => Error::Other(format!("{m}{}", already(inserted))),
+        other => other,
+    }
+}
+
 fn edit_value(v: &EditValue) -> Option<Value> {
     match v {
         EditValue::Default => None,
@@ -108,6 +131,7 @@ pub(crate) async fn bulk_insert(
     );
     let client_req = Req {
         session_id: session_id.map(str::to_string),
+        session_check: session_id.is_some(),
         ..Req::default()
     };
     let mut inserted = 0u64;
@@ -141,19 +165,30 @@ pub(crate) async fn bulk_insert(
                 None => buf.push(1),
                 Some(v) => {
                     buf.push(0);
-                    encode_value(&mut buf, t, &v)
-                        .map_err(|e| Error::Invalid(format!("row {}: {}", r + 1, e.message())))?;
+                    // Nothing of this batch has been sent yet; earlier batches have.
+                    encode_value(&mut buf, t, &v).map_err(|e| {
+                        Error::Invalid(format!(
+                            "row {}: {}{}",
+                            r + 1,
+                            e.message(),
+                            already(inserted)
+                        ))
+                    })?;
                 }
             }
         }
         in_batch += 1;
         if in_batch as usize >= BATCH_ROWS || buf.len() >= BATCH_BYTES {
-            inserted += flush(&mut buf, in_batch).await?;
+            inserted += flush(&mut buf, in_batch)
+                .await
+                .map_err(|e| annotate(e, inserted))?;
             in_batch = 0;
         }
     }
     if in_batch > 0 {
-        inserted += flush(&mut buf, in_batch).await?;
+        inserted += flush(&mut buf, in_batch)
+            .await
+            .map_err(|e| annotate(e, inserted))?;
     }
     Ok(BulkInsertResult {
         inserted,

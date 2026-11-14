@@ -141,6 +141,8 @@ pub(crate) struct Pending {
     /// A row already read to learn that more rows exist.
     pub row: Option<Vec<Value>>,
     pub query_id: Uuid,
+    /// Server-side id of the statement.
+    pub qid: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -206,11 +208,12 @@ pub(crate) struct Call<'a> {
 }
 
 impl Call<'_> {
-    fn req(&self, db: &Option<String>, id: Uuid) -> Req {
+    fn req(&self, db: &Option<String>, query_id: String) -> Req {
         Req {
             database: db.clone(),
-            query_id: Some(id.to_string()),
+            query_id: Some(query_id),
             session_id: self.session_id.map(str::to_string),
+            session_check: self.session_id.is_some(),
             timeout_ms: self
                 .timeout
                 .map(|t| u64::try_from(t.as_millis()).unwrap_or(u64::MAX)),
@@ -226,22 +229,49 @@ impl Call<'_> {
 
     /// Stop the server-side query too. A call inside an HTTP session waits for the kill (the
     /// session stays locked while the query runs and the next statement needs it).
-    async fn abort(&self, id: Uuid) {
+    async fn abort(&self, qid: &str) {
         let core = self.core.clone();
         if self.session_id.is_some() {
-            let _ =
-                tokio::time::timeout(Duration::from_secs(5), core.kill_sync(&id.to_string())).await;
+            let _ = core.kill_exact(qid, true).await;
         } else {
+            let qid = qid.to_string();
             tokio::spawn(async move {
-                let _ =
-                    tokio::time::timeout(Duration::from_secs(5), core.kill(&id.to_string())).await;
+                let _ = tokio::time::timeout(Duration::from_secs(5), core.kill_exact(&qid, false))
+                    .await;
             });
         }
     }
 }
 
+/// Open a statement, stopping at cancel or deadline. A cancel that arrives before the server
+/// registered the query is retried once the request is gone.
+async fn open_cancellable(call: &Call<'_>, req: &Req, sql: &str, qid: &str) -> Result<Opened> {
+    let deadline = call.deadline();
+    let sleep = tokio::time::sleep_until(
+        deadline
+            .map(tokio::time::Instant::from_std)
+            .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(86_400 * 365)),
+    );
+    tokio::pin!(sleep);
+    let r = tokio::select! {
+        r = Source::open(call.core, req, sql) => r,
+        () = call.ctl.cancelled() => Err(Error::Cancelled),
+        () = &mut sleep, if deadline.is_some() => {
+            call.ctl.timed_out.store(true, Ordering::SeqCst);
+            Err(Error::Timeout)
+        }
+    };
+    if matches!(r, Err(Error::Cancelled) | Err(Error::Timeout)) {
+        call.abort(qid).await;
+        // The request may not have reached the server's process list yet.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        call.abort(qid).await;
+    }
+    r
+}
+
 /// Wait for the next row, stopping at cancel or deadline.
-async fn next_row(call: &Call<'_>, src: &mut Source, id: Uuid) -> Result<Option<Vec<Value>>> {
+async fn next_row(call: &Call<'_>, src: &mut Source, qid: &str) -> Result<Option<Vec<Value>>> {
     let deadline = call.deadline();
     let sleep = tokio::time::sleep_until(
         deadline
@@ -258,7 +288,7 @@ async fn next_row(call: &Call<'_>, src: &mut Source, id: Uuid) -> Result<Option<
         }
     };
     if matches!(r, Err(Error::Cancelled) | Err(Error::Timeout)) {
-        call.abort(id).await;
+        call.abort(qid).await;
     }
     r
 }
@@ -276,7 +306,7 @@ pub(crate) async fn stream_rows(
     call: &Call<'_>,
     src: &mut Source,
     first: Option<Vec<Value>>,
-    id: Uuid,
+    qid: &str,
     o: &StreamOpts,
     sink: &mut dyn ResultSink,
 ) -> Result<Streamed> {
@@ -289,7 +319,7 @@ pub(crate) async fn stream_rows(
     loop {
         let row = match next.take() {
             Some(r) => Some(r),
-            None => next_row(call, src, id).await?,
+            None => next_row(call, src, qid).await?,
         };
         let Some(row) = row else { break };
         if o.max_rows.is_some_and(|m| count >= m) {
@@ -301,7 +331,7 @@ pub(crate) async fn stream_rows(
         count += 1;
         if buf.len() >= o.batch || last_flush.elapsed() >= FLUSH_EVERY {
             if let Err(e) = sink.on_rows(std::mem::take(&mut buf)) {
-                call.abort(id).await;
+                call.abort(qid).await;
                 return Err(e);
             }
             last_flush = Instant::now();
@@ -309,7 +339,7 @@ pub(crate) async fn stream_rows(
     }
     if !buf.is_empty() {
         if let Err(e) = sink.on_rows(buf) {
-            call.abort(id).await;
+            call.abort(qid).await;
             return Err(e);
         }
     }
@@ -372,8 +402,16 @@ pub(crate) async fn run_script(
             done += 1;
             continue;
         }
+        // One server-side query id per statement (`{id}`, `{id}-1`, ...): a statement cut at
+        // `max_rows` is killed asynchronously and must not clash with the next one. Killing by
+        // prefix still matches them all.
         let id = req.query_id;
-        let opened = Source::open(call.core, &call.req(db, id), stmt).await;
+        let qid = if i == 0 {
+            id.to_string()
+        } else {
+            format!("{id}-{i}")
+        };
+        let opened = open_cancellable(call, &call.req(db, qid.clone()), stmt, &qid).await;
         let opened = match opened {
             Ok(o) => o,
             Err(e) => return Err(finish_error(call, e)),
@@ -387,7 +425,7 @@ pub(crate) async fn run_script(
             }
             Opened::Rows(mut src) => {
                 sink.on_columns(src.metas())?;
-                let streamed = stream_rows(call, &mut src, None, id, &o, sink)
+                let streamed = stream_rows(call, &mut src, None, &qid, &o, sink)
                     .await
                     .map_err(|e| finish_error(call, e))?;
                 let last = i + 1 == n;
@@ -402,12 +440,13 @@ pub(crate) async fn run_script(
                     match keep.as_deref_mut() {
                         Some(slot) if last => {
                             *slot = Some(Pending {
-                                src,
+                                src: *src,
                                 row: streamed.extra,
                                 query_id: id,
+                                qid: qid.clone(),
                             });
                         }
-                        _ => call.abort(id).await,
+                        _ => call.abort(&qid).await,
                     }
                 }
             }

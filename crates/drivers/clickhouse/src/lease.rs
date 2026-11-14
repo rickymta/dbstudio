@@ -83,15 +83,16 @@ impl ChBackend {
     /// Drop the open result and stop its query (the HTTP session is locked until it ends).
     async fn drop_pending(&mut self) {
         if let Some(p) = self.pending.take() {
-            let id = p.query_id.to_string();
+            let qid = p.qid.clone();
             drop(p);
-            let _ = tokio::time::timeout(Duration::from_secs(5), self.core.kill_sync(&id)).await;
+            let _ = self.core.kill_exact(&qid, true).await;
         }
     }
 
     fn req(&self) -> Req {
         Req {
             session_id: Some(self.session_id.clone()),
+            session_check: true,
             database: self.db.clone(),
             ..Req::default()
         }
@@ -136,10 +137,11 @@ impl LeaseBackend for ChBackend {
         let core = self.core.clone();
         let reg = self.reg.clone();
         let guard = reg.register(pending.query_id);
+        let session = self.session_id.clone();
         let call = Call {
             core: &core,
             ctl: &guard.ctl,
-            session_id: None,
+            session_id: Some(&session),
             timeout: None,
             started,
         };
@@ -148,8 +150,8 @@ impl LeaseBackend for ChBackend {
             max_rows: Some(max_rows.max(1)),
         };
         let first = pending.row.take();
-        let id = pending.query_id;
-        let streamed = stream_rows(&call, &mut pending.src, first, id, &o, sink)
+        let qid = pending.qid.clone();
+        let streamed = stream_rows(&call, &mut pending.src, first, &qid, &o, sink)
             .await
             .map_err(|e| finish_error(&call, e))?;
         sink.on_statement_end(StatementEnd {

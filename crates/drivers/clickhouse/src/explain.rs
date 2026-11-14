@@ -42,6 +42,7 @@ pub(crate) async fn explain(
         database: req.database.clone().filter(|d| !d.is_empty()),
         query_id: Some(req.query_id.to_string()),
         session_id: session_id.map(str::to_string),
+        session_check: session_id.is_some(),
         timeout_ms: req.timeout_ms,
         settings: Vec::new(),
     };

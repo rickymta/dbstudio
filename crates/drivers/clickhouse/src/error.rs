@@ -14,6 +14,7 @@ const ACCESS_DENIED: u32 = 497;
 const TIMEOUT_EXCEEDED: u32 = 159;
 const QUERY_WAS_CANCELLED: u32 = 394;
 const READONLY: u32 = 164;
+const SESSION_NOT_FOUND: u32 = 372;
 
 /// `Code: NNN.` at the start of a server error text.
 pub(crate) fn exception_code(text: &str) -> Option<u32> {
@@ -48,6 +49,10 @@ pub(crate) fn from_server_text(text: &str) -> Error {
     match exception_code(text) {
         Some(c) if AUTH_CODES.contains(&c) => Error::Authentication(message),
         Some(ACCESS_DENIED) => Error::Permission(message),
+        Some(SESSION_NOT_FOUND) => Error::Connection(
+            "the ClickHouse session expired; close this editor connection and open a new one"
+                .into(),
+        ),
         Some(TIMEOUT_EXCEEDED) => Error::Timeout,
         Some(QUERY_WAS_CANCELLED) => Error::Cancelled,
         Some(READONLY) => Error::ReadOnlyViolation {

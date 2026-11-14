@@ -313,9 +313,11 @@ fn decode_value(c: &mut Cur<'_>, t: &CType) -> R<Value> {
         CType::String => text_or_bytes(c.string_bytes()?),
         CType::FixedString(n) => {
             let b = c.take(*n)?;
-            match std::str::from_utf8(b) {
-                Ok(s) => Value::Text(s.trim_end_matches('\0').to_string()),
-                Err(_) => Value::Bytes(b.to_vec()),
+            // Padding NULs are part of the value: show them as bytes instead of hiding them.
+            if b.contains(&0) {
+                Value::Bytes(b.to_vec())
+            } else {
+                text_or_bytes(b)
             }
         }
         CType::Uuid => Value::Uuid(fmt_uuid(c.arr()?)),
@@ -392,7 +394,7 @@ fn decode_value(c: &mut Cur<'_>, t: &CType) -> R<Value> {
             let string_keys = matches!(k.inner(), CType::String | CType::FixedString(_));
             let mut doc = Vec::new();
             let mut pairs = Vec::new();
-            for _ in 0..n.min(1 << 24) {
+            for _ in 0..n {
                 let key = decode_value(c, k)?;
                 let val = decode_value(c, v)?;
                 if string_keys {
@@ -463,6 +465,16 @@ pub(crate) fn value_text(v: &Value) -> String {
 
 /// Binary type encoding of `Dynamic` values (`BinaryTypeIndex`).
 fn read_binary_type(c: &mut Cur<'_>) -> R<CType> {
+    read_binary_type_at(c, 0)
+}
+
+const MAX_TYPE_DEPTH: u32 = 64;
+
+fn read_binary_type_at(c: &mut Cur<'_>, depth: u32) -> R<CType> {
+    if depth > MAX_TYPE_DEPTH {
+        return Err(DecErr::Bad("Dynamic type nested too deeply".into()));
+    }
+    let d = depth + 1;
     let tag = c.u8()?;
     Ok(match tag {
         0 => CType::Nothing,
@@ -515,12 +527,12 @@ fn read_binary_type(c: &mut Cur<'_>) -> R<CType> {
             CType::Decimal(p, s)
         }
         29 => CType::Uuid,
-        30 => CType::Array(Box::new(read_binary_type(c)?)),
+        30 => CType::Array(Box::new(read_binary_type_at(c, d)?)),
         31 => {
             let n = c.len()?;
             let mut items = Vec::new();
             for _ in 0..n {
-                items.push((None, read_binary_type(c)?));
+                items.push((None, read_binary_type_at(c, d)?));
             }
             CType::Tuple(items)
         }
@@ -529,15 +541,15 @@ fn read_binary_type(c: &mut Cur<'_>) -> R<CType> {
             let mut items = Vec::new();
             for _ in 0..n {
                 let name = c.string()?;
-                items.push((Some(name), read_binary_type(c)?));
+                items.push((Some(name), read_binary_type_at(c, d)?));
             }
             CType::Tuple(items)
         }
-        35 => CType::Nullable(Box::new(read_binary_type(c)?)),
-        38 => CType::LowCardinality(Box::new(read_binary_type(c)?)),
+        35 => CType::Nullable(Box::new(read_binary_type_at(c, d)?)),
+        38 => CType::LowCardinality(Box::new(read_binary_type_at(c, d)?)),
         39 => {
-            let k = read_binary_type(c)?;
-            let v = read_binary_type(c)?;
+            let k = read_binary_type_at(c, d)?;
+            let v = read_binary_type_at(c, d)?;
             CType::Map(Box::new(k), Box::new(v))
         }
         40 => CType::IPv4,
@@ -546,11 +558,12 @@ fn read_binary_type(c: &mut Cur<'_>) -> R<CType> {
             let n = c.len()?;
             let mut items = Vec::new();
             for _ in 0..n {
-                items.push(read_binary_type(c)?);
+                items.push(read_binary_type_at(c, d)?);
             }
             CType::Variant(items)
         }
         45 => CType::Bool,
+        49 => CType::BFloat16,
         48 => {
             // JSON(max_dynamic_paths) in the binary encoding carries parameters; keep it simple.
             return Err(DecErr::Unsupported("JSON inside Dynamic".into()));
@@ -1224,6 +1237,10 @@ mod tests {
         );
         assert_eq!(
             round("FixedString(4)", Value::Text("ab".into())),
+            Value::Bytes(b"ab\0\0".to_vec())
+        );
+        assert_eq!(
+            round("FixedString(2)", Value::Text("ab".into())),
             Value::Text("ab".into())
         );
         assert_eq!(

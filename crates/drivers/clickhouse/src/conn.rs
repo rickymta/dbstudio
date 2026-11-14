@@ -4,6 +4,8 @@
 //! and decoded incrementally by [`Source`]; a result with a column type the decoder does not
 //! know is re-requested once as `JSONCompactEachRowWithNamesAndTypes` and converted by type.
 
+use std::time::Duration;
+
 use bytes::Bytes;
 use clickhouse::Client;
 use clickhouse::query::BytesCursor;
@@ -54,6 +56,11 @@ pub(crate) struct Core {
     pub settings: Vec<(String, String)>,
     /// List the `system` / `INFORMATION_SCHEMA` databases in the tree.
     pub show_system: bool,
+    /// `output_format_binary_write_json_as_string` is sent (otherwise JSON columns go through the
+    /// JSON fallback).
+    pub json_as_string: bool,
+    /// The JSON fallback can ask for UTC (`session_timezone`); false when settings are locked.
+    pub utc_in_json: bool,
     /// Data editing is limited to inserts (option `clickhouse.editing = insertOnly`).
     pub insert_only: bool,
     /// The connection is configured read-only.
@@ -69,6 +76,9 @@ pub(crate) struct Req {
     pub database: Option<String>,
     pub query_id: Option<String>,
     pub session_id: Option<String>,
+    /// The session must already exist (`session_check=1`): an expired one is an error instead of
+    /// a silently new session without the lease's `SET`s and temporary tables.
+    pub session_check: bool,
     pub timeout_ms: Option<u64>,
     /// Extra settings of this request only.
     pub settings: Vec<(String, String)>,
@@ -109,6 +119,9 @@ impl Core {
             c = c
                 .with_setting("session_id", s)
                 .with_setting("session_timeout", "3600");
+            if req.session_check {
+                c = c.with_setting("session_check", "1");
+            }
         }
         if let Some(ms) = req.timeout_ms.filter(|_| !self.settings_locked) {
             c = c.with_setting("max_execution_time", format!("{}", ms as f64 / 1000.0));
@@ -127,16 +140,24 @@ impl Core {
 
     /// Ask the server to kill the query `query_id` (and its JSON-fallback twin).
     pub(crate) async fn kill(&self, query_id: &str) -> Result<()> {
-        self.kill_with(query_id, false).await
+        self.kill_with(query_id, false, false).await
     }
 
-    /// Like [`Core::kill`] but returns only when the query has stopped (and released its HTTP
-    /// session, which a following statement of the same lease needs).
-    pub(crate) async fn kill_sync(&self, query_id: &str) -> Result<()> {
-        self.kill_with(query_id, true).await
+    /// Kill exactly the statement `query_id` (and its JSON twin), not its siblings.
+    pub(crate) async fn kill_exact(&self, query_id: &str, sync: bool) -> Result<()> {
+        if sync {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.kill_with(query_id, true, true),
+            )
+            .await
+            .map_err(|_| Error::Timeout)?
+        } else {
+            self.kill_with(query_id, false, true).await
+        }
     }
 
-    async fn kill_with(&self, query_id: &str, sync: bool) -> Result<()> {
+    async fn kill_with(&self, query_id: &str, sync: bool, exact: bool) -> Result<()> {
         // Query ids are UUID text; refuse anything else so the literal cannot be abused.
         if query_id.is_empty()
             || !query_id
@@ -146,7 +167,12 @@ impl Core {
             return Err(Error::Invalid("bad query id".into()));
         }
         let mode = if sync { "SYNC" } else { "ASYNC" };
-        let sql = format!("KILL QUERY WHERE startsWith(query_id, '{query_id}') {mode} FORMAT Null");
+        let cond = if exact {
+            format!("query_id IN ('{query_id}', '{query_id}-json')")
+        } else {
+            format!("startsWith(query_id, '{query_id}')")
+        };
+        let sql = format!("KILL QUERY WHERE {cond} {mode} FORMAT Null");
         self.admin_client(&Req::default())
             .query_raw(&sql)
             .execute()
@@ -268,7 +294,7 @@ pub(crate) fn quote_ident(name: &str) -> String {
 /// What a request produced.
 pub(crate) enum Opened {
     /// A result set (possibly with zero rows).
-    Rows(Source),
+    Rows(Box<Source>),
     /// The statement returned no data (DDL, INSERT, SET, ...).
     NoResult,
 }
@@ -289,6 +315,11 @@ pub(crate) struct Source {
     types: Vec<CType>,
     /// Rows of the JSON fallback not yet handed out.
     json_lines_done: bool,
+    /// JSON mode only: timestamps arrive in UTC.
+    utc: bool,
+    /// Failed attempts to decode the row at `pos` (big rows are retried less eagerly).
+    fails: u32,
+    retry_at: usize,
 }
 
 impl std::fmt::Debug for Source {
@@ -299,25 +330,88 @@ impl std::fmt::Debug for Source {
     }
 }
 
-/// Remove a trailing `FORMAT name` clause so the result format stays under our control.
+/// Remove the real trailing `FORMAT name` clause (found with the ClickHouse lexer) so the result
+/// format stays under our control. `FORMAT x SETTINGS ...` keeps its settings; `ORDER BY format`,
+/// aliases, strings and comments are not touched.
 pub(crate) fn strip_format_clause(sql: &str) -> String {
-    let trimmed = sql.trim_end().trim_end_matches(';').trim_end();
-    let lower = trimmed.to_ascii_lowercase();
-    if let Some(i) = lower.rfind("format") {
-        let before_ok = i == 0
-            || !(lower.as_bytes()[i - 1].is_ascii_alphanumeric()
-                || lower.as_bytes()[i - 1] == b'_');
-        let tail = trimmed[i + 6..].trim();
-        if before_ok
-            && !tail.is_empty()
-            && tail.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-            && trimmed[i + 6..].starts_with(char::is_whitespace)
-            && !lower[..i].trim_end().ends_with(',')
-        {
-            return trimmed[..i].trim_end().to_string();
+    use dbstudio_core::ScriptDialect;
+    use dbstudio_sql::lexer::{TokenKind, tokenize};
+    let chars: Vec<char> = sql.chars().collect();
+    let toks: Vec<_> = tokenize(ScriptDialect::ClickHouse, sql)
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .collect();
+    let text = |t: &dbstudio_sql::lexer::Token| -> String {
+        chars[t.range.start as usize..t.range.end as usize]
+            .iter()
+            .collect()
+    };
+    let mut end = toks.len();
+    while end > 0 && toks[end - 1].kind == TokenKind::Punct && text(&toks[end - 1]) == ";" {
+        end -= 1;
+    }
+    let toks = &toks[..end];
+    let mut depth = 0i32;
+    let mut found: Option<usize> = None;
+    for (i, t) in toks.iter().enumerate() {
+        let w = text(t);
+        match (t.kind, w.as_str()) {
+            (TokenKind::Punct, "(") => depth += 1,
+            (TokenKind::Punct, ")") => depth -= 1,
+            (TokenKind::Word, _) if depth == 0 && w.eq_ignore_ascii_case("format") => {
+                let prev_ok = i > 0 && {
+                    let p = &toks[i - 1];
+                    let pt = text(p);
+                    match p.kind {
+                        TokenKind::Word => ![
+                            "by", "as", "select", "distinct", "and", "or", "not", "on", "where",
+                            "having", "from", "join", "with",
+                        ]
+                        .contains(&pt.to_ascii_lowercase().as_str()),
+                        TokenKind::Punct => pt == ")",
+                        _ => true,
+                    }
+                };
+                let name_ok = toks.get(i + 1).is_some_and(|n| n.kind == TokenKind::Word)
+                    && toks.get(i + 2).is_none_or(|n| {
+                        n.kind == TokenKind::Word && text(n).eq_ignore_ascii_case("settings")
+                    });
+                if prev_ok && name_ok {
+                    found = Some(i);
+                }
+            }
+            _ => {}
         }
     }
-    trimmed.to_string()
+    let body_end = |upto: usize| -> String { chars[..upto].iter().collect::<String>() };
+    match found {
+        Some(i) => {
+            let name_end = toks[i + 1].range.end as usize;
+            let rest_start = toks.get(i + 2).map(|t| t.range.start as usize);
+            let head = body_end(toks[i].range.start as usize);
+            let tail = rest_start
+                .map(|s| {
+                    chars[s..toks[toks.len() - 1].range.end as usize]
+                        .iter()
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            let _ = name_end;
+            format!(
+                "{}{}",
+                head.trim_end(),
+                if tail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {tail}")
+                }
+            )
+        }
+        None => match toks.last() {
+            Some(last) => chars[..last.range.end as usize].iter().collect(),
+            None => String::new(),
+        },
+    }
 }
 
 impl Source {
@@ -338,6 +432,9 @@ impl Source {
             cols: Vec::new(),
             types: Vec::new(),
             json_lines_done: false,
+            utc: true,
+            fails: 0,
+            retry_at: 0,
         };
         // Read until the header is complete.
         let header = loop {
@@ -362,29 +459,36 @@ impl Source {
         };
         src.pos += used;
         let types: Vec<CType> = cols.iter().map(|(_, t)| CType::parse_lenient(t)).collect();
-        if types.iter().all(CType::decodable) {
+        if types
+            .iter()
+            .all(|t| t.decodable() && (core.json_as_string || !t.has_json()))
+        {
             src.cols = cols
                 .into_iter()
                 .zip(&types)
                 .map(|((n, _), t)| (n, t.clone()))
                 .collect();
             src.types = types;
-            return Ok(Opened::Rows(src));
+            return Ok(Opened::Rows(Box::new(src)));
         }
         // Unsupported column type: ask the server for JSON instead.
         drop(src);
-        let _ = core.kill_sync(req.query_id.as_deref().unwrap_or("")).await;
+        let _ = core
+            .kill_exact(req.query_id.as_deref().unwrap_or(""), true)
+            .await;
         Self::open_json(core, req, &sql).await
     }
 
     async fn open_json(core: &Core, req: &Req, sql: &str) -> Result<Opened> {
         let mut req = req.clone();
+        if core.utc_in_json {
+            req.settings.push(("session_timezone".into(), "UTC".into()));
+        }
         req.settings.extend([
             ("output_format_json_quote_64bit_integers".into(), "1".into()),
             ("output_format_json_quote_decimals".into(), "1".into()),
             ("output_format_json_quote_denormals".into(), "1".into()),
             ("output_format_decimal_trailing_zeros".into(), "1".into()),
-            ("session_timezone".into(), "UTC".into()),
         ]);
         if let Some(id) = &req.query_id {
             req.query_id = Some(format!("{id}-json"));
@@ -403,6 +507,9 @@ impl Source {
             cols: Vec::new(),
             types: Vec::new(),
             json_lines_done: false,
+            utc: core.utc_in_json,
+            fails: 0,
+            retry_at: 0,
         };
         let names = loop {
             if let Some(line) = src.json_line() {
@@ -433,7 +540,7 @@ impl Source {
             .collect();
         src.cols = names.into_iter().zip(types.iter().cloned()).collect();
         src.types = types;
-        Ok(Opened::Rows(src))
+        Ok(Opened::Rows(Box::new(src)))
     }
 
     /// Column metadata for the sink.
@@ -476,14 +583,23 @@ impl Source {
         loop {
             match self.mode {
                 Mode::Binary => {
-                    if self.pos < self.buf.len() {
+                    // Big rows arrive in many chunks: after a few failed attempts retry only
+                    // when the buffer has doubled, instead of decoding from the row start each time.
+                    let ready = self.pos < self.buf.len()
+                        && (self.fails < 8 || self.eof || self.buf.len() >= self.retry_at);
+                    if ready {
                         let mut cur = Cur::new(&self.buf[self.pos..]);
                         match rowbinary::decode_row(&mut cur, &self.types) {
                             Ok(row) => {
                                 self.pos += cur.pos();
+                                self.fails = 0;
                                 return Ok(Some(row));
                             }
-                            Err(DecErr::NeedMore) => {}
+                            Err(DecErr::NeedMore) => {
+                                self.fails += 1;
+                                self.retry_at =
+                                    (self.buf.len() - self.pos).saturating_mul(2) + self.pos;
+                            }
                             Err(DecErr::Bad(m)) => return Err(self.bad_data(m)),
                             Err(DecErr::Unsupported(m)) => {
                                 return Err(Error::Unsupported(format!(
@@ -505,7 +621,7 @@ impl Source {
                         if line.trim().is_empty() {
                             continue;
                         }
-                        return json_row(&self.types, &line).map(Some);
+                        return json_row(&self.types, &line, self.utc).map(Some);
                     }
                     if self.eof {
                         self.json_lines_done = true;
@@ -616,7 +732,7 @@ pub(crate) fn render_type(t: &CType) -> String {
 // JSON fallback conversion
 // ---------------------------------------------------------------------------------------------
 
-fn json_row(types: &[CType], line: &str) -> Result<Vec<Value>> {
+fn json_row(types: &[CType], line: &str, utc: bool) -> Result<Vec<Value>> {
     let j: serde_json::Value = serde_json::from_str(line)
         .map_err(|e| Error::Other(format!("bad ClickHouse JSON row: {e}")))?;
     let serde_json::Value::Array(cells) = j else {
@@ -627,7 +743,7 @@ fn json_row(types: &[CType], line: &str) -> Result<Vec<Value>> {
         .iter()
         .enumerate()
         .map(|(i, c)| match types.get(i) {
-            Some(t) => json_cell(t, c),
+            Some(t) => json_cell(t, c, utc),
             None => json_generic(c),
         })
         .collect())
@@ -674,13 +790,13 @@ fn json_generic(j: &serde_json::Value) -> Value {
     }
 }
 
-fn json_cell(t: &CType, j: &serde_json::Value) -> Value {
+fn json_cell(t: &CType, j: &serde_json::Value, utc: bool) -> Value {
     use serde_json::Value as J;
     if j.is_null() {
         return Value::Null;
     }
     match t {
-        CType::Nullable(i) | CType::LowCardinality(i) => json_cell(i, j),
+        CType::Nullable(i) | CType::LowCardinality(i) => json_cell(i, j, utc),
         CType::Int8
         | CType::Int16
         | CType::Int32
@@ -731,6 +847,23 @@ fn json_cell(t: &CType, j: &serde_json::Value) -> Value {
         CType::Date | CType::Date32 => Value::Date(json_text(j)),
         CType::DateTime(_) | CType::DateTime64(..) => {
             let text = json_text(j);
+            // The text is in the column's own time zone unless the request forced UTC; without
+            // a way to convert it, hand it over as a plain local date-time.
+            let explicit_tz = match t {
+                CType::DateTime(tz) | CType::DateTime64(_, tz) => tz
+                    .as_deref()
+                    .is_some_and(|z| !z.eq_ignore_ascii_case("UTC")),
+                _ => false,
+            };
+            let explicit_utc = match t {
+                CType::DateTime(tz) | CType::DateTime64(_, tz) => {
+                    tz.as_deref().is_some_and(|z| z.eq_ignore_ascii_case("UTC"))
+                }
+                _ => false,
+            };
+            if explicit_tz || (!utc && !explicit_utc) {
+                return Value::DateTime(text);
+            }
             match rowbinary::parse_datetime(&text) {
                 Some((days, tod, nanos)) => {
                     let secs = days * 86_400 + tod;
@@ -746,7 +879,7 @@ fn json_cell(t: &CType, j: &serde_json::Value) -> Value {
             }
         }
         CType::Array(inner) => match j {
-            J::Array(a) => Value::Array(a.iter().map(|x| json_cell(inner, x)).collect()),
+            J::Array(a) => Value::Array(a.iter().map(|x| json_cell(inner, x, utc)).collect()),
             _ => json_generic(j),
         },
         CType::Tuple(items) => match j {
@@ -755,7 +888,7 @@ fn json_cell(t: &CType, j: &serde_json::Value) -> Value {
                     .iter()
                     .enumerate()
                     .map(|(i, x)| match items.get(i) {
-                        Some((_, it)) => json_cell(it, x),
+                        Some((_, it)) => json_cell(it, x, utc),
                         None => json_generic(x),
                     })
                     .collect();
@@ -776,7 +909,7 @@ fn json_cell(t: &CType, j: &serde_json::Value) -> Value {
         CType::Map(_, v) => match j {
             J::Object(o) => Value::Document(
                 o.iter()
-                    .map(|(k, x)| (k.clone(), json_cell(v, x)))
+                    .map(|(k, x)| (k.clone(), json_cell(v, x, utc)))
                     .collect(),
             ),
             _ => json_generic(j),
@@ -823,6 +956,18 @@ mod tests {
             "SELECT 'a FORMAT x'"
         );
         assert_eq!(
+            strip_format_clause("SELECT a FROM t ORDER BY format"),
+            "SELECT a FROM t ORDER BY format"
+        );
+        assert_eq!(
+            strip_format_clause("SELECT 1 FORMAT JSON SETTINGS max_threads = 1 -- c"),
+            "SELECT 1 SETTINGS max_threads = 1"
+        );
+        assert_eq!(
+            strip_format_clause("SELECT 1 /* x */ FORMAT CSV;"),
+            "SELECT 1 /* x */"
+        );
+        assert_eq!(
             strip_format_clause("SELECT 1 AS format"),
             "SELECT 1 AS format"
         );
@@ -854,17 +999,17 @@ mod tests {
         let j: serde_json::Value =
             serde_json::from_str("[\"18446744073709551615\", null]").unwrap();
         assert_eq!(
-            json_cell(&t, &j),
+            json_cell(&t, &j, true),
             Value::Array(vec![Value::UInt(u64::MAX), Value::Null])
         );
         let t = CType::parse("Decimal(10, 2)").unwrap();
         assert_eq!(
-            json_cell(&t, &serde_json::json!("1.50")),
+            json_cell(&t, &serde_json::json!("1.50"), true),
             Value::Decimal("1.50".into())
         );
         let t = CType::parse("DateTime64(3)").unwrap();
         assert_eq!(
-            json_cell(&t, &serde_json::json!("2024-01-02 03:04:05.678")),
+            json_cell(&t, &serde_json::json!("2024-01-02 03:04:05.678"), true),
             Value::Timestamp("2024-01-02T03:04:05.678Z".into())
         );
     }

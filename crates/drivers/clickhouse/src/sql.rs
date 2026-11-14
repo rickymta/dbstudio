@@ -374,7 +374,27 @@ pub(crate) fn literal(t: &CType, v: &Value) -> Result<String> {
             },
             other => return Err(bad(format!("`{}` is not a boolean", value_text(other)))),
         },
-        CType::String | CType::FixedString(_) => match v {
+        CType::FixedString(n) => {
+            let inner = match v {
+                Value::Bytes(b) => {
+                    // Trailing padding NULs of a value read back from the table are not needed.
+                    let mut b = b.as_slice();
+                    while b.last() == Some(&0) {
+                        b = &b[..b.len() - 1];
+                    }
+                    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+                    format!("unhex('{hex}')")
+                }
+                Value::Array(_) | Value::Document(_) => {
+                    return Err(bad(
+                        "a structured value cannot be stored in a FixedString column",
+                    ));
+                }
+                other => quote_literal(&value_text(other)),
+            };
+            format!("toFixedString({inner}, {n})")
+        }
+        CType::String => match v {
             Value::Bytes(b) => {
                 let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
                 format!("unhex('{hex}')")

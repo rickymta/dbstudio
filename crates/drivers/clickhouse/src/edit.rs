@@ -52,6 +52,8 @@ pub(crate) struct Info {
     /// Sorting / partition key columns (cannot change by UPDATE).
     pub key_like: Vec<String>,
     pub table: String,
+    pub db: String,
+    pub name: String,
 }
 
 fn not_editable(reason: NotEditableReason) -> Editability {
@@ -75,6 +77,8 @@ pub(crate) async fn info(core: &Core, path: &ObjectPath) -> Result<Info> {
                 generated: vec![],
                 key_like: vec![],
                 table: String::new(),
+                db: String::new(),
+                name: String::new(),
             });
         }
     };
@@ -85,6 +89,8 @@ pub(crate) async fn info(core: &Core, path: &ObjectPath) -> Result<Info> {
         generated: vec![],
         key_like: vec![],
         table: table.clone(),
+        db: db.clone(),
+        name: t.clone(),
     };
     if kind != ObjectKind::Table {
         return Ok(empty(not_editable(NotEditableReason::NotATable)));
@@ -145,6 +151,8 @@ pub(crate) async fn info(core: &Core, path: &ObjectPath) -> Result<Info> {
         generated,
         key_like,
         table,
+        db,
+        name: t,
     })
 }
 
@@ -379,6 +387,42 @@ pub(crate) async fn preview(core: &Core, changes: &ChangeSet) -> Result<Vec<Stri
         .collect())
 }
 
+/// How long one update/delete may wait for its mutation to finish.
+const MUTATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Ids of the unfinished mutations of the table (empty when `system.mutations` cannot be read).
+async fn pending_mutations(core: &Core, info: &Info) -> Vec<String> {
+    let sql = format!(
+        "SELECT mutation_id FROM system.mutations WHERE database = {} AND `table` = {} AND NOT is_done",
+        crate::conn::quote_literal(&info.db),
+        crate::conn::quote_literal(&info.name)
+    );
+    core.rows(&Req::default(), &sql)
+        .await
+        .map(|rows| rows.iter().map(|r| crate::conn::cell_text(r, 0)).collect())
+        .unwrap_or_default()
+}
+
+/// `KILL MUTATION` for the unfinished mutations that appeared since `before`.
+async fn kill_new_mutations(core: &Core, info: &Info, before: &[String]) {
+    for id in pending_mutations(core, info).await {
+        if before.contains(&id) {
+            continue;
+        }
+        let sql = format!(
+            "KILL MUTATION WHERE database = {} AND `table` = {} AND mutation_id = {} FORMAT Null",
+            crate::conn::quote_literal(&info.db),
+            crate::conn::quote_literal(&info.name),
+            crate::conn::quote_literal(&id)
+        );
+        let _ = core
+            .admin_client(&Req::default())
+            .query_raw(&sql)
+            .execute()
+            .await;
+    }
+}
+
 /// Statement-level failure of the lightweight `DELETE` that justifies the `ALTER` fallback.
 fn lightweight_refused(e: &Error) -> bool {
     let m = e.message();
@@ -421,10 +465,32 @@ pub(crate) async fn apply(core: &Core, changes: ChangeSet) -> Result<ApplyResult
                 return Err(fail(step.index, format!("key matches {n} rows"), applied));
             }
         }
-        let mut result = core.exec(&req, &step.sql).await;
-        if let (Err(e), Some(alt)) = (&result, &step.fallback) {
-            if lightweight_refused(e) {
-                result = core.exec(&req, alt).await;
+        // Mutations still running that were not there before this step.
+        let before = pending_mutations(core, &info).await;
+        let run = async {
+            let mut result = core.exec(&req, &step.sql).await;
+            if let (Err(e), Some(alt)) = (&result, &step.fallback) {
+                if lightweight_refused(e) {
+                    result = core.exec(&req, alt).await;
+                }
+            }
+            result
+        };
+        let mut result = match tokio::time::timeout(MUTATION_TIMEOUT, run).await {
+            Ok(r) => r,
+            Err(_) => Err(Error::Timeout),
+        };
+        if result.is_err() && step.guard.is_some() {
+            // A failed or abandoned mutation would block every later one on the table.
+            kill_new_mutations(core, &info, &before).await;
+            if matches!(result, Err(Error::Timeout)) {
+                result = Err(Error::Query {
+                    message: format!(
+                        "the mutation did not finish within {} s and was cancelled",
+                        MUTATION_TIMEOUT.as_secs()
+                    ),
+                    position: None,
+                });
             }
         }
         match result {
@@ -464,6 +530,8 @@ mod tests {
             generated: vec!["g".into()],
             key_like: vec!["id".into()],
             table: "`d`.`t`".into(),
+            db: "d".into(),
+            name: "t".into(),
         }
     }
 

@@ -523,3 +523,67 @@ async fn tls_connections_use_https_and_verify() {
     cfg.tls.mode = TlsMode::Disable;
     assert!(connect_cfg(&cfg).await.is_err());
 }
+
+#[tokio::test]
+async fn truncated_statement_does_not_disturb_the_next_one_in_a_script() {
+    let Some(s) = session().await else { return };
+    let mut req = QueryRequest::new(
+        "SELECT number FROM numbers(1000000000000); SELECT 2 AS two; SELECT number FROM numbers(1000000000000)",
+    );
+    req.max_rows = Some(5);
+    let results = execute_collect(s.as_ref(), req).await.unwrap();
+    assert_eq!(results.len(), 3);
+    match &results[0].outcome {
+        StatementOutcome::Rows(rs) => assert!(rs.truncated && rs.rows.len() == 5),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(rows_of(&results[1]).rows[0][0], Value::Int(2));
+    // The same inside a lease (the HTTP session must be free again for each statement).
+    let lease = s.open_lease(LeaseOptions::default()).await.unwrap();
+    let mut req = QueryRequest::new("SELECT number FROM numbers(1000000000000); SELECT 3 AS three");
+    req.max_rows = Some(5);
+    let mut sink = CollectingSink::new();
+    lease.execute(req, &mut sink).await.unwrap();
+    let r = sink.into_results();
+    assert_eq!(rows_of(&r[1]).rows[0][0], Value::Int(3));
+    lease.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn prefer_falls_back_to_http_and_locked_profile_uses_json_fallback() {
+    let Some(s) = session().await else { return };
+    let mut cfg = config(http_port());
+    cfg.tls.mode = TlsMode::Prefer;
+    let p = connect_cfg(&cfg).await.unwrap();
+    assert_eq!(p.server_info().await.unwrap().extra["protocol"], "http");
+
+    // A read-only profile cannot send settings: JSON columns and time zones still come out right.
+    run(
+        s.as_ref(),
+        "CREATE USER IF NOT EXISTS dbstudio_it_lock IDENTIFIED BY 'lk' SETTINGS readonly = 1",
+    )
+    .await;
+    run(s.as_ref(), "GRANT SELECT ON *.* TO dbstudio_it_lock").await;
+    let mut cfg = config(http_port());
+    cfg.username = Some("dbstudio_it_lock".into());
+    use dbstudio_core::{Driver, Secret};
+    let ro = dbstudio_driver_clickhouse::ClickHouseDriver::new()
+        .connect(&cfg, Some(&Secret::new("lk")))
+        .await
+        .unwrap();
+    let r = run(
+        ro.as_ref(),
+        "SELECT '{\"a\":1}'::JSON AS j, toDateTime('2024-01-01 12:00:00', 'Europe/Paris') AS p, \
+         toDateTime('2024-01-01 12:00:00', 'UTC') AS u",
+    )
+    .await;
+    let row = &rows_of(&r[0]).rows[0];
+    assert!(
+        matches!(&row[0], Value::Json(t) if t.contains("\"a\"")),
+        "{row:?}"
+    );
+    // No conversion possible for the Paris column: a plain local date-time, never a wrong instant.
+    assert_eq!(row[1], Value::DateTime("2024-01-01 12:00:00".into()));
+    assert_eq!(row[2], Value::Timestamp("2024-01-01T12:00:00Z".into()));
+    run(s.as_ref(), "DROP USER IF EXISTS dbstudio_it_lock").await;
+}

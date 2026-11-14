@@ -107,8 +107,40 @@ impl Driver for ClickHouseDriver {
         config: &ConnectionConfig,
         secret: Option<&Secret>,
     ) -> Result<Box<dyn Session>> {
-        let target = http::target(config)?;
-        let client = http::build_client(config, secret, &target)?;
+        let candidates = http::targets(config)?;
+        let mut last = None;
+        for (i, target) in candidates.iter().enumerate() {
+            match connect_target(config, secret, target).await {
+                Ok(s) => {
+                    if i > 0 {
+                        tracing::warn!(
+                            host = %config.host,
+                            "ClickHouse: TLS is not available, connected over plain HTTP; the \
+                             password and the data travel unencrypted"
+                        );
+                    }
+                    return Ok(s);
+                }
+                // Only a transport problem justifies falling back from HTTPS to HTTP.
+                Err(e @ (Error::Tls(_) | Error::Connection(_) | Error::Timeout))
+                    if i + 1 < candidates.len() =>
+                {
+                    last = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| Error::Connection("no target".into())))
+    }
+}
+
+async fn connect_target(
+    config: &ConnectionConfig,
+    secret: Option<&Secret>,
+    target: &http::Target,
+) -> Result<Box<dyn Session>> {
+    {
+        let client = http::build_client(config, secret, target)?;
         let insert_only = match option(config, "editing").map(str::trim) {
             None | Some("full") => false,
             Some(v) if v.eq_ignore_ascii_case("insertOnly") => true,
@@ -126,6 +158,8 @@ impl Driver for ClickHouseDriver {
             version: Version::default(),
             settings: user_settings(config)?,
             show_system: flag(config, "show_system")?,
+            json_as_string: false,
+            utc_in_json: true,
             insert_only,
             config_read_only: config.read_only,
             settings_locked: false,
@@ -180,7 +214,12 @@ impl Driver for ClickHouseDriver {
         core.version = Version::parse(&version_text);
         if profile_readonly {
             core.settings_locked = true;
+            core.utc_in_json = false;
         } else {
+            core.json_as_string = known_settings
+                .iter()
+                .any(|n| n == "output_format_binary_write_json_as_string");
+            core.utc_in_json = core.version.at_least(23, 6);
             for name in known_settings {
                 core.settings.push((name, "1".into()));
             }

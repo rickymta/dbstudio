@@ -988,8 +988,7 @@ pub(crate) async fn generate_ddl(core: &Core, req: DdlRequest) -> Result<Vec<Ddl
         if o.qualify_schema {
             sql
         } else {
-            sql.replace(&format!("{}.", quote_ident(db)), "")
-                .replace(&format!("{db}."), "")
+            strip_db_prefix(&sql, db)
         }
     };
     let finish = |mut sql: String, drop: Option<String>| -> String {
@@ -1112,6 +1111,82 @@ pub(crate) async fn generate_ddl(core: &Core, req: DdlRequest) -> Result<Vec<Ddl
     Ok(items)
 }
 
+/// Remove the `db.` qualifier from object names (bare, backtick or double quoted) at token
+/// boundaries, outside string literals and comments. `mydb.t` and `'/clickhouse/tables/db/x'`
+/// are left alone.
+pub(crate) fn strip_db_prefix(sql: &str, db: &str) -> String {
+    let chars: Vec<char> = sql.chars().collect();
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let candidates: Vec<Vec<char>> = [format!("{db}."), format!("`{db}`."), format!("\"{db}\".")]
+        .iter()
+        .map(|s| s.chars().collect())
+        .collect();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\'' => {
+                // String literal with backslash escapes and doubled quotes.
+                out.push(c);
+                i += 1;
+                while i < chars.len() {
+                    out.push(chars[i]);
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        i += 1;
+                        out.push(chars[i]);
+                    } else if chars[i] == '\'' {
+                        if chars.get(i + 1) == Some(&'\'') {
+                            i += 1;
+                            out.push('\'');
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            '-' if chars.get(i + 1) == Some(&'-') => {
+                while i < chars.len() && chars[i] != '\n' {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                continue;
+            }
+            '/' if chars.get(i + 1) == Some(&'*') => {
+                out.push_str("/*");
+                i += 2;
+                while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                if i < chars.len() {
+                    out.push_str("*/");
+                    i += 2;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        let boundary = i == 0
+            || !(is_ident(chars[i - 1])
+                || chars[i - 1] == '.'
+                || chars[i - 1] == '`'
+                || chars[i - 1] == '"');
+        if boundary {
+            if let Some(m) = candidates.iter().find(|m| chars[i..].starts_with(m)) {
+                i += m.len();
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
 /// Order views so a view comes after the views its query mentions.
 async fn order_views<'a>(
     core: &Core,
@@ -1203,6 +1278,27 @@ mod tests {
             Place::Column("d".into(), "t".into(), "c".into())
         );
         assert!(resolve(&db.child(ObjectKind::Folder, "nope")).is_err());
+    }
+
+    #[test]
+    fn db_prefix_is_stripped_only_at_token_boundaries() {
+        let sql = "CREATE MATERIALIZED VIEW db.mv TO db.dst AS SELECT x FROM `db`.src JOIN mydb.src \
+                   ENGINE = ReplicatedMergeTree('/clickhouse/tables/db/x', '{replica}') COMMENT 'see db.t' -- db.y\n/* db.z */";
+        let out = strip_db_prefix(sql, "db");
+        assert!(
+            out.contains("VIEW mv TO dst AS SELECT x FROM src JOIN mydb.src"),
+            "{out}"
+        );
+        assert!(out.contains("'/clickhouse/tables/db/x'"));
+        assert!(out.contains("'see db.t' -- db.y\n/* db.z */"));
+        assert_eq!(
+            strip_db_prefix("CREATE TABLE \"db\".t (a UInt8)", "db"),
+            "CREATE TABLE t (a UInt8)"
+        );
+        assert_eq!(
+            strip_db_prefix("CREATE TABLE xdb.t", "db"),
+            "CREATE TABLE xdb.t"
+        );
     }
 
     #[test]

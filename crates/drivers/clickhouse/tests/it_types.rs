@@ -120,7 +120,13 @@ fn columns() -> Vec<Col> {
             Value::Bytes(vec![0xff, 0xfe, 0]),
             K::Text,
         ),
-        col("fs", "FixedString(4)", "'ab'", text("ab"), K::Text),
+        col(
+            "fs",
+            "FixedString(4)",
+            "'ab'",
+            Value::Bytes(b"ab\0\0".to_vec()),
+            K::Text,
+        ),
         col(
             "u",
             "UUID",

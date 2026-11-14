@@ -84,6 +84,18 @@ impl CType {
         }
     }
 
+    /// Whether a `JSON` column occurs anywhere inside this type.
+    pub(crate) fn has_json(&self) -> bool {
+        match self {
+            CType::Json => true,
+            CType::Nullable(t) | CType::LowCardinality(t) | CType::Array(t) => t.has_json(),
+            CType::Tuple(ts) => ts.iter().any(|(_, t)| t.has_json()),
+            CType::Map(k, v) => k.has_json() || v.has_json(),
+            CType::Variant(ts) => ts.iter().any(CType::has_json),
+            _ => false,
+        }
+    }
+
     pub(crate) fn is_nullable(&self) -> bool {
         match self {
             CType::Nullable(_) | CType::Dynamic | CType::Nothing => true,

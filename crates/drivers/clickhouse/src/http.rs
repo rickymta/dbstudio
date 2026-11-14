@@ -247,26 +247,40 @@ fn bracket(host: &str) -> String {
     }
 }
 
-/// URL and TLS decision. `HTTPS` is used for `Require`/`VerifyCa`/`VerifyFull`, for `Prefer` on
-/// the conventional TLS ports, or when the option `secure` is `true` (`false` forces HTTP).
-pub(crate) fn target(cfg: &ConnectionConfig) -> Result<Target> {
-    let secure = match crate::conn::option(cfg, "secure").map(|s| s.trim().to_ascii_lowercase()) {
-        Some(v) if v == "true" || v == "1" => true,
-        Some(v) if v == "false" || v == "0" => false,
+/// Candidate targets in the order to try them.
+///
+/// `Require` / `VerifyCa` / `VerifyFull` (or option `secure = true`) mean HTTPS only, `Disable`
+/// (or `secure = false`) HTTP only. `Prefer` tries HTTPS first on every port and falls back to
+/// plain HTTP (the driver logs a warning then: credentials travel in clear text).
+pub(crate) fn targets(cfg: &ConnectionConfig) -> Result<Vec<Target>> {
+    let explicit = match crate::conn::option(cfg, "secure").map(|s| s.trim().to_ascii_lowercase()) {
+        Some(v) if v == "true" || v == "1" => Some(true),
+        Some(v) if v == "false" || v == "0" => Some(false),
         Some(v) => return Err(Error::Invalid(format!("invalid option secure `{v}`"))),
-        None => match cfg.tls.mode {
-            TlsMode::Disable => false,
-            TlsMode::Prefer => matches!(cfg.port, 8443 | 443),
-            _ => true,
-        },
+        None => None,
     };
+    Ok(match (explicit, cfg.tls.mode) {
+        (Some(s), _) => vec![target_for(cfg, s)],
+        (None, TlsMode::Disable) => vec![target_for(cfg, false)],
+        (None, TlsMode::Prefer) => vec![target_for(cfg, true), target_for(cfg, false)],
+        (None, _) => vec![target_for(cfg, true)],
+    })
+}
+
+/// The first candidate of [`targets`].
+#[cfg(test)]
+pub(crate) fn target(cfg: &ConnectionConfig) -> Result<Target> {
+    Ok(targets(cfg)?.remove(0))
+}
+
+fn target_for(cfg: &ConnectionConfig, secure: bool) -> Target {
     let (host, resolve_from) = match (&cfg.tls.server_name, secure) {
         (Some(sn), true) if !sn.is_empty() && !sn.eq_ignore_ascii_case(&cfg.host) => {
             (sn.clone(), Some(sn.clone()))
         }
         _ => (cfg.host.clone(), None),
     };
-    Ok(Target {
+    Target {
         url: format!(
             "{}://{}:{}",
             if secure { "https" } else { "http" },
@@ -275,7 +289,7 @@ pub(crate) fn target(cfg: &ConnectionConfig) -> Result<Target> {
         ),
         secure,
         resolve_from,
-    })
+    }
 }
 
 /// Build the base [`Client`] (URL, credentials, transport, compression).
@@ -353,7 +367,12 @@ mod tests {
         c.tls.mode = TlsMode::Disable;
         assert_eq!(target(&c).unwrap().url, "http://db.example.com:8123");
         c.tls.mode = TlsMode::Prefer;
-        assert!(!target(&c).unwrap().secure);
+        let order: Vec<bool> = targets(&c).unwrap().iter().map(|t| t.secure).collect();
+        assert_eq!(
+            order,
+            vec![true, false],
+            "Prefer tries HTTPS first, then HTTP"
+        );
         c.port = 8443;
         assert_eq!(target(&c).unwrap().url, "https://db.example.com:8443");
         c.tls.mode = TlsMode::VerifyFull;
