@@ -19,7 +19,7 @@ fn req(text: &str, analyze: bool) -> ExplainRequest {
 }
 
 /// Scratch database with table `t` (50 rows) and a session positioned in it.
-async fn setup(t: Target, name: &str) -> (std::sync::Arc<dyn Session>, String) {
+async fn setup(t: Target, name: &str) -> (std::sync::Arc<dyn Session>, ScratchDb) {
     ensure_fixture(t).await;
     let db = scratch_db(t, name).await;
     let s = user_session(t).await;

@@ -879,7 +879,7 @@ async fn concurrent_use_of_one_session() {
 
 const RAW_DB_TABLE: &str = "t";
 
-async fn raw_where_fixture(t: Target) -> String {
+async fn raw_where_fixture(t: Target) -> ScratchDb {
     let db = scratch_db(t, "rawwhere").await;
     let root = root_session(t).await;
     run(

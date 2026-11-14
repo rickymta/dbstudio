@@ -30,7 +30,7 @@ fn set(db: &str, table: &str, changes: Vec<RowChange>) -> ChangeSet {
 }
 
 /// Fresh scratch database with table `t` (4 rows) and a session on it.
-async fn setup(t: Target, name: &str, extra: &str) -> (std::sync::Arc<dyn Session>, String) {
+async fn setup(t: Target, name: &str, extra: &str) -> (std::sync::Arc<dyn Session>, ScratchDb) {
     ensure_fixture(t).await;
     let db = scratch_db(t, name).await;
     let s = user_session(t).await;
@@ -249,7 +249,7 @@ async fn editability_cases() {
         )
         .await;
         let vp = ObjectPath::root()
-            .child(ObjectKind::Database, &db)
+            .child(ObjectKind::Database, db.as_str())
             .child(ObjectKind::View, "v");
         let e = s.editability(&vp).await.unwrap();
         assert_eq!(e.reason, Some(NotEditableReason::NotATable), "[{}]", t.name);

@@ -335,8 +335,56 @@ async fn build_fixture(t: Target) {
     root.close().await.unwrap();
 }
 
-/// A private scratch database for tests that mutate data.
-pub async fn scratch_db(t: Target, name: &str) -> String {
+/// A private scratch database for tests that mutate data. It is dropped when the guard goes out
+/// of scope, also when the test panics; a crashed run is cleaned by the `DROP .. IF EXISTS`
+/// below the next time the same name is requested.
+#[derive(Debug)]
+pub struct ScratchDb {
+    t: Target,
+    name: String,
+}
+
+impl std::ops::Deref for ScratchDb {
+    type Target = String;
+    fn deref(&self) -> &String {
+        &self.name
+    }
+}
+
+impl std::fmt::Display for ScratchDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.name.fmt(f)
+    }
+}
+
+impl Drop for ScratchDb {
+    fn drop(&mut self) {
+        let (t, db) = (self.t, self.name.clone());
+        // A fresh thread and runtime: this may run while the test runtime is shutting down.
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async {
+                let Ok(root) = connect_cfg(&config(t, "root", TlsMode::Disable)).await else {
+                    return;
+                };
+                let _ = execute_collect(
+                    &*root,
+                    QueryRequest::new(format!("DROP DATABASE IF EXISTS `{db}`")),
+                )
+                .await;
+                let _ = root.close().await;
+            });
+        })
+        .join();
+    }
+}
+
+pub async fn scratch_db(t: Target, name: &str) -> ScratchDb {
     let db = format!("dbstudio_it_{name}");
     let root = root_session(t).await;
     run(
@@ -345,7 +393,7 @@ pub async fn scratch_db(t: Target, name: &str) -> String {
     )
     .await;
     root.close().await.unwrap();
-    db
+    ScratchDb { t, name: db }
 }
 
 /// `Debug`-like rendering of a connect result (sessions are not `Debug`).

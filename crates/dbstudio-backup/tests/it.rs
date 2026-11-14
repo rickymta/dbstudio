@@ -81,6 +81,50 @@ async fn connect_at(kind: DbKind, port: u16) -> (ConnectionConfig, Arc<dyn Sessi
     (cfg, Arc::from(session))
 }
 
+/// Drops the databases of a test when it ends, also when it fails halfway (names are unique per
+/// run, so anything left behind would pile up on the shared test servers).
+struct DbGuard {
+    kind: DbKind,
+    port: u16,
+    names: Vec<String>,
+}
+
+impl DbGuard {
+    fn new<const N: usize>(kind: DbKind, port: u16, names: [&String; N]) -> Self {
+        Self {
+            kind,
+            port,
+            names: names.iter().map(|n| (*n).clone()).collect(),
+        }
+    }
+}
+
+impl Drop for DbGuard {
+    fn drop(&mut self) {
+        let (kind, port, names) = (self.kind, self.port, std::mem::take(&mut self.names));
+        // A fresh thread and runtime: this may run while the test runtime is shutting down.
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async {
+                let (_, s) = connect_at(kind, port).await;
+                for db in names {
+                    if kind == DbKind::Postgres {
+                        drop_pg(&*s, &db).await;
+                    } else {
+                        exec(&*s, None, &format!("DROP DATABASE IF EXISTS `{db}`")).await;
+                    }
+                }
+            });
+        })
+        .join();
+    }
+}
+
 async fn exec(s: &dyn Session, db: Option<&str>, sql: &str) {
     let mut req = QueryRequest::new(sql);
     req.database = db.map(str::to_string);
@@ -252,6 +296,7 @@ async fn native_pg_dump_and_mysqldump_roundtrip_through_shims() {
     // PostgreSQL: pg_dump -Fc -> container (encrypted) -> pg_restore into an empty database.
     let (cfg, s) = connect(DbKind::Postgres).await;
     let (src, dst) = (format!("bk_it_nsrc_{n}"), format!("bk_it_ndst_{n}"));
+    let _cleanup = DbGuard::new(DbKind::Postgres, 54316, [&src, &dst]);
     exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
     for sql in &PG_FIXTURE[..6] {
         exec(&*s, Some(&src), sql).await;
@@ -304,6 +349,7 @@ async fn native_pg_dump_and_mysqldump_roundtrip_through_shims() {
         format!("dbstudio_it_nsrc_{n}"),
         format!("dbstudio_it_ndst_{n}"),
     );
+    let _cleanup = DbGuard::new(DbKind::MySql, 33068, [&src, &dst]);
     exec(&*s, None, &format!("CREATE DATABASE `{src}`")).await;
     for sql in &MY_FIXTURE[..3] {
         exec(&*s, Some(&src), sql).await;
@@ -576,6 +622,7 @@ async fn postgres_full_round_trip_pg16_and_pg12() {
         let (cfg, s) = connect_at(DbKind::Postgres, port).await;
         let n = unique();
         let (src, dst) = (format!("bk_it_full_src_{n}"), format!("bk_it_full_dst_{n}"));
+        let _cleanup = DbGuard::new(DbKind::Postgres, port, [&src, &dst]);
         exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
         for sql in PG_FULL {
             exec(&*s, Some(&src), sql).await;
@@ -666,6 +713,7 @@ async fn mysql_and_mariadb_full_round_trip() {
             format!("dbstudio_it_full_src_{n}"),
             format!("dbstudio_it_full_dst_{n}"),
         );
+        let _cleanup = DbGuard::new(DbKind::MySql, port, [&src, &dst]);
         exec(&*s, None, &format!("CREATE DATABASE `{src}`")).await;
         for sql in MY_FULL {
             exec(&*s, Some(&src), sql).await;
@@ -717,6 +765,7 @@ async fn restore_guards_clean_and_failure_semantics() {
     let (cfg, s) = connect(DbKind::Postgres).await;
     let n = unique();
     let (src, dst) = (format!("bk_it_g_src_{n}"), format!("bk_it_g_dst_{n}"));
+    let _cleanup = DbGuard::new(DbKind::Postgres, 54316, [&src, &dst]);
     exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
     for sql in &PG_FULL[..12] {
         exec(&*s, Some(&src), sql).await;
@@ -809,6 +858,7 @@ async fn backup_and_restore_through_an_ssh_tunnel() {
     let (_, direct) = connect(DbKind::Postgres).await;
     let n = unique();
     let (src, dst) = (format!("bk_it_ssh_src_{n}"), format!("bk_it_ssh_dst_{n}"));
+    let _cleanup = DbGuard::new(DbKind::Postgres, 54316, [&src, &dst]);
     exec(&*direct, None, &format!("CREATE DATABASE {src}")).await;
     for sql in &PG_FIXTURE[..6] {
         exec(&*direct, Some(&src), sql).await;
@@ -940,6 +990,7 @@ async fn pg_identity_always_columns_restore_and_continue() {
         let (cfg, s) = connect_at(DbKind::Postgres, port).await;
         let n = unique();
         let (src, dst) = (format!("bk_it_id_src_{n}"), format!("bk_it_id_dst_{n}"));
+        let _cleanup = DbGuard::new(DbKind::Postgres, port, [&src, &dst]);
         exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
         for sql in [
             "CREATE TABLE ids (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text)",
@@ -996,6 +1047,7 @@ async fn big_databases_are_not_silently_truncated() {
         format!("bk_it_big_dst_{n}"),
         format!("bk_it_big2_{n}"),
     );
+    let _cleanup = DbGuard::new(DbKind::Postgres, 54316, [&src, &dst, &big]);
     exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
     exec(&*s, Some(&src), "CREATE SCHEMA s1").await;
     exec(&*s, Some(&src), "CREATE SCHEMA s2").await;
@@ -1058,6 +1110,7 @@ async fn partitions_are_exported_once_from_the_catalog() {
     let (_, s) = connect(DbKind::Postgres).await;
     let n = unique();
     let src = format!("bk_it_part_{n}");
+    let _cleanup = DbGuard::new(DbKind::Postgres, 54316, [&src]);
     exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
     for sql in [
         "CREATE TABLE ev (id int, at date) PARTITION BY RANGE (at)",
@@ -1142,6 +1195,7 @@ async fn mysql_clean_keeps_the_database_charset() {
             format!("dbstudio_it_cl_src_{n}"),
             format!("dbstudio_it_cl_dst_{n}"),
         );
+        let _cleanup = DbGuard::new(DbKind::MySql, port, [&src, &dst]);
         exec(&*s, None, &format!("CREATE DATABASE `{src}`")).await;
         exec(
             &*s,
@@ -1221,6 +1275,7 @@ async fn concurrent_backups_never_share_or_overwrite_a_file() {
     let (cfg, s) = connect(DbKind::Postgres).await;
     let n = unique();
     let src = format!("bk_it_same_{n}");
+    let _cleanup = DbGuard::new(DbKind::Postgres, 54316, [&src]);
     exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
     exec(&*s, Some(&src), "CREATE TABLE t (id int)").await;
     let dir = tempfile::tempdir().unwrap();

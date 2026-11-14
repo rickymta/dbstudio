@@ -309,6 +309,7 @@ async fn model_pagila(port: u16) {
 
 async fn model_100_tables_in_four_queries(port: u16) {
     let s = connect(port).await;
+    let _cleanup = DbGuard::new(port, &["erd_it_100"]);
     recreate_db(&*s, "erd_it_100").await;
     let mut script = String::from("CREATE SCHEMA gen100;\n");
     for i in 1..=100 {
@@ -441,6 +442,7 @@ async fn ddl_replays_into_empty_database(port: u16) {
 
     // Replay into an empty database.
     let admin = connect(port).await;
+    let _cleanup = DbGuard::new(port, &["erd_it_copy"]);
     recreate_db(&*admin, "erd_it_copy").await;
     for i in &items {
         run_in(&*admin, "erd_it_copy", &i.sql).await;
@@ -678,6 +680,7 @@ async fn ddl_options_and_selection(port: u16) {
     );
     assert!(!items.iter().any(|i| i.sql.contains("FOREIGN KEY")));
     let admin = connect(port).await;
+    let _cleanup = DbGuard::new(port, &["erd_it_opts"]);
     recreate_db(&*admin, "erd_it_opts").await;
     run_in(
         &*admin,
@@ -719,6 +722,7 @@ async fn ddl_restore_with_data_between_phases(port: u16) {
         .await
         .unwrap();
     let admin = connect(port).await;
+    let _cleanup = DbGuard::new(port, &["erd_it_data"]);
     recreate_db(&*admin, "erd_it_data").await;
     for i in items.iter().filter(|i| i.section == DdlSection::PreData) {
         run_in(&*admin, "erd_it_data", &i.sql).await;

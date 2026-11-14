@@ -41,6 +41,45 @@ pub struct Env {
     pub src: Arc<dyn Session>,
     /// Session that may create databases.
     pub admin: Arc<dyn Session>,
+    /// Databases this environment created; dropped with it, also when the test fails.
+    created: std::sync::Mutex<Vec<String>>,
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        let dbs = std::mem::take(&mut *self.created.lock().unwrap_or_else(|e| e.into_inner()));
+        let (flavor, port) = (self.flavor, self.port);
+        // A fresh thread and runtime: this may run while the test runtime is shutting down.
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async {
+                let admin = match flavor {
+                    Flavor::Pg => pg_connect(port, "dbstudio").await,
+                    Flavor::My => my_connect(port).await,
+                };
+                for db in dbs {
+                    let sql = match flavor {
+                        Flavor::Pg => format!(
+                            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+                             WHERE datname = '{db}' AND pid <> pg_backend_pid(); \
+                             DROP DATABASE IF EXISTS {db}"
+                        ),
+                        Flavor::My => format!("DROP DATABASE IF EXISTS {db}"),
+                    };
+                    for stmt in sql.split(';') {
+                        let _ = execute_collect(&*admin, QueryRequest::new(stmt)).await;
+                    }
+                }
+                let _ = admin.close().await;
+            });
+        })
+        .join();
+    }
 }
 
 pub fn secret() -> Secret {
@@ -188,6 +227,7 @@ impl Env {
             flavor: Flavor::Pg,
             label: label.into(),
             port,
+            created: std::sync::Mutex::new(vec![src_db.clone()]),
             src_db,
             src,
             admin,
@@ -204,6 +244,7 @@ impl Env {
             flavor: Flavor::My,
             label: label.into(),
             port,
+            created: std::sync::Mutex::new(vec![src_db.clone()]),
             src_db,
             src: admin.clone(),
             admin,
@@ -274,6 +315,7 @@ impl Env {
     /// scripts must run in.
     pub async fn destination(&self, tag: &str) -> (Arc<dyn Session>, Option<String>) {
         let db = format!("exp_it_dst_{}_{tag}", self.label.replace('-', "_"));
+        self.created.lock().unwrap().push(db.clone());
         match self.flavor {
             Flavor::Pg => {
                 recreate_pg_db(&*self.admin, &db).await;

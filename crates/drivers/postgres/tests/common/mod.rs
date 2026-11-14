@@ -62,6 +62,58 @@ pub async fn connect(port: u16) -> Box<dyn Session> {
         .expect("connect")
 }
 
+/// Drops scratch databases when a test ends, also when it fails halfway. Shared fixtures that are
+/// kept on purpose (`erd_it`, `dbs_it_other`) are not registered here.
+#[derive(Debug)]
+pub struct DbGuard {
+    port: u16,
+    names: Vec<String>,
+}
+
+impl DbGuard {
+    pub fn new(port: u16, names: &[&str]) -> Self {
+        Self {
+            port,
+            names: names.iter().map(|n| n.to_string()).collect(),
+        }
+    }
+}
+
+impl Drop for DbGuard {
+    fn drop(&mut self) {
+        let (port, names) = (self.port, std::mem::take(&mut self.names));
+        // A fresh thread and runtime: this may run while the test runtime is shutting down.
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async {
+                let s = connect(port).await;
+                for db in names {
+                    let _ = execute_collect(
+                        &*s,
+                        QueryRequest::new(format!(
+                            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+                             WHERE datname = '{db}' AND pid <> pg_backend_pid()"
+                        )),
+                    )
+                    .await;
+                    let _ = execute_collect(
+                        &*s,
+                        QueryRequest::new(format!("DROP DATABASE IF EXISTS {db}")),
+                    )
+                    .await;
+                }
+                let _ = s.close().await;
+            });
+        })
+        .join();
+    }
+}
+
 pub async fn exec(s: &dyn Session, sql: &str) -> Vec<StatementResult> {
     match execute_collect(s, QueryRequest::new(sql)).await {
         Ok(r) => r,
