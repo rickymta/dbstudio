@@ -69,10 +69,7 @@ pub(crate) fn scan(
     eof: bool,
 ) -> (Vec<Unit>, usize) {
     let (mut units, consumed) = match d {
-        // CQL and ClickHouse behave like `Opaque` until package S adds their splitters.
-        ScriptDialect::Opaque | ScriptDialect::Cql | ScriptDialect::ClickHouse => {
-            scan_opaque(chars, eof)
-        }
+        ScriptDialect::Opaque => scan_opaque(chars, eof),
         ScriptDialect::RedisCli => scan_lines(chars, eof),
         ScriptDialect::MongoShell => scan_mongo(chars, eof),
         _ => {
@@ -515,6 +512,12 @@ fn scan_sql(
     let is_mssql = matches!(d, ScriptDialect::MsSql);
     let is_oracle = matches!(d, ScriptDialect::Oracle);
     let is_pg = matches!(d, ScriptDialect::Postgres);
+    let is_cql = matches!(d, ScriptDialect::Cql);
+    // `;` ends a statement (PostgreSQL, CQL, ClickHouse).
+    let semi = is_pg || is_cql || matches!(d, ScriptDialect::ClickHouse);
+    // CQL `BEGIN [UNLOGGED|COUNTER] BATCH ... APPLY BATCH` is one statement.
+    let mut in_batch = false;
+    let mut prev_word = String::new();
     let mut out = Vec::new();
     let mut consumed = 0usize;
     let mut cur = Cur::default();
@@ -600,12 +603,14 @@ fn scan_sql(
             }
             _ => {
                 line_start = false;
-                if is_pg
+                if semi
                     && kind == TokenKind::Punct
                     && chars[i] == ';'
-                    && !open_atomic_body(&cur.words)
+                    && !(is_pg && open_atomic_body(&cur.words))
+                    && !in_batch
                 {
                     cur.take(1, &mut out);
+                    prev_word.clear();
                     i = end;
                     consumed = i;
                     continue;
@@ -644,6 +649,16 @@ fn scan_sql(
                 cur.touch(i, end);
                 if kind == TokenKind::Word {
                     let w: String = chars[i..end].iter().collect::<String>().to_uppercase();
+                    if is_cql && w == "BATCH" {
+                        if cur.lead.first().map(String::as_str) == Some("BEGIN")
+                            && matches!(prev_word.as_str(), "BEGIN" | "UNLOGGED" | "COUNTER")
+                        {
+                            in_batch = true;
+                        } else if prev_word == "APPLY" {
+                            in_batch = false;
+                        }
+                    }
+                    prev_word.clone_from(&w);
                     if cur.lead.len() < 10 {
                         cur.lead.push(w);
                     }

@@ -247,11 +247,15 @@ struct Tok {
 fn scan_tokens(dialect: ScriptDialect, text: &str) -> Vec<Tok> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
-    let hash_comment = matches!(dialect, ScriptDialect::MySql { .. });
+    let mysql = matches!(dialect, ScriptDialect::MySql { .. });
+    let clickhouse = matches!(dialect, ScriptDialect::ClickHouse);
+    let cql = matches!(dialect, ScriptDialect::Cql);
+    let hash_comment = mysql || clickhouse;
     let backslash = match dialect {
         ScriptDialect::MySql {
             backslash_escapes, ..
         } => backslash_escapes,
+        ScriptDialect::ClickHouse => true,
         _ => false,
     };
     let mut out = Vec::new();
@@ -262,7 +266,7 @@ fn scan_tokens(dialect: ScriptDialect, text: &str) -> Vec<Tok> {
             '\'' | '"' | '`' => {
                 i += 1;
                 while i < n {
-                    if chars[i] == '\\' && backslash && c != '`' {
+                    if chars[i] == '\\' && backslash && (c != '`' || clickhouse) {
                         i += 2;
                         continue;
                     }
@@ -287,6 +291,22 @@ fn scan_tokens(dialect: ScriptDialect, text: &str) -> Vec<Tok> {
                     i += 1;
                 }
             }
+            '/' if cql && i + 1 < n && chars[i + 1] == '/' => {
+                while i < n && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            // MySQL / MariaDB / TiDB executable comments (`/*! .. */`, `/*M! .. */`,
+            // `/*T![feature] .. */`) are code: skip only the opener, scan the content.
+            '/' if mysql
+                && i + 2 < n
+                && chars[i + 1] == '*'
+                && (chars[i + 2] == '!'
+                    || (matches!(chars[i + 2], 'M' | 'T') && i + 3 < n && chars[i + 3] == '!')) =>
+            {
+                i += if chars[i + 2] == '!' { 3 } else { 4 };
+            }
+            '*' if mysql && i + 1 < n && chars[i + 1] == '/' => i += 2,
             '/' if i + 1 < n && chars[i + 1] == '*' => {
                 i += 2;
                 while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
@@ -294,13 +314,17 @@ fn scan_tokens(dialect: ScriptDialect, text: &str) -> Vec<Tok> {
                 }
                 i += 2;
             }
-            '$' if matches!(dialect, ScriptDialect::Postgres) => {
-                // Dollar quote `$tag$ ... $tag$`.
+            '$' if matches!(
+                dialect,
+                ScriptDialect::Postgres | ScriptDialect::ClickHouse | ScriptDialect::Cql
+            ) =>
+            {
+                // Dollar quote `$tag$ ... $tag$` (CQL only knows the empty tag `$$`).
                 let mut j = i + 1;
                 while j < n && (chars[j].is_alphanumeric() || chars[j] == '_') {
                     j += 1;
                 }
-                if j < n && chars[j] == '$' {
+                if j < n && chars[j] == '$' && (!cql || j == i + 1) {
                     let tag: String = chars[i..=j].iter().collect();
                     let mut k = j + 1;
                     let tag_chars: Vec<char> = tag.chars().collect();
@@ -407,12 +431,12 @@ fn production_fallback(
             Some(DestructiveReason::Drop)
         } else if words.contains(&"TRUNCATE") {
             Some(DestructiveReason::Truncate)
-        } else if words.contains(&"ALTER") {
-            Some(DestructiveReason::AlterDrop)
-        } else if words.contains(&"DELETE") {
-            Some(DestructiveReason::DeleteWithoutWhere)
-        } else if words.contains(&"UPDATE") && !words.contains(&"WHERE") {
-            Some(DestructiveReason::UpdateWithoutWhere)
+        } else if words.contains(&"ALTER")
+            || words.contains(&"DELETE")
+            || (words.contains(&"UPDATE") && !words.contains(&"WHERE"))
+        {
+            // The statement was not understood, so the kind of damage is a guess: say so.
+            Some(DestructiveReason::KeywordScan)
         } else {
             None
         };
@@ -433,7 +457,9 @@ fn production_fallback(
 }
 
 /// Why a MySQL script cannot be split reliably: its statement boundaries differ between the two
-/// settings of `NO_BACKSLASH_ESCAPES` (guard and server could then disagree on what runs).
+/// settings of `NO_BACKSLASH_ESCAPES` (guard and server could then disagree on what runs), or,
+/// when the script itself changes `sql_mode`, between the combinations of `NO_BACKSLASH_ESCAPES`
+/// and `ANSI_QUOTES` (the mode in force changes in the middle of the script).
 fn split_ambiguity(dialect: ScriptDialect, text: &str) -> Option<String> {
     let ScriptDialect::MySql {
         mariadb,
@@ -443,16 +469,37 @@ fn split_ambiguity(dialect: ScriptDialect, text: &str) -> Option<String> {
     else {
         return None;
     };
-    let other = ScriptDialect::MySql {
+    let with = |backslash_escapes, ansi_quotes| ScriptDialect::MySql {
         mariadb,
-        backslash_escapes: !backslash_escapes,
+        backslash_escapes,
         ansi_quotes,
     };
-    (dbstudio_sql::split(dialect, text) != dbstudio_sql::split(other, text)).then(|| {
-        "the statement boundaries depend on the NO_BACKSLASH_ESCAPES sql_mode (a quote escaped \
-         with a backslash); write the literal with '' so the script means the same in both modes"
-            .to_string()
-    })
+    let base = dbstudio_sql::split(dialect, text);
+    if base != dbstudio_sql::split(with(!backslash_escapes, ansi_quotes), text) {
+        return Some(
+            "the statement boundaries depend on the NO_BACKSLASH_ESCAPES sql_mode (a quote escaped \
+             with a backslash); write the literal with \'\' so the script means the same in both modes"
+                .to_string(),
+        );
+    }
+    let changes_mode = scan_tokens(dialect, text)
+        .iter()
+        .any(|t| t.word == "SQL_MODE");
+    if changes_mode {
+        for (b, a) in [(true, false), (true, true), (false, false), (false, true)] {
+            if (b, a) != (backslash_escapes, ansi_quotes)
+                && base != dbstudio_sql::split(with(b, a), text)
+            {
+                return Some(
+                    "the script changes sql_mode and its statement boundaries differ between the \
+                     ANSI_QUOTES / NO_BACKSLASH_ESCAPES modes; split it into separate runs or avoid \
+                     double quotes and backslashes in its literals"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    None
 }
 
 /// What a confirmation token is bound to besides the target: where the text runs, the databases
@@ -1239,5 +1286,89 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn production_fallback_reasons() {
+        let reason = |text: &str, d: ScriptDialect| {
+            let a = analysis(vec![stmt(
+                0,
+                0,
+                text.chars().count() as u32,
+                StatementClass::Unknown,
+                None,
+            )]);
+            production_fallback(d, &a, text).first().map(|s| s.reason)
+        };
+        let pg = ScriptDialect::Postgres;
+        assert_eq!(reason("x; DROP TABLE t", pg), Some(DestructiveReason::Drop));
+        assert_eq!(reason("TRUNCATE t", pg), Some(DestructiveReason::Truncate));
+        // A statement the analyzer did not understand: the damage is only guessed.
+        assert_eq!(
+            reason("CALL p(); DELETE FROM t", pg),
+            Some(DestructiveReason::KeywordScan)
+        );
+        assert_eq!(
+            reason("foo ALTER TABLE t", pg),
+            Some(DestructiveReason::KeywordScan)
+        );
+        assert_eq!(
+            reason("foo UPDATE t SET a = 1", pg),
+            Some(DestructiveReason::KeywordScan)
+        );
+        assert_eq!(reason("foo UPDATE t SET a = 1 WHERE b = 2", pg), None);
+        assert_eq!(reason("foo bar", pg), None);
+    }
+
+    #[test]
+    fn new_dialects_tokens_skip_their_literals_and_comments() {
+        let words =
+            |d, t: &str| -> Vec<String> { scan_tokens(d, t).into_iter().map(|x| x.word).collect() };
+        let cql = ScriptDialect::Cql;
+        assert_eq!(
+            words(cql, "select $$ drop ; $$ // drop\n from t; -- drop\n use k"),
+            ["SELECT", "FROM", "T", ";", "USE", "K"]
+        );
+        assert_eq!(words(cql, "select 'a\\' from t"), ["SELECT", "FROM", "T"]);
+        let ch = ScriptDialect::ClickHouse;
+        assert_eq!(
+            words(
+                ch,
+                "select 'it\\'s drop' # drop\n, `a\\`drop`, $t$ drop $t$ from t"
+            ),
+            ["SELECT", "FROM", "T"]
+        );
+        // MySQL / TiDB executable comments are code
+        let my = ScriptDialect::mysql(false, true);
+        assert_eq!(
+            words(my, "select /*T![a_b] drop */ 1"),
+            ["SELECT", "A_B", "DROP"]
+        );
+        assert_eq!(words(my, "select /*!50000 drop */ 1"), ["SELECT", "DROP"]);
+        assert_eq!(words(my, "select /*M! drop */ 1"), ["SELECT", "DROP"]);
+        assert_eq!(words(my, "select /* drop */ 1"), ["SELECT"]);
+    }
+
+    #[test]
+    fn scripts_that_change_sql_mode_with_ambiguous_boundaries_are_refused() {
+        let (t, _) = tokens();
+        let mut i = input(
+            "SET sql_mode='ANSI_QUOTES'; SELECT \"a\\\"; DROP TABLE t; -- \"",
+            false,
+            false,
+            None,
+        );
+        i.dialect = ScriptDialect::mysql(false, true);
+        let err = run_guard(&t, &i).unwrap_err();
+        assert!(err.to_string().contains("sql_mode"), "{err}");
+        i.dialect = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+            ansi_quotes: true,
+        };
+        assert!(run_guard(&t, &i).is_err());
+        // The same mode switch with plain text is fine.
+        i.text = "SET sql_mode='ANSI_QUOTES'; SELECT \"a\" FROM t";
+        run_guard(&t, &i).unwrap();
     }
 }
