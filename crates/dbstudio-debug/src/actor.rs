@@ -1842,13 +1842,17 @@ impl Core {
 
     async fn abort_routine(&mut self) {
         if let Some(mut ctx) = self.routine_ctx.take() {
+            // The target statement is stopped first (abort, then cancel); only then are the
+            // proxy connections closed, so the target can never run on unattended.
             if let Some(r) = self.routine.as_mut() {
                 let _ = r.command(RoutineCommand::Abort, &mut ctx.done).await;
-                let _ = r.disarm().await;
             }
             let qid = *self.shared.query.lock().unwrap();
             if let Some(q) = qid {
                 let _ = self.lease.cancel(q).await;
+            }
+            if let Some(r) = self.routine.as_mut() {
+                let _ = r.disarm().await;
             }
             let _ = ctx.handle.await;
             *self.shared.query.lock().unwrap() = None;

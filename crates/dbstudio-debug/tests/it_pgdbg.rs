@@ -722,15 +722,28 @@ it!(pgdbg_deposit_accepts_expressions_text_and_null, async {
     assert_eq!(find(&vars, "d").type_name.as_deref(), Some("date"));
     assert_eq!(find(&vars, "b").display, "false");
 
-    // Plain text for a text variable, an expression for a number, a date in text form, true.
+    // Plain text for a text variable, a literal for a number, a date in text form, true.
     let t = timed(h.dbg.set_variable(&find(&vars, "t").reference, "abc"))
         .await
         .unwrap();
     assert_eq!(t.display, "'abc'");
-    let n = timed(h.dbg.set_variable(&find(&vars, "n").reference, "1+1"))
+    // Text is stored as typed: `current_user` is not evaluated, `1+1` is not a number.
+    let t = timed(
+        h.dbg
+            .set_variable(&find(&vars, "t").reference, "current_user"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(t.display, "'current_user'");
+    assert!(
+        timed(h.dbg.set_variable(&find(&vars, "n").reference, "1+1"))
+            .await
+            .is_err()
+    );
+    let n = timed(h.dbg.set_variable(&find(&vars, "n").reference, "2.5"))
         .await
         .unwrap();
-    assert_eq!(n.display, "2");
+    assert_eq!(n.display, "2.5");
     let d = timed(
         h.dbg
             .set_variable(&find(&vars, "d").reference, "2024-02-03"),
@@ -754,7 +767,7 @@ it!(pgdbg_deposit_accepts_expressions_text_and_null, async {
     );
     assert_eq!(
         h.scalar_result().await,
-        Value::Text("abc|null|2024-02-03|true".into())
+        Value::Text("current_user|null|2024-02-03|true".into())
     );
     timed(h.dbg.disarm()).await.unwrap();
 });
@@ -855,13 +868,62 @@ it!(pgdbg_sessions_can_be_repeated, async {
     for round in 1..=3 {
         let stop = h.arm_and_run("SELECT dbgt_outer(1)", &[OUTER], &[]).await;
         assert_eq!(at(&stop), (OUTER, 6, 1), "round {round}");
+        // The end of the outermost routine must not cost the ~9 s server timeout.
+        let began = std::time::Instant::now();
         assert_eq!(
             h.cmd(RoutineCommand::Continue).await,
             RoutineStop::TargetDone
         );
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "ending the routine took {:?}",
+            began.elapsed()
+        );
         assert_eq!(h.scalar_result().await, Value::Int(2));
         timed(h.dbg.disarm()).await.unwrap();
     }
+});
+
+it!(pgdbg_proxy_killed_mid_session_does_not_hang, async {
+    let mut h = Harness::new().await;
+    let stop = h.arm_and_run("SELECT dbgt_outer(2)", &[OUTER], &[]).await;
+    assert_eq!(at(&stop).2, 1);
+    let proxy_pid = h.dbg.proxy_pid().expect("proxy pid");
+    let other = lease(&*h.session).await;
+    execute_collect_on(
+        &*other,
+        &format!("SELECT pg_terminate_backend({proxy_pid})"),
+    )
+    .await;
+    // The next command fails or ends the routine, but never hangs.
+    let _ = timed(async {
+        let done = h.done.as_mut().unwrap();
+        h.dbg.command(RoutineCommand::StepOver, done).await
+    })
+    .await;
+    timed(h.dbg.disarm()).await.unwrap();
+    // The target is released and finishes (or fails) on its own.
+    let _ = h.result().await;
+    assert!(!h.target.state().broken);
+    other.close().await.unwrap();
+});
+
+it!(pgdbg_third_session_before_attach_is_not_stopped, async {
+    let mut h = Harness::new().await;
+    h.support().await;
+    let targets = vec![rref(OUTER), rref(INNER)];
+    timed(h.dbg.arm(&targets, &[])).await.expect("arm");
+    // Another backend runs the armed routines before the target statement starts.
+    let other = lease(&*h.session).await;
+    let v = timed(execute_collect_on(&*other, "SELECT dbgt_outer(2)")).await;
+    assert_eq!(v, Value::Int(6));
+    h.run("SELECT dbgt_outer(2)");
+    let stop = h.wait().await;
+    assert_eq!(at(&stop).0, OUTER);
+    h.cmd(RoutineCommand::Abort).await;
+    h.result().await.unwrap_err();
+    timed(h.dbg.disarm()).await.unwrap();
+    other.close().await.unwrap();
 });
 
 // ------------------------------------------------------------------------------------------
@@ -949,6 +1011,10 @@ it!(
             Value::Int(n) => n,
             other => panic!("{other:?}"),
         };
+        let Value::Int(proxy_pid) = execute_collect_on(&*proxy, "SELECT pg_backend_pid()").await
+        else {
+            panic!()
+        };
         let Value::Int(s) = execute_collect_on(&*proxy, "SELECT pldbg_create_listener()").await
         else {
             panic!()
@@ -972,7 +1038,20 @@ it!(
             let mut sink = CollectingSink::new();
             p2.execute(request, &mut sink).await
         });
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // Wait until the call really sits in the server (no fixed sleep).
+        let probe = format!(
+            "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND pid = {proxy_pid}"
+        );
+        timed(async {
+            loop {
+                let seen = execute_collect_on(&*target, &probe).await;
+                if !matches!(seen, Value::Int(0) | Value::UInt(0)) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
         proxy.cancel(qid).await.unwrap();
         let cancelled = timed(waiter).await.unwrap();
         assert!(cancelled.is_err(), "the cancelled wait must fail");

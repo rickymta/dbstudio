@@ -109,6 +109,12 @@ const TARGET_GONE: &str = "debugger connection terminated";
 /// `target_done` argument of `wait` / `command`).
 const TARGET_TIMEOUT: &str = "select() failed waiting for target";
 
+/// How many times an interrupted wait for the target is repeated before giving up.
+const TIMEOUT_RETRIES: u32 = 50;
+
+/// Longest a `pg_stat_activity` poll may take.
+const WATCH_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// How often the end of the target statement is polled when the host gave no future for it.
 const WATCH_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -130,6 +136,16 @@ pub fn quote_literal(text: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+/// Value argument of `pldbg_deposit_value`, which the server evaluates as an expression: the
+/// text typed by the user is sent as a string literal (so `user` or `nextval('s')` are stored
+/// as typed, not run); only the word `NULL` stays the null value.
+pub fn deposit_expression(value_text: &str) -> String {
+    if value_text.trim().eq_ignore_ascii_case("null") {
+        return quote_literal("NULL");
+    }
+    quote_literal(&quote_literal(value_text))
 }
 
 /// `SELECT pldbg_set_global_breakpoint(...)` for exactly one backend. `target_pid` is not an
@@ -415,11 +431,12 @@ async fn wait_done(done: &mut Option<&mut (dyn Future<Output = ()> + Send + Unpi
 async fn target_statement_ended(watcher: &dyn Lease, pid: i32) -> bool {
     let sql = format!("SELECT state FROM pg_stat_activity WHERE pid = {pid}");
     let mut sink = CollectingSink::new();
-    if watcher
-        .execute(QueryRequest::new(sql), &mut sink)
-        .await
-        .is_err()
-    {
+    let ran = tokio::time::timeout(
+        WATCH_QUERY_TIMEOUT,
+        watcher.execute(QueryRequest::new(sql), &mut sink),
+    )
+    .await;
+    if !matches!(ran, Ok(Ok(_))) {
         return false;
     }
     for r in sink.into_results() {
@@ -485,8 +502,13 @@ fn collect_candidates(rows: Vec<Vec<Value>>, found: &mut Vec<RoutineRef>) {
 }
 
 fn is_target_gone(e: &Error) -> bool {
-    matches!(e, Error::Query { message, .. }
-        if message.contains(TARGET_GONE) || message.contains(TARGET_TIMEOUT))
+    matches!(e, Error::Query { message, .. } if message.contains(TARGET_GONE))
+}
+
+/// The server gave up waiting for the target. Usually an interrupted `select()` (a signal), not
+/// the end of the target: the caller checks that the statement is really over before believing it.
+fn is_target_timeout(e: &Error) -> bool {
+    matches!(e, Error::Query { message, .. } if message.contains(TARGET_TIMEOUT))
 }
 
 fn value_i64(v: &Value) -> Option<i64> {
@@ -563,7 +585,14 @@ pub struct PgRoutineDebugger {
     database: Option<String>,
     support: Option<RoutineDebugSupport>,
     target_pid: Option<i32>,
+    /// `pg_stat_activity.backend_start` of the target when its pid was read (pid reuse check).
+    target_start: Option<String>,
+    /// `current_database()` of the target: the proxies open on it.
+    target_db: Option<String>,
+    /// Schema of the `pldbgapi` extension (already quoted).
+    ext_schema: Option<String>,
     proxy: Option<Arc<dyn Lease>>,
+    proxy_pid: Option<i32>,
     /// Second hidden connection that polls `pg_stat_activity` for the end of the target
     /// statement while the proxy is blocked inside a `pldbg_*` call.
     watcher: Option<Arc<dyn Lease>>,
@@ -604,7 +633,11 @@ impl PgRoutineDebugger {
             database,
             support: None,
             target_pid: None,
+            target_start: None,
+            target_db: None,
+            ext_schema: None,
             proxy: None,
+            proxy_pid: None,
             watcher: None,
             session: None,
             sources: HashMap::new(),
@@ -630,6 +663,11 @@ impl PgRoutineDebugger {
     /// Set the target backend pid explicitly (when the host already knows it).
     pub fn set_target_pid(&mut self, pid: i32) {
         self.target_pid = Some(pid);
+    }
+
+    /// Backend pid of the hidden proxy connection (known once it was opened).
+    pub fn proxy_pid(&self) -> Option<i32> {
+        self.proxy_pid
     }
 
     /// True while the target is stopped inside a routine.
@@ -660,9 +698,29 @@ impl PgRoutineDebugger {
         if let Some(p) = &self.proxy {
             return Ok(p.clone());
         }
-        let p = self.opener.open_proxy(self.database.clone()).await?;
+        let p = self.opener.open_proxy(self.proxy_database()).await?;
         self.proxy = Some(p.clone());
+        // The proxy usually runs as a superuser: never let the search_path of the role (or a
+        // schema a user can write to) decide which `pldbg_*` function it calls.
+        if let Some(ext) = &self.ext_schema {
+            let _ = Self::rows(&*p, &format!("SET search_path = pg_catalog, {ext}")).await;
+        }
+        // Not `client_connection_check_interval`: its timer signals interrupt the `select()` of
+        // pldbgapi (every call then fails with "select() failed waiting for target"); a dead
+        // client is handled by `Drop` terminating the proxy backend instead.
+        if let Ok(rows) = Self::rows(&*p, "SELECT pg_backend_pid()").await {
+            self.proxy_pid = rows
+                .first()
+                .and_then(|r| r.first())
+                .and_then(value_i64)
+                .and_then(|n| i32::try_from(n).ok());
+        }
         Ok(p)
+    }
+
+    /// Database the proxies open on: the one the target is really in.
+    fn proxy_database(&self) -> Option<String> {
+        self.target_db.clone().or_else(|| self.database.clone())
     }
 
     fn session(&self) -> Result<i32> {
@@ -681,25 +739,39 @@ impl PgRoutineDebugger {
     }
 
     async fn probe_target(&mut self, target: &dyn Lease) -> Result<i32> {
-        let rows = Self::rows(target, "SELECT pg_backend_pid()").await?;
-        let pid = rows
-            .first()
+        let rows = Self::rows(
+            target,
+            "SELECT pg_backend_pid(), current_database(), \
+             (SELECT backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid())",
+        )
+        .await?;
+        let row = rows.first();
+        let pid = row
             .and_then(|r| r.first())
             .and_then(value_i64)
             .and_then(|n| i32::try_from(n).ok())
             .ok_or_else(|| Error::Other("cannot read pg_backend_pid() of the target".into()))?;
+        let db = row.and_then(|r| r.get(1)).and_then(value_text);
+        if db != self.target_db {
+            // The proxies belong to the old database.
+            self.close_proxy().await;
+        }
         self.target_pid = Some(pid);
+        self.target_db = db;
+        self.target_start = row.and_then(|r| r.get(2)).and_then(value_text);
         Ok(pid)
     }
 
-    async fn gather_facts(lease: &dyn Lease) -> Result<SupportFacts> {
+    async fn gather_facts(lease: &dyn Lease) -> Result<(SupportFacts, Option<String>)> {
         let rows = Self::rows(
             lease,
             "SELECT version(), \
              (SELECT extversion FROM pg_extension WHERE extname = 'pldbgapi'), \
              EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pldbgapi'), \
              (SELECT setting FROM pg_settings WHERE name = 'shared_preload_libraries'), \
-             COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)",
+             COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false), \
+             (SELECT quote_ident(n.nspname) FROM pg_extension e \
+                JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'pldbgapi')",
         )
         .await?;
         let row = rows
@@ -707,25 +779,35 @@ impl PgRoutineDebugger {
             .ok_or_else(|| Error::Other("empty answer of the support probe".into()))?;
         let extension_version = row.get(1).and_then(value_text);
         // The function privilege probe needs the extension; without it the answer is moot.
-        let can_execute = if extension_version.is_some() {
+        let ext_schema = row.get(5).and_then(value_text);
+        let can_execute = if let (Some(_), Some(ext)) = (&extension_version, &ext_schema) {
             let r = Self::rows(
                 lease,
-                "SELECT has_function_privilege('pldbg_create_listener()', 'EXECUTE') AND \
-                 has_function_privilege('pldbg_set_global_breakpoint(integer, oid, integer, integer)', 'EXECUTE')",
+                &format!(
+                    "SELECT has_function_privilege({}, 'EXECUTE') AND \
+                     has_function_privilege({}, 'EXECUTE')",
+                    quote_literal(&format!("{ext}.pldbg_create_listener()")),
+                    quote_literal(&format!(
+                        "{ext}.pldbg_set_global_breakpoint(integer, oid, integer, integer)"
+                    ))
+                ),
             )
             .await?;
             r.first().and_then(|r| r.first()).is_some_and(value_bool)
         } else {
             false
         };
-        Ok(SupportFacts {
-            version: row.first().and_then(value_text).unwrap_or_default(),
-            extension_version,
-            extension_available: row.get(2).is_some_and(value_bool),
-            preload: row.get(3).and_then(value_text),
-            superuser: row.get(4).is_some_and(value_bool),
-            can_execute,
-        })
+        Ok((
+            SupportFacts {
+                version: row.first().and_then(value_text).unwrap_or_default(),
+                extension_version,
+                extension_available: row.get(2).is_some_and(value_bool),
+                preload: row.get(3).and_then(value_text),
+                superuser: row.get(4).is_some_and(value_bool),
+                can_execute,
+            },
+            ext_schema,
+        ))
     }
 
     /// Support level of the target, cached for the session; also learns the target pid.
@@ -736,7 +818,11 @@ impl PgRoutineDebugger {
         if let Some(s) = &self.support {
             return Ok(s.clone());
         }
-        let facts = Self::gather_facts(target).await?;
+        let (facts, ext_schema) = Self::gather_facts(target).await?;
+        if ext_schema != self.ext_schema {
+            self.close_proxy().await;
+        }
+        self.ext_schema = ext_schema;
         let s = decide_support(&facts);
         self.support = Some(s.clone());
         Ok(s)
@@ -774,6 +860,16 @@ impl PgRoutineDebugger {
             }
         }
         Ok(())
+    }
+
+    /// Oid of a routine: the one the reference carries (resolved by the server against the
+    /// target's own search_path), else looked up from the signature.
+    async fn oid_of(&mut self, proxy: &dyn Lease, r: &RoutineRef) -> Result<Option<u32>> {
+        if let Some(oid) = r.oid.as_deref().and_then(|o| o.parse::<u32>().ok()) {
+            self.signatures.entry(oid).or_insert_with(|| r.clone());
+            return Ok(Some(oid));
+        }
+        self.routine_oid(proxy, &r.signature).await
     }
 
     async fn routine_oid(&mut self, proxy: &dyn Lease, signature: &str) -> Result<Option<u32>> {
@@ -868,20 +964,16 @@ impl PgRoutineDebugger {
         cmd: RoutineCommand,
         done: Option<&mut (dyn Future<Output = ()> + Send + Unpin)>,
     ) -> Result<RoutineStop> {
+        let mut done = done;
         let s = self.stopped()?;
         let func = match cmd {
-            RoutineCommand::Abort => {
-                let proxy = self.proxy().await?;
-                let _ = Self::rows(&*proxy, &format!("SELECT pldbg_abort_target({s})")).await;
-                self.finished = true;
-                return Ok(RoutineStop::Aborted);
-            }
+            RoutineCommand::Abort => return self.abort_target(s).await,
             RoutineCommand::StepInto => "pldbg_step_into",
             RoutineCommand::StepOver => "pldbg_step_over",
             RoutineCommand::Continue => "pldbg_continue",
         };
         match self
-            .proxy_call(format!("SELECT linenumber FROM {func}({s})"), done)
+            .proxy_call(format!("SELECT linenumber FROM {func}({s})"), &mut done)
             .await
         {
             Ok(true) => self.position().await,
@@ -889,8 +981,73 @@ impl PgRoutineDebugger {
                 self.finished = true;
                 Ok(RoutineStop::TargetDone)
             }
+            Err(e) if is_target_timeout(&e) => self.after_timeout(s, &mut done).await,
             Err(e) => self.handle_command_error(e).await,
         }
+    }
+
+    /// Stop the target statement. `pldbg_abort_target` first; when that fails, cancel the
+    /// backend. An error is returned only when neither worked: closing the proxy would then let
+    /// the target run on (and autocommit the rest).
+    async fn abort_target(&mut self, s: i32) -> Result<RoutineStop> {
+        let proxy = self.proxy().await?;
+        let aborted = Self::rows(&*proxy, &format!("SELECT pldbg_abort_target({s})"))
+            .await
+            .map(|rows| rows.first().and_then(|r| r.first()).is_none_or(value_bool))
+            .unwrap_or(false);
+        if !aborted {
+            let cancelled = match (self.target_pid, self.watcher().await) {
+                (Some(pid), Ok(w)) => Self::rows(&*w, &format!("SELECT pg_cancel_backend({pid})"))
+                    .await
+                    .is_ok_and(|rows| rows.first().and_then(|r| r.first()).is_some_and(value_bool)),
+                _ => false,
+            };
+            if !cancelled {
+                return Err(Error::Other(
+                    "could not abort the target statement (pldbg_abort_target and \
+                     pg_cancel_backend both failed)"
+                        .into(),
+                ));
+            }
+        }
+        self.finished = true;
+        Ok(RoutineStop::Aborted)
+    }
+
+    /// True when the target statement is over (checked from the hidden watcher connection).
+    async fn target_over(&mut self) -> bool {
+        match (self.target_pid, self.watcher().await) {
+            (Some(pid), Ok(w)) => target_statement_ended(&*w, pid).await,
+            _ => false,
+        }
+    }
+
+    /// The server gave up waiting for the target. If the statement is still running this was an
+    /// interrupted wait: ask again (no new command) for the next stop, still raced against `done`.
+    async fn after_timeout(
+        &mut self,
+        s: i32,
+        done: &mut Option<&mut (dyn Future<Output = ()> + Send + Unpin)>,
+    ) -> Result<RoutineStop> {
+        for _ in 0..TIMEOUT_RETRIES {
+            if self.target_over().await {
+                self.finished = true;
+                return Ok(RoutineStop::TargetDone);
+            }
+            let sql = format!("SELECT func::int8, linenumber FROM pldbg_wait_for_breakpoint({s})");
+            match self.proxy_call(sql, done).await {
+                Ok(true) => return self.position().await,
+                Ok(false) => {
+                    self.finished = true;
+                    return Ok(RoutineStop::TargetDone);
+                }
+                Err(e) if is_target_timeout(&e) => continue,
+                Err(e) => return self.handle_command_error(e).await,
+            }
+        }
+        Err(Error::Other(
+            "the routine debugger lost the target (select() keeps failing)".into(),
+        ))
     }
 
     // ---- extras beyond the trait ----------------------------------------------------------
@@ -912,7 +1069,7 @@ impl PgRoutineDebugger {
     pub async fn add_breakpoint(&mut self, routine: &RoutineRef, line: u32) -> Result<bool> {
         let s = self.stopped()?;
         let proxy = self.proxy().await?;
-        let Some(oid) = self.routine_oid(&*proxy, &routine.signature).await? else {
+        let Some(oid) = self.oid_of(&*proxy, routine).await? else {
             return Ok(false);
         };
         let rows = Self::rows(
@@ -927,7 +1084,7 @@ impl PgRoutineDebugger {
     pub async fn remove_breakpoint(&mut self, routine: &RoutineRef, line: u32) -> Result<bool> {
         let s = self.stopped()?;
         let proxy = self.proxy().await?;
-        let Some(oid) = self.routine_oid(&*proxy, &routine.signature).await? else {
+        let Some(oid) = self.oid_of(&*proxy, routine).await? else {
             return Ok(false);
         };
         let rows = Self::rows(
@@ -999,6 +1156,7 @@ impl PgRoutineDebugger {
         if let Some(p) = self.proxy.take() {
             let _ = p.close().await;
         }
+        self.proxy_pid = None;
         self.session = None;
     }
 
@@ -1006,7 +1164,7 @@ impl PgRoutineDebugger {
         if let Some(w) = &self.watcher {
             return Ok(w.clone());
         }
-        let w = self.opener.open_proxy(self.database.clone()).await?;
+        let w = self.opener.open_proxy(self.proxy_database()).await?;
         self.watcher = Some(w.clone());
         Ok(w)
     }
@@ -1017,7 +1175,7 @@ impl PgRoutineDebugger {
     async fn proxy_call(
         &mut self,
         sql: String,
-        mut done: Option<&mut (dyn Future<Output = ()> + Send + Unpin)>,
+        done: &mut Option<&mut (dyn Future<Output = ()> + Send + Unpin)>,
     ) -> Result<bool> {
         let proxy = self.proxy().await?;
         let watcher = if done.is_none() {
@@ -1036,7 +1194,7 @@ impl PgRoutineDebugger {
         let finished_first = loop {
             tokio::select! {
                 r = &mut exec => return r.map(|_| true),
-                () = wait_done(&mut done), if done.is_some() => break true,
+                () = wait_done(done), if done.is_some() => break true,
                 _ = tick.tick(), if watcher.is_some() => {
                     let (Some(w), Some(pid)) = (&watcher, pid) else { continue };
                     if target_statement_ended(&**w, pid).await {
@@ -1050,6 +1208,8 @@ impl PgRoutineDebugger {
         // The call may have completed in the meantime: then the target did stop.
         match exec.await {
             Ok(_) => Ok(true),
+            // A lost connection is not the end of the statement.
+            Err(e @ Error::Connection(_)) => Err(e),
             Err(_) => Ok(false),
         }
     }
@@ -1057,13 +1217,13 @@ impl PgRoutineDebugger {
     async fn attach_after_wait(&mut self) -> Result<RoutineStop> {
         let s = self.session()?;
         let proxy = self.proxy().await?;
-        self.attached = true;
-        self.finished = false;
         Self::rows(
             &*proxy,
             &format!("SELECT func::int8, linenumber FROM pldbg_wait_for_breakpoint({s})"),
         )
         .await?;
+        self.attached = true;
+        self.finished = false;
         // The entry breakpoints only serve the first stop of Step Into.
         let entries = std::mem::take(&mut self.entry_oids);
         for oid in entries {
@@ -1074,6 +1234,47 @@ impl PgRoutineDebugger {
             .await;
         }
         self.position().await
+    }
+}
+
+impl Drop for PgRoutineDebugger {
+    /// A proxy stuck in `pldbg_wait_for_target` keeps its listener and global breakpoints after
+    /// the session is gone: terminate that backend, then close the connections.
+    fn drop(&mut self) {
+        let (proxy, watcher) = (self.proxy.take(), self.watcher.take());
+        if proxy.is_none() && watcher.is_none() {
+            return;
+        }
+        let pid = self.proxy_pid;
+        let opener = self.opener.clone();
+        let db = self.proxy_database();
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        rt.spawn(async move {
+            if let Some(pid) = pid {
+                let killer = match &watcher {
+                    Some(w) => Some(w.clone()),
+                    None => opener.open_proxy(db).await.ok(),
+                };
+                if let Some(k) = killer {
+                    let _ = PgRoutineDebugger::rows(
+                        &*k,
+                        &format!("SELECT pg_terminate_backend({pid})"),
+                    )
+                    .await;
+                    if watcher.is_none() {
+                        let _ = k.close().await;
+                    }
+                }
+            }
+            if let Some(w) = watcher {
+                let _ = w.close().await;
+            }
+            if let Some(p) = proxy {
+                let _ = p.close().await;
+            }
+        });
     }
 }
 
@@ -1123,6 +1324,26 @@ impl RoutineDebugger for PgRoutineDebugger {
             return Ok(statuses);
         }
         let proxy = self.proxy().await?;
+        if let Some(start) = self.target_start.clone() {
+            // The pid may have been reused by another backend since it was read.
+            let rows = Self::rows(
+                &*proxy,
+                &format!("SELECT backend_start::text FROM pg_stat_activity WHERE pid = {pid}"),
+            )
+            .await?;
+            if rows
+                .first()
+                .and_then(|r| r.first())
+                .and_then(value_text)
+                .as_deref()
+                != Some(start.as_str())
+            {
+                self.close_proxy().await;
+                return Err(Error::Invalid(
+                    "the target connection changed since it was inspected: start again".into(),
+                ));
+            }
+        }
         let session = match Self::rows(&*proxy, "SELECT pldbg_create_listener()").await {
             Ok(rows) => rows
                 .first()
@@ -1152,18 +1373,36 @@ impl RoutineDebugger for PgRoutineDebugger {
         &mut self,
         target_done: &mut (dyn Future<Output = ()> + Send + Unpin),
     ) -> Result<RoutineStop> {
-        if !self.armed || self.finished {
+        if self.finished {
+            return Ok(RoutineStop::TargetDone);
+        }
+        if !self.armed {
             target_done.await;
             return Ok(RoutineStop::TargetDone);
         }
         let s = self.session()?;
-        let sql = format!("SELECT pldbg_wait_for_target({s})");
-        if self.proxy_call(sql, Some(target_done)).await? {
-            self.attach_after_wait().await
-        } else {
-            self.finished = true;
-            Ok(RoutineStop::TargetDone)
+        let mut done = Some(target_done);
+        for _ in 0..TIMEOUT_RETRIES {
+            let sql = format!("SELECT pldbg_wait_for_target({s})");
+            match self.proxy_call(sql, &mut done).await {
+                Ok(true) => return self.attach_after_wait().await,
+                Ok(false) => {
+                    self.finished = true;
+                    return Ok(RoutineStop::TargetDone);
+                }
+                // An interrupted wait: when the statement is still running, wait again.
+                Err(e) if is_target_timeout(&e) => {
+                    if self.target_over().await {
+                        self.finished = true;
+                        return Ok(RoutineStop::TargetDone);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
+        Err(Error::Other(
+            "the routine debugger lost the target (select() keeps failing)".into(),
+        ))
     }
 
     async fn command(
@@ -1303,7 +1542,7 @@ impl RoutineDebugger for PgRoutineDebugger {
             &format!(
                 "SELECT pldbg_deposit_value({s}, {}, {line}, {})",
                 quote_literal(name),
-                quote_literal(value_text)
+                deposit_expression(value_text)
             ),
         )
         .await?;
@@ -1375,7 +1614,7 @@ impl PgRoutineDebugger {
         statuses: &mut Vec<BreakpointStatus>,
     ) -> Result<()> {
         for t in targets {
-            let Some(oid) = self.routine_oid(proxy, &t.signature).await? else {
+            let Some(oid) = self.oid_of(proxy, t).await? else {
                 continue;
             };
             if self
@@ -1398,7 +1637,7 @@ impl PgRoutineDebugger {
                 statuses.push(status);
                 continue;
             }
-            let Some(oid) = self.routine_oid(proxy, &rb.routine.signature).await? else {
+            let Some(oid) = self.oid_of(proxy, &rb.routine).await? else {
                 status.message = Some(format!("routine {} not found", rb.routine.signature));
                 statuses.push(status);
                 continue;
