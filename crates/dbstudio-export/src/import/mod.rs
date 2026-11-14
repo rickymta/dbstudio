@@ -17,6 +17,7 @@ use crate::{
     ImportReport, ImportSpec, ImportTarget, RowError, Transform,
 };
 
+mod document;
 mod insert;
 mod preview;
 mod script;
@@ -38,6 +39,11 @@ pub async fn run_import(ctx: ExportContext, spec: ImportSpec) -> Result<ImportRe
     }
     if matches!(spec.target, ImportTarget::Keys { .. }) {
         return crate::keys::import_keys(&ctx, &spec, &cancel).await;
+    }
+    if matches!(ctx.dialect, ScriptDialect::MongoShell)
+        && !matches!(spec.format, ImportFormat::Sql { .. })
+    {
+        return document::run(&ctx, &spec, &cancel).await;
     }
     match &spec.format {
         ImportFormat::Sql { continue_on_error } => {
