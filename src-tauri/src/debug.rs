@@ -413,6 +413,8 @@ pub struct EventSink {
     emitter: Arc<dyn EventEmitter>,
     inner: Mutex<SinkInner>,
     on_end: Mutex<Option<EndHook>>,
+    /// Why the host is ending the session; replaces the engine's plain `Stopped`.
+    end_reason: Mutex<Option<TerminateReason>>,
     throttle: Duration,
     me: std::sync::Weak<EventSink>,
 }
@@ -436,6 +438,7 @@ impl EventSink {
             emitter,
             inner: Mutex::new(SinkInner::default()),
             on_end: Mutex::new(None),
+            end_reason: Mutex::new(None),
             throttle,
             me: me.clone(),
         })
@@ -443,6 +446,10 @@ impl EventSink {
 
     fn set_on_end(&self, hook: EndHook) {
         *self.on_end.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    fn set_end_reason(&self, reason: TerminateReason) {
+        *self.end_reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
     }
 
     fn lock(&self) -> MutexGuard<'_, SinkInner> {
@@ -479,6 +486,30 @@ impl EventSink {
 impl DebugSink for EventSink {
     fn state(&self, state: &DebugState) {
         let terminated = is_terminated(state);
+        // One Terminated event per session: when the host ended it, the engine's own
+        // Terminated(Stopped) carries the host's reason instead of a second event following it.
+        let rewritten;
+        let state = match (&state.status, terminated) {
+            (
+                DebugStatus::Terminated {
+                    reason: TerminateReason::Stopped,
+                    report,
+                },
+                true,
+            ) => match *self.end_reason.lock().unwrap_or_else(|e| e.into_inner()) {
+                Some(reason) => {
+                    let mut st = state.clone();
+                    st.status = DebugStatus::Terminated {
+                        reason,
+                        report: *report,
+                    };
+                    rewritten = st;
+                    &rewritten
+                }
+                None => state,
+            },
+            _ => state,
+        };
         {
             let mut inner = self.lock();
             inner.last = Some(state.clone());
@@ -688,12 +719,17 @@ impl Inner {
         if entry.cleaned.load(Ordering::SeqCst) {
             return;
         }
+        entry.sink.set_end_reason(reason);
         let report = entry
             .control
             .stop(Some(DebugEndAction::Rollback))
             .await
             .ok();
-        if let Some(mut last) = entry.sink.last_state() {
+        // The engine reports its end through the sink (carrying `reason`); only when it did
+        // not, the manager makes the final state up.
+        if let Some(mut last) = entry.sink.last_state()
+            && !is_terminated(&last)
+        {
             last.seq += 1;
             last.status = DebugStatus::Terminated { reason, report };
             entry.sink.publish(last);
@@ -997,9 +1033,8 @@ impl DebugManager {
         }
     }
 
-    /// End every session of `session_id` (the session closed). The session manager has no
-    /// hook for it yet, so sessions also notice it themselves (`spawn_watchdog`).
-    #[allow(dead_code)] // hook for `SessionManager::close`, which package T does not own
+    /// End every session of `session_id` (called before the session closes, from the
+    /// `session_close` command); the watchdog is the fallback for other ways it can vanish.
     pub async fn stop_for_session(&self, session_id: Uuid) {
         let doomed: Vec<Arc<Entry>> = self
             .inner

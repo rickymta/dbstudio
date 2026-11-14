@@ -208,7 +208,7 @@ CREATE TABLE routine_breakpoints (
     connection_id TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
     signature     TEXT NOT NULL,
     source_hash   TEXT,
-    body_json     TEXT NOT NULL,               -- Breakpoint (JSON)
+    body_json     TEXT NOT NULL,               -- RoutineBreakpoint (JSON: routine + sourceHash + breakpoint)
     updated_at    TEXT NOT NULL
 );
 CREATE INDEX routine_breakpoints_conn ON routine_breakpoints(connection_id);"##,

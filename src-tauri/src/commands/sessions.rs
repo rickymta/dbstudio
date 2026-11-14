@@ -67,6 +67,8 @@ pub(crate) async fn reconnect_impl(
 }
 
 pub(crate) async fn close_impl(state: &AppState, session_id: Uuid) -> Result<()> {
+    // End its debug sessions first: they roll back on the leases that close next.
+    state.debug.stop_for_session(session_id).await;
     state.sessions.close(session_id).await
 }
 
