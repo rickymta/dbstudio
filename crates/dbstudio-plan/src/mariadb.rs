@@ -9,7 +9,8 @@ use dbstudio_core::PlanFormat;
 
 use crate::build::{finish, flatten_scalars, object};
 use crate::json::{self, Js};
-use crate::{PlanError, PlanNode, PlanNodeKind, PlanTotals, PlanTree};
+use crate::mysql::{push_pred, split_top};
+use crate::{PlanError, PlanNode, PlanNodeKind, PlanTotals, PlanTree, PredicateRole};
 
 const BLOCK_TOTAL: &str = "block_total_ms";
 
@@ -65,6 +66,9 @@ fn wrapper(op: &str, kind: PlanNodeKind, v: &Js) -> PlanNode {
     if let Some(r) = v.num("r_output_rows").or_else(|| v.num("r_rows")) {
         let loops = n.loops.unwrap_or(1);
         n.set_actual(r, loops);
+    }
+    for key in v.text("sort_key").map(split_top).unwrap_or_default() {
+        push_pred(&mut n, PredicateRole::SortKey, Some(&key));
     }
     n.children.push(body(v));
     n
@@ -189,6 +193,15 @@ fn table_node(t: &Js, join_buffer: Option<&Js>) -> PlanNode {
             .filter_map(|k| t.text(k).map(str::to_string))
             .collect(),
     );
+    push_pred(&mut n, PredicateRole::Filter, t.text("attached_condition"));
+    push_pred(&mut n, PredicateRole::IndexCond, t.text("index_condition"));
+    if let Some(jb) = join_buffer {
+        push_pred(
+            &mut n,
+            PredicateRole::JoinCond,
+            jb.text("attached_condition"),
+        );
+    }
     n.est_rows = t.num("rows");
     if let Some(r) = t.num("r_rows") {
         n.set_actual(r, t.num("r_loops").unwrap_or(1.0) as u64);

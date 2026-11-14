@@ -5,7 +5,53 @@ use dbstudio_core::PlanFormat;
 
 use crate::build::{finish, flatten_scalars, inherit_cost, join_conditions, object};
 use crate::json::{self, Js};
-use crate::{PlanError, PlanNode, PlanNodeKind, PlanObject, PlanTotals, PlanTree, RawRef};
+use crate::{
+    NodePredicate, PlanError, PlanNode, PlanNodeKind, PlanObject, PlanTotals, PlanTree,
+    PredicateRole, RawRef,
+};
+
+/// Comma separated pieces of `text`, ignoring commas inside brackets and quotes. Pieces are
+/// trimmed and empty ones dropped.
+pub(crate) fn split_top(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if let Some(q) = quote {
+            if c == '\\' && q != '`' {
+                chars.next();
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' | '`' => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(text[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(text[start..].trim().to_string());
+    out.retain(|p| !p.is_empty());
+    out
+}
+
+/// Add a predicate with `role` when `text` is present.
+pub(crate) fn push_pred(n: &mut PlanNode, role: PredicateRole, text: Option<&str>) {
+    if let Some(t) = text.map(str::trim).filter(|t| !t.is_empty()) {
+        n.predicates.push(NodePredicate {
+            role,
+            text: t.to_string(),
+        });
+    }
+}
 
 // ---------------------------------------------------------------------------------------------
 // JSON
@@ -174,6 +220,8 @@ fn table_node(t: &Js) -> PlanNode {
         .filter_map(|k| t.text(k).map(str::to_string))
         .collect(),
     );
+    push_pred(&mut n, PredicateRole::Filter, t.text("attached_condition"));
+    push_pred(&mut n, PredicateRole::IndexCond, t.text("index_condition"));
     let ci = t.get("cost_info");
     let read = ci.and_then(|c| c.num("read_cost"));
     let eval = ci.and_then(|c| c.num("eval_cost"));
@@ -272,6 +320,33 @@ fn node_v2(j: &Js) -> PlanNode {
         .map(str::to_string);
     if n.condition.is_none() {
         n.condition = condition_of(operation);
+    }
+    let is_join = matches!(
+        kind,
+        PlanNodeKind::HashJoin | PlanNodeKind::NestedLoopJoin | PlanNodeKind::MergeJoin
+    );
+    push_pred(
+        &mut n,
+        if is_join {
+            PredicateRole::JoinCond
+        } else {
+            PredicateRole::Filter
+        },
+        j.text("condition").or_else(|| j.text("join_condition")),
+    );
+    if is_join && n.predicates.is_empty() {
+        push_pred(
+            &mut n,
+            PredicateRole::JoinCond,
+            condition_of(operation).as_deref(),
+        );
+    }
+    push_pred(&mut n, PredicateRole::IndexCond, j.text("lookup_condition"));
+    for r in j.get("ranges").map(Js::items).unwrap_or_default() {
+        push_pred(&mut n, PredicateRole::IndexCond, Some(&r.display()));
+    }
+    for f in j.get("sort_fields").map(Js::items).unwrap_or_default() {
+        push_pred(&mut n, PredicateRole::SortKey, Some(&f.display()));
     }
     n.est_cost = j.num("estimated_total_cost");
     n.est_rows = j.num("estimated_rows");
@@ -429,7 +504,46 @@ fn parse_tree_line(rest: &str) -> PlanNode {
     if label.starts_with("Sort:") {
         n.put("Sort Key", label.trim_start_matches("Sort:").trim());
     }
+    n.predicates = tree_predicates(label, kind);
     n
+}
+
+/// Conditions of a tree line with their roles.
+fn tree_predicates(label: &str, kind: PlanNodeKind) -> Vec<NodePredicate> {
+    let mut n = PlanNode::new("x", kind);
+    if let Some(c) = label.strip_prefix("Filter: ") {
+        push_pred(&mut n, PredicateRole::Filter, Some(c));
+    } else if let Some(rest) = label.strip_prefix("Sort: ") {
+        for key in split_top(rest) {
+            if !key.starts_with("limit input") {
+                push_pred(&mut n, PredicateRole::SortKey, Some(&key));
+            }
+        }
+    } else if matches!(
+        kind,
+        PlanNodeKind::IndexSeek | PlanNodeKind::IndexScan | PlanNodeKind::IndexOnlyScan
+    ) {
+        if let Some(i) = label.find(" over ") {
+            push_pred(&mut n, PredicateRole::IndexCond, Some(&label[i + 6..]));
+        } else if label.ends_with(')') {
+            if let Some(i) = label.find(" (") {
+                for c in split_top(&label[i + 2..label.len() - 1]) {
+                    push_pred(&mut n, PredicateRole::IndexCond, Some(&c));
+                }
+            }
+        }
+    } else if matches!(kind, PlanNodeKind::HashJoin | PlanNodeKind::NestedLoopJoin)
+        && label.ends_with(')')
+    {
+        if let Some(i) = label.find(" (") {
+            push_pred(
+                &mut n,
+                PredicateRole::JoinCond,
+                Some(&label[i + 2..label.len() - 1]),
+            );
+        }
+    }
+    n.predicates
 }
 
 /// Operator label to `(kind, short op name)`.

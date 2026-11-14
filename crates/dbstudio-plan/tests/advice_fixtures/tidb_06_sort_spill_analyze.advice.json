@@ -1,0 +1,177 @@
+[
+  {
+    "actions": [],
+    "basis": "time",
+    "caveats": [
+      "descendingIndexIgnored",
+      "indexForSortSpill",
+      "noDdlForDialect"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "sortRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 100000.0
+      },
+      {
+        "actual": false,
+        "key": "sortKey",
+        "nodeId": 0,
+        "text": "amount, created DESC",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [
+      "spillToDisk"
+    ],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "columns": "amount, created DESC",
+      "rows": "100000",
+      "table": "orders"
+    },
+    "rule": "indexForSort",
+    "severity": "warning",
+    "share": 0.676,
+    "statementRange": null,
+    "table": "orders"
+  },
+  {
+    "actions": [
+      {
+        "kind": "sessionSetting",
+        "label": "raiseMemQuota",
+        "lock": "none",
+        "scope": "session",
+        "sql": "SET SESSION tidb_mem_quota_query = 33554432;",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [
+      "memoryQuotaPerQuery",
+      "spillEstimate"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "diskBytes",
+        "nodeId": 0,
+        "text": null,
+        "unit": "bytes",
+        "value": 6469713.92
+      },
+      {
+        "actual": true,
+        "key": "memoryBytes",
+        "nodeId": 0,
+        "text": null,
+        "unit": "bytes",
+        "value": 2862612.48
+      }
+    ],
+    "fromWarnings": [
+      "spillToDisk"
+    ],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "quota": "33554432",
+      "spaceBytes": "6469713.92"
+    },
+    "rule": "sortSpill",
+    "severity": "warning",
+    "share": 0.676,
+    "statementRange": null,
+    "table": null
+  },
+  {
+    "actions": [
+      {
+        "kind": "rewrite",
+        "label": "listColumns",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "planSign",
+        "nodeId": 0,
+        "text": "spill",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "sign": "spill"
+    },
+    "rule": "selectStar",
+    "severity": "info",
+    "share": 0.676,
+    "statementRange": {
+      "end": 8,
+      "start": 7
+    },
+    "table": null
+  },
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewFilter",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 2,
+        "text": null,
+        "unit": "rows",
+        "value": 100000.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      2
+    ],
+    "params": {
+      "rows": "100000",
+      "table": "orders"
+    },
+    "rule": "fullScanReview",
+    "severity": "warning",
+    "share": 0.098,
+    "statementRange": null,
+    "table": "orders"
+  }
+]

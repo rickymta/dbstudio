@@ -1,0 +1,71 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "statistics",
+        "label": "refreshStatistics",
+        "lock": "none",
+        "scope": "object",
+        "sql": "ANALYZE TABLE `plan_fx_orders`;",
+        "template": false
+      },
+      {
+        "kind": "hint",
+        "label": "compareForceIndex",
+        "lock": null,
+        "scope": "query",
+        "sql": "SELECT ... FROM `plan_fx_orders` FORCE INDEX (`created`) WHERE ...;",
+        "template": true
+      }
+    ],
+    "basis": "cost",
+    "caveats": [
+      "optimizerLikelyRight",
+      "estimatedOnly"
+    ],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "possibleKeys",
+        "nodeId": 3,
+        "text": "customer_id, created",
+        "unit": null,
+        "value": null
+      },
+      {
+        "actual": false,
+        "key": "rowsRead",
+        "nodeId": 3,
+        "text": null,
+        "unit": "rows",
+        "value": 100270.0
+      },
+      {
+        "actual": false,
+        "key": "selectivity",
+        "nodeId": 3,
+        "text": null,
+        "unit": "pct",
+        "value": 50.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      3
+    ],
+    "params": {
+      "index": "created",
+      "keys": "customer_id, created",
+      "selectivity": "50%",
+      "table": "plan_fx_orders"
+    },
+    "rule": "mysqlPossibleKeysUnused",
+    "severity": "warning",
+    "share": 0.365,
+    "statementRange": null,
+    "table": "plan_fx_orders"
+  }
+]

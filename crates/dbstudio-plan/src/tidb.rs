@@ -18,7 +18,11 @@ use dbstudio_core::PlanFormat;
 
 use crate::build::{finish, object};
 use crate::json::{self, JVal, Js};
-use crate::{PlanError, PlanNode, PlanNodeKind, PlanObject, PlanTotals, PlanTree, RawRef};
+use crate::mysql::split_top;
+use crate::{
+    NodePredicate, PlanError, PlanNode, PlanNodeKind, PlanObject, PlanTotals, PlanTree,
+    PredicateRole, RawRef,
+};
 
 /// Columns copied verbatim into `extra` (when not empty / `N/A`).
 const EXTRA_COLUMNS: &[(&str, &str)] = &[("task", "task"), ("estCost", "est_cost_text")];
@@ -126,6 +130,12 @@ fn row_node(row: &Js, id_text: &str, index: u32, analyzed: &mut bool) -> PlanNod
     n.est_cost = cell(row, "estCost").and_then(|v| v.trim().parse::<f64>().ok());
     n.object = cell(row, "access object").and_then(|a| access_object(&a));
     n.condition = cell(row, "operator info");
+    if let Some(info) = n.condition.clone() {
+        n.predicates = predicates_of(op, &info);
+    }
+    if let Some(cols) = cell(row, "access object").and_then(|a| index_columns_of(&a)) {
+        n.put("index_columns", cols);
+    }
 
     let info = cell(row, "execution info");
     let act_rows = cell(row, "actRows").and_then(|v| v.trim().parse::<f64>().ok());
@@ -158,6 +168,143 @@ fn row_node(row: &Js, id_text: &str, index: u32, analyzed: &mut bool) -> PlanNod
         n.put("disk", d);
     }
     n
+}
+
+/// `index:idx_customer(customer_id, status)` of an access object → `customer_id, status`.
+fn index_columns_of(text: &str) -> Option<String> {
+    let i = text.find("index:")?;
+    let rest = &text[i + 6..];
+    let open = rest.find('(')?;
+    let mut depth = 0i32;
+    for (k, c) in rest[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(rest[open + 1..open + k].trim().to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Name and argument text of a prefix function call `name(args)` that spans all of `t`.
+fn call(t: &str) -> Option<(&str, &str)> {
+    let open = t.find('(')?;
+    let name = &t[..open];
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut chars = t[open..].char_indices();
+    while let Some((i, c)) = chars.next() {
+        if let Some(q) = quote {
+            if c == '\\' {
+                chars.next();
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' | '`' => quote = Some(c),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (open + i + 1 == t.len()).then(|| (name, &t[open + 1..open + i]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// TiDB prints expressions in prefix form (`gt(db.t.a, 5)`); rewrite the known operators as
+/// infix SQL so the advisor can read them. Unknown functions keep their name.
+fn expr_sql(t: &str) -> String {
+    let t = t.trim();
+    let Some((name, args)) = call(t) else {
+        return t.to_string();
+    };
+    let parts: Vec<String> = split_top(args).iter().map(|a| expr_sql(a)).collect();
+    let bin = |op: &str| format!("{} {op} {}", parts[0], parts[1]);
+    match (name, parts.len()) {
+        ("eq", 2) => bin("="),
+        ("ne", 2) => bin("<>"),
+        ("gt", 2) => bin(">"),
+        ("ge", 2) => bin(">="),
+        ("lt", 2) => bin("<"),
+        ("le", 2) => bin("<="),
+        ("plus", 2) => bin("+"),
+        ("minus", 2) => bin("-"),
+        ("mul", 2) => bin("*"),
+        ("div", 2) => bin("/"),
+        ("and", 2) => format!("({}) AND ({})", parts[0], parts[1]),
+        ("or", 2) => format!("({}) OR ({})", parts[0], parts[1]),
+        ("isnull", 1) => format!("{} IS NULL", parts[0]),
+        ("not", 1) => match parts[0].strip_suffix(" IS NULL") {
+            Some(col) => format!("{col} IS NOT NULL"),
+            None => format!("NOT ({})", parts[0]),
+        },
+        ("in", n) if n >= 2 => format!("{} IN ({})", parts[0], parts[1..].join(", ")),
+        ("like", 2 | 3) => bin("LIKE"),
+        _ => format!("{name}({})", parts.join(", ")),
+    }
+}
+
+/// Conditions of an operator with their roles (the `operator info` text of a row).
+fn predicates_of(op: &str, info: &str) -> Vec<NodePredicate> {
+    let mut out = Vec::new();
+    let mut add = |role: PredicateRole, text: String| {
+        if !text.trim().is_empty() {
+            out.push(NodePredicate { role, text });
+        }
+    };
+    match op {
+        "Selection" => {
+            for c in split_top(info) {
+                add(PredicateRole::Filter, expr_sql(&c));
+            }
+        }
+        "Sort" | "TopN" => {
+            for k in split_top(info) {
+                if k.starts_with("offset:") || k.starts_with("count:") {
+                    continue;
+                }
+                let text = match k.rsplit_once(':') {
+                    Some((col, "desc")) => format!("{} DESC", expr_sql(col)),
+                    Some((col, "asc")) => expr_sql(col),
+                    _ => expr_sql(&k),
+                };
+                add(PredicateRole::SortKey, text);
+            }
+        }
+        "HashJoin" | "MergeJoin" | "IndexJoin" | "IndexHashJoin" | "IndexMergeJoin" => {
+            if let Some(i) = info.find("equal:[") {
+                let rest = &info[i + 7..];
+                let inner = rest.split_once(']').map_or(rest, |(a, _)| a);
+                for c in split_top(inner) {
+                    add(PredicateRole::JoinCond, expr_sql(&c));
+                }
+            } else if let Some(i) = info.find("equal cond:") {
+                for c in split_top(&info[i + 11..]) {
+                    if call(&c).is_some() {
+                        add(PredicateRole::JoinCond, expr_sql(&c));
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// `table:orders, index:idx_customer(customer_id), partition:p0` → table and index.
