@@ -1867,8 +1867,9 @@ impl Core {
         if let Some(p) = self.eval_proxy.take() {
             let _ = p.close().await;
         }
-        // restoring the server timeout inside a transaction would be undone by its rollback
-        if self.lease.state().transaction == TxStatus::Idle && !self.lease.state().broken {
+        // Always give the session its own timeout back, also when the transaction stays open
+        // (`Keep`): then the SET runs inside it and holds once the user commits.
+        if !self.lease.state().broken {
             self.restore_idle_timeout().await;
         }
         let report = DebugEndReport {
@@ -2003,9 +2004,11 @@ impl Core {
                     .program
                     .step_at_line(*line)
                     .ok_or_else(|| Error::Invalid(format!("no statement at line {line}")))?;
-                if target < self.cursor {
+                // The current statement runs first (or, after an error, is skipped): a target at or
+                // before it can never be reached and the run would end at the end of the script.
+                if target <= self.cursor {
                     return Err(Error::Invalid(
-                        "the cursor is behind the current statement".into(),
+                        "the cursor is not after the current statement: use Step Over".into(),
                     ));
                 }
                 RunMode::RunTo {
@@ -2493,7 +2496,21 @@ pub async fn start(
                     .await;
             }
         }
-        lease.begin(TxOptions::default()).await?;
+        if let Err(e) = lease.begin(TxOptions::default()).await {
+            if let Some(old) = &old_idle_timeout {
+                let mut s = StepSink::new(1);
+                let _ = lease
+                    .execute(
+                        QueryRequest::new(format!(
+                            "SET idle_in_transaction_session_timeout = '{}'",
+                            old.replace('\'', "''")
+                        )),
+                        &mut s,
+                    )
+                    .await;
+            }
+            return Err(e);
+        }
         owned = true;
         tx_since = Some(now);
     } else if lstate.transaction != TxStatus::Idle {

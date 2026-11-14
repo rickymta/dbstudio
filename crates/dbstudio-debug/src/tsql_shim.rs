@@ -368,7 +368,18 @@ impl TsqlShim {
             step.range.start as usize,
             step.range.end as usize,
         );
-        if self.vars.is_empty() && new_vars.is_empty() {
+        // A DECLARE met again (`GO n`, Jump To backwards) declares its variables anew: the
+        // carried copy would make the batch fail with "already declared".
+        let carried: Vec<&ShimVar> = self
+            .vars
+            .iter()
+            .filter(|v| {
+                !new_vars
+                    .iter()
+                    .any(|n| n.name.eq_ignore_ascii_case(&v.name))
+            })
+            .collect();
+        if carried.is_empty() && new_vars.is_empty() {
             // nothing declared yet: the statement runs as it is
             return Composed {
                 text: stmt.to_string(),
@@ -377,15 +388,13 @@ impl TsqlShim {
             };
         }
         let mut text = String::new();
-        if !self.vars.is_empty() {
-            let decl: Vec<String> = self
-                .vars
+        if !carried.is_empty() {
+            let decl: Vec<String> = carried
                 .iter()
                 .map(|v| format!("{} {}", v.name, v.ty))
                 .collect();
             text.push_str(&format!("DECLARE {};", decl.join(", ")));
-            let sets: Vec<String> = self
-                .vars
+            let sets: Vec<String> = carried
                 .iter()
                 .map(|v| format!("{} = {}", v.name, literal(v.value.as_ref(), &v.ty)))
                 .collect();
@@ -393,7 +402,7 @@ impl TsqlShim {
         }
         text.push_str(stmt);
         text.push_str("; SELECT ");
-        let all: Vec<&ShimVar> = self.vars.iter().chain(new_vars.iter()).collect();
+        let all: Vec<&ShimVar> = carried.iter().copied().chain(new_vars.iter()).collect();
         let cols: Vec<String> = all
             .iter()
             .map(|v| {
@@ -415,12 +424,13 @@ impl TsqlShim {
     /// Store the read-out row of a step that ran.
     pub fn absorb(&mut self, c: &Composed, row: &[Value]) {
         for v in &c.new_vars {
-            if !self
+            match self
                 .vars
-                .iter()
-                .any(|o| o.name.eq_ignore_ascii_case(&v.name))
+                .iter_mut()
+                .find(|o| o.name.eq_ignore_ascii_case(&v.name))
             {
-                self.vars.push(v.clone());
+                Some(old) => *old = v.clone(),
+                None => self.vars.push(v.clone()),
             }
         }
         for (name, value) in c.readout.iter().zip(row.iter()) {
@@ -442,6 +452,21 @@ mod tests {
 
     fn program(text: &str) -> DebugProgram {
         DebugProgram::build(ScriptDialect::MsSql, text, None).unwrap()
+    }
+
+    #[test]
+    fn a_declare_met_again_does_not_redeclare_the_carried_variable() {
+        let p = program("DECLARE @a int = 1;\nSELECT @a");
+        let mut shim = TsqlShim::new(&p);
+        let c = shim.compose(&p.steps[0], "DECLARE @a int = 1");
+        shim.absorb(&c, &[Value::Int(1)]);
+        let c = shim.compose(&p.steps[1], "SELECT @a");
+        shim.absorb(&c, &[Value::Int(1)]);
+        // Jump back (or `GO 2`): the DECLARE runs again.
+        let again = shim.compose(&p.steps[0], "DECLARE @a int = 1");
+        assert_eq!(again.text.matches("DECLARE").count(), 1, "{}", again.text);
+        shim.absorb(&again, &[Value::Int(1)]);
+        assert_eq!(shim.vars().len(), 1);
     }
 
     #[test]

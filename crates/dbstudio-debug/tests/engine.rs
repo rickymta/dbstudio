@@ -312,6 +312,17 @@ async fn run_to_cursor_stops_at_the_target_and_force_skips_breakpoints() {
         rig.h.act(back, None).await,
         Err(Error::Invalid(_))
     ));
+    // the statement the session stands on is refused too (it would run to the end)
+    let here = DebugAction::RunToCursor {
+        source: SourceRef::Script,
+        line: 4,
+        force: true,
+    };
+    assert!(matches!(
+        rig.h.act(here, None).await,
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(rig.lease.ran("SELECT 4"), 0, "nothing ran");
 }
 
 #[tokio::test]
@@ -1201,4 +1212,54 @@ async fn range_and_empty_scripts() {
         .wait_until(|s| matches!(s.status, DebugStatus::Terminated { .. }))
         .await;
     assert_eq!(terminated(&s), Some(TerminateReason::Finished));
+}
+
+#[tokio::test]
+async fn the_idle_timeout_of_the_session_comes_back_even_when_the_transaction_is_kept() {
+    for end in [DebugEndAction::Keep, DebugEndAction::Rollback] {
+        let lease = FakeLease::new(true);
+        lease.on(
+            "show idle_in_transaction_session_timeout",
+            vec![Reply::Rows(vec!["t"], vec![vec![Value::Text("5s".into())]])],
+        );
+        let mut req = request("SELECT 1;");
+        req.options.end_action = end;
+        let rig = begin_with(PG, req, lease, DebugSettings::default(), None).await;
+        rig.paused().await;
+        rig.step().await;
+        assert_eq!(
+            rig.lease
+                .ran("SET idle_in_transaction_session_timeout = '5s'"),
+            1,
+            "{end:?}: {:?}",
+            rig.lease.log()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_begin_gives_the_idle_timeout_back() {
+    let lease = FakeLease::new(true);
+    lease.on(
+        "show idle_in_transaction_session_timeout",
+        vec![Reply::Rows(vec!["t"], vec![vec![Value::Text("0".into())]])],
+    );
+    lease.fail_begin();
+    let gate = std::sync::Arc::new(FakeGate::default());
+    let r = dbstudio_debug::actor::start(
+        profile(PG),
+        lease.clone(),
+        gate,
+        std::sync::Arc::new(RecSink::default()),
+        std::sync::Arc::new(NoProxy),
+        DebugSettings::default(),
+        request("SELECT 1;"),
+        None,
+    )
+    .await;
+    assert!(r.is_err());
+    assert_eq!(
+        lease.ran("SET idle_in_transaction_session_timeout = '0'"),
+        1
+    );
 }

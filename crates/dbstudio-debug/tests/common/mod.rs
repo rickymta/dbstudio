@@ -46,6 +46,7 @@ pub struct FakeLease {
     release: Notify,
     cancelled: Notify,
     pub dialect: Mutex<Option<ScriptDialect>>,
+    fail_begin: std::sync::atomic::AtomicBool,
 }
 
 impl FakeLease {
@@ -65,7 +66,14 @@ impl FakeLease {
             release: Notify::new(),
             cancelled: Notify::new(),
             dialect: Mutex::new(None),
+            fail_begin: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// `begin` fails from now on.
+    pub fn fail_begin(&self) {
+        self.fail_begin
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Statements containing `needle` (case-insensitive) answer `reply`; several replies are
@@ -203,6 +211,9 @@ impl Lease for FakeLease {
 
     async fn begin(&self, _o: TxOptions) -> Result<()> {
         self.log.lock().unwrap().push("<begin>".into());
+        if self.fail_begin.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(Error::query("cannot begin"));
+        }
         self.state.lock().unwrap().transaction = TxStatus::Active;
         Ok(())
     }
