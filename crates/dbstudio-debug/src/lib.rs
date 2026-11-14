@@ -3,10 +3,8 @@
 //! (PostgreSQL `pldbgapi`). Pure Rust + tokio; the host (`src-tauri`) injects the guard, the
 //! event sink and the proxy-connection opener through the traits below.
 //!
-//! Step 0 (contract): the traits, helper types and module layout are final; every body that
-//! needs real work returns [`Error::Unsupported`]. Package D fills `program`, `actor`, `eval`,
-//! `inline`, `tsql_shim` and `dialect/*`; package P fills `routine/pg.rs`; package O
-//! `routine/oracle.rs`. Design: `docs/design/sql-debugger.md` section 3.6.
+//! [`DebugEngine::start`] spawns the session actor (`actor`); `routine/pg.rs` is the PostgreSQL
+//! routine debugger. Design: `docs/design/sql-debugger.md` section 3.6.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -18,7 +16,7 @@ use dbstudio_core::debug::{
     RoutineDebugSupport, RoutineRef, RoutineSource, SourceRef, WatchResult, WatchSpec,
 };
 use dbstudio_core::{
-    Capabilities, ConfirmationGrant, DbKind, Error, Lease, ParamValue, Result, ScriptAnalysis,
+    Capabilities, ConfirmationGrant, DbKind, Lease, ParamValue, Result, ScriptAnalysis,
     ScriptDialect, TxStatus,
 };
 use uuid::Uuid;
@@ -254,8 +252,14 @@ pub trait RoutineDebugger: Send {
         &mut self,
         target_done: &mut (dyn Future<Output = ()> + Send + Unpin),
     ) -> Result<RoutineStop>;
-    /// Step / continue / abort.
-    async fn command(&mut self, cmd: RoutineCommand) -> Result<RoutineStop>;
+    /// Step / continue / abort. `target_done` resolves when the target statement ended; the call
+    /// must race against it (a step at the last line of the outermost routine would otherwise
+    /// block until the server gives up).
+    async fn command(
+        &mut self,
+        cmd: RoutineCommand,
+        target_done: &mut (dyn Future<Output = ()> + Send + Unpin),
+    ) -> Result<RoutineStop>;
     /// Call stack, innermost first.
     async fn frames(&mut self) -> Result<Vec<DebugFrame>>;
     /// Select the frame Variables and Evaluate refer to.
@@ -270,17 +274,15 @@ pub trait RoutineDebugger: Send {
     async fn disarm(&mut self) -> Result<()>;
 }
 
-fn unsupported<T>(what: &str) -> Result<T> {
-    Err(Error::Unsupported(format!("sql debugger: {what}")))
-}
-
 /// Entry point: starts one debug session.
 #[derive(Debug, Clone, Copy)]
 pub struct DebugEngine;
 
 impl DebugEngine {
     /// Take over `lease` and start debugging `request.text`. Returns the client of the session
-    /// actor; the first state goes to `sink`.
+    /// actor; the first state goes to `sink`. PostgreSQL and YugabyteDB get a routine debugger
+    /// (`pldbgapi`) on a hidden proxy connection of the same server; other dialects debug the
+    /// script only.
     #[allow(clippy::too_many_arguments)]
     pub async fn start(
         profile: DialectProfile,
@@ -291,32 +293,44 @@ impl DebugEngine {
         settings: DebugSettings,
         request: DebugStartRequest,
     ) -> Result<DebugHandle> {
-        let _ = (profile, lease, gate, sink, proxy, settings, request);
-        unsupported("start")
+        let routine: Option<Box<dyn RoutineDebugger>> = match profile.kind {
+            DbKind::Postgres | DbKind::YugabyteDb => {
+                let database = lease.state().database;
+                Some(Box::new(routine::pg::PgRoutineDebugger::new(
+                    proxy.clone(),
+                    database,
+                )))
+            }
+            _ => None,
+        };
+        let inner = actor::start(
+            profile, lease, gate, sink, proxy, settings, request, routine,
+        )
+        .await?;
+        Ok(DebugHandle { inner })
     }
 }
 
-/// Client of one session actor (cheap to clone in the real implementation).
+/// Client of one session actor (the actor's handle; every call is forwarded).
 #[derive(Debug)]
 pub struct DebugHandle {
-    debug_id: Uuid,
-    lease_id: Uuid,
+    inner: actor::ActorHandle,
 }
 
 impl DebugHandle {
     /// Id of the session.
     pub fn debug_id(&self) -> Uuid {
-        self.debug_id
+        self.inner.debug_id()
     }
 
     /// Lease the session holds.
     pub fn lease_id(&self) -> Uuid {
-        self.lease_id
+        self.inner.lease_id()
     }
 
     /// Latest state snapshot.
     pub async fn snapshot(&self) -> Result<DebugState> {
-        unsupported("snapshot")
+        self.inner.snapshot().await
     }
 
     /// Resume / step / run to cursor / jump / pause; returns the `Running` state at once.
@@ -325,20 +339,17 @@ impl DebugHandle {
         action: DebugAction,
         confirm: Option<ConfirmationGrant>,
     ) -> Result<DebugState> {
-        let _ = (action, confirm);
-        unsupported("act")
+        self.inner.act(action, confirm).await
     }
 
     /// End the session; `None` = the `endAction` chosen at start. Idempotent.
     pub async fn stop(&self, end: Option<DebugEndAction>) -> Result<DebugEndReport> {
-        let _ = end;
-        unsupported("stop")
+        self.inner.stop(end).await
     }
 
     /// Evaluate an expression in the read-only frame of `frame` (default: selected).
     pub async fn evaluate(&self, expr: &str, frame: Option<u32>, echo: bool) -> Result<EvalResult> {
-        let _ = (expr, frame, echo);
-        unsupported("evaluate")
+        self.inner.evaluate(expr, frame, echo).await
     }
 
     /// Replace the breakpoints of one source.
@@ -347,44 +358,37 @@ impl DebugHandle {
         source: SourceRef,
         breakpoints: Vec<Breakpoint>,
     ) -> Result<Vec<BreakpointStatus>> {
-        let _ = (source, breakpoints);
-        unsupported("set_breakpoints")
+        self.inner.set_breakpoints(source, breakpoints).await
     }
 
     /// Mute / unmute all breakpoints.
     pub async fn set_muted(&self, muted: bool) -> Result<DebugState> {
-        let _ = muted;
-        unsupported("set_muted")
+        self.inner.set_muted(muted).await
     }
 
     /// Change a variable.
     pub async fn set_variable(&self, reference: &str, value_text: &str) -> Result<DebugVariable> {
-        let _ = (reference, value_text);
-        unsupported("set_variable")
+        self.inner.set_variable(reference, value_text).await
     }
 
     /// Children of a variable (lazy tree).
     pub async fn variable_children(&self, reference: &str) -> Result<Vec<DebugVariable>> {
-        let _ = reference;
-        unsupported("variable_children")
+        self.inner.variable_children(reference).await
     }
 
     /// Replace the watches and evaluate them when paused.
     pub async fn set_watches(&self, watches: Vec<WatchSpec>) -> Result<Vec<WatchResult>> {
-        let _ = watches;
-        unsupported("set_watches")
+        self.inner.set_watches(watches).await
     }
 
     /// Select a call-stack frame.
     pub async fn select_frame(&self, frame: u32) -> Result<DebugState> {
-        let _ = frame;
-        unsupported("select_frame")
+        self.inner.select_frame(frame).await
     }
 
     /// Source of a routine through the session's proxy.
     pub async fn routine_source(&self, routine: &RoutineRef) -> Result<RoutineSource> {
-        let _ = routine;
-        unsupported("routine_source")
+        self.inner.routine_source(routine).await
     }
 }
 
@@ -404,15 +408,5 @@ mod tests {
             ),
             (60, 900, 5_000, 200)
         );
-    }
-
-    #[tokio::test]
-    async fn the_contract_bodies_answer_unsupported() {
-        let h = DebugHandle {
-            debug_id: Uuid::nil(),
-            lease_id: Uuid::nil(),
-        };
-        assert!(matches!(h.snapshot().await, Err(Error::Unsupported(_))));
-        assert!(matches!(h.stop(None).await, Err(Error::Unsupported(_))));
     }
 }

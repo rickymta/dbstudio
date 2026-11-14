@@ -322,8 +322,34 @@ struct BpEntry {
     status: BreakpointStatus,
 }
 
+/// End of the statement task: unlike a bare `async` block it can be polled again after it
+/// resolved, as the routine debugger races several calls against it.
+struct StatementDone {
+    rx: oneshot::Receiver<()>,
+    fired: bool,
+}
+
+impl Future for StatementDone {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        if self.fired {
+            return std::task::Poll::Ready(());
+        }
+        match Pin::new(&mut self.rx).poll(cx) {
+            std::task::Poll::Ready(_) => {
+                self.fired = true;
+                std::task::Poll::Ready(())
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
 /// A statement running on the target lease while the routine debugger holds it.
 struct RoutineCtx {
+    /// Resolves (and keeps resolving) once the statement task finished.
+    done: StatementDone,
     handle: JoinHandle<(Result<ExecSummary>, StepSink)>,
     prepared: Prepared,
     at: Option<(RoutineRef, u32, u32)>,
@@ -1647,18 +1673,19 @@ impl Core {
             let _ = done_tx.send(());
             (r, sink)
         });
-        let mut done: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(async move {
-            let _ = done_rx.await;
-        });
         self.routine_ctx = Some(RoutineCtx {
+            done: StatementDone {
+                rx: done_rx,
+                fired: false,
+            },
             handle,
             prepared: p,
             at: None,
             frames: vec![],
         });
-        let stop = match self.routine.as_mut() {
-            Some(r) => r.wait(&mut done).await,
-            None => Ok(RoutineStop::TargetDone),
+        let stop = match (self.routine.as_mut(), self.routine_ctx.as_mut()) {
+            (Some(r), Some(ctx)) => r.wait(&mut ctx.done).await,
+            _ => Ok(RoutineStop::TargetDone),
         };
         self.handle_routine_stop(stop, RoutineAct::Into, true).await
     }
@@ -1736,18 +1763,19 @@ impl Core {
             .as_ref()
             .and_then(|c| c.at.as_ref().map(|a| a.2))
             .unwrap_or(1);
-        let Some(r) = self.routine.as_mut() else {
+        let (Some(r), Some(ctx)) = (self.routine.as_mut(), self.routine_ctx.as_mut()) else {
             return self.finish_routine_step(act).await;
         };
+        let done = &mut ctx.done;
         let stop = match act {
-            RoutineAct::Into => r.command(RoutineCommand::StepInto).await,
-            RoutineAct::Over => r.command(RoutineCommand::StepOver).await,
-            RoutineAct::Continue => r.command(RoutineCommand::Continue).await,
+            RoutineAct::Into => r.command(RoutineCommand::StepInto, done).await,
+            RoutineAct::Over => r.command(RoutineCommand::StepOver, done).await,
+            RoutineAct::Continue => r.command(RoutineCommand::Continue, done).await,
             RoutineAct::Out => {
                 // simulated: step over until the stack is shallower (cap 10 000)
                 let mut last = Ok(RoutineStop::TargetDone);
                 for _ in 0..10_000 {
-                    last = r.command(RoutineCommand::StepOver).await;
+                    last = r.command(RoutineCommand::StepOver, done).await;
                     match &last {
                         Ok(RoutineStop::At { depth, .. }) if *depth >= start_depth => continue,
                         _ => break,
@@ -1813,9 +1841,9 @@ impl Core {
     }
 
     async fn abort_routine(&mut self) {
-        if let Some(ctx) = self.routine_ctx.take() {
+        if let Some(mut ctx) = self.routine_ctx.take() {
             if let Some(r) = self.routine.as_mut() {
-                let _ = r.command(RoutineCommand::Abort).await;
+                let _ = r.command(RoutineCommand::Abort, &mut ctx.done).await;
                 let _ = r.disarm().await;
             }
             let qid = *self.shared.query.lock().unwrap();

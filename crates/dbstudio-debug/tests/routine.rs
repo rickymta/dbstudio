@@ -79,7 +79,11 @@ impl RoutineDebugger for FakeRoutine {
         })
     }
 
-    async fn command(&mut self, cmd: RoutineCommand) -> Result<RoutineStop> {
+    async fn command(
+        &mut self,
+        cmd: RoutineCommand,
+        _done: &mut (dyn Future<Output = ()> + Send + Unpin),
+    ) -> Result<RoutineStop> {
         self.calls.lock().unwrap().push(format!("{cmd:?}"));
         match cmd {
             RoutineCommand::StepOver | RoutineCommand::StepInto if self.line < 2 => {

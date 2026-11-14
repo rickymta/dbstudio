@@ -62,8 +62,9 @@
 //!   last routine returns do not fail at once while the target backend stays connected: they
 //!   wait ~9 s for the next call and then fail with `select() failed waiting for target`. The
 //!   engine must therefore race every blocking call against the end of the target statement
-//!   ([`PgRoutineDebugger::command_until`]); the trait method `command` does the same by polling
-//!   `pg_stat_activity` from a second hidden connection every 200 ms.
+//!   (`wait` and `command` both take the `target_done` future); without one (`step_out`, used by
+//!   tests) the end is found by polling `pg_stat_activity` from a second hidden connection every
+//!   200 ms.
 //! * **Roles.** A non-superuser cannot read `shared_preload_libraries` (permission error): the
 //!   probe reads `pg_settings`, which hides the value, and the role is refused as `NoPermission`.
 //! * **Variables.** `varclass` is `A` (argument) or `L` (local); a null value comes back as the
@@ -104,8 +105,8 @@ const TARGET_GONE: &str = "debugger connection terminated";
 /// Message of the error `pldbgapi` raises after ~9 s when the routine returned but the target
 /// backend neither exited nor called another routine: a step or `continue` issued at the last
 /// line of the outermost routine keeps waiting for the next call. The host must not wait for
-/// it: it races the call against the end of the target statement (see
-/// [`PgRoutineDebugger::command_until`]).
+/// it: it races the call against the end of the target statement (the
+/// `target_done` argument of `wait` / `command`).
 const TARGET_TIMEOUT: &str = "select() failed waiting for target";
 
 /// How often the end of the target statement is polled when the host gave no future for it.
@@ -562,7 +563,6 @@ pub struct PgRoutineDebugger {
     database: Option<String>,
     support: Option<RoutineDebugSupport>,
     target_pid: Option<i32>,
-    statement_text: Option<String>,
     proxy: Option<Arc<dyn Lease>>,
     /// Second hidden connection that polls `pg_stat_activity` for the end of the target
     /// statement while the proxy is blocked inside a `pldbg_*` call.
@@ -604,7 +604,6 @@ impl PgRoutineDebugger {
             database,
             support: None,
             target_pid: None,
-            statement_text: None,
             proxy: None,
             watcher: None,
             session: None,
@@ -631,12 +630,6 @@ impl PgRoutineDebugger {
     /// Set the target backend pid explicitly (when the host already knows it).
     pub fn set_target_pid(&mut self, pid: i32) {
         self.target_pid = Some(pid);
-    }
-
-    /// Text of the statement about to run. The `Step` of the trait carries no text, so the
-    /// engine hands it over here before calling `step_into_targets`.
-    pub fn set_statement_text(&mut self, text: impl Into<String>) {
-        self.statement_text = Some(text.into());
     }
 
     /// True while the target is stopped inside a routine.
@@ -900,17 +893,6 @@ impl PgRoutineDebugger {
         }
     }
 
-    /// Like [`RoutineDebugger::command`], racing the call against `target_done` (the end of the
-    /// target statement, the same future given to `wait`). Preferred by the engine: with the
-    /// trait method the end of the statement is found by polling every 200 ms.
-    pub async fn command_until(
-        &mut self,
-        cmd: RoutineCommand,
-        target_done: &mut (dyn Future<Output = ()> + Send + Unpin),
-    ) -> Result<RoutineStop> {
-        self.command_inner(cmd, Some(target_done)).await
-    }
-
     // ---- extras beyond the trait ----------------------------------------------------------
 
     /// Step Out, simulated (design section 2.4): `step_over` until the stack is shallower than
@@ -918,12 +900,12 @@ impl PgRoutineDebugger {
     pub async fn step_out(&mut self) -> Result<RoutineStop> {
         let start = self.depth;
         for _ in 0..STEP_OUT_LIMIT {
-            match self.command(RoutineCommand::StepOver).await? {
+            match self.command_inner(RoutineCommand::StepOver, None).await? {
                 RoutineStop::At { depth, .. } if depth >= start => continue,
                 other => return Ok(other),
             }
         }
-        self.command(RoutineCommand::Continue).await
+        self.command_inner(RoutineCommand::Continue, None).await
     }
 
     /// Set a breakpoint on the attached target (Run to Cursor, edits while paused).
@@ -1117,8 +1099,7 @@ impl RoutineDebugger for PgRoutineDebugger {
         ) {
             return Ok(Vec::new());
         }
-        let text = self.statement_text.take().unwrap_or_default();
-        self.candidates_for_text(target, &text, &step.info.targets, force)
+        self.candidates_for_text(target, &step.text, &step.info.targets, force)
             .await
     }
 
@@ -1185,8 +1166,12 @@ impl RoutineDebugger for PgRoutineDebugger {
         }
     }
 
-    async fn command(&mut self, cmd: RoutineCommand) -> Result<RoutineStop> {
-        self.command_inner(cmd, None).await
+    async fn command(
+        &mut self,
+        cmd: RoutineCommand,
+        target_done: &mut (dyn Future<Output = ()> + Send + Unpin),
+    ) -> Result<RoutineStop> {
+        self.command_inner(cmd, Some(target_done)).await
     }
 
     async fn frames(&mut self) -> Result<Vec<DebugFrame>> {

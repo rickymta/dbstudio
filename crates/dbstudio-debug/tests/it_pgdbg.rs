@@ -8,6 +8,8 @@
 //!
 //! Tests that need a server without the package use `pg16` (port 54316) and skip when it is down.
 
+mod common;
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -189,7 +191,28 @@ const OUTER: &str = "public.dbgt_outer(integer)";
 const INNER: &str = "public.dbgt_inner(integer)";
 
 type Slot = Arc<Mutex<Option<Result<Vec<dbstudio_core::StatementResult>>>>>;
-type Done = Pin<Box<dyn Future<Output = ()> + Send>>;
+/// Resolves when the background statement ended, and keeps resolving (a plain `async` block
+/// would panic when polled again after completion).
+struct Done {
+    rx: oneshot::Receiver<()>,
+    fired: bool,
+}
+
+impl Future for Done {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        if self.fired {
+            return std::task::Poll::Ready(());
+        }
+        match Pin::new(&mut self.rx).poll(cx) {
+            std::task::Poll::Ready(_) => {
+                self.fired = true;
+                std::task::Poll::Ready(())
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
 
 /// A target lease running one statement in the background, plus the debugger.
 struct Harness {
@@ -237,9 +260,7 @@ impl Harness {
             *slot.lock().unwrap() = Some(r);
             let _ = tx.send(());
         });
-        self.done = Some(Box::pin(async move {
-            let _ = rx.await;
-        }));
+        self.done = Some(Done { rx, fired: false });
     }
 
     async fn arm_and_run(
@@ -262,7 +283,8 @@ impl Harness {
     }
 
     async fn cmd(&mut self, c: RoutineCommand) -> RoutineStop {
-        timed(self.dbg.command(c)).await.expect("command")
+        let done = self.done.as_mut().expect("run() first");
+        timed(self.dbg.command(c, done)).await.expect("command")
     }
 
     /// Result of the background statement (waits for it).
@@ -322,6 +344,7 @@ fn step_of(text: &str, targets: &[&str]) -> Step {
             implicit_commit: false,
             targets: targets.iter().map(|t| t.to_string()).collect(),
         },
+        text: text.to_string(),
     }
 }
 
@@ -462,7 +485,6 @@ it!(pgdbg_step_into_outer_then_inner, async {
     h.support().await;
     // Candidates come from the statement text through the trait method.
     let text = "SELECT dbgt_outer(2)";
-    h.dbg.set_statement_text(text);
     let cands = timed(
         h.dbg
             .step_into_targets(&*h.target, &step_of(text, &[]), false),
@@ -988,3 +1010,136 @@ it!(
         target.close().await.unwrap();
     }
 );
+
+// ------------------------------------------------------------------------------------------
+// End to end through DebugEngine (real actor + PgRoutineDebugger, no fakes besides the gate)
+// ------------------------------------------------------------------------------------------
+
+async fn engine_session(text: &str) -> (dbstudio_debug::DebugHandle, Arc<dyn Session>) {
+    use dbstudio_core::Capabilities;
+    use dbstudio_core::debug::{DebugEndAction, DebugOptions, DebugStartRequest};
+    let session = connect().await;
+    fixtures(&*session).await;
+    let target = lease(&*session).await;
+    let profile = dbstudio_debug::DialectProfile {
+        kind: DbKind::Postgres,
+        flavor: None,
+        version: None,
+        dialect: target.script_dialect().unwrap_or(session.script_dialect()),
+        caps: Capabilities {
+            manual_transactions: true,
+            routine_debug: true,
+            ..Capabilities::default()
+        },
+    };
+    let request = DebugStartRequest {
+        lease_id: uuid::Uuid::new_v4(),
+        text: text.into(),
+        range: None,
+        params: vec![],
+        breakpoints: vec![],
+        routine_breakpoints: vec![],
+        watches: vec![],
+        options: DebugOptions {
+            end_action: DebugEndAction::Rollback,
+            ..Default::default()
+        },
+        muted: false,
+    };
+    let h = timed(dbstudio_debug::DebugEngine::start(
+        profile,
+        target,
+        Arc::new(common::FakeGate::default()),
+        Arc::new(common::RecSink::default()),
+        Arc::new(SessionOpener(session.clone())),
+        dbstudio_debug::DebugSettings::default(),
+        request,
+    ))
+    .await
+    .expect("start");
+    (h, session)
+}
+
+async fn settle(h: &dbstudio_debug::DebugHandle) -> dbstudio_core::debug::DebugState {
+    use dbstudio_core::debug::DebugStatus;
+    timed(async {
+        loop {
+            let s = h.snapshot().await.expect("snapshot");
+            if matches!(
+                s.status,
+                DebugStatus::Paused { .. } | DebugStatus::Terminated { .. }
+            ) {
+                return s;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+}
+
+it!(pgdbg_engine_steps_into_a_routine_and_stops, async {
+    use dbstudio_core::debug::{DebugAction, DebugStatus, PauseReason, SourceRef, TerminateReason};
+    let (h, _session) = engine_session("SELECT dbgt_outer(2);").await;
+    let s = settle(&h).await;
+    assert!(matches!(
+        s.status,
+        DebugStatus::Paused {
+            reason: PauseReason::Entry
+        }
+    ));
+    timed(h.act(DebugAction::StepInto, None)).await.unwrap();
+    let s = settle(&h).await;
+    assert!(
+        matches!(
+            s.status,
+            DebugStatus::Paused {
+                reason: PauseReason::RoutineEntry
+            }
+        ),
+        "{:?}",
+        s.status
+    );
+    let pos = s.position.clone().expect("position");
+    assert!(matches!(pos.source, SourceRef::Routine { .. }));
+    assert!(s.frames.len() >= 2, "routine frame above the script frame");
+    for _ in 0..3 {
+        timed(h.act(DebugAction::StepOver, None)).await.unwrap();
+        let s = settle(&h).await;
+        assert!(
+            matches!(s.status, DebugStatus::Paused { .. }),
+            "{:?}",
+            s.status
+        );
+    }
+    let report = timed(h.stop(None)).await.expect("stop");
+    assert!(report.rolled_back || !report.committed);
+    let end = h.snapshot().await.unwrap();
+    assert!(matches!(
+        end.status,
+        DebugStatus::Terminated {
+            reason: TerminateReason::Stopped,
+            ..
+        }
+    ));
+});
+
+it!(pgdbg_engine_resume_runs_the_routine_to_the_end, async {
+    use dbstudio_core::debug::{DebugAction, DebugStatus, TerminateReason};
+    let (h, _session) = engine_session("SELECT dbgt_outer(2);").await;
+    settle(&h).await;
+    timed(h.act(DebugAction::StepInto, None)).await.unwrap();
+    settle(&h).await;
+    timed(h.act(DebugAction::Resume, None)).await.unwrap();
+    let s = settle(&h).await;
+    assert!(
+        matches!(
+            s.status,
+            DebugStatus::Terminated {
+                reason: TerminateReason::Finished,
+                ..
+            }
+        ),
+        "{:?}",
+        s.status
+    );
+});
