@@ -128,9 +128,8 @@ pub(crate) struct Inner {
     pub(crate) is_mariadb: bool,
     /// The server is TiDB (detected from `VERSION()`): no read-only transactions, `EXPLAIN FORMAT='row'`.
     pub(crate) is_tidb: bool,
-    /// The effective `sql_mode` has `ANSI_QUOTES` / `ANSI`. Read at connect time and updated by
-    /// leases after a script changes `sql_mode`; the last writer wins (the session dialect used
-    /// by the editor follows the most recent change).
+    /// The server's `sql_mode` had `ANSI_QUOTES` / `ANSI` at connect time. Leases keep their own
+    /// dialect (`Lease::script_dialect`), because `sql_mode` is per connection.
     pub(crate) ansi_quotes: Arc<AtomicBool>,
     /// `NO_BACKSLASH_ESCAPES` was off in the server's global `sql_mode` at connect time.
     pub(crate) backslash_escapes: bool,
@@ -713,6 +712,16 @@ impl MySqlSession {
         }
         extra.insert("full_version".into(), raw.clone());
         extra.insert("flavor".into(), flavor.into());
+        if flavor == "tidb" {
+            // TiDB has no server-side read-only session or transaction (noop implementation):
+            // a read-only profile is enforced by DBStudio's statement guard only. The UI shows
+            // a badge from this key.
+            extra.insert("readOnlyEnforcement".into(), "application".into());
+            extra.insert(
+                "readOnlyNote".into(),
+                "TiDB cannot enforce read-only on the server; DBStudio's statement guard blocks writes".into(),
+            );
+        }
         let cipher: Option<Row> = conn
             .query_first("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
             .await

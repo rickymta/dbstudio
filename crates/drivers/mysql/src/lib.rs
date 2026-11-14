@@ -23,6 +23,13 @@
 //! * `raw_where` is user-trusted SQL, but must be a single expression: a lexer rejects `;` and
 //!   unbalanced parentheses and the server confirms the statement with `COM_STMT_PREPARE`.
 //!
+//! * TiDB (flavour detected from `VERSION()`): `SET SESSION TRANSACTION READ ONLY` and
+//!   `START TRANSACTION READ ONLY` are rejected by the server, so there is NO server-side
+//!   read-only layer. A read-only profile is enforced by the application's statement guard
+//!   only; `server_info().extra["readOnlyEnforcement"] == "application"` (plus
+//!   `readOnlyNote`) tells the UI to show that, and the capability `read_only_session` is
+//!   false. A user-requested read-only transaction is refused (`Unsupported`).
+//!
 //! # Tested versions and version differences
 //!
 //! The integration suite runs on MySQL 8.4, MySQL 5.7.44, MariaDB 10.4.34 and MariaDB 10.6.

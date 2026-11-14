@@ -46,6 +46,8 @@ async fn flavour_follows_the_server_not_the_profile_kind() {
             (info.product.as_str(), info.extra["flavor"].as_str()),
             ("TiDB", "tidb")
         );
+        assert_eq!(info.extra["readOnlyEnforcement"], "application");
+        assert!(info.extra["readOnlyNote"].contains("guard"));
         let caps = s.capabilities().expect("TiDB overrides the descriptor");
         assert!(
             caps.sequences && !caps.triggers && !caps.stored_routines && !caps.read_only_session
@@ -316,6 +318,16 @@ fn ansi_of(s: &dyn Session) -> bool {
     }
 }
 
+fn lease_ansi(l: &dyn dbstudio_core::Lease) -> bool {
+    match l
+        .script_dialect()
+        .expect("MySQL leases report their dialect")
+    {
+        ScriptDialect::MySql { ansi_quotes, .. } => ansi_quotes,
+        other => panic!("not a MySQL dialect: {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ansi_quotes_follow_the_lease_sql_mode() {
     if !it_enabled() {
@@ -352,18 +364,28 @@ async fn ansi_quotes_follow_the_lease_sql_mode() {
             }
         };
         run("SET SESSION sql_mode = 'ANSI_QUOTES'").await;
-        assert!(ansi_of(&*s), "[{}] ANSI_QUOTES is on after SET", t.name);
+        assert!(
+            lease_ansi(&*lease),
+            "[{}] ANSI_QUOTES is on after SET",
+            t.name
+        );
+        assert!(
+            !ansi_of(&*s),
+            "[{}] the session dialect is not changed by a lease",
+            t.name
+        );
         // `script_analyze` reports it in the dialect.
-        let analysis = dbstudio_sql::analyze(s.script_dialect(), "SELECT \"a\" FROM t");
+        let analysis =
+            dbstudio_sql::analyze(lease.script_dialect().unwrap(), "SELECT \"a\" FROM t");
         let json = serde_json::to_value(analysis.dialect).unwrap();
         assert_eq!(json["ansiQuotes"], true, "[{}] {json}", t.name);
         run("SET SESSION sql_mode = 'ANSI'").await;
-        assert!(ansi_of(&*s), "[{}] ANSI implies ANSI_QUOTES", t.name);
+        assert!(lease_ansi(&*lease), "[{}] ANSI implies ANSI_QUOTES", t.name);
         run("SET SESSION sql_mode = ''").await;
-        assert!(!ansi_of(&*s), "[{}]", t.name);
+        assert!(!lease_ansi(&*lease), "[{}]", t.name);
         // A statement that merely mentions the word does not change anything.
         run("SELECT 'sql_mode'").await;
-        assert!(!ansi_of(&*s), "[{}]", t.name);
+        assert!(!lease_ansi(&*lease), "[{}]", t.name);
         lease.close().await.unwrap();
     }
 }
@@ -479,4 +501,64 @@ async fn r6_verify_full_checks_the_server_name_not_the_tunnel_address() {
     );
     s.ping().await.unwrap();
     let _ = MySqlDriver::new();
+}
+
+/// Two leases of one session with different `sql_mode`: each reports its own dialect, so a
+/// guard that uses it splits exactly like the lease (the attack text is ONE string in the
+/// ANSI_QUOTES lease's view of `"..."` only when quotes are identifiers; here the attack hides a
+/// DELETE from a splitter using the wrong mode).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_lease_reports_its_own_dialect_and_the_guard_sees_the_delete() {
+    if !it_enabled() {
+        return;
+    }
+    let t = MYSQL8;
+    if !selected(t) {
+        return;
+    }
+    let db = scratch_db(t, "dialect_leases").await;
+    let s = user_session(t).await;
+    let open = || async {
+        s.open_lease(dbstudio_core::LeaseOptions {
+            database: Some(db.to_string()),
+            schema: None,
+            auto_commit: true,
+        })
+        .await
+        .unwrap()
+    };
+    let (a, b) = (open().await, open().await);
+    let mut sink = dbstudio_core::CollectingSink::new();
+    a.execute(
+        QueryRequest::new("SET SESSION sql_mode = 'ANSI_QUOTES,NO_BACKSLASH_ESCAPES'"),
+        &mut sink,
+    )
+    .await
+    .unwrap();
+    assert!(lease_ansi(&*a));
+    assert!(!lease_ansi(&*b), "lease B keeps its own sql_mode");
+    // The attack: with ANSI_QUOTES a double-quoted text is an identifier and `\` is a plain
+    // character, so the lexer of lease A sees `"\"` as a complete identifier and `DELETE` as
+    // a second statement; the default dialect (session / lease B) reads one string.
+    let attack = "SELECT \"\\\"; DELETE FROM t; -- \"";
+    let da = a.script_dialect().unwrap();
+    let db_ = b.script_dialect().unwrap();
+    let kinds = |d| {
+        dbstudio_sql::analyze(d, attack)
+            .statements
+            .iter()
+            .map(|x| x.class)
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        kinds(da).contains(&dbstudio_core::StatementClass::Write),
+        "the guard with lease A's dialect must see the DELETE: {:?}",
+        kinds(da)
+    );
+    assert!(
+        !kinds(db_).contains(&dbstudio_core::StatementClass::Write),
+        "the default dialect reads one string (this is why the wrong dialect was dangerous)"
+    );
+    a.close().await.unwrap();
+    b.close().await.unwrap();
 }

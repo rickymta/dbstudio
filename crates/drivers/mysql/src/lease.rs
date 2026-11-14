@@ -78,19 +78,19 @@ pub(crate) async fn open(session: &MySqlSession, opts: LeaseOptions) -> Result<B
         .map_err(map_query_error)?
         .unwrap_or_default();
     let ansi = crate::sql_mode_has_ansi_quotes(&sql_mode);
-    inner.ansi_quotes.store(ansi, Ordering::Relaxed);
+    let dialect = ScriptDialect::MySql {
+        mariadb: inner.is_mariadb,
+        backslash_escapes: !crate::sql_mode_no_backslash_escapes(&sql_mode),
+        ansi_quotes: ansi,
+    };
     let backend = MyBackend {
         killer: Arc::new(Killer {
             opts: inner.opts.clone(),
             conn_id,
         }),
-        dialect: ScriptDialect::MySql {
-            mariadb: inner.is_mariadb,
-            backslash_escapes: !crate::sql_mode_no_backslash_escapes(&sql_mode),
-            ansi_quotes: ansi,
-        },
+        dialect,
         is_tidb: inner.is_tidb,
-        ansi_flag: inner.ansi_quotes.clone(),
+        dialect_cell: Arc::new(Mutex::new(dialect)),
         conn: Some(conn),
         auto_commit: opts.auto_commit,
         in_tx: false,
@@ -862,8 +862,9 @@ struct MyBackend {
     dialect: ScriptDialect,
     /// The server is TiDB (no read-only transactions, `FORMAT='row'` plans).
     is_tidb: bool,
-    /// Session-wide copy of the `ANSI_QUOTES` flag, published when this lease changes `sql_mode`.
-    ansi_flag: Arc<AtomicBool>,
+    /// This connection's dialect, published for `Lease::script_dialect` (guard and explain
+    /// checks must split like this lease does, whatever other leases set).
+    dialect_cell: Arc<Mutex<ScriptDialect>>,
     /// `None` while a parked task owns it, or after the connection was lost / closed.
     conn: Option<Conn>,
     auto_commit: bool,
@@ -913,8 +914,8 @@ fn mentions_sql_mode(stmt: &str) -> bool {
 }
 
 impl MyBackend {
-    /// Re-read this connection's `sql_mode` and update the lexer dialect (also the session-wide
-    /// `ANSI_QUOTES` flag the editor reads). A failed read keeps the current dialect.
+    /// Re-read this connection's `sql_mode` and update the lexer dialect. A failed read keeps
+    /// the current dialect.
     async fn refresh_dialect(&mut self) {
         let Some(conn) = self.conn.as_mut() else {
             return;
@@ -935,7 +936,7 @@ impl MyBackend {
             *backslash_escapes = !crate::sql_mode_no_backslash_escapes(&mode);
             *ansi_quotes = ansi;
         }
-        self.ansi_flag.store(ansi, Ordering::Relaxed);
+        *self.dialect_cell.lock().unwrap_or_else(|e| e.into_inner()) = self.dialect;
     }
 
     fn conn(&mut self) -> Result<&mut Conn> {
@@ -1545,6 +1546,10 @@ impl LeaseBackend for MyBackend {
         // An auto-commit result in flight pins a read view and a busy connection on the
         // server: release it soon.
         (self.parked.is_some() && self.auto_commit).then_some(AUTO_COMMIT_PENDING_TTL)
+    }
+
+    fn dialect_cell(&self) -> Option<Arc<Mutex<ScriptDialect>>> {
+        Some(self.dialect_cell.clone())
     }
 
     fn canceller(&self) -> Arc<dyn Canceller> {

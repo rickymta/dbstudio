@@ -117,6 +117,12 @@ pub trait LeaseBackend: Send + 'static {
     fn pending_ttl(&self) -> Option<Duration> {
         None
     }
+    /// Shared cell holding the lexer dialect of this connection, kept current by the backend
+    /// (read by [`Lease::script_dialect`] without touching the actor). `None` (default) = the
+    /// session's dialect applies.
+    fn dialect_cell(&self) -> Option<Arc<Mutex<crate::ScriptDialect>>> {
+        None
+    }
 }
 
 /// Interrupts the call currently running on a [`LeaseBackend`].
@@ -367,6 +373,7 @@ pub struct ActorLease<B: LeaseBackend> {
     shared: Arc<Shared>,
     cmd_tx: mpsc::UnboundedSender<Cmd>,
     canceller: Arc<dyn Canceller>,
+    dialect: Option<Arc<Mutex<crate::ScriptDialect>>>,
     task: Mutex<Option<JoinHandle<()>>>,
     tuning: LeaseTuning,
     report: tokio::sync::Mutex<Option<LeaseCloseReport>>,
@@ -404,12 +411,14 @@ impl<B: LeaseBackend> ActorLease<B> {
             }),
         });
         let canceller = backend.canceller();
+        let dialect = backend.dialect_cell();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let task = handle.spawn(run_actor(backend, shared.clone(), cmd_rx, tuning));
         Ok(ActorLease {
             shared,
             cmd_tx,
             canceller,
+            dialect,
             task: Mutex::new(Some(task)),
             tuning,
             report: tokio::sync::Mutex::new(None),
@@ -563,6 +572,12 @@ impl<B: LeaseBackend> Drop for ActorLease<B> {
 
 #[async_trait]
 impl<B: LeaseBackend> Lease for ActorLease<B> {
+    fn script_dialect(&self) -> Option<crate::ScriptDialect> {
+        self.dialect
+            .as_ref()
+            .map(|d| *d.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     async fn execute(&self, req: QueryRequest, sink: &mut dyn ResultSink) -> Result<ExecSummary> {
         let query_id = req.query_id;
         let slot = self.claim(Some(query_id))?;
