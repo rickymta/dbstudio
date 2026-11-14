@@ -46,7 +46,9 @@
     "server": "Máy chủ {{version}}",
     "layoutFailed": "Không dàn được sơ đồ: {{message}}",
     "sessionLost": "Phiên kết nối đã mất",
-    "sessionLostHint": "Kết nối tới máy chủ đã bị mất. Hãy kết nối lại rồi chạy lại."
+    "sessionLostHint": "Kết nối tới máy chủ đã bị mất. Hãy kết nối lại rồi chạy lại.",
+    "reconnected": "Đã kết nối lại",
+    "reconnectedAnalyze": "Kết nối đã trở lại. ANALYZE thực thi câu lệnh nên không tự chạy lại — hãy bấm chạy lại khi bạn sẵn sàng."
   },
   "summary": {
     "totalCost": "Tổng chi phí",
@@ -176,7 +178,11 @@
       "partial": "Chỉ đối chiếu được một phần — độ tin cậy đã hạ",
       "unavailable": "Không lấy được metadata — độ tin cậy đã hạ",
       "disabled": "Đã tắt đối chiếu index hiện có",
-      "failed": "Không đối chiếu được với index hiện có"
+      "failed": "Không đối chiếu được với index hiện có",
+      "reason": {
+        "planWithoutConnection": "Plan không thuộc kết nối này — không đối chiếu bảng",
+        "dialectMismatch": "Plan thuộc loại CSDL khác — không đối chiếu bảng"
+      }
     },
     "confidence": {
       "high": "Tin cậy cao",
@@ -591,6 +597,7 @@
       "writeOverhead": "Mỗi index làm chậm insert, update và tốn dung lượng đĩa.",
       "expressionMustBeImmutable": "Biểu thức phải là immutable mới đánh index được.",
       "extendsIndex": "Thay thế hoặc mở rộng index hiện có; chỉ xoá index cũ sau khi kiểm tra các truy vấn khác.",
+      "rebuildKeepsOptions": "Bản dựng lại giữ thứ tự khoá và cột INCLUDE của index cũ; hãy kiểm tra thêm nén, fillfactor và filegroup — chúng không được đọc ở đây.",
       "onlineDdlMayFail": "Tạo index online có thể thất bại hoặc phải chờ giao dịch dài.",
       "selectivityHigh": "Điều kiện giữ lại phần lớn dòng nên index có thể không giúp.",
       "serverSuggestion": "Do máy chủ gợi ý chỉ dựa trên truy vấn này; hãy xem lại trước khi tạo.",

@@ -46,7 +46,9 @@
     "server": "Server {{version}}",
     "layoutFailed": "The diagram could not be laid out: {{message}}",
     "sessionLost": "The connection session was lost",
-    "sessionLostHint": "The connection to the server is gone. Reconnect, then run again."
+    "sessionLostHint": "The connection to the server is gone. Reconnect, then run again.",
+    "reconnected": "Reconnected",
+    "reconnectedAnalyze": "The connection is back. ANALYZE runs the statement, so it was not repeated on its own — run it again when you are ready."
   },
   "summary": {
     "totalCost": "Total cost",
@@ -176,7 +178,11 @@
       "partial": "Only partly matched — confidence lowered",
       "unavailable": "Could not read metadata — confidence lowered",
       "disabled": "Matching against existing indexes is off",
-      "failed": "Could not match against existing indexes"
+      "failed": "Could not match against existing indexes",
+      "reason": {
+        "planWithoutConnection": "Not a plan of this connection — tables were not matched",
+        "dialectMismatch": "The plan belongs to another database product — tables were not matched"
+      }
     },
     "confidence": {
       "high": "High confidence",
@@ -591,6 +597,7 @@
       "writeOverhead": "Every index slows down inserts and updates and uses disk space.",
       "expressionMustBeImmutable": "The expression must be immutable to be indexed.",
       "extendsIndex": "Replaces or extends an existing index; drop the old one only after checking other queries.",
+      "rebuildKeepsOptions": "The rebuild keeps the key order and INCLUDE columns of the old index, but check its compression, fill factor and filegroup — they are not read here.",
       "onlineDdlMayFail": "Online index creation may fail or wait on long transactions.",
       "selectivityHigh": "The condition keeps most rows, so an index may not help.",
       "serverSuggestion": "Suggested by the server from this query alone; review before creating.",

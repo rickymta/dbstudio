@@ -42,14 +42,21 @@ export const planApi = {
     raw: RawPlan,
     database?: string | null,
     rules?: PlanRules | null,
+    /** `false` for a plan that does not come from this connection (opened from a file). */
+    useCatalog?: boolean,
   ): Promise<AdviceReport> =>
-    call('plan_advise', () => mock.planAdvise(sessionId, leaseId, raw, database ?? null), {
-      sessionId,
-      leaseId,
-      raw,
-      database: database ?? null,
-      rules: rules ?? null,
-    }),
+    call(
+      'plan_advise',
+      () => mock.planAdvise(sessionId, leaseId, raw, database ?? null, useCatalog ?? true),
+      {
+        sessionId,
+        leaseId,
+        raw,
+        database: database ?? null,
+        rules: rules ?? null,
+        useCatalog: useCatalog ?? true,
+      },
+    ),
   /** Save a `.dbplan.json`; resolves to the path (`null` = cancelled). */
   planFileSave: (raw: RawPlan): Promise<string | null> =>
     call('plan_file_save', () => mock.planFileSave(raw), { raw }),

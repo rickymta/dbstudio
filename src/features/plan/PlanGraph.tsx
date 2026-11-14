@@ -264,10 +264,13 @@ function FollowSelection({
   layout: PlanLayout;
 }) {
   const flow = useReactFlow();
+  // The nodes of THIS diagram: another plan tab may be mounted with the same node ids.
+  const domNode = useStore((st) => st.domNode);
   const focus = useAdviceFocus();
   const handled = useRef(0);
   useEffect(() => {
-    if (selectedId == null) return;
+    // The diagram is not in the document yet (its container is known after the first render).
+    if (selectedId == null || !domNode) return;
     const p = layout.positions.get(selectedId);
     if (!p) return;
     const fresh = focus != null && focus.seq !== handled.current;
@@ -279,12 +282,12 @@ function FollowSelection({
     if (fresh) {
       for (const id of focus.nodeIds) {
         if (id === selectedId) continue;
-        flashElement(document.querySelector(`.react-flow__node[data-id="${id}"]`));
+        flashElement(domNode.querySelector(`.react-flow__node[data-id="${id}"]`));
       }
     }
     // Only when the selection changes, not on every zoom.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, layout, focus?.seq]);
+  }, [selectedId, layout, focus?.seq, domNode]);
   return null;
 }
 

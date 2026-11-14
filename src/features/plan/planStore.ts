@@ -15,6 +15,11 @@ export interface PlanEntry {
   leaseId: Uuid | null;
   /** Editor tab (`tabStateId`) the plan was explained from: "Insert into editor" appends there. */
   sourceEditorId?: string | null;
+  /**
+   * The plan comes from this connection (explained in the tab). `false` for a plan opened from
+   * a file: its tables are not looked up in the catalog of the session that happens to be open.
+   */
+  catalog?: boolean;
   /** What was asked; `null` for a plan opened from a file. */
   request: ExplainRequest | null;
   /** The statement text (also set for plans opened from a file). */

@@ -29,7 +29,8 @@ import { Spinner } from '@/components/ui/Spinner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { toast } from '@/components/ui/toastStore';
 import { ipc, toIpcError } from '@/lib/ipc';
-import { isSessionLost, reconnectSession } from '@/stores/sessionRecovery';
+import { useSessionReconnect } from '@/features/connections/useSessionReconnect';
+import { isSessionLost } from '@/stores/sessionRecovery';
 import type { PlanTabPayload } from '@/stores/tabs';
 import { openPlanFile } from './open';
 import { adviceNodeSet } from './adviceModel';
@@ -98,6 +99,9 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
         ? true
         : width < INSPECTOR_AUTO_COLLAPSE_PX;
   const [reconnecting, setReconnecting] = useState(false);
+  const { reconnect: reconnectWithPrompts, dialog: reconnectDialog } = useSessionReconnect();
+  // Session that was restored after a loss while the last request was an ANALYZE.
+  const [restoredFor, setRestoredFor] = useState<string | null>(null);
 
   // Query Advisor: tier 2 is asked once per plan; the inspector, the summary strip, the marks on
   // the nodes and the compare dialog all read the same answer.
@@ -178,7 +182,7 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
   const analyzing = entry.request?.analyze ?? false;
   // Ask the backend's parser whether the statement writes before an ANALYZE (which runs it).
   const requestAnalyze = (kind: 'analyze' | 'rerun') =>
-    void statementWrites(sessionId, entry.statement).then((w) => {
+    void statementWrites(entry.sessionId, entry.statement).then((w) => {
       setWrites(w);
       if (w) setConfirm(kind);
       else void runPlan(planId, { analyze: true });
@@ -356,10 +360,16 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
   const reconnect = () => {
     setReconnecting(true);
     const stale = entry.sessionId;
-    void reconnectSession(stale, entry.connectionId)
+    void reconnectWithPrompts(stale, entry.connectionId)
       .then((info) => {
         usePlanStore.getState().patch(planId, { sessionId: info.sessionId, leaseId: null });
-        void runPlan(planId);
+        if (entry.request?.analyze) {
+          // ANALYZE executes the statement, and the dedicated connection it ran on is gone:
+          // never repeat it unasked, the user presses the button.
+          setRestoredFor(info.sessionId);
+        } else {
+          void runPlan(planId);
+        }
       })
       .catch((e: unknown) => toast.error(toIpcError(e).message))
       .finally(() => setReconnecting(false));
@@ -376,7 +386,18 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
   } else if (entry.status === 'error') {
     body = (
       <div className="flex flex-1 items-center justify-center">
-        {entry.error && isSessionLost(entry.error) ? (
+        {entry.sessionId === restoredFor && entry.error && isSessionLost(entry.error) ? (
+          <EmptyState
+            title={t('status.reconnected')}
+            description={t('status.reconnectedAnalyze')}
+            action={
+              <Button variant="primary" onClick={() => requestAnalyze('rerun')}>
+                <Play size={13} />
+                {t('toolbar.rerun')}
+              </Button>
+            }
+          />
+        ) : entry.error && isSessionLost(entry.error) ? (
           <EmptyState
             title={t('status.sessionLost')}
             description={t('status.sessionLostHint')}
@@ -393,7 +414,9 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
             description={entry.error ? explainErrorMessage(t, entry.error) : undefined}
             action={
               entry.request && (
-                <Button onClick={() => void runPlan(planId)}>
+                <Button
+                  onClick={() => (analyzing ? requestAnalyze('rerun') : void runPlan(planId))}
+                >
                   <Play size={13} />
                   {t('toolbar.rerun')}
                 </Button>
@@ -517,6 +540,7 @@ export const PlanTab: FC<PlanTabPayload> = ({ planId, sessionId, connectionId })
 
   return (
     <div ref={rootRef} className="flex h-full min-h-0 flex-col" data-testid="plan-tab">
+      {reconnectDialog}
       {header}
       {tree && (
         <AdviceSummary ranked={ranked} tree={tree} status={adviceStatus} onView={viewAdvice} />

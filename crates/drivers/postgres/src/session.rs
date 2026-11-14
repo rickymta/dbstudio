@@ -228,7 +228,8 @@ impl Session for PostgresSession {
             .query_one(
                 "SELECT version(), current_setting('server_version'), \
                         current_setting('server_version_num'), current_setting('server_encoding'), \
-                        current_database()::text, current_user::text",
+                        current_database()::text, current_user::text, \
+                        array_to_string(current_schemas(true), chr(31))",
                 &[],
             )
             .await
@@ -274,6 +275,9 @@ impl Session for PostgresSession {
         info.extra
             .insert("database".into(), row.get::<_, String>(4));
         info.extra.insert("user".into(), row.get::<_, String>(5));
+        // `current_schemas(true)`, in search order (unit separator between names).
+        info.extra
+            .insert("searchPath".into(), row.get::<_, String>(6));
         if let Some(tz) = self.shared.server_timezone() {
             info.extra.insert("timezone".into(), tz.to_string());
         }

@@ -371,6 +371,8 @@ export interface AdviceMetadata {
   failed: TableFailure[];
   skipped: number;
   elapsedMs: number;
+  /** Why the catalog was not read although it was wanted. */
+  reason?: 'planWithoutConnection' | 'dialectMismatch' | null;
 }
 
 export interface AdviceReport {

@@ -407,6 +407,10 @@ pub struct AdviceMetadata {
     pub skipped: u32,
     /// Time spent.
     pub elapsed_ms: u64,
+    /// Why the catalog was not consulted although it was wanted: `planWithoutConnection` (a plan
+    /// from a file or the history), `dialectMismatch` (the plan belongs to another product than
+    /// the connection).
+    pub reason: Option<String>,
 }
 
 /// Result of `plan_advise`.

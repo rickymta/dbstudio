@@ -99,7 +99,7 @@ pub(crate) fn quote_ident(dialect: ScriptDialect, name: &str) -> String {
             let safe = name.chars().enumerate().all(|(i, c)| {
                 c == '_' || c.is_ascii_lowercase() || (i > 0 && (c.is_ascii_digit() || c == '$'))
             }) && !name.is_empty();
-            if safe && !PG_RESERVED.contains(&name) {
+            if safe && PG_RESERVED.binary_search(&name).is_err() {
                 name.to_string()
             } else {
                 dbstudio_sql::Dialect::new(dialect).quote_ident(name)
@@ -109,7 +109,8 @@ pub(crate) fn quote_ident(dialect: ScriptDialect, name: &str) -> String {
     }
 }
 
-/// Reserved words of PostgreSQL that cannot be used as bare identifiers.
+/// Words PostgreSQL 16 reserves, plus those of the `type_func_name` category (`left`, `join`,
+/// `like`...) that cannot be a bare column name either. Sorted for binary search.
 const PG_RESERVED: &[&str] = &[
     "all",
     "analyse",
@@ -120,17 +121,23 @@ const PG_RESERVED: &[&str] = &[
     "as",
     "asc",
     "asymmetric",
+    "authorization",
+    "binary",
     "both",
     "case",
     "cast",
     "check",
     "collate",
+    "collation",
     "column",
+    "concurrently",
     "constraint",
     "create",
+    "cross",
     "current_catalog",
     "current_date",
     "current_role",
+    "current_schema",
     "current_time",
     "current_timestamp",
     "current_user",
@@ -146,35 +153,52 @@ const PG_RESERVED: &[&str] = &[
     "fetch",
     "for",
     "foreign",
+    "freeze",
     "from",
+    "full",
     "grant",
     "group",
     "having",
+    "ilike",
     "in",
     "initially",
+    "inner",
     "intersect",
     "into",
+    "is",
+    "isnull",
+    "join",
     "lateral",
     "leading",
+    "left",
+    "like",
     "limit",
     "localtime",
     "localtimestamp",
+    "natural",
     "not",
+    "notnull",
     "null",
     "offset",
     "on",
     "only",
     "or",
     "order",
+    "outer",
+    "overlaps",
     "placing",
     "primary",
     "references",
     "returning",
+    "right",
     "select",
     "session_user",
+    "similar",
     "some",
     "symmetric",
+    "system_user",
     "table",
+    "tablesample",
     "then",
     "to",
     "trailing",
@@ -184,18 +208,176 @@ const PG_RESERVED: &[&str] = &[
     "user",
     "using",
     "variadic",
+    "verbose",
     "when",
     "where",
     "window",
     "with",
 ];
 
-/// Lower-case, drop whitespace and parentheses: a crude canonical form for comparing the
-/// expression of a suggestion with the one the catalog printed.
+/// Words Oracle reserves (`V$RESERVED_WORDS` with `RESERVED = Y`, plus the SQL reference list);
+/// an unquoted identifier named like one fails. Sorted for binary search.
+const ORACLE_RESERVED: &[&str] = &[
+    "ACCESS",
+    "ADD",
+    "ALL",
+    "ALTER",
+    "AND",
+    "ANY",
+    "AS",
+    "ASC",
+    "AUDIT",
+    "BETWEEN",
+    "BY",
+    "CHAR",
+    "CHECK",
+    "CLUSTER",
+    "COLUMN",
+    "COLUMN_VALUE",
+    "COMMENT",
+    "COMPRESS",
+    "CONNECT",
+    "CREATE",
+    "CURRENT",
+    "DATE",
+    "DECIMAL",
+    "DEFAULT",
+    "DELETE",
+    "DESC",
+    "DISTINCT",
+    "DROP",
+    "ELSE",
+    "EXCLUSIVE",
+    "EXISTS",
+    "FILE",
+    "FLOAT",
+    "FOR",
+    "FROM",
+    "GRANT",
+    "GROUP",
+    "HAVING",
+    "IDENTIFIED",
+    "IMMEDIATE",
+    "IN",
+    "INCREMENT",
+    "INDEX",
+    "INITIAL",
+    "INSERT",
+    "INTEGER",
+    "INTERSECT",
+    "INTO",
+    "IS",
+    "LEVEL",
+    "LIKE",
+    "LOCK",
+    "LONG",
+    "MAXEXTENTS",
+    "MINUS",
+    "MLSLABEL",
+    "MODE",
+    "MODIFY",
+    "NESTED_TABLE_ID",
+    "NOAUDIT",
+    "NOCOMPRESS",
+    "NOT",
+    "NOWAIT",
+    "NULL",
+    "NUMBER",
+    "OF",
+    "OFFLINE",
+    "ON",
+    "ONLINE",
+    "OPTION",
+    "OR",
+    "ORDER",
+    "PCTFREE",
+    "PRIOR",
+    "PUBLIC",
+    "RAW",
+    "RENAME",
+    "RESOURCE",
+    "REVOKE",
+    "ROW",
+    "ROWID",
+    "ROWNUM",
+    "ROWS",
+    "SELECT",
+    "SESSION",
+    "SET",
+    "SHARE",
+    "SIZE",
+    "SMALLINT",
+    "START",
+    "SUCCESSFUL",
+    "SYNONYM",
+    "SYSDATE",
+    "TABLE",
+    "THEN",
+    "TO",
+    "TRIGGER",
+    "UID",
+    "UNION",
+    "UNIQUE",
+    "UPDATE",
+    "USER",
+    "VALIDATE",
+    "VALUES",
+    "VARCHAR",
+    "VARCHAR2",
+    "VIEW",
+    "WHENEVER",
+    "WHERE",
+    "WITH",
+];
+
+/// Harmless text casts the catalog adds (`(email)::text`): dropped before comparing.
+const TEXT_CASTS: &[&str] = &[
+    "character varying",
+    "varchar",
+    "bpchar",
+    "character",
+    "text",
+    "name",
+];
+
+/// Remove `::text`, `::character varying(20)`... (the type must end at a word boundary).
+fn strip_text_casts(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(p) = rest.find("::") {
+        out.push_str(&rest[..p]);
+        let after = &rest[p + 2..];
+        let hit = TEXT_CASTS.iter().find_map(|t| {
+            let tail = after.strip_prefix(t)?;
+            let tail = match tail.strip_prefix('(') {
+                Some(r) => r.split_once(')').map_or(tail, |(_, r)| r),
+                None => tail,
+            };
+            let boundary = tail
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '['));
+            boundary.then_some(tail)
+        });
+        match hit {
+            Some(tail) => rest = tail,
+            None => {
+                out.push_str("::");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Lower-case, drop harmless text casts, whitespace and parentheses: a crude canonical form for
+/// comparing the expression of a suggestion with the one the catalog printed
+/// (`(lower((email)::text))` against `lower(email)`).
 fn normalize_expr(s: &str) -> String {
-    s.chars()
+    strip_text_casts(&s.to_lowercase())
+        .chars()
         .filter(|c| !c.is_whitespace() && *c != '(' && *c != ')' && *c != '"')
-        .flat_map(char::to_lowercase)
         .collect()
 }
 
@@ -305,7 +487,10 @@ fn oracle_safe(name: &str) -> bool {
 
 /// Identifier as SQL for the connection's product.
 fn q(ctx: &AdvisorContext<'_>, name: &str) -> String {
-    if ctx.flavor() == Flavor::Oracle && oracle_safe(name) {
+    if ctx.flavor() == Flavor::Oracle
+        && oracle_safe(name)
+        && ORACLE_RESERVED.binary_search(&name).is_err()
+    {
         name.to_string()
     } else {
         quote_ident(ctx.dialect, name)
@@ -334,6 +519,8 @@ struct Known {
     name: String,
     /// Key columns, lower-cased, without direction.
     keys: Vec<String>,
+    /// Which of `keys` are descending.
+    desc: Vec<bool>,
     /// INCLUDE / STORING columns read from the definition (original case).
     include: Vec<String>,
     unique: bool,
@@ -341,8 +528,13 @@ struct Known {
     method: Option<String>,
 }
 
+/// The key is declared descending (`col DESC`).
+pub(crate) fn has_desc(s: &str) -> bool {
+    s.trim_end().to_ascii_lowercase().ends_with(" desc")
+}
+
 /// `col DESC` to `col`.
-fn strip_direction(s: &str) -> &str {
+pub(crate) fn strip_direction(s: &str) -> &str {
     let t = s.trim_end();
     let lower = t.to_ascii_lowercase();
     for suffix in [" desc", " asc"] {
@@ -414,6 +606,7 @@ fn known_indexes(flavor: Flavor, meta: &TableMeta) -> Vec<Known> {
                     }
                 })
                 .collect(),
+            desc: ix.columns.iter().map(|c| has_desc(c)).collect(),
             include: included_columns(ix.definition.as_deref()),
             unique: ix.unique,
             primary: ix.primary,
@@ -520,37 +713,25 @@ fn js_ident(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
+/// A JavaScript string literal: quotes, backslashes and every line terminator escaped.
 fn js_str(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
-
-/// Collection methods and JavaScript words a collection name must not collide with.
-const JS_RESERVED: &[&str] = &[
-    "aggregate",
-    "class",
-    "constructor",
-    "count",
-    "createIndex",
-    "default",
-    "delete",
-    "drop",
-    "dropIndex",
-    "find",
-    "findOne",
-    "function",
-    "getIndexes",
-    "getName",
-    "insert",
-    "new",
-    "remove",
-    "save",
-    "stats",
-    "toString",
-    "update",
-    "valueOf",
-    "validate",
-    "var",
-];
 
 fn mongo_ddl(t: &TableRef, keys: &[IndexKey], name: &str) -> String {
     let db = t.database.as_ref().or(t.schema.as_ref());
@@ -558,11 +739,8 @@ fn mongo_ddl(t: &TableRef, keys: &[IndexKey], name: &str) -> String {
         Some(d) => format!("db.getSiblingDB({})", js_str(d)),
         None => "db".to_string(),
     };
-    let coll = if js_ident(&t.name) && !JS_RESERVED.contains(&t.name.as_str()) {
-        format!(".{}", t.name)
-    } else {
-        format!(".getCollection({})", js_str(&t.name))
-    };
+    // Always `getCollection("..")`: a property access breaks on names such as `stats` or `a-b`.
+    let coll = format!(".getCollection({})", js_str(&t.name));
     let fields: Vec<String> = keys
         .iter()
         .map(|k| {
@@ -680,7 +858,19 @@ pub(crate) fn render(ctx: &AdvisorContext<'_>, c: &IndexCandidate) -> IndexOutco
         _ => {}
     }
     if let Some(i) = replace {
-        // DROP_EXISTING rebuilds the old index: keep what it already includes.
+        // DROP_EXISTING rebuilds the old index: keep what it already includes and the
+        // direction of the key columns it already has.
+        for k in keys.iter_mut() {
+            if let Some(col) = &k.column {
+                let col = col.to_lowercase();
+                if let Some(pos) = known[i].keys.iter().position(|x| *x == col) {
+                    if known[i].desc.get(pos).copied().unwrap_or(false) {
+                        k.desc = true;
+                    }
+                }
+            }
+        }
+        caveats.push(caveat("rebuildKeepsOptions", true));
         for old in &known[i].include {
             if !include.iter().any(|x| x.eq_ignore_ascii_case(old)) {
                 include.push(old.clone());
@@ -1303,6 +1493,85 @@ mod tests {
     }
 
     #[test]
+    fn drop_existing_keeps_desc_and_asks_to_check_options() {
+        let rig = Rig::new(PlanFormat::MsSqlShowplanXml, "16.0");
+        let mut ctx = rig.ctx();
+        ctx.server.edition = Some("Enterprise Edition (64-bit)".into());
+        let mut old = index("IX_Orders_Date", &["OrderDate DESC"]);
+        old.method = Some("NONCLUSTERED".into());
+        ctx.tables
+            .insert(TableKey::new(Some("dbo"), "Orders"), meta(None, vec![old]));
+        let c = cand(&ctx, "Orders", &["OrderDate", "CustomerId"], 0);
+        let (text, _, caveats) = created(render(&ctx, &c));
+        assert!(text.contains("([OrderDate] DESC, [CustomerId])"), "{text}");
+        assert!(text.contains("DROP_EXISTING"), "{text}");
+        assert!(has(&caveats, "rebuildKeepsOptions"));
+    }
+
+    #[test]
+    fn keyword_columns_are_quoted() {
+        // type_func_name keywords of PostgreSQL 16.
+        for w in [
+            "left", "right", "join", "full", "like", "is", "verbose", "binary",
+        ] {
+            assert_eq!(
+                quote_ident(ScriptDialect::Postgres, w),
+                format!("\"{w}\""),
+                "{w}"
+            );
+        }
+        assert_eq!(quote_ident(ScriptDialect::Postgres, "status"), "status");
+        assert!(PG_RESERVED.windows(2).all(|w| w[0] < w[1]), "sorted");
+        assert!(ORACLE_RESERVED.windows(2).all(|w| w[0] < w[1]), "sorted");
+        let rig = Rig::new(PlanFormat::PostgresJson, "16.2");
+        let ctx = rig.ctx();
+        let c = cand(&ctx, "tree", &["left"], 1);
+        assert!(sql(render(&ctx, &c)).contains("ON public.tree (\"left\")"));
+        let rig = Rig::new(PlanFormat::OraclePlanRows, "19.0");
+        let ctx = rig.ctx();
+        let c = cand(&ctx, "T", &["LEVEL", "DATE", "SIZE", "NAME"], 4);
+        let text = sql(render(&ctx, &c));
+        assert!(
+            text.contains("(\"LEVEL\", \"DATE\", \"SIZE\", NAME)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn catalog_expression_with_casts_matches_the_suggestion() {
+        assert_eq!(
+            normalize_expr("(lower((email)::text))"),
+            normalize_expr("(lower(email))")
+        );
+        assert_eq!(
+            normalize_expr("lower((email)::character varying(40))"),
+            normalize_expr("(lower(\"email\"))")
+        );
+        // A numeric cast is not harmless.
+        assert_ne!(normalize_expr("(id)::numeric"), normalize_expr("id"));
+        assert_ne!(normalize_expr("(a)::text[]"), normalize_expr("a"));
+        let rig = Rig::new(PlanFormat::PostgresJson, "16.2");
+        let mut ctx = rig.ctx();
+        ctx.tables.insert(
+            TableKey::new(Some("public"), "users"),
+            meta(
+                None,
+                vec![index("ix_users_lower_email", &["(lower((email)::text))"])],
+            ),
+        );
+        let c = IndexCandidate {
+            table: table_for(Flavor::Postgres, "users"),
+            keys: vec![IndexKey::expression(
+                "(lower(email))".into(),
+                "lower_email".into(),
+            )],
+            eq_count: 0,
+            include: vec![],
+        };
+        assert!(matches!(render(&ctx, &c), IndexOutcome::Existing { .. }));
+    }
+
+    #[test]
     fn existing_index_cases_mssql_use_drop_existing() {
         let rig = Rig::new(PlanFormat::MsSqlShowplanXml, "16.0");
         let mut ctx = rig.ctx();
@@ -1430,11 +1699,19 @@ mod tests {
         let (text, name, _) = created(render(&ctx, &c));
         assert_eq!(
             text,
-            "db.getSiblingDB(\"shop\").orders.createIndex({ status: 1, \"created.at\": -1 }, { name: \"status_1_created.at_-1\" })"
+            "db.getSiblingDB(\"shop\").getCollection(\"orders\").createIndex({ status: 1, \"created.at\": -1 }, { name: \"status_1_created.at_-1\" })"
         );
         assert_eq!(name, "status_1_created.at_-1");
         let odd = cand(&ctx, "order-items", &["a"], 1);
         assert!(sql(render(&ctx, &odd)).contains(".getCollection(\"order-items\").createIndex("));
+        let hostile = cand(&ctx, "a\nb\u{2028}c\"d", &["x\ry"], 1);
+        let text = sql(render(&ctx, &hostile));
+        assert!(
+            text.contains(".getCollection(\"a\\nb\\u2028c\\\"d\")"),
+            "{text}"
+        );
+        assert!(text.contains("\"x\\ry\": 1"), "{text}");
+        assert!(!text.contains('\n') && !text.contains('\u{2028}') && !text.contains('\r'));
         let reserved = cand(&ctx, "stats", &["a"], 1);
         assert!(sql(render(&ctx, &reserved)).contains(".getCollection(\"stats\")"));
         // Server-named existing index with the same fields.

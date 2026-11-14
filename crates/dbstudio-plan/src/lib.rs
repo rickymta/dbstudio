@@ -590,6 +590,7 @@ mod tests {
                         }],
                         skipped: 1,
                         elapsed_ms: 3_000,
+                        reason: None,
                     },
                 }),
                 "PlanRules": j(&PlanRules::default()),

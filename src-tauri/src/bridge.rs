@@ -430,7 +430,7 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
         }
         "plan_parse" => {
             args!(raw: RawPlan = "raw", rules: Option<PlanRules> = "rules");
-            Some(out(plan::parse_impl(state, raw, rules)))
+            call!(plan::parse_impl(state, raw, rules))
         }
         "plan_advise" => {
             args!(
@@ -438,9 +438,18 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
                 lease: Option<Uuid> = "leaseId",
                 raw: RawPlan = "raw",
                 database: Option<String> = "database",
-                rules: Option<PlanRules> = "rules"
+                rules: Option<PlanRules> = "rules",
+                use_catalog: Option<bool> = "useCatalog"
             );
-            call!(plan::advise_impl(state, id, lease, raw, database, rules))
+            call!(plan::advise_impl(
+                state,
+                id,
+                lease,
+                raw,
+                database,
+                rules,
+                use_catalog.unwrap_or(true)
+            ))
         }
         "plan_file_save" => {
             args!(raw: RawPlan = "raw");
