@@ -63,7 +63,7 @@ pub(crate) fn open(
             *layout,
             preview.then_some(PREVIEW_KEY_SCAN),
         )?)),
-        ImportFormat::Sql { .. } => Err(Error::Other("a SQL script has no rows".into())),
+        ImportFormat::Sql { .. } => Err(Error::Invalid("a SQL script has no rows".into())),
     }
 }
 
@@ -75,7 +75,7 @@ fn ascii_byte(c: char, what: &str) -> Result<u8> {
     u8::try_from(c as u32)
         .ok()
         .filter(u8::is_ascii)
-        .ok_or_else(|| Error::Other(format!("the CSV {what} must be an ASCII character")))
+        .ok_or_else(|| Error::Invalid(format!("the CSV {what} must be an ASCII character")))
 }
 
 /// Strip a UTF-8 byte order mark at the start of `r`.
@@ -345,7 +345,7 @@ impl XlsxMemSource {
             wb.sheet_names()
                 .first()
                 .cloned()
-                .ok_or_else(|| Error::Other("the workbook has no sheets".into()))?
+                .ok_or_else(|| Error::Invalid("the workbook has no sheets".into()))?
         } else {
             sheet.to_string()
         };
@@ -742,7 +742,7 @@ impl<R: BufRead> ArrayReader<R> {
                     }
                     Some(b'[') => break,
                     _ => {
-                        return Err(Error::Other(
+                        return Err(Error::Invalid(
                             "the JSON file must hold an array of objects".into(),
                         ));
                     }
@@ -754,7 +754,7 @@ impl<R: BufRead> ArrayReader<R> {
         let (mut depth, mut in_str, mut escaped) = (0i32, false, false);
         loop {
             let Some(b) = self.next_byte().map_err(io)? else {
-                return Err(Error::Other("the JSON array is not closed".into()));
+                return Err(Error::Invalid("the JSON array is not closed".into()));
             };
             if in_str {
                 out.push(b);
@@ -790,7 +790,7 @@ impl<R: BufRead> ArrayReader<R> {
                 }
                 b',' if depth == 0 => {
                     return non_blank(out)
-                        .ok_or_else(|| Error::Other("empty element in the JSON array".into()))
+                        .ok_or_else(|| Error::Invalid("empty element in the JSON array".into()))
                         .map(Some);
                 }
                 _ => out.push(b),
@@ -937,7 +937,7 @@ impl RowSource for JsonSource {
             return Ok(None);
         };
         let obj: OrderedObject = serde_json::from_str(&text)
-            .map_err(|e| Error::Other(format!("record {line}: not a JSON object ({e})")))?;
+            .map_err(|e| Error::Invalid(format!("record {line}: not a JSON object ({e})")))?;
         let mut cells = vec![EditValue::Value(Value::Null); self.columns.len()];
         for (k, v) in &obj.0 {
             if let Some(&i) = self.index.get(k) {

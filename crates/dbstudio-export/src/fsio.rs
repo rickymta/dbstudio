@@ -26,7 +26,7 @@ pub(crate) fn tmp_path_for(dest: &Path) -> PathBuf {
 /// `overwrite`.
 pub(crate) fn check_destination(dest: &Path, overwrite: bool) -> Result<()> {
     if dest.file_name().is_none() || dest.is_dir() {
-        return Err(Error::Other(format!(
+        return Err(Error::Invalid(format!(
             "invalid destination: {}",
             dest.display()
         )));
@@ -36,7 +36,7 @@ pub(crate) fn check_destination(dest: &Path, overwrite: bool) -> Result<()> {
         _ => Path::new("."),
     };
     if !parent.is_dir() {
-        return Err(Error::Other(format!(
+        return Err(Error::Invalid(format!(
             "destination folder does not exist: {}",
             parent.display()
         )));

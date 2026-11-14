@@ -810,7 +810,7 @@ mod tests {
             schedule_preview_impl("nope".into(), "utc".into(), 3)
                 .unwrap_err()
                 .kind(),
-            "other"
+            "invalid"
         );
         assert!(schedule_preview_impl("* * * * *".into(), "mars".into(), 3).is_err());
     }
@@ -1105,7 +1105,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .kind(),
-            "other"
+            "invalid"
         );
         assert_eq!(state.confirm.pending(), 0);
         spec.target_database = Some(String::new());

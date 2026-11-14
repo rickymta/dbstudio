@@ -17,7 +17,7 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "net"] }
 tracing.workspace = true
 uuid.workspace = true
 # The workspace entry alone does not compile (the crate needs a root-certificate feature).
-clickhouse = { workspace = true, features = ["rustls-tls-native-roots"] }
+clickhouse = { workspace = true }
 hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
 hyper-rustls = { workspace = true, features = ["http1", "tls12"] }
 rustls = { workspace = true, features = ["ring", "std"] }

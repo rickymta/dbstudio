@@ -24,10 +24,15 @@ pub(crate) async fn open_impl(
     // Only a password the user typed is kept in memory for reconnects; a stored one is read
     // from the keychain again each time.
     let typed = !(profile.save_password && profile.has_password);
-    state
+    let info = state
         .sessions
         .open_remembering(&profile.config, secret.as_ref(), ssh.as_ref(), typed)
-        .await
+        .await?;
+    // Let the import preview recall the session's dialect (MariaDB, ANSI_QUOTES) after it closes.
+    if let Some(dialect) = state.sessions.last_dialect(connection_id) {
+        super::export::remember_dialect(connection_id, dialect);
+    }
+    Ok(info)
 }
 
 /// Reconnect a lost session, keeping its `session_id`. `secret` is the password when it is

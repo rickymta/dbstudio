@@ -140,7 +140,7 @@ pub(crate) fn insert_statement(
                         .map(|c| q.quote_ident(c))
                         .collect();
                     if keys.is_empty() {
-                        return Err(Error::Other(
+                        return Err(Error::Invalid(
                             "updating on conflict needs a primary key or conflict columns".into(),
                         ));
                     }

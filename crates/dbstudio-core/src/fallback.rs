@@ -133,7 +133,7 @@ pub async fn children_page<S: Session + ?Sized>(
         None => 0,
         Some(c) => c
             .parse()
-            .map_err(|_| Error::Other(format!("invalid cursor: {c}")))?,
+            .map_err(|_| Error::Invalid(format!("invalid cursor: {c}")))?,
     };
     let limit = req.limit.clamp(1, 5000) as usize;
     let mut nodes = s.list_children(&req.parent).await?;

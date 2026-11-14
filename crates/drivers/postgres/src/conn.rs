@@ -201,7 +201,7 @@ impl Shared {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
             {
-                return Err(Error::Other(format!(
+                return Err(Error::Invalid(format!(
                     "invalid connection option name: {key:?}"
                 )));
             }

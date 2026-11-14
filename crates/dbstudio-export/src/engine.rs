@@ -231,7 +231,7 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, _warnings: &mut Vec<String
         }
         ExportSource::Tables { paths } => {
             if paths.is_empty() {
-                return Err(Error::Other("no tables selected".into()));
+                return Err(Error::Invalid("no tables selected".into()));
             }
             let mut groups: Vec<(ObjectPath, Vec<ObjectPath>)> = Vec::new();
             for p in paths {
@@ -279,7 +279,7 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, _warnings: &mut Vec<String
             dbs.sort();
             dbs.dedup();
             if dbs.len() > 1 {
-                return Err(Error::Other(format!(
+                return Err(Error::Invalid(format!(
                     "the tables belong to several databases ({}); export them one database at a time",
                     dbs.join(", ")
                 )));
@@ -288,7 +288,7 @@ async fn plan(ctx: &ExportContext, spec: &ExportSpec, _warnings: &mut Vec<String
         }
     };
     if !is_query && tables.is_empty() {
-        return Err(Error::Other("nothing to export: no tables found".into()));
+        return Err(Error::Invalid("nothing to export: no tables found".into()));
     }
     tables.sort_by(|a, b| {
         let qa = qualifier(Some(&a.path), a.schema.as_deref(), ctx.dialect);
@@ -605,7 +605,7 @@ fn check_query_is_read_only(dialect: ScriptDialect, text: &str) -> Result<()> {
         })
         .count();
     if statements != 1 {
-        return Err(Error::Other(
+        return Err(Error::Invalid(
             "the query to export must be exactly one statement".into(),
         ));
     }

@@ -829,13 +829,13 @@ async fn ipc(State(ctx): State<Ctx>, Path(command): Path<String>, body: Bytes) -
             Ok(_) => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    &Error::Other("request body must be a JSON object".into()),
+                    &Error::Invalid("request body must be a JSON object".into()),
                 );
             }
             Err(e) => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    &Error::Other(format!("invalid JSON body: {e}")),
+                    &Error::Invalid(format!("invalid JSON body: {e}")),
                 );
             }
         }

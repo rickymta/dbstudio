@@ -459,7 +459,9 @@ fn tool_timeout(options: &BTreeMap<String, String>) -> Option<Duration> {
 /// MySQL tools take the database as a bare argument: a name that looks like an option is refused.
 fn plain_db_name(database: &str) -> Result<()> {
     if database.starts_with('-') || database.contains('\0') {
-        return Err(Error::Other(format!("invalid database name {database:?}")));
+        return Err(Error::Invalid(format!(
+            "invalid database name {database:?}"
+        )));
     }
     Ok(())
 }
@@ -503,12 +505,12 @@ pub fn validate_options(tool: NativeTool, options: &BTreeMap<String, String>) ->
             if v.parse::<u64>().is_ok() {
                 continue;
             }
-            return Err(Error::Other(
+            return Err(Error::Invalid(
                 "option timeoutSecs must be a number of seconds".into(),
             ));
         }
         if !allowed.contains(&k.as_str()) {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "option {k:?} is not allowed for {tool:?}"
             )));
         }
@@ -1032,7 +1034,7 @@ pub fn scan_restore_script(tool: NativeTool, path: &Path) -> Result<()> {
             _ => false,
         };
         if bad {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "the script contains a client command that runs programs or reads files (line {n}); \
                  it was not run"
             )));

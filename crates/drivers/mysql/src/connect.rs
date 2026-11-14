@@ -48,7 +48,7 @@ impl Tunables {
                 .parse::<usize>()
                 .ok()
                 .filter(|n| (1..=32).contains(n))
-                .ok_or_else(|| Error::Other(format!("invalid pool_max `{v}` (expected 1-32)")))?,
+                .ok_or_else(|| Error::Invalid(format!("invalid pool_max `{v}` (expected 1-32)")))?,
         };
         let init_command = cfg
             .options
@@ -61,7 +61,7 @@ impl Tunables {
                 .map(|v| {
                     v.trim()
                         .parse::<u64>()
-                        .map_err(|_| Error::Other(format!("invalid {key} `{v}`")))
+                        .map_err(|_| Error::Invalid(format!("invalid {key} `{v}`")))
                 })
                 .transpose()
         };

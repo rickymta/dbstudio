@@ -60,7 +60,7 @@ fn parse_score(text: &str) -> Result<()> {
     let t = text.trim();
     match t.parse::<f64>() {
         Ok(f) if !f.is_nan() => Ok(()),
-        _ => Err(Error::Other(format!("invalid score `{text}`"))),
+        _ => Err(Error::Invalid(format!("invalid score `{text}`"))),
     }
 }
 
@@ -77,7 +77,7 @@ fn plan(change: &KeyChange) -> Result<Plan> {
     match change {
         KeyChange::SetString { key, value, ttl_ms } => {
             if *ttl_ms == Some(0) {
-                return Err(Error::Other("the TTL must be at least 1 ms".into()));
+                return Err(Error::Invalid("the TTL must be at least 1 ms".into()));
             }
             let k = key_bytes(key)?;
             let v = value_bytes(value)?;
@@ -255,7 +255,7 @@ fn plan(change: &KeyChange) -> Result<Plan> {
             let id = id.as_deref().filter(|i| !i.is_empty()).unwrap_or("*");
             let mut c = cmd(&[b"XADD", &k, id.as_bytes()]);
             if fields.is_empty() {
-                return Err(Error::Other(
+                return Err(Error::Invalid(
                     "a stream entry needs at least one field".into(),
                 ));
             }
@@ -281,7 +281,7 @@ fn plan(change: &KeyChange) -> Result<Plan> {
         KeyChange::Expire { key, ttl_ms } => {
             if *ttl_ms == Some(0) {
                 // PEXPIRE with 0 ms would delete the key instead of expiring it later.
-                return Err(Error::Other("the TTL must be at least 1 ms".into()));
+                return Err(Error::Invalid("the TTL must be at least 1 ms".into()));
             }
             let k = key_bytes(key)?;
             watch(&mut p, &k);

@@ -28,7 +28,7 @@ impl Shared {
             .key
             .last()
             .filter(|s| s.kind == ObjectKind::Key)
-            .ok_or_else(|| Error::Other("path is not a key".into()))?;
+            .ok_or_else(|| Error::Invalid("path is not a key".into()))?;
         let key = decode_key_name(&seg.name)?;
         let db = db_of(&req.key, self.default_db)?;
         let count = req.count.clamp(1, 10_000) as i64;
@@ -381,7 +381,7 @@ fn parse_index(cursor: Option<&str>) -> Result<i64> {
             .parse::<i64>()
             .ok()
             .filter(|n| *n >= 0)
-            .ok_or_else(|| Error::Other(format!("invalid cursor `{c}`"))),
+            .ok_or_else(|| Error::Invalid(format!("invalid cursor `{c}`"))),
     }
 }
 

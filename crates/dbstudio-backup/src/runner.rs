@@ -587,7 +587,7 @@ pub fn restore_names_its_target(spec: &RestoreSpec) -> bool {
 
 /// Error for a guarded restore without an explicit target database.
 pub fn explicit_target_required() -> Error {
-    Error::Other(
+    Error::Invalid(
         "a restore into a production connection, or one that cleans the target, needs the \
          target database to be named explicitly"
             .into(),

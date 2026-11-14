@@ -90,7 +90,7 @@ pub(crate) fn resolve_mapping(
             }
         }
         if out.is_empty() {
-            return Err(Error::Other(
+            return Err(Error::Invalid(
                 "no column of the file matches a column of the table".into(),
             ));
         }
@@ -104,21 +104,23 @@ pub(crate) fn resolve_mapping(
         {
             Some(n) if n >= 1 && n <= file_columns.len() => n - 1,
             Some(_) => {
-                return Err(Error::Other(format!(
+                return Err(Error::Invalid(format!(
                     "column {} is outside the file's {} column(s)",
                     m.source,
                     file_columns.len()
                 )));
             }
             None => find_ci(file_columns, &m.source).ok_or_else(|| {
-                Error::Other(format!("column not found in the file: {}", m.source))
+                Error::Invalid(format!("column not found in the file: {}", m.source))
             })?,
         };
         let target = find_ci(table_columns, &m.target)
             .map(|t| table_columns[t].clone())
-            .ok_or_else(|| Error::Other(format!("column not found in the table: {}", m.target)))?;
+            .ok_or_else(|| {
+                Error::Invalid(format!("column not found in the table: {}", m.target))
+            })?;
         if out.iter().any(|o| o.target == target) {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "column {target} is mapped more than once"
             )));
         }
@@ -722,7 +724,7 @@ async fn run_rows(
             let name = table
                 .last()
                 .map(|s| s.name.clone())
-                .ok_or_else(|| Error::Other("invalid table path".into()))?;
+                .ok_or_else(|| Error::Invalid("invalid table path".into()))?;
             let qualified = match qualifier(Some(table), None, dialect) {
                 Some(s) => format!("{}.{}", q.quote_ident(&s), q.quote_ident(&name)),
                 None => q.quote_ident(&name),
@@ -751,7 +753,7 @@ async fn run_rows(
             columns,
         } => {
             if columns.is_empty() {
-                return Err(Error::Other("the new table has no columns".into()));
+                return Err(Error::Invalid("the new table has no columns".into()));
             }
             let qualified = match qualifier(Some(parent), None, dialect) {
                 Some(s) => format!("{}.{}", q.quote_ident(&s), q.quote_ident(name)),
@@ -811,7 +813,7 @@ async fn run_rows(
     let on_conflict = spec.on_conflict.unwrap_or(OnConflict::Error);
     let conflict_columns = pk;
     if on_conflict == OnConflict::Update && conflict_columns.is_empty() {
-        return Err(Error::Other(
+        return Err(Error::Invalid(
             "updating on conflict needs a table with a primary key".into(),
         ));
     }

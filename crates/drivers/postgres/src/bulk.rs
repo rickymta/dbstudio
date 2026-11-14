@@ -141,7 +141,7 @@ pub(crate) fn insert_sql(table: &str, req: &BulkInsertRequest, key: &[String]) -
         OnConflict::Skip => s.push_str("\nON CONFLICT DO NOTHING"),
         OnConflict::Update => {
             if conflict.is_empty() {
-                return Err(Error::Other(
+                return Err(Error::Invalid(
                     "updating on conflict needs a primary key or conflict columns".into(),
                 ));
             }

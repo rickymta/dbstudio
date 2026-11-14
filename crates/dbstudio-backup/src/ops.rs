@@ -203,7 +203,7 @@ fn groups(ctx: &BackupContext, spec: &BackupSpec) -> Result<Vec<(String, Vec<Obj
     let mut out: Vec<(String, Vec<ObjectPath>)> = Vec::new();
     for t in &spec.targets {
         let db = logical::database_of(t)
-            .ok_or_else(|| Error::Other("a backup target must be inside a database".into()))?;
+            .ok_or_else(|| Error::Invalid("a backup target must be inside a database".into()))?;
         match out.iter_mut().find(|(d, _)| *d == db) {
             Some((_, v)) => v.push(t.clone()),
             None => out.push((db, vec![t.clone()])),
@@ -271,7 +271,7 @@ pub async fn run_backup(
     };
     let passphrase = if spec.encrypted {
         Some(passphrase.ok_or_else(|| {
-            Error::Other("this backup is encrypted but no passphrase is available".into())
+            Error::Invalid("this backup is encrypted but no passphrase is available".into())
         })?)
     } else {
         None
@@ -516,7 +516,7 @@ async fn server_side_backup(
     let mut files = Vec::new();
     for (database, _) in groups(ctx, spec)? {
         if database.is_empty() {
-            return Err(Error::Other(
+            return Err(Error::Invalid(
                 "a backup target must be inside a database".into(),
             ));
         }
@@ -679,7 +679,7 @@ pub async fn run_restore(
 ) -> Result<RestoreOutcome> {
     let reporter = ctx.reporter.clone();
     if spec.clean && spec.target_database.as_deref().is_none_or(str::is_empty) {
-        return Err(Error::Other(
+        return Err(Error::Invalid(
             "a clean restore needs the target database to be named explicitly".into(),
         ));
     }
@@ -724,7 +724,7 @@ async fn native_restore(
         .target_database
         .clone()
         .or_else(|| pre["database"].as_str().map(str::to_string))
-        .ok_or_else(|| Error::Other("target database is not specified".into()))?;
+        .ok_or_else(|| Error::Invalid("target database is not specified".into()))?;
     if let Some(input) = scanned
         .files
         .get(pre["native"]["file"].as_str().unwrap_or_default())

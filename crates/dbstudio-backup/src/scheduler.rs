@@ -29,12 +29,12 @@ impl Clock for SystemClock {
 pub fn parse_cron(expr: &str) -> Result<Cron> {
     let fields = expr.split_whitespace().count();
     if fields != 5 {
-        return Err(Error::Other(format!(
+        return Err(Error::Invalid(format!(
             "cron expression needs 5 fields (minute hour day month weekday), got {fields}"
         )));
     }
     expr.parse::<Cron>()
-        .map_err(|e| Error::Other(format!("invalid cron expression: {e}")))
+        .map_err(|e| Error::Invalid(format!("invalid cron expression: {e}")))
 }
 
 /// Time zone name used by `schedule_preview` (`local` or `utc`, case-insensitive).
@@ -42,7 +42,7 @@ pub fn parse_tz(name: &str) -> Result<ScheduleTz> {
     match name.trim().to_ascii_lowercase().as_str() {
         "local" => Ok(ScheduleTz::Local),
         "utc" => Ok(ScheduleTz::Utc),
-        other => Err(Error::Other(format!("unknown time zone {other:?}"))),
+        other => Err(Error::Invalid(format!("unknown time zone {other:?}"))),
     }
 }
 

@@ -505,7 +505,7 @@ async fn a_query_must_be_a_single_statement() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, Error::Other(_)), "{err:?}");
+    assert!(matches!(err, Error::Invalid(_)), "{err:?}");
     assert!(session.statements().is_empty());
     assert!(leftovers(dir.path()).is_empty());
 }
@@ -646,7 +646,7 @@ async fn invalid_requests_are_rejected() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, Error::Other(_)));
+    assert!(matches!(err, Error::Invalid(_)));
     let err = run_export(
         context(session, Recorder::new()),
         spec(

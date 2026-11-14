@@ -114,7 +114,7 @@ fn export_source(database: &str, targets: &[ObjectPath]) -> Result<ExportSource>
             path: targets[0].clone(),
         });
     }
-    Err(Error::Other(
+    Err(Error::Invalid(
         "choose a whole database, one schema, or a list of tables to back up".into(),
     ))
 }
@@ -548,7 +548,7 @@ pub(crate) async fn restore(
         .target_database
         .clone()
         .or_else(|| pre["database"].as_str().map(str::to_string))
-        .ok_or_else(|| Error::Other("target database is not specified".into()))?;
+        .ok_or_else(|| Error::Invalid("target database is not specified".into()))?;
     let dump_name = pre["dumpFile"].as_str().unwrap_or(DUMP_ENTRY);
     let dump_path = scanned
         .files
@@ -630,7 +630,7 @@ pub(crate) async fn restore(
     // MySQL `clean` replaces the whole database: do it on the session, before the lease opens.
     let clean = if spec.clean {
         if spec.target_database.as_deref().is_none_or(str::is_empty) {
-            return Err(Error::Other(
+            return Err(Error::Invalid(
                 "a clean restore needs the target database to be named explicitly".into(),
             ));
         }

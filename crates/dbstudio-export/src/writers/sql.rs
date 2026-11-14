@@ -644,7 +644,7 @@ impl TableWriter for SqlWriter {
         }
         self.flush_buf()?;
         if !self.wrote_any && self.out.bytes() == 0 {
-            return Err(Error::Other("nothing to export".into()));
+            return Err(Error::Invalid("nothing to export".into()));
         }
         let SqlWriter { out, .. } = *self;
         let (path, _) = out.commit()?;

@@ -302,7 +302,7 @@ pub async fn run_script(
         if name == DELETE_PATTERN {
             let pattern = tokens
                 .get(1)
-                .ok_or_else(|| Error::Other(format!("{DELETE_PATTERN} needs a pattern")))?;
+                .ok_or_else(|| Error::Invalid(format!("{DELETE_PATTERN} needs a pattern")))?;
             let deleted = delete_pattern(conn, pattern, sink).await?;
             sink.on_statement_end(StatementEnd {
                 outcome: EndOutcome::Affected { rows: deleted },

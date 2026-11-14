@@ -223,7 +223,7 @@ fn open_deps(cli: &Cli) -> Result<CliDeps, Error> {
         .clone()
         .or_else(default_data_dir)
         .ok_or_else(|| {
-            Error::Other("cannot determine the data directory; use --data-dir".into())
+            Error::Invalid("cannot determine the data directory; use --data-dir".into())
         })?;
     let db = dir.join(DATABASE_FILE);
     if !db.exists() {

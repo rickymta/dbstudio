@@ -217,7 +217,7 @@ impl TableWriter for CsvWriter {
             self.write_schema_file()?;
         }
         if self.schema.is_empty() {
-            return Err(Error::Other("nothing to export".into()));
+            return Err(Error::Invalid("nothing to export".into()));
         }
         let CsvWriter { out, .. } = *self;
         let (path, _) = out.commit()?;

@@ -65,7 +65,7 @@ proptest = "1"
 
 # Backlog + phase 9 (declared centrally by the contract v2 scaffold; crates opt in with `.workspace = true`).
 scylla = { version = "1.10.0", default-features = false, features = ["rustls-023"] }
-clickhouse = { version = "0.15.3", default-features = false, features = ["lz4", "rustls-tls-ring"] }
+clickhouse = { version = "0.15.3", default-features = false, features = ["lz4", "rustls-tls-ring", "rustls-tls-native-roots"] }
 hyper-util = "0.1.21"
 hyper-rustls = { version = "0.27.10", default-features = false, features = ["ring"] }
 sys-locale = "0.3.2"

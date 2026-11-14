@@ -498,6 +498,44 @@ mod tests {
         test_state(registry).0
     }
 
+    #[tokio::test]
+    async fn session_open_remembers_the_dialect_for_later_previews() {
+        let (driver, probe) = MockDriver::new(DbKind::Postgres);
+        let mariadb = ScriptDialect::mysql(true, true);
+        *probe.dialect.lock().unwrap() = Some(mariadb);
+        let mut registry = dbstudio_core::DriverRegistry::new();
+        registry.register(driver);
+        let (state, _) = test_state(registry);
+        let config = ConnectionConfig::new(DbKind::Postgres, "pg", "h");
+        let id = config.id;
+        state
+            .connections
+            .save(
+                dbstudio_store::ConnectionProfile {
+                    config,
+                    group_id: None,
+                    color: None,
+                    save_password: false,
+                    has_password: false,
+                    sort_order: 0,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                dbstudio_store::SecretChange::Clear,
+            )
+            .unwrap();
+        assert!(last_dialect(id).is_none());
+        let info = crate::commands::sessions::open_impl(&state, id, None)
+            .await
+            .unwrap();
+        assert_eq!(last_dialect(id), Some(mariadb));
+        crate::commands::sessions::close_impl(&state, info.session_id)
+            .await
+            .unwrap();
+        // No live session any more: the preview still knows the dialect and does not guess.
+        assert_eq!(preview_dialect(&state, id).await, Some((mariadb, false)));
+    }
+
     fn export_spec(path: &str) -> ExportSpec {
         ExportSpec {
             connection_id: Uuid::new_v4(),

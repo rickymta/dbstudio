@@ -88,7 +88,7 @@ fn validate(ed: &Editability, rs: &RowChangeSet, strict_table: bool) -> Result<(
             )));
         }
         if keyed && rs.key_columns != ed.key_columns {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "key columns {:?} do not match the table's key {:?}",
                 rs.key_columns, ed.key_columns
             )));
