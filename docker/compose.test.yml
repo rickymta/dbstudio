@@ -94,7 +94,7 @@ services:
     image: mysql:8
     environment: *my-env
     ports: ['127.0.0.1:33068:3306']
-    volumes: ['./certs:/certs:ro']
+    volumes: ['./certs:/certs:ro', './mysql/init.sql:/docker-entrypoint-initdb.d/10-grants.sql:ro']
     command:
       - --ssl-ca=/certs/ca.crt
       - --ssl-cert=/certs/server.crt
@@ -109,6 +109,7 @@ services:
   mariadb:
     image: mariadb:10.6
     environment: *my-env
+    volumes: ['./mysql/init.sql:/docker-entrypoint-initdb.d/10-grants.sql:ro']
     ports: ['127.0.0.1:33106:3306']
     healthcheck:
       test:
@@ -124,6 +125,7 @@ services:
   mariadb104:
     image: mariadb:10.4
     environment: *my-env
+    volumes: ['./mysql/init.sql:/docker-entrypoint-initdb.d/10-grants.sql:ro']
     ports: ['127.0.0.1:33104:3306']
     healthcheck:
       test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -udbstudio -pdbstudio_test --silent']
@@ -137,6 +139,7 @@ services:
     image: mysql:5.7
     platform: linux/amd64
     environment: *my-env
+    volumes: ['./mysql/init.sql:/docker-entrypoint-initdb.d/10-grants.sql:ro']
     ports: ['127.0.0.1:33057:3306']
     healthcheck:
       test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -udbstudio -pdbstudio_test --silent']

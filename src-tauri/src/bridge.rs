@@ -1210,7 +1210,7 @@ mod tests {
         let app = app();
         let (status, drivers) = call(&app, "list_drivers", json!({})).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(drivers.as_array().unwrap().len(), 9);
+        assert_eq!(drivers.as_array().unwrap().len(), 12);
 
         let (status, saved) = call(
             &app,
@@ -1225,13 +1225,17 @@ mod tests {
 
         let (_, settings) = call(&app, "settings_get", json!({})).await;
         assert_eq!(settings["logLevel"], "info");
-        let (_, set) = call(
+        // Out-of-range settings are refused (the store no longer clamps on write).
+        let (status, set) = call(
             &app,
             "settings_set",
             json!({"settings": {"gridMaxRows": 5}}),
         )
         .await;
-        assert_eq!(set["gridMaxRows"], 1000);
+        assert_eq!(
+            (status, set["kind"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("invalid"))
+        );
 
         // Errors: 400 with the Error JSON.
         let (status, err) = call(
@@ -1247,7 +1251,7 @@ mod tests {
         let (status, err) = call(&app, "session_close", json!({"sessionId": "nope"})).await;
         assert_eq!(
             (status, err["kind"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("other"))
+            (StatusCode::BAD_REQUEST, Some("invalid"))
         );
         let (status, ..) = send(
             &app,
@@ -1483,31 +1487,26 @@ mod tests {
             err,
             json!({"kind": "unsupported", "message": "leases", "capability": "leases"})
         );
-        let (status, err) = call(
+        // Implemented since the scaffold: parses instead of answering "unsupported".
+        let (status, _) = call(
             &app,
             "connection_parse_uri",
             json!({"uri": "postgres://h/d"}),
         )
         .await;
-        assert_eq!(
-            (status, err["kind"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("unsupported"))
-        );
-        let (status, err) = call(
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = call(
             &app,
             "schedule_preview",
             json!({"cron": "* * * * *", "timezone": "utc", "count": 3}),
         )
         .await;
-        assert_eq!(
-            (status, err["kind"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("unsupported"))
-        );
+        assert_eq!(status, StatusCode::OK);
         // A command with a missing required argument is an argument error, not a 404.
         let (status, err) = call(&app, "lease_open", json!({})).await;
         assert_eq!(
             (status, err["kind"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("other"))
+            (StatusCode::BAD_REQUEST, Some("invalid"))
         );
     }
 
