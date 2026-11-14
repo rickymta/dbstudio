@@ -1,0 +1,59 @@
+{
+  "command": "QUERY",
+  "coordinator": "172.28.0.7",
+  "durationUs": 18256,
+  "events": [
+    {
+      "activity": "Parsing SELECT * FROM nums WHERE p = 7",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 294,
+      "thread": "Native-Transport-Requests-8"
+    },
+    {
+      "activity": "Preparing statement",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 438,
+      "thread": "Native-Transport-Requests-8"
+    },
+    {
+      "activity": "Executing single-partition query on nums",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 4903,
+      "thread": "ReadStage-10"
+    },
+    {
+      "activity": "Acquiring sstable references",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 5594,
+      "thread": "ReadStage-10"
+    },
+    {
+      "activity": "Skipped 0/0 non-slice-intersecting sstables, included 0 due to tombstones",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 9584,
+      "thread": "ReadStage-10"
+    },
+    {
+      "activity": "Merged data from memtables and 0 sstables",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 10327,
+      "thread": "ReadStage-10"
+    },
+    {
+      "activity": "Read 20 live rows and 20 tombstone cells",
+      "source": "172.28.0.7",
+      "sourceElapsedUs": 10406,
+      "thread": "ReadStage-10"
+    }
+  ],
+  "parameters": {
+    "consistency_level": "LOCAL_ONE",
+    "page_size": "1000",
+    "query": "SELECT * FROM nums WHERE p = 7",
+    "serial_consistency_level": "SERIAL"
+  },
+  "request": "Execute CQL3 query",
+  "rows": 20,
+  "sessionId": "ca546870-dfda-11f1-8407-d9e3705a30bf",
+  "startedAt": "2026-11-14T03:23:41.559Z"
+}

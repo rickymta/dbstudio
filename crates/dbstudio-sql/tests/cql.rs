@@ -217,6 +217,50 @@ fn splitting() {
 }
 
 #[test]
+fn cqlsh_commands_end_at_the_end_of_the_line() {
+    for cmd in [
+        "DESCRIBE TABLES",
+        "CONSISTENCY ALL",
+        "TRACING ON",
+        "USE ks",
+        "PAGING OFF",
+        "SERIAL CONSISTENCY SERIAL",
+        "desc keyspaces",
+    ] {
+        for nl in ["\n", "\r\n", "\r"] {
+            let sql = format!("{cmd}{nl}DROP TABLE t;");
+            assert_eq!(
+                texts(&sql),
+                [cmd.to_string(), "DROP TABLE t".to_string()],
+                "{sql:?}"
+            );
+            // The guard sees both statements too.
+            assert_eq!(analyze(Q, &sql).statements.len(), 2, "{sql:?}");
+        }
+    }
+    assert_eq!(
+        texts("CONSISTENCY ALL\nTRUNCATE t;"),
+        ["CONSISTENCY ALL", "TRUNCATE t"]
+    );
+    // A `;` still ends them, and an ordinary statement spans lines.
+    assert_eq!(texts("USE ks; SELECT 1"), ["USE ks", "SELECT 1"]);
+    assert_eq!(texts("SELECT *\nFROM t;"), ["SELECT *\nFROM t"]);
+    // Inside a batch nothing is cut.
+    assert_eq!(texts("BEGIN BATCH\nUSE x\nAPPLY BATCH;").len(), 1);
+}
+
+#[test]
+fn line_comments_end_at_a_carriage_return() {
+    let sql = "// x\r/* \nDROP TABLE ks.t; */ SELECT 1";
+    let st = analyze(Q, sql).statements;
+    assert_eq!(texts(sql).len(), st.len());
+    assert!(
+        st.iter().all(|s| s.class != C::Ddl) || st.len() == 2,
+        "{st:?}"
+    );
+}
+
+#[test]
 fn batch_is_one_statement() {
     let b = "BEGIN BATCH INSERT INTO t (a) VALUES (1); INSERT INTO t (a) VALUES (2); APPLY BATCH";
     assert_eq!(texts(&format!("{b};")), [b]);

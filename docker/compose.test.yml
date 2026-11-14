@@ -328,10 +328,11 @@ services:
     mem_limit: 1g
     command:
       - --smp=1
-      - --memory=750M
+      - --memory=450M
       - --overprovisioned=1
       - --developer-mode=1
       - --authenticator=PasswordAuthenticator
+      - --options-file=/etc/scylla.d/dbstudio.yaml
     ports: ['127.0.0.1:19060:9042', '127.0.0.1:19062:9142']
     volumes:
       - ./certs:/certs:ro
@@ -347,7 +348,7 @@ services:
   cassandra5:
     profiles: ['wide']
     image: cassandra:5.0.9
-    mem_limit: 1g
+    mem_limit: 1500m
     entrypoint: ['sh', '/cassandra/enable-auth.sh']
     environment:
       MAX_HEAP_SIZE: 512M

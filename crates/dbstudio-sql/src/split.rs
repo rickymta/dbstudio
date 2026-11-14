@@ -596,6 +596,18 @@ fn scan_sql(
                 if chars[i..end].contains(&'\n') {
                     line_start = true;
                 }
+                // cqlsh commands (`CONSISTENCY ALL`, `USE ks`, `DESCRIBE TABLES`...) end at the end
+                // of the line, no `;` needed.
+                if is_cql
+                    && cur.has_code
+                    && !in_batch
+                    && cql_line_command(&cur.lead)
+                    && chars[i..end].iter().any(|c| *c == '\n' || *c == '\r')
+                {
+                    cur.take(1, &mut out);
+                    prev_word.clear();
+                    consumed = end;
+                }
             }
             TokenKind::LineComment | TokenKind::BlockComment => {
                 cur.touch(i, end);
@@ -684,6 +696,31 @@ fn scan_sql(
         consumed = n;
     }
     (out, consumed)
+}
+
+/// First words of a cqlsh shell command, which ends at the end of its line.
+const CQL_LINE_COMMANDS: &[&str] = &[
+    "CONSISTENCY",
+    "SERIAL",
+    "TRACING",
+    "PAGING",
+    "USE",
+    "DESCRIBE",
+    "DESC",
+    "COPY",
+    "SOURCE",
+    "EXPAND",
+    "CAPTURE",
+    "CLEAR",
+    "CLS",
+    "LOGIN",
+    "SHOW",
+    "UNICODE",
+];
+
+fn cql_line_command(lead: &[String]) -> bool {
+    lead.first()
+        .is_some_and(|w| CQL_LINE_COMMANDS.contains(&w.as_str()))
 }
 
 enum Check {
