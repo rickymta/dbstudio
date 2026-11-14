@@ -1976,6 +1976,8 @@ name = "dbstudio-plan"
 version = "0.1.0"
 dependencies = [
  "dbstudio-core",
+ "dbstudio-sql",
+ "proptest",
  "quick-xml 0.42.0",
  "serde",
  "serde_json",

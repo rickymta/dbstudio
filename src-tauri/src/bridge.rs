@@ -432,6 +432,16 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
             args!(raw: RawPlan = "raw", rules: Option<PlanRules> = "rules");
             Some(out(plan::parse_impl(state, raw, rules)))
         }
+        "plan_advise" => {
+            args!(
+                id: Uuid = "sessionId",
+                lease: Option<Uuid> = "leaseId",
+                raw: RawPlan = "raw",
+                database: Option<String> = "database",
+                rules: Option<PlanRules> = "rules"
+            );
+            call!(plan::advise_impl(state, id, lease, raw, database, rules))
+        }
         "plan_file_save" => {
             args!(raw: RawPlan = "raw");
             call!(plan::file_save_impl(state, raw))

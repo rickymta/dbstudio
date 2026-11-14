@@ -125,6 +125,8 @@ pub struct AppSettings {
     pub plan_history_enabled: bool,
     /// Plan history entries kept per connection.
     pub plan_history_max_per_connection: u32,
+    /// Query Advisor reads the catalog (indexes, columns, row counts) to refine its advice.
+    pub plan_advisor_metadata: bool,
     /// Language of OS notifications.
     pub language: UiLanguage,
 }
@@ -149,6 +151,7 @@ impl Default for AppSettings {
             keepalive_secs: 240,
             plan_history_enabled: true,
             plan_history_max_per_connection: 200,
+            plan_advisor_metadata: true,
             language: UiLanguage::System,
         }
     }
@@ -180,6 +183,7 @@ impl AppSettings {
                 "planHistoryMaxPerConnection",
                 d.plan_history_max_per_connection,
             ),
+            plan_advisor_metadata: field(value, "planAdvisorMetadata", d.plan_advisor_metadata),
             language: field(value, "language", d.language),
             log_level: field(value, "logLevel", d.log_level),
             grid_max_rows: field(value, "gridMaxRows", d.grid_max_rows),
@@ -383,7 +387,8 @@ mod tests {
                 "maxLobBytes": 16_777_216, "planMisestimateFactor": 10, "closeToTray": "auto",
                 "editorFontFamily": "", "editorFontSize": 13, "autoReconnect": true,
                 "keepaliveSecs": 240, "planHistoryEnabled": true,
-                "planHistoryMaxPerConnection": 200, "language": "system"
+                "planHistoryMaxPerConnection": 200, "planAdvisorMetadata": true,
+                "language": "system"
             })
         );
         let old: AppSettings = serde_json::from_value(json!({"logLevel": "debug"})).unwrap();

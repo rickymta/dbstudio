@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { NO_CAPABILITIES, type IpcErrorKind } from './core';
+import { ADVICE_RULES } from './plan';
 
 type Json = unknown;
 type Obj = Record<string, unknown>;
@@ -428,6 +429,7 @@ const appSettings = shape({
   keepaliveSecs: num,
   planHistoryEnabled: bool,
   planHistoryMaxPerConnection: num,
+  planAdvisorMetadata: bool,
   language: oneOf('system', 'vi', 'en'),
 });
 const planHistoryEntryFields = {
@@ -488,6 +490,84 @@ const importPreview = shape(
   { dialectGuessed: bool },
 );
 
+// Query Advisor (dbstudio-plan `advice`).
+const strMap: Guard = (v) => {
+  if (!isObj(v)) return 'expected object';
+  for (const [k, x] of Object.entries(v)) {
+    const e = str(x);
+    if (e) return `${k}: ${e}`;
+  }
+  return null;
+};
+const adviceTableRef = shape(
+  { name: str },
+  {
+    database: str,
+    schema: str,
+    alias: str,
+    path: shape({ segments: arrayOf(shape({ name: str })) }),
+  },
+);
+const adviceEvidence = shape(
+  { key: str, actual: bool },
+  {
+    nodeId: num,
+    value: num,
+    text: str,
+    unit: oneOf('rows', 'ms', 'bytes', 'blocks', 'pct', 'ratio', 'count', 'kb'),
+  },
+);
+const adviceAction = shape(
+  {
+    kind: oneOf(
+      'createIndex',
+      'statistics',
+      'sessionSetting',
+      'maintenance',
+      'rewrite',
+      'hint',
+      'check',
+      'serverSetting',
+    ),
+    labelKey: str,
+    template: bool,
+    scope: oneOf('query', 'session', 'object', 'database', 'server'),
+  },
+  {
+    sql: str,
+    lock: oneOf('none', 'shortLock', 'blocksWrites', 'blocksReadsWrites', 'heavyMutation'),
+    params: strMap,
+  },
+);
+const adviceCaveat = shape({ key: str, verify: bool }, { params: strMap });
+const planAdvice = shape(
+  {
+    id: str,
+    rule: oneOf(...ADVICE_RULES, 'unknown'),
+    severity: oneOf('info', 'warning', 'critical'),
+    confidence: oneOf('high', 'medium', 'low'),
+    nodeIds: arrayOf(num),
+    params: strMap,
+    evidence: arrayOf(adviceEvidence),
+    actions: arrayOf(adviceAction),
+    caveats: arrayOf(adviceCaveat),
+    impact: shape({ basis: oneOf('time', 'cost', 'rows', 'none'), score: num }, { share: num }),
+    fromWarnings: arrayOf(str),
+    fingerprint: str,
+  },
+  { table: adviceTableRef, statementRange: shape({ start: num, end: num }) },
+);
+const adviceReport = shape({
+  advice: arrayOf(planAdvice),
+  metadata: shape({
+    state: oneOf('notRequested', 'checked', 'partial', 'unavailable', 'disabled'),
+    checked: arrayOf(adviceTableRef),
+    failed: arrayOf(shape({ table: str, reason: str, message: str })),
+    skipped: num,
+    elapsedMs: num,
+  }),
+});
+
 /** Guards by group and Rust type name. */
 const GUARDS: Record<string, Record<string, Guard>> = {
   script: { ScriptAnalysis: isScriptAnalysis, ScriptDialect: scriptDialect },
@@ -510,6 +590,8 @@ const GUARDS: Record<string, Record<string, Guard>> = {
   },
   plan: {
     PlanFormat: oneOf(...PLAN_FORMATS),
+    PlanAdvice: planAdvice,
+    AdviceReport: adviceReport,
   },
   model: { DdlLanguage: oneOf('sql', 'mongoShell', 'cql') },
   app: {

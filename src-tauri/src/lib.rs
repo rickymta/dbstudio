@@ -184,6 +184,7 @@ pub fn run() {
             commands::changes::changes_apply,
             commands::plan::plan_explain,
             commands::plan::plan_parse,
+            commands::plan::plan_advise,
             commands::plan::plan_file_save,
             commands::plan::plan_file_open,
             commands::erd::schema_model,

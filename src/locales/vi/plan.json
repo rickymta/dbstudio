@@ -143,5 +143,59 @@
       "nodeCount": "Số toán tử",
       "warnings": "Cảnh báo"
     }
+  },
+  "advice": {
+    "title": "Gợi ý tối ưu",
+    "summary": "{{count}} điểm tối ưu · lớn nhất: {{title}}{{shareText}}",
+    "summaryNone": "Không thấy điểm cần tối ưu rõ ràng",
+    "share": {
+      "time": " — node chiếm ~{{pct}} thời gian",
+      "cost": " — node chiếm ~{{pct}} chi phí"
+    },
+    "tabs": {
+      "advice": "Gợi ý ({{count}})",
+      "node": "Node"
+    },
+    "status": {
+      "checking": "Đang kiểm tra index hiện có…",
+      "checked": "Đã đối chiếu index của {{count}} bảng",
+      "partial": "Chỉ đối chiếu được một phần — độ tin cậy đã hạ",
+      "unavailable": "Không lấy được metadata — độ tin cậy đã hạ",
+      "disabled": "Đã tắt đối chiếu index hiện có"
+    },
+    "confidence": {
+      "high": "Tin cậy cao",
+      "medium": "Trung bình",
+      "low": "Thấp",
+      "verify": "Cần xác minh"
+    },
+    "scope": {
+      "query": "Câu truy vấn",
+      "session": "Phiên hiện tại",
+      "object": "Đối tượng",
+      "database": "Cơ sở dữ liệu",
+      "server": "Máy chủ"
+    },
+    "lock": {
+      "none": "Không khoá đáng kể",
+      "shortLock": "Khoá ngắn",
+      "blocksWrites": "Chặn ghi",
+      "blocksReadsWrites": "Chặn đọc và ghi",
+      "heavyMutation": "Ghi lại nhiều dữ liệu"
+    },
+    "actions": {
+      "copy": "Sao chép",
+      "insert": "Chèn vào editor",
+      "openTable": "Mở bảng"
+    },
+    "template": "Mẫu — cần sửa trước khi chạy",
+    "readOnlyBanner": "Kết nối chỉ đọc: câu này sẽ bị chặn khi chạy; dùng kết nối có quyền DDL.",
+    "productionBadge": "Production",
+    "rawWarnings": "Cảnh báo thô ({{count}})",
+    "compare": {
+      "gone": "Đã hết",
+      "new": "Mới",
+      "kept": "Còn lại"
+    }
   }
 }

@@ -3,6 +3,7 @@
 // and live in planTrees.json, so the browser mock needs no parser of its own.
 
 import type {
+  AdviceReport,
   DbKind,
   ExplainRequest,
   PlanFormat,
@@ -24,6 +25,7 @@ import oracleEstimated from '../../../crates/dbstudio-plan/tests/fixtures/oracle
 import oracleActual from '../../../crates/dbstudio-plan/tests/fixtures/oracle_04_group_by_spill_actual.json?raw';
 import pgActual from '../../../crates/dbstudio-plan/tests/fixtures/pg_02_hashjoin_agg_analyze.json?raw';
 import pgEstimated from '../../../crates/dbstudio-plan/tests/fixtures/pg_08_cte_subplan.json?raw';
+import { SAMPLE_ADVICE, sampleReport } from './planAdvice';
 import trees from './planTrees.json';
 import { mockSessionConnectionId, mockSessionKind } from './sessions';
 import { ipcError, newId, sleep, unsupported } from './util';
@@ -85,7 +87,7 @@ const SAMPLES: Partial<Record<DbKind, { estimated: Sample; actual: Sample } | nu
 const TREES = trees as unknown as Record<string, PlanTree>;
 
 function treeOf(file: string): PlanTree {
-  return structuredClone(TREES[file]!);
+  return { ...structuredClone(TREES[file]!), advice: structuredClone(SAMPLE_ADVICE[file] ?? []) };
 }
 
 function allSamples(): Sample[] {
@@ -155,6 +157,20 @@ export const planMock = {
     const sample = allSamples().find((s) => s.text === raw.text && s.format === raw.format);
     if (!sample) throw ipcError('other', 'invalid plan: unknown to the browser mock');
     return treeOf(sample.file);
+  },
+  /** Tier 2 of the Query Advisor: the sample advice with one fake table "checked". */
+  async planAdvise(
+    sessionId: Uuid,
+    leaseId: Uuid | null,
+    raw: RawPlan,
+    database: string | null,
+  ): Promise<AdviceReport> {
+    void [leaseId, database];
+    mockSessionKind(sessionId);
+    await sleep(40, 120);
+    const sample = allSamples().find((s) => s.text === raw.text && s.format === raw.format);
+    if (!sample) throw ipcError('other', 'invalid plan: unknown to the browser mock');
+    return sampleReport(structuredClone(SAMPLE_ADVICE[sample.file] ?? []));
   },
   async planFileSave(raw: RawPlan): Promise<string | null> {
     savedPlan = structuredClone(raw);

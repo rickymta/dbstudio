@@ -45,4 +45,17 @@ describe('mock plans', () => {
     expect(await ipc.planFileSave(raw)).toMatch(/\.dbplan\.json$/);
     expect(await ipc.planFileOpen()).toEqual(raw);
   });
+
+  it('carries sample advice and answers planAdvise with a checked report', async () => {
+    const { sessionId } = await ipc.sessionOpen(PG);
+    const { raw, tree } = await ipc.planExplain(sessionId, null, request(true));
+    expect(tree?.advice?.length).toBeGreaterThan(0);
+    const report = await ipc.planAdvise(sessionId, null, raw);
+    expect(report.metadata.state).toBe('checked');
+    expect(report.advice.map((a) => a.id)).toEqual(tree?.advice?.map((a) => a.id));
+    expect(report.advice[0]?.table?.path?.segments.length).toBeGreaterThan(0);
+    await expect(ipc.planAdvise(sessionId, null, { ...raw, text: 'nope' })).rejects.toMatchObject({
+      kind: 'other',
+    });
+  });
 });

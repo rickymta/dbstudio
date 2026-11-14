@@ -143,5 +143,59 @@
       "nodeCount": "Operators",
       "warnings": "Warnings"
     }
+  },
+  "advice": {
+    "title": "Optimisation advice",
+    "summary": "{{count}} optimisation points · biggest: {{title}}{{shareText}}",
+    "summaryNone": "No clear optimisation point found",
+    "share": {
+      "time": " — the node takes ~{{pct}} of the time",
+      "cost": " — the node takes ~{{pct}} of the cost"
+    },
+    "tabs": {
+      "advice": "Advice ({{count}})",
+      "node": "Node"
+    },
+    "status": {
+      "checking": "Checking existing indexes…",
+      "checked": "Matched against the indexes of {{count}} tables",
+      "partial": "Only partly matched — confidence lowered",
+      "unavailable": "Could not read metadata — confidence lowered",
+      "disabled": "Matching against existing indexes is off"
+    },
+    "confidence": {
+      "high": "High confidence",
+      "medium": "Medium",
+      "low": "Low",
+      "verify": "Needs verification"
+    },
+    "scope": {
+      "query": "This statement",
+      "session": "Current session",
+      "object": "Object",
+      "database": "Database",
+      "server": "Server"
+    },
+    "lock": {
+      "none": "No notable lock",
+      "shortLock": "Short lock",
+      "blocksWrites": "Blocks writes",
+      "blocksReadsWrites": "Blocks reads and writes",
+      "heavyMutation": "Rewrites a lot of data"
+    },
+    "actions": {
+      "copy": "Copy",
+      "insert": "Insert into editor",
+      "openTable": "Open table"
+    },
+    "template": "Template — edit before running",
+    "readOnlyBanner": "Read-only connection: this statement will be blocked when run; use a connection with DDL rights.",
+    "productionBadge": "Production",
+    "rawWarnings": "Raw warnings ({{count}})",
+    "compare": {
+      "gone": "Resolved",
+      "new": "New",
+      "kept": "Remaining"
+    }
   }
 }

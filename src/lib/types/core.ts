@@ -601,6 +601,8 @@ export interface AppSettings {
   planHistoryEnabled: boolean;
   /** 10..=5000. */
   planHistoryMaxPerConnection: number;
+  /** Query Advisor reads the catalog (indexes, columns, row counts) to refine its advice. */
+  planAdvisorMetadata: boolean;
   /** Language of OS notifications. */
   language: UiLanguage;
 }
@@ -626,5 +628,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   keepaliveSecs: 240,
   planHistoryEnabled: true,
   planHistoryMaxPerConnection: 200,
+  planAdvisorMetadata: true,
   language: 'system',
 };

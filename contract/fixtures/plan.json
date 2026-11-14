@@ -1,4 +1,81 @@
 {
+  "AdviceReport": {
+    "advice": [
+      {
+        "actions": [
+          {
+            "kind": "createIndex",
+            "labelKey": "createIndex",
+            "lock": "shortLock",
+            "params": {},
+            "scope": "object",
+            "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_status ON public.orders (status);",
+            "template": false
+          }
+        ],
+        "caveats": [
+          {
+            "key": "writeOverhead",
+            "params": {},
+            "verify": false
+          }
+        ],
+        "confidence": "high",
+        "evidence": [
+          {
+            "actual": true,
+            "key": "rowsRead",
+            "nodeId": 1,
+            "text": null,
+            "unit": "rows",
+            "value": 250000.0
+          }
+        ],
+        "fingerprint": "indexforfilter|public.orders|status",
+        "fromWarnings": [
+          "fullScanLargeTable"
+        ],
+        "id": "indexForFilter:0a1b2c3d",
+        "impact": {
+          "basis": "time",
+          "score": 0.78,
+          "share": 0.78
+        },
+        "nodeIds": [
+          1
+        ],
+        "params": {
+          "columns": "status"
+        },
+        "rule": "indexForFilter",
+        "severity": "warning",
+        "statementRange": {
+          "end": 20,
+          "start": 7
+        },
+        "table": {
+          "alias": null,
+          "database": null,
+          "name": "orders",
+          "path": null,
+          "schema": "public"
+        }
+      }
+    ],
+    "metadata": {
+      "checked": [],
+      "elapsedMs": 3000,
+      "failed": [
+        {
+          "message": "3 s",
+          "reason": "timeout",
+          "table": "orders"
+        }
+      ],
+      "skipped": 1,
+      "state": "partial"
+    }
+  },
   "ExplainOptions": {
     "buffers": true,
     "settings": false,
@@ -15,6 +92,66 @@
     "queryId": "00000000-0000-0000-0000-000000000003",
     "text": "SELECT 1",
     "timeoutMs": 30000
+  },
+  "PlanAdvice": {
+    "actions": [
+      {
+        "kind": "createIndex",
+        "labelKey": "createIndex",
+        "lock": "shortLock",
+        "params": {},
+        "scope": "object",
+        "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_status ON public.orders (status);",
+        "template": false
+      }
+    ],
+    "caveats": [
+      {
+        "key": "writeOverhead",
+        "params": {},
+        "verify": false
+      }
+    ],
+    "confidence": "high",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 250000.0
+      }
+    ],
+    "fingerprint": "indexforfilter|public.orders|status",
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "id": "indexForFilter:0a1b2c3d",
+    "impact": {
+      "basis": "time",
+      "score": 0.78,
+      "share": 0.78
+    },
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "columns": "status"
+    },
+    "rule": "indexForFilter",
+    "severity": "warning",
+    "statementRange": {
+      "end": 20,
+      "start": 7
+    },
+    "table": {
+      "alias": null,
+      "database": null,
+      "name": "orders",
+      "path": null,
+      "schema": "public"
+    }
   },
   "PlanFormat": "mySqlJsonV2",
   "PlanFormat#clickHouseJson": "clickHouseJson",
@@ -43,6 +180,12 @@
       "schema": "public"
     },
     "op": "Seq Scan",
+    "predicates": [
+      {
+        "role": "filter",
+        "text": "(status = 'x'::text)"
+      }
+    ],
     "raw": {
       "kind": "jsonPointer",
       "pointer": "/0/Plan"
@@ -51,15 +194,87 @@
     "selfTimeMs": 1.5
   },
   "PlanRules": {
+    "filterMaxSelectivity": 0.1,
+    "filterMinExamined": 10000.0,
+    "heapFetchRatio": 0.1,
+    "largeOffset": 10000.0,
     "largeTableRows": 100000.0,
+    "maxAdvice": 15,
+    "minShare": 0.05,
     "misestimateFactor": 10.0,
     "misestimateMinRows": 100.0,
-    "nestedLoopRows": 10000.0
+    "nestedLoopRows": 10000.0,
+    "residualRatio": 10.0
   },
   "PlanTree": {
+    "advice": [
+      {
+        "actions": [
+          {
+            "kind": "createIndex",
+            "labelKey": "createIndex",
+            "lock": "shortLock",
+            "params": {},
+            "scope": "object",
+            "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_status ON public.orders (status);",
+            "template": false
+          }
+        ],
+        "caveats": [
+          {
+            "key": "writeOverhead",
+            "params": {},
+            "verify": false
+          }
+        ],
+        "confidence": "high",
+        "evidence": [
+          {
+            "actual": true,
+            "key": "rowsRead",
+            "nodeId": 1,
+            "text": null,
+            "unit": "rows",
+            "value": 250000.0
+          }
+        ],
+        "fingerprint": "indexforfilter|public.orders|status",
+        "fromWarnings": [
+          "fullScanLargeTable"
+        ],
+        "id": "indexForFilter:0a1b2c3d",
+        "impact": {
+          "basis": "time",
+          "score": 0.78,
+          "share": 0.78
+        },
+        "nodeIds": [
+          1
+        ],
+        "params": {
+          "columns": "status"
+        },
+        "rule": "indexForFilter",
+        "severity": "warning",
+        "statementRange": {
+          "end": 20,
+          "start": 7
+        },
+        "table": {
+          "alias": null,
+          "database": null,
+          "name": "orders",
+          "path": null,
+          "schema": "public"
+        }
+      }
+    ],
     "analyzed": true,
     "format": "postgresJson",
-    "hotPath": [0, 1],
+    "hotPath": [
+      0,
+      1
+    ],
     "nodeCount": 2,
     "root": {
       "actualRows": 950.0,
@@ -88,6 +303,12 @@
             "schema": "public"
           },
           "op": "Seq Scan",
+          "predicates": [
+            {
+              "role": "filter",
+              "text": "(status = 'x'::text)"
+            }
+          ],
           "raw": {
             "kind": "jsonPointer",
             "pointer": "/0/Plan"
@@ -108,6 +329,12 @@
       "loops": 1,
       "object": null,
       "op": "Sort",
+      "predicates": [
+        {
+          "role": "filter",
+          "text": "(status = 'x'::text)"
+        }
+      ],
       "raw": {
         "kind": "none"
       },

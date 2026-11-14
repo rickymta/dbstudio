@@ -6,6 +6,7 @@
 //! `FORMAT='row'` rows (JSON). ClickHouse, CockroachDB and CQL trace parsers are scaffolded
 //! (`PlanError::Unsupported`).
 
+pub mod advice;
 mod analyze;
 mod build;
 mod clickhouse;
@@ -25,6 +26,12 @@ use std::collections::BTreeMap;
 use dbstudio_core::{PlanFormat, RawPlan};
 use serde::{Deserialize, Serialize};
 
+pub use advice::{
+    ActionKind, ActionScope, AdviceAction, AdviceMetadata, AdviceReport, AdviceRule,
+    AdvisorContext, Caveat, Confidence, Evidence, EvidenceUnit, Impact, ImpactBasis, LockRisk,
+    MetadataState, NodePredicate, PlanAdvice, PredicateRole, ServerFacts, TableFailure, TableKey,
+    TableMeta, TableRef, advise,
+};
 pub use analyze::analyze;
 
 /// Why a plan could not be parsed.
@@ -59,10 +66,20 @@ pub fn parse(raw: &RawPlan) -> Result<PlanTree, PlanError> {
     }
 }
 
-/// [`parse`] then [`analyze`].
+/// [`parse`] then [`analyze`] then [`advise`] with the plan and statement only (tier 1).
 pub fn parse_and_analyze(raw: &RawPlan, rules: &PlanRules) -> Result<PlanTree, PlanError> {
+    parse_analyze_advise(raw, rules, &AdvisorContext::basic(raw, rules))
+}
+
+/// [`parse`], [`analyze`] and [`advise`] with an explicit context (tier 2 adds catalog metadata).
+pub fn parse_analyze_advise(
+    raw: &RawPlan,
+    rules: &PlanRules,
+    ctx: &AdvisorContext<'_>,
+) -> Result<PlanTree, PlanError> {
     let mut tree = parse(raw)?;
     analyze(&mut tree, rules);
+    tree.advice = advise(&tree, &raw.statement, ctx);
     Ok(tree)
 }
 
@@ -84,6 +101,9 @@ pub struct PlanTree {
     pub hot_path: Vec<u32>,
     /// Number of nodes.
     pub node_count: u32,
+    /// Optimisation advice of [`advise`], ranked (empty when none; absent in old JSON).
+    #[serde(default)]
+    pub advice: Vec<PlanAdvice>,
 }
 
 /// One operator of the plan.
@@ -100,6 +120,9 @@ pub struct PlanNode {
     pub object: Option<PlanObject>,
     /// Filter / index cond / join cond summary.
     pub condition: Option<String>,
+    /// The conditions of the node with their roles (filled by the parsers that know them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub predicates: Vec<NodePredicate>,
     /// Estimated startup cost.
     pub est_startup_cost: Option<f64>,
     /// Estimated cost, inclusive of the subtree.
@@ -287,6 +310,20 @@ pub struct PlanRules {
     pub misestimate_min_rows: f64,
     /// `NestedLoopManyRows` from this many inner loops.
     pub nested_loop_rows: f64,
+    /// Advisor: a scan must read at least this many rows to suggest an index.
+    pub filter_min_examined: f64,
+    /// Advisor: largest kept/read ratio for which an index is suggested.
+    pub filter_max_selectivity: f64,
+    /// Advisor: rows read per row returned from which the index is called insufficient.
+    pub residual_ratio: f64,
+    /// Advisor: PostgreSQL heap fetches per row from which `pgHeapFetches` fires.
+    pub heap_fetch_ratio: f64,
+    /// Advisor: `OFFSET` from which `largeOffset` fires.
+    pub large_offset: f64,
+    /// Advisor: share of the statement below which severity drops to `info`.
+    pub min_share: f64,
+    /// Advisor: most advice kept after ranking.
+    pub max_advice: u32,
 }
 
 impl Default for PlanRules {
@@ -296,6 +333,13 @@ impl Default for PlanRules {
             misestimate_factor: 10.0,
             misestimate_min_rows: 100.0,
             nested_loop_rows: 10_000.0,
+            filter_min_examined: 10_000.0,
+            filter_max_selectivity: 0.10,
+            residual_ratio: 10.0,
+            heap_fetch_ratio: 0.10,
+            large_offset: 10_000.0,
+            min_share: 0.05,
+            max_advice: 15,
         }
     }
 }
@@ -322,6 +366,10 @@ mod tests {
                 index: None,
             }),
             condition: Some("(status = 'x')".into()),
+            predicates: vec![NodePredicate {
+                role: PredicateRole::Filter,
+                text: "(status = 'x'::text)".into(),
+            }],
             est_startup_cost: Some(0.0),
             est_cost: Some(155.0),
             est_rows: Some(1000.0),
@@ -359,6 +407,57 @@ mod tests {
             warnings: vec![warning()],
             hot_path: vec![0, 1],
             node_count: 2,
+            advice: vec![advice()],
+        }
+    }
+
+    fn advice() -> PlanAdvice {
+        PlanAdvice {
+            id: "indexForFilter:0a1b2c3d".into(),
+            rule: AdviceRule::IndexForFilter,
+            severity: Severity::Warning,
+            confidence: Confidence::High,
+            node_ids: vec![1],
+            table: Some(TableRef {
+                database: None,
+                schema: Some("public".into()),
+                name: "orders".into(),
+                alias: None,
+                path: None,
+            }),
+            params: BTreeMap::from([("columns".to_string(), "status".to_string())]),
+            evidence: vec![Evidence {
+                key: "rowsRead".into(),
+                node_id: Some(1),
+                value: Some(250_000.0),
+                text: None,
+                unit: Some(EvidenceUnit::Rows),
+                actual: true,
+            }],
+            actions: vec![AdviceAction {
+                kind: ActionKind::CreateIndex,
+                label_key: "createIndex".into(),
+                sql: Some(
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_status ON public.orders (status);".into(),
+                ),
+                template: false,
+                scope: ActionScope::Object,
+                lock: Some(LockRisk::ShortLock),
+                params: BTreeMap::new(),
+            }],
+            caveats: vec![Caveat {
+                key: "writeOverhead".into(),
+                verify: false,
+                params: BTreeMap::new(),
+            }],
+            impact: Impact {
+                basis: ImpactBasis::Time,
+                share: Some(0.78),
+                score: 0.78,
+            },
+            from_warnings: vec![PlanRule::FullScanLargeTable],
+            statement_range: Some(dbstudio_core::TextRange { start: 7, end: 20 }),
+            fingerprint: "indexforfilter|public.orders|status".into(),
         }
     }
 
@@ -433,6 +532,18 @@ mod tests {
     }
 
     #[test]
+    fn old_json_without_advice_still_reads() {
+        let mut t = j(&tree());
+        t.as_object_mut().unwrap().remove("advice");
+        t["root"].as_object_mut().unwrap().remove("predicates");
+        let parsed: PlanTree = serde_json::from_value(t).unwrap();
+        assert!(parsed.advice.is_empty() && parsed.root.predicates.is_empty());
+        // An advice rule from a newer build reads as `unknown`.
+        let rule: AdviceRule = serde_json::from_value(json!("someFutureRule")).unwrap();
+        assert_eq!(rule, AdviceRule::Unknown);
+    }
+
+    #[test]
     fn json_shapes() {
         let w = j(&warning());
         assert_eq!(
@@ -466,6 +577,21 @@ mod tests {
                 "PlanTree": j(&tree()),
                 "PlanNode": j(&leaf(1)),
                 "PlanWarning": j(&warning()),
+                "PlanAdvice": j(&advice()),
+                "AdviceReport": j(&AdviceReport {
+                    advice: vec![advice()],
+                    metadata: AdviceMetadata {
+                        state: MetadataState::Partial,
+                        checked: vec![],
+                        failed: vec![TableFailure {
+                            table: "orders".into(),
+                            reason: "timeout".into(),
+                            message: "3 s".into(),
+                        }],
+                        skipped: 1,
+                        elapsed_ms: 3_000,
+                    },
+                }),
                 "PlanRules": j(&PlanRules::default()),
             }),
         );

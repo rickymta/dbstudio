@@ -1,6 +1,7 @@
 // Query plans (dbstudio-core `plan.rs`, dbstudio-plan).
 
-import type { Uuid } from './core';
+import type { ObjectPath, Uuid } from './core';
+import type { TextRange } from './script';
 
 export type PlanFormat =
   | 'postgresJson'
@@ -84,6 +85,15 @@ export type RawRef =
   | { kind: 'row'; id: number }
   | { kind: 'none' };
 
+export type PredicateRole =
+  'indexCond' | 'filter' | 'joinCond' | 'joinFilter' | 'recheck' | 'sortKey' | 'groupKey' | 'other';
+
+/** One condition of a node with its role (filled by the parsers that know them). */
+export interface NodePredicate {
+  role: PredicateRole;
+  text: string;
+}
+
 export interface PlanNode {
   /** Pre-order index, root = 0. */
   id: number;
@@ -91,6 +101,8 @@ export interface PlanNode {
   kind: PlanNodeKind;
   object: PlanObject | null;
   condition: string | null;
+  /** Absent in plans from older builds and for formats whose parser does not fill it. */
+  predicates?: NodePredicate[];
   estStartupCost: number | null;
   estCost: number | null;
   estRows: number | null;
@@ -131,6 +143,8 @@ export interface PlanTree {
   /** Node ids from the root following the maximum inclusive time (else cost). */
   hotPath: number[];
   nodeCount: number;
+  /** Query Advisor output, ranked. Absent in old mocks: always read `?? []`. */
+  advice?: PlanAdvice[];
 }
 
 export interface PlanRules {
@@ -138,6 +152,230 @@ export interface PlanRules {
   misestimateFactor?: number;
   misestimateMinRows?: number;
   nestedLoopRows?: number;
+  /** Advisor thresholds. */
+  filterMinExamined?: number;
+  filterMaxSelectivity?: number;
+  residualRatio?: number;
+  heapFetchRatio?: number;
+  largeOffset?: number;
+  minShare?: number;
+  maxAdvice?: number;
+}
+
+// ---- Query Advisor (dbstudio-plan `advice`) ----
+
+export type AdviceRule =
+  | 'indexForFilter'
+  | 'indexResidualFilter'
+  | 'indexForSort'
+  | 'nestedLoopInnerScan'
+  | 'staleStatistics'
+  | 'sortSpill'
+  | 'hashSpill'
+  | 'fullScanReview'
+  | 'existingIndexUnused'
+  | 'pgBitmapLossy'
+  | 'pgHeapFetches'
+  | 'pgFunctionOnColumn'
+  | 'implicitConversion'
+  | 'pgParallelNotLaunched'
+  | 'pgJitOverhead'
+  | 'pgColdCache'
+  | 'pgNotInSubplan'
+  | 'mysqlPossibleKeysUnused'
+  | 'mysqlTempTableGroup'
+  | 'mysqlJoinBuffer'
+  | 'mysqlIndexMerge'
+  | 'mssqlMissingIndex'
+  | 'mssqlKeyLookup'
+  | 'mssqlNoJoinPredicate'
+  | 'mssqlNoStatistics'
+  | 'mssqlExcessiveGrant'
+  | 'oracleCartesian'
+  | 'oracleIndexSkipScan'
+  | 'mongoCollscan'
+  | 'mongoExaminedRatio'
+  | 'mongoBlockingSort'
+  | 'mongoLookupNoIndex'
+  | 'mongoUnanchoredRegex'
+  | 'chPrimaryKeyUnused'
+  | 'chPartitionNotPruned'
+  | 'chSkipIndexUseless'
+  | 'chFinal'
+  | 'chJoinRightLarge'
+  | 'crdbIndexRecommendation'
+  | 'crdbMissingStats'
+  | 'tidbPseudoStats'
+  | 'nonSargablePredicate'
+  | 'leadingWildcardLike'
+  | 'orAcrossColumns'
+  | 'selectStar'
+  | 'largeOffset'
+  | 'notInSubquery'
+  | 'typeMismatch'
+  /** A rule newer than this build. */
+  | 'unknown';
+
+/** Every rule name, for exhaustive checks (i18n coverage tests). */
+export const ADVICE_RULES: readonly AdviceRule[] = [
+  'indexForFilter',
+  'indexResidualFilter',
+  'indexForSort',
+  'nestedLoopInnerScan',
+  'staleStatistics',
+  'sortSpill',
+  'hashSpill',
+  'fullScanReview',
+  'existingIndexUnused',
+  'pgBitmapLossy',
+  'pgHeapFetches',
+  'pgFunctionOnColumn',
+  'implicitConversion',
+  'pgParallelNotLaunched',
+  'pgJitOverhead',
+  'pgColdCache',
+  'pgNotInSubplan',
+  'mysqlPossibleKeysUnused',
+  'mysqlTempTableGroup',
+  'mysqlJoinBuffer',
+  'mysqlIndexMerge',
+  'mssqlMissingIndex',
+  'mssqlKeyLookup',
+  'mssqlNoJoinPredicate',
+  'mssqlNoStatistics',
+  'mssqlExcessiveGrant',
+  'oracleCartesian',
+  'oracleIndexSkipScan',
+  'mongoCollscan',
+  'mongoExaminedRatio',
+  'mongoBlockingSort',
+  'mongoLookupNoIndex',
+  'mongoUnanchoredRegex',
+  'chPrimaryKeyUnused',
+  'chPartitionNotPruned',
+  'chSkipIndexUseless',
+  'chFinal',
+  'chJoinRightLarge',
+  'crdbIndexRecommendation',
+  'crdbMissingStats',
+  'tidbPseudoStats',
+  'nonSargablePredicate',
+  'leadingWildcardLike',
+  'orAcrossColumns',
+  'selectStar',
+  'largeOffset',
+  'notInSubquery',
+  'typeMismatch',
+];
+
+export type Confidence = 'high' | 'medium' | 'low';
+
+export interface TableRef {
+  database?: string | null;
+  schema?: string | null;
+  name: string;
+  alias?: string | null;
+  /** Resolved by `planAdvise`; enables "Open table". */
+  path?: ObjectPath | null;
+}
+
+export type EvidenceUnit = 'rows' | 'ms' | 'bytes' | 'blocks' | 'pct' | 'ratio' | 'count' | 'kb';
+
+export interface Evidence {
+  /** i18n `advice.evidence.<key>`. */
+  key: string;
+  nodeId?: number | null;
+  value?: number | null;
+  text?: string | null;
+  unit?: EvidenceUnit | null;
+  /** true = measured (ANALYZE), false = estimate. */
+  actual: boolean;
+}
+
+export type ActionKind =
+  | 'createIndex'
+  | 'statistics'
+  | 'sessionSetting'
+  | 'maintenance'
+  | 'rewrite'
+  | 'hint'
+  | 'check'
+  | 'serverSetting';
+export type ActionScope = 'query' | 'session' | 'object' | 'database' | 'server';
+export type LockRisk =
+  'none' | 'shortLock' | 'blocksWrites' | 'blocksReadsWrites' | 'heavyMutation';
+
+export interface AdviceAction {
+  kind: ActionKind;
+  /** i18n `advice.actions.<labelKey>`. */
+  labelKey: string;
+  /** Ready text in the connection's language (SQL, mongo shell); absent for descriptions. */
+  sql?: string | null;
+  /** Has placeholders: never "ready to run". */
+  template: boolean;
+  scope: ActionScope;
+  lock?: LockRisk | null;
+  params?: Record<string, string>;
+}
+
+export interface Caveat {
+  /** i18n `advice.caveats.<key>`. */
+  key: string;
+  /** The user must verify before acting. */
+  verify: boolean;
+  params?: Record<string, string>;
+}
+
+export type ImpactBasis = 'time' | 'cost' | 'rows' | 'none';
+
+export interface Impact {
+  basis: ImpactBasis;
+  /** Share of the whole statement attributed to the nodes (0..1); null = unknown. */
+  share?: number | null;
+  score: number;
+}
+
+export interface PlanAdvice {
+  /** Stable per plan: `{rule}:{hash8}`. */
+  id: string;
+  rule: AdviceRule;
+  severity: Severity;
+  confidence: Confidence;
+  /** Nodes concerned, most relevant first (empty for statement-only advice). */
+  nodeIds: number[];
+  table?: TableRef | null;
+  /** Values for `advice.rules.<rule>.title` / `.why`. */
+  params: Record<string, string>;
+  evidence: Evidence[];
+  actions: AdviceAction[];
+  caveats: Caveat[];
+  impact: Impact;
+  fromWarnings: PlanRule[];
+  /** Character range in `RawPlan.statement` for statement rules. */
+  statementRange?: TextRange | null;
+  /** Plan-independent identity for compare. */
+  fingerprint: string;
+}
+
+export type MetadataState = 'notRequested' | 'checked' | 'partial' | 'unavailable' | 'disabled';
+
+export interface TableFailure {
+  table: string;
+  reason: 'timeout' | 'notFound' | 'ambiguous' | 'unsupported' | 'error';
+  message: string;
+}
+
+export interface AdviceMetadata {
+  state: MetadataState;
+  checked: TableRef[];
+  failed: TableFailure[];
+  skipped: number;
+  elapsedMs: number;
+}
+
+export interface AdviceReport {
+  advice: PlanAdvice[];
+  metadata: AdviceMetadata;
 }
 
 export interface PlanResult {

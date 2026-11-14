@@ -1,5 +1,6 @@
 import { mock } from '../mock';
 import type {
+  AdviceReport,
   ConfirmationGrant,
   ExplainRequest,
   PlanHistoryEntry,
@@ -31,6 +32,24 @@ export const planApi = {
     }),
   planParse: (raw: RawPlan, rules?: PlanRules | null): Promise<PlanTree> =>
     call('plan_parse', () => mock.planParse(raw, rules ?? null), { raw, rules: rules ?? null }),
+  /**
+   * Query Advisor tier 2: the advice of `raw` refined with the catalog (indexes, columns, row
+   * counts) of the tables it touches. Only reads; never runs the statement.
+   */
+  planAdvise: (
+    sessionId: Uuid,
+    leaseId: Uuid | null,
+    raw: RawPlan,
+    database?: string | null,
+    rules?: PlanRules | null,
+  ): Promise<AdviceReport> =>
+    call('plan_advise', () => mock.planAdvise(sessionId, leaseId, raw, database ?? null), {
+      sessionId,
+      leaseId,
+      raw,
+      database: database ?? null,
+      rules: rules ?? null,
+    }),
   /** Save a `.dbplan.json`; resolves to the path (`null` = cancelled). */
   planFileSave: (raw: RawPlan): Promise<string | null> =>
     call('plan_file_save', () => mock.planFileSave(raw), { raw }),

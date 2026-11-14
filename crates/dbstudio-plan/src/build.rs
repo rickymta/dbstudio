@@ -16,6 +16,7 @@ impl PlanNode {
             kind,
             object: None,
             condition: None,
+            predicates: Vec::new(),
             est_startup_cost: None,
             est_cost: None,
             est_rows: None,
@@ -156,6 +157,7 @@ pub(crate) fn finish(
         warnings: Vec::new(),
         hot_path: Vec::new(),
         node_count: next,
+        advice: Vec::new(),
     }
 }
 

@@ -13,6 +13,7 @@
     "language": "vi",
     "logLevel": "info",
     "maxLobBytes": 16777216,
+    "planAdvisorMetadata": true,
     "planHistoryEnabled": true,
     "planHistoryMaxPerConnection": 200,
     "planMisestimateFactor": 10,
@@ -56,7 +57,12 @@
       ]
     },
     "snapshot": {
-      "public.users": [["id", "integer"]]
+      "public.users": [
+        [
+          "id",
+          "integer"
+        ]
+      ]
     },
     "tables": [
       {

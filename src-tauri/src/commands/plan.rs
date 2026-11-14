@@ -6,7 +6,9 @@ use dbstudio_core::{
     ConfirmationGrant, ConfirmationRequest, ConnectionConfig, DestructiveStatement, Error,
     ExplainRequest, RawPlan, ScriptDialect, StatementClass, TextRange,
 };
-use dbstudio_plan::{PlanError, PlanRules, PlanTree};
+use dbstudio_plan::{
+    AdviceMetadata, AdviceReport, AdvisorContext, MetadataState, PlanError, PlanRules, PlanTree,
+};
 use dbstudio_store::NewPlanHistory;
 use serde::Serialize;
 use tauri::State;
@@ -332,6 +334,40 @@ pub(crate) fn parse_impl(
     dbstudio_plan::parse_and_analyze(&raw, &effective_rules(state, rules)).map_err(plan_error)
 }
 
+/// Query Advisor, tier 2 entry point. The contract (arguments and result) is final; for now the
+/// report holds the tier 1 advice (plan and statement only) and `metadata.state` is `disabled`.
+/// Package R2 reads the catalog here (design section 5.5 and 7).
+pub(crate) async fn advise_impl(
+    state: &AppState,
+    session_id: Uuid,
+    lease_id: Option<Uuid>,
+    raw: RawPlan,
+    database: Option<String>,
+    rules: Option<PlanRules>,
+) -> Result<AdviceReport> {
+    let _ = database;
+    let (session, _config) = state.sessions.get_with_config(session_id)?;
+    let dialect = match lease_id {
+        Some(id) => state
+            .leases
+            .get(id)?
+            .script_dialect()
+            .unwrap_or_else(|| session.script_dialect()),
+        None => session.script_dialect(),
+    };
+    let rules = effective_rules(state, rules);
+    let mut ctx = AdvisorContext::basic(&raw, &rules);
+    ctx.dialect = dialect;
+    let tree = dbstudio_plan::parse_analyze_advise(&raw, &rules, &ctx).map_err(plan_error)?;
+    Ok(AdviceReport {
+        advice: tree.advice,
+        metadata: AdviceMetadata {
+            state: MetadataState::Disabled,
+            ..AdviceMetadata::default()
+        },
+    })
+}
+
 /// Save a plan through a Save dialog; `None` when cancelled.
 pub(crate) async fn file_save_impl(state: &AppState, raw: RawPlan) -> Result<Option<String>> {
     let host = state.host.clone();
@@ -464,6 +500,19 @@ pub fn plan_parse(
 }
 
 #[tauri::command]
+pub async fn plan_advise(
+    state: State<'_, AppState>,
+    session_id: Uuid,
+    lease_id: Option<Uuid>,
+    raw: RawPlan,
+    database: Option<String>,
+    rules: Option<PlanRules>,
+) -> Result<AdviceReport> {
+    tracing::debug!(command = "plan_advise", session = %session_id, "ipc call");
+    advise_impl(&state, session_id, lease_id, raw, database, rules).await
+}
+
+#[tauri::command]
 pub async fn plan_file_save(state: State<'_, AppState>, raw: RawPlan) -> Result<Option<String>> {
     tracing::debug!(command = "plan_file_save", "ipc call");
     file_save_impl(&state, raw).await
@@ -499,6 +548,45 @@ mod tests {
             captured_at: "2025-01-01T00:00:00Z".into(),
             extra: BTreeMap::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn advise_stub_reports_tier_one_and_a_lost_session() {
+        let (state, sid, _) = state_with_session(false, false).await;
+        let report = advise_impl(
+            &state,
+            sid,
+            None,
+            raw(PlanFormat::PostgresJson, PG_SPILL),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.metadata.state, MetadataState::Disabled);
+        assert!(report.metadata.checked.is_empty());
+        let lost = advise_impl(
+            &state,
+            Uuid::new_v4(),
+            None,
+            raw(PlanFormat::PostgresJson, PG_SPILL),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(lost.kind(), "notFound");
+        let bad = advise_impl(
+            &state,
+            sid,
+            None,
+            raw(PlanFormat::PostgresJson, "nope"),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(bad.kind(), "invalid");
     }
 
     #[test]
