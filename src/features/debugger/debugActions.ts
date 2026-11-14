@@ -27,7 +27,7 @@ import {
   type WatchSpec,
 } from '@/lib/types';
 import { useSessionsStore } from '@/stores/sessions';
-import { useTabsStore } from '@/stores/tabs';
+import { editorTabId, useTabsStore, type TabItem } from '@/stores/tabs';
 import { cursorLine, docText, insertAtCursor, revealDocLine, viewOf } from './cm/viewRegistry';
 import type { OutputItem } from './consoleModel';
 import {
@@ -163,32 +163,81 @@ function afterState(tabId: string, state: DebugState, previous: DebugState | nul
     if (status.reason.kind === 'awaitingEnd' && was !== 'awaitingEnd') {
       useDebugUi.getState().openDialog(tabId, { kind: 'end', then: 'stop' });
     }
-    const pos = state.position;
-    if (pos?.source.kind === 'routine') openRoutineTab(tabId, pos.source.routine);
+    followStop(tabId, state, previous, status.reason.kind);
     useDebugStore.getState().patchUi(tabId, { bottom: 'debug' });
   }
 }
 
-/** Open (or reuse) the read-only source tab of a routine the debugger stopped in. */
-export function openRoutineTab(tabId: string, routine: RoutineRef): void {
+/** Where a paused state stands: the routine signature, or null for the script. */
+function stopSignature(state: DebugState | null): string | null {
+  if (!state || state.status.kind !== 'paused') return null;
+  const source = state.position?.source ?? state.frames[state.selectedFrame]?.source;
+  return source?.kind === 'routine' ? source.routine.signature : null;
+}
+
+/**
+ * JetBrains-style follow: a stop in a routine opens its source tab; the focus moves there when
+ * the routine is new or the stop was not a plain step, and only from the session's own tabs.
+ * Stepping inside the same routine never switches tabs.
+ */
+function followStop(
+  tabId: string,
+  state: DebugState,
+  previous: DebugState | null,
+  reason: string,
+): void {
+  const sig = stopSignature(state);
+  const before = stopSignature(previous);
+  const source = state.position?.source ?? state.frames[state.selectedFrame]?.source;
+  const tabs = useTabsStore.getState();
+  const active = tabs.tabs.find((x) => x.id === tabs.activeId);
+  const own = (x: typeof active): boolean =>
+    x?.kind === 'editor'
+      ? x.payload.tabStateId === tabId
+      : x?.kind === 'debugSource' &&
+        (tabOfRoutine(x.payload.signature) === tabId ||
+          x.payload.signature === sig ||
+          x.payload.signature === before);
+  const mine = own(active);
+  if (sig && source?.kind === 'routine') {
+    const focus = mine && (sig !== before || reason !== 'step');
+    const had = openRoutineTab(tabId, source.routine, focus);
+    if (focus && had) tabs.activate(had);
+    return;
+  }
+  // Back in the script (step out / finish the routine): bring its editor back.
+  if (!sig && before && active?.kind === 'debugSource' && mine) tabs.activate(editorTabId(tabId));
+}
+
+/**
+ * Open (or reuse) the read-only source tab of a routine the debugger stopped in. `activate`
+ * false opens it in the background. Returns the tab id (null when it cannot be opened).
+ */
+export function openRoutineTab(tabId: string, routine: RoutineRef, activate = true): string | null {
   const data = getTabData(tabId);
   const editorTab = useTabsStore
     .getState()
     .tabs.find((x) => x.kind === 'editor' && x.payload.tabStateId === tabId);
   const sessionId = data?.leaseSessionId ?? (editorTab?.payload?.sessionId as string | undefined);
   const connectionId = editorTab?.kind === 'editor' ? editorTab.payload.connectionId : null;
-  if (!sessionId || !connectionId) return;
+  if (!sessionId || !connectionId) return null;
   const id = `debugSource:${sessionId}:${routine.signature}`;
   const tabs = useTabsStore.getState();
-  if (tabs.tabs.some((x) => x.id === id)) return;
+  if (tabs.tabs.some((x) => x.id === id)) {
+    if (activate) tabs.activate(id);
+    return id;
+  }
   const name = (routine.signature.split('(')[0] ?? routine.signature).split('.').pop();
-  tabs.openTab({
+  const item: TabItem = {
     id,
     kind: 'debugSource',
     title: `${name}() [debug]`,
     closable: true,
     payload: { sessionId, connectionId, signature: routine.signature },
-  });
+  };
+  if (activate) tabs.openTab(item);
+  else useTabsStore.setState((s) => ({ tabs: [...s.tabs, item] }));
+  return id;
 }
 
 // -- scopes, breakpoints --------------------------------------------------------------------

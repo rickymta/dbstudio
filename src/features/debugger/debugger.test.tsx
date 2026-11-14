@@ -719,3 +719,54 @@ describe('start from a restored tab', () => {
     expect(useDebugStore.getState().starting[id]).toBeFalsy();
   });
 });
+
+describe('following stops into routines', () => {
+  const routineRef = { signature: 'public.f_outer(integer)' };
+  const stopIn = (id: string, kind: 'routine' | 'script', reason: 'step' | 'breakpoint') => {
+    const cur = sessionOf(id)!.state;
+    const source =
+      kind === 'routine'
+        ? { kind: 'routine' as const, routine: routineRef }
+        : { kind: 'script' as const };
+    const frame = { id: 0, kind, name: 'f', source, line: 4 } as DebugState['frames'][number];
+    return emitState(id, {
+      status: {
+        kind: 'paused',
+        reason: reason === 'step' ? { kind: 'step' } : { kind: 'breakpoint', ids: ['b'] },
+      },
+      position: { ...(cur.position ?? { line: 4 }), source, line: 4 },
+      frames: [frame],
+      selectedFrame: 0,
+    } as Partial<DebugState>);
+  };
+  const activeId = () => useTabsStore.getState().activeId;
+  const sourceTab = () => useTabsStore.getState().tabs.find((t) => t.kind === 'debugSource');
+
+  it('a breakpoint stop in a new routine switches to its tab; steps inside it do not', async () => {
+    const { id } = await mountEditor();
+    await startSession(id);
+    act(() => useTabsStore.getState().activate(editorTabId(id)));
+    stopIn(id, 'routine', 'breakpoint');
+    await waitFor(() => expect(sourceTab()).toBeTruthy());
+    expect(activeId()).toBe(sourceTab()!.id);
+    // the user goes back to the script, then a plain step in the same routine: no jump
+    act(() => useTabsStore.getState().activate(editorTabId(id)));
+    stopIn(id, 'routine', 'step');
+    expect(activeId()).toBe(editorTabId(id));
+    // a breakpoint hit again brings the routine back
+    stopIn(id, 'routine', 'breakpoint');
+    expect(activeId()).toBe(sourceTab()!.id);
+    // leaving the routine returns to the script
+    stopIn(id, 'script', 'step');
+    expect(activeId()).toBe(editorTabId(id));
+  });
+
+  it('does not steal the focus from an unrelated tab', async () => {
+    const { id } = await mountEditor();
+    await startSession(id);
+    act(() => useTabsStore.getState().activate('welcome'));
+    stopIn(id, 'routine', 'breakpoint');
+    await waitFor(() => expect(sourceTab()).toBeTruthy());
+    expect(activeId()).toBe('welcome');
+  });
+});

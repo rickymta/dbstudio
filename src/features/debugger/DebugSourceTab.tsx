@@ -10,6 +10,7 @@ import { ipc } from '@/lib/ipc';
 import type { IpcError, RoutineSource } from '@/lib/types';
 import { useTabsStore, editorTabId, type DebugSourcePayload } from '@/stores/tabs';
 import { createSourceExtension } from './cm/extension';
+import { revealDocLine } from './cm/viewRegistry';
 import { BreakpointPopover } from './BreakpointPopover';
 import { ensureDebugEvents, ensureRoutineScope } from './debugActions';
 import { routineScope, tabOfRoutine, useDebugStore } from './debugStore';
@@ -87,6 +88,19 @@ const DebugSourceTab: FC<DebugSourcePayload> = ({ sessionId, connectionId, signa
     });
     return () => view.destroy();
   }, [source, extensions, signature, t]);
+
+  // Scroll to the line the session stopped at (on arrival and whenever it moves).
+  const stopLine = useDebugStore((st) => {
+    const state = sessionTab ? st.sessions[sessionTab]?.state : undefined;
+    const frame = state?.frames[state.selectedFrame];
+    return frame?.source.kind === 'routine' && frame.source.routine.signature === signature
+      ? frame.line
+      : null;
+  });
+  useEffect(() => {
+    if (stopLine !== null && source && extensions)
+      revealDocLine(scopeKey, stopLine - source.firstLine + 1);
+  }, [stopLine, source, extensions, scopeKey]);
 
   const backToScript = () => {
     if (!sessionTab) return;
