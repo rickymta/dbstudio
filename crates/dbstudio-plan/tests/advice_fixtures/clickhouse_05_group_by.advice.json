@@ -1,0 +1,42 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewFilter",
+        "lock": null,
+        "params": {},
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "none",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "rowsRead",
+        "nodeId": 6,
+        "text": null,
+        "unit": "rows",
+        "value": 2023424.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      6
+    ],
+    "params": {
+      "rows": "2023424",
+      "table": "plan_fx.events"
+    },
+    "rule": "fullScanReview",
+    "severity": "critical",
+    "share": null,
+    "table": "plan_fx.events"
+  }
+]

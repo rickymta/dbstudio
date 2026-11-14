@@ -1,0 +1,53 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "createIndex",
+        "label": "createIndex",
+        "lock": "none",
+        "params": {},
+        "scope": "object",
+        "sql": "CREATE INDEX ON dbstudio.sv.big (name) STORING (grp, amount);",
+        "template": false
+      }
+    ],
+    "basis": "none",
+    "caveats": [
+      "writeOverhead"
+    ],
+    "confidence": "high",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "rowsRead",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 6000.0
+      },
+      {
+        "actual": false,
+        "key": "recommendationType",
+        "nodeId": null,
+        "text": "index creation",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "columns": "name",
+      "examined": "6000",
+      "recommendation": "index creation",
+      "storing": "grp, amount",
+      "table": "sv.big"
+    },
+    "rule": "crdbIndexRecommendation",
+    "severity": "warning",
+    "share": null,
+    "table": "sv.big"
+  }
+]

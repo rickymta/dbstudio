@@ -1,0 +1,121 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "statistics",
+        "label": "refreshStatistics",
+        "lock": "none",
+        "params": {
+          "table": "ords"
+        },
+        "scope": "object",
+        "sql": "ANALYZE ords;",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "estimatedRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 0.0
+      },
+      {
+        "actual": true,
+        "key": "actualRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 200.0
+      },
+      {
+        "actual": true,
+        "key": "misestimateFactor",
+        "nodeId": 0,
+        "text": null,
+        "unit": "ratio",
+        "value": 200.0
+      }
+    ],
+    "fromWarnings": [
+      "misestimate"
+    ],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "actual": "200",
+      "direction": "under",
+      "estimated": "0",
+      "factor": "200",
+      "table": "ords"
+    },
+    "rule": "staleStatistics",
+    "severity": "critical",
+    "share": 0.727,
+    "table": "ords"
+  },
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewStatistics",
+        "lock": null,
+        "params": {},
+        "scope": "object",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "none",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "estimatedRows",
+        "nodeId": 2,
+        "text": null,
+        "unit": "rows",
+        "value": 10.0
+      },
+      {
+        "actual": true,
+        "key": "actualRows",
+        "nodeId": 2,
+        "text": null,
+        "unit": "rows",
+        "value": 200.0
+      },
+      {
+        "actual": true,
+        "key": "misestimateFactor",
+        "nodeId": 2,
+        "text": null,
+        "unit": "ratio",
+        "value": 20.0
+      }
+    ],
+    "fromWarnings": [
+      "misestimate"
+    ],
+    "nodeIds": [
+      2
+    ],
+    "params": {
+      "actual": "200",
+      "direction": "under",
+      "estimated": "10",
+      "factor": "20"
+    },
+    "rule": "staleStatistics",
+    "severity": "warning",
+    "share": null,
+    "table": null
+  }
+]
