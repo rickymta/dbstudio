@@ -256,7 +256,7 @@ flowchart LR
 - `dbstudio-ssh` (`russh`): `Tunnel::open` kết nối bastion, **kiểm host key qua `KnownHosts` trước khi gửi bất kỳ thông tin xác thực nào**, xác thực bằng mật khẩu, private key (+ passphrase) hoặc ssh-agent (Unix socket / named pipe Windows), lắng nghe `127.0.0.1:0` và forward mỗi kết nối qua kênh `direct-tcpip`. Drop tunnel → đóng hết.
 - `SessionManager::connect`: profile có `ssh` → mở tunnel → clone config với `host=127.0.0.1`, `port=local`, `tls.server_name=host gốc` → `Driver::connect`; tunnel sống cùng session (lease và job dùng chung). Secret SSH ở keychain account `<connId>#ssh`; `connection_test` nhận thêm `ssh_secret` để thử mật khẩu vừa gõ.
 - Host key lạ/đổi → `Error::SshHostKey { host, port, keyType, fingerprint, changed }`; UI hỏi → `ssh_trust_host` lưu vào bảng `ssh_known_hosts` — **chỉ lưu khoá thực sự vừa quan sát được** từ server (không tin fingerprint do webview gửi lên).
-- `tls.server_name` (mặc định = host gốc khi có SSH) được tôn trọng ở **mọi driver có TLS** (R6 đã giải quyết): PG, MSSQL như cũ; MySQL qua `tls_hostname_override` của `mysql_async`; Redis kết nối `TcpTls{host gốc}` với resolver DNS trả đầu tunnel; MongoDB qua **SOCKS5**: `Tunnel::open_socks5` mở listener 127.0.0.1 không xác thực, chỉ cho phép host:port của profile (+ `options.hosts`), chuyển qua `direct-tcpip`, driver đặt `socks5Proxy` — giữ host gốc nên được cả replica set nhiều host; Cassandra/ScyllaDB verifier rustls riêng kiểm theo tên cấu hình thay IP node; ClickHouse connector hyper với resolver map host gốc → đầu tunnel. Cassandra qua SSH chỉ dùng **một node** (`AddressTranslator` + `HostFilter`, `cql.singleNode`).
+- `tls.server_name` (mặc định = host gốc khi có SSH) được tôn trọng ở PG, MSSQL (như cũ) và nay ở mọi driver còn lại trừ Oracle (R6 đã giải quyết): MySQL qua `tls_hostname_override` của `mysql_async`; Redis kết nối `TcpTls{host gốc}` với resolver DNS trả đầu tunnel; MongoDB qua **SOCKS5**: `Tunnel::open_socks5` mở listener 127.0.0.1 không xác thực, chỉ cho phép host:port của profile (+ `options.hosts`), chuyển qua `direct-tcpip`, driver đặt `socks5Proxy` — giữ host gốc nên được cả replica set nhiều host; Cassandra/ScyllaDB verifier rustls riêng kiểm theo tên cấu hình thay IP node; ClickHouse connector hyper với resolver map host gốc → đầu tunnel. Cassandra qua SSH chỉ dùng **một node** (`AddressTranslator` + `HostFilter`, `cql.singleNode`).
 
 ## 14. Luồng chính
 
@@ -323,7 +323,7 @@ CockroachDB, YugabyteDB, TiDB có `DbKind` riêng (cổng, nhãn, capabilities, 
 |---|---|
 | CockroachDB | Cổng 26257, option `cockroach.cluster` (Cloud). Huỷ bằng `CANCEL QUERIES` qua kết nối riêng (lọc theo user), huỷ query trước khi đóng session. EXPLAIN text (`CockroachText`). DDL `SHOW CREATE ALL TABLES`. Bảng không PK sửa theo `rowid` ẩn. Đổi DB của lease bằng `SET database`. Lỗi 40001 kèm gợi ý retry. Sequence lưu giá trị qua `setval`. |
 | YugabyteDB YSQL | Cổng 5433. Như PG; timeout catalog/tìm kiếm ×2; EXPLAIN JSON PG; `last_value` đọc từ chính sequence. |
-| TiDB | Cổng 4000. Không procedure/trigger/event (ẩn folder), có sequence. `EXPLAIN FORMAT='row'` (`TiDbRows`). Không read-only phía server (mục 7.1); isolation/`READ ONLY` không hỗ trợ được cô lập. `ANSI_QUOTES` đọc từ `sql_mode`. |
+| TiDB | Cổng 4000. Không procedure/trigger/event (ẩn folder), có sequence. `EXPLAIN FORMAT='row'` (`TiDbRows`). Không read-only phía server (mục 7.1); export/đọc bảng dùng transaction thường. `ANSI_QUOTES` đọc từ `sql_mode`. |
 
 ## 16. Lưu trữ cục bộ
 
@@ -379,7 +379,7 @@ CockroachDB, YugabyteDB, TiDB có `DbKind` riêng (cổng, nhãn, capabilities, 
 | NewSQL có `DbKind` riêng nhưng là flavor của driver PG/MySQL, tự nhận diện theo `version()` | Tái dùng ~90% mã; cổng/capabilities/tool native khác nhau; chọn nhầm kind vẫn đúng. |
 | Cassandra + ScyllaDB một crate (`scylla`); ClickHouse qua HTTP chính thức + decoder RowBinary riêng | Một mã nguồn cho hai CQL; HTTP đi qua proxy/SSH/HTTPS dễ, RowBinary không mất độ chính xác. |
 | Mọi driver tách câu bằng splitter chung của `dbstudio-sql`, cùng dialect với guard (của lease nếu có) | Guard phải xét đúng các câu driver sẽ chạy (bài học lỗ hổng Cassandra `split.rs` riêng và dialect lease TiDB, mục 6). |
-| Read-only chặn hàm bảng ngoài của ClickHouse và `crdb_internal.unsafe_*` (quyết định mặc định đợt tồn đọng) | Các hàm này đọc/ghi file, URL, DB khác, chạy lệnh; với `readonly=2` ClickHouse vẫn cho chạy một số. |
+| Read-only chặn hàm bảng ngoài của ClickHouse và `crdb_internal.unsafe_*` (quyết định mặc định đợt tồn đọng) | Các hàm này đọc/ghi tài nguyên ngoài server (file, URL, object store, DB khác, lệnh shell); guard chặn ở ứng dụng, không dựa vào quyền phía server. |
 | Giữ mật khẩu người dùng gõ trong bộ nhớ suốt đời session để tự kết nối lại | Không ghi đĩa/log; mật khẩu keychain đọc lại mỗi lần. |
 
 ### 18.2 Còn mở
@@ -389,32 +389,38 @@ Giữ TanStack Virtual hay canvas grid (chưa benchmark 1 triệu dòng trên 3 
 ### 18.3 Giới hạn đã biết
 
 **An toàn câu lệnh**
-- MySQL: `mysql_async` luôn bật `CLIENT_MULTI_STATEMENTS`, không tắt được → guard từ chối script mà ranh giới câu khác nhau giữa hai chế độ `NO_BACKSLASH_ESCAPES` (vd. chuỗi có `\'`); người dùng phải viết `''`.
-- MySQL `ANSI_QUOTES` chưa mô hình hoá: `"x"` lex như chuỗi; chỉ ảnh hưởng văn bản trộn cả hai cách quote.
-- Phân loại vẫn là heuristic (R5): `Unknown`/`Procedural` coi là ghi; với production quét thêm từ khoá. SQL động (`EXECUTE IMMEDIATE`, `EXEC(@sql)`) chỉ được nhận diện qua từ khoá.
-- MSSQL, Oracle, MongoDB, Redis không có read-only mức session từ server (chỉ guard + kiểm ở driver).
+- MySQL/TiDB: `mysql_async` luôn bật `CLIENT_MULTI_STATEMENTS`, không tắt được → guard từ chối script mà ranh giới câu khác nhau giữa các chế độ `NO_BACKSLASH_ESCAPES`/`ANSI_QUOTES` khi script đổi `sql_mode` (vd. chuỗi có `\'`); người dùng phải viết `''`.
+- Phân loại vẫn là heuristic (R5): `Unknown`/`Procedural` coi là ghi; với production quét thêm từ khoá (`keywordScan`). SQL động (`EXECUTE IMMEDIATE`, `EXEC(@sql)`) chỉ được nhận diện qua từ khoá.
+- Không có read-only mức session từ server: MSSQL, Oracle, MongoDB, Redis, Cassandra/ScyllaDB, **TiDB** (server từ chối `SET SESSION TRANSACTION READ ONLY`, lỗi 1235 → `readOnlyEnforcement=application`); chỉ guard + kiểm ở driver.
+- Redact chưa che đối số của `s3(...)` (khoá truy cập trong hàm bảng ClickHouse); `mysql()`/`remote()` đã che.
+- `PlanRule` chưa có luật riêng cho `FINAL` trên bảng lớn (ClickHouse), tombstone/request chậm (CQL) — parser chỉ ghi `warnings` ở node.
 
 **Sửa dữ liệu**
-- Mongo sửa document chỉ khoá theo `_id` (không so giá trị cũ). Mongo standalone không transaction (`atomic=false`).
-- Redis không rollback lỗi lúc chạy trong `MULTI/EXEC` (`atomic=false`); thao tác list theo index không kiểm giá trị cũ.
+- Mongo standalone không transaction (`atomic=false`); phát hiện sửa đồng thời chỉ khi UI gửi `expected` (UI chưa gửi).
+- Redis không rollback lỗi lúc chạy trong `MULTI/EXEC` (`atomic=false`); list theo index chỉ kiểm khi có `expected`.
+- **CQL không có transaction**; LWT chỉ `IF EXISTS`/`IF NOT EXISTS` — Update/Delete không so các ô người dùng đã thấy, sửa đồng thời cùng dòng thì ghi sau thắng; keyspace tablets của ScyllaDB và `cql.lwtEdits=false` ghi không điều kiện (upsert). Bảng counter, MV, virtual table chỉ đọc.
+- **ClickHouse**: sửa dữ liệu = mutation (nặng, viết lại data part), chỉ họ `*MergeTree` thường, kiểm `count() = 1` theo sorting key trước mỗi Update/Delete nhưng không nguyên tử giữa các thay đổi; `editing=insertOnly` hiện chỉ biểu hiện bằng `editable=true` + `key_columns=[]` (chưa có trạng thái "insert-only" rõ ràng trong `Editability`).
 
 **TLS / SSH / xác thực**
 - `verify-ca` = `verify-full` ở MySQL, MongoDB, Redis, MSSQL.
-- R6: MySQL, MongoDB, Redis qua SSH tunnel với `verify-full` lỗi tên host (thư viện kiểm chứng thư theo `127.0.0.1`, không đổi được tên) → dùng `verify-ca`/`require` hoặc chứng thư có địa chỉ đó. PG và MSSQL dùng `tls.server_name`.
+- Cassandra/ScyllaDB qua SSH chỉ một node; `Require` không dùng file CA.
+- R6 của ClickHouse và Cassandra mới kiểm bằng `tls.server_name` với kết nối trực tiếp, chưa qua `sshd` thật (MySQL 8, Redis 7, MongoDB 7 đã có IT qua `sshd` với `verifyFull`).
 - MySQL: `verify-ca` kiểm cả tên host; không đăng nhập được tài khoản `sha256_password`; khi thiếu file CA dùng `webpki-roots` thay vì kho của OS; không TLS thì `caching_sha2_password` có thể xin khoá RSA qua kênh chưa xác thực.
 - `require` không kiểm chứng thư, `prefer` lùi về plain (giống libpq) — UI chỉ cảnh báo.
 - MSSQL NTLM chưa thử với domain thật; Azure AD chưa hỗ trợ; Integrated chỉ trên Windows.
 
 **Giá trị / dữ liệu**
-- `json` của MariaDB về text; JSON MySQL bị server chuẩn hoá; `timestamptz` hiển thị UTC hoặc theo tuỳ chọn hiển thị; LOB vượt `maxLobBytes` thành `Ext truncated*` không sửa được.
-- Export: chưa có nguồn `Keys` (Redis) và làm phẳng document Mongo cho CSV/XLSX; import CSV chỉ coi ô rỗng không ngoặc là NULL (không nhận `null_text` tuỳ chỉnh).
+- `json` của MariaDB về text; JSON MySQL bị server chuẩn hoá; `timestamptz` hiển thị UTC hoặc theo tuỳ chọn hiển thị; LOB vượt `maxLobBytes` ở editor/lưới thành `Ext truncated*` không sửa được (export/backup đọc đủ).
+- ClickHouse `FixedString(n)` có NUL đệm được đọc thành `Bytes`; khứ hồi giá trị đệm qua CSV/JSON chưa bảo đảm (IT chỉ dùng giá trị đủ `n` byte).
+- Mongo CSV/XLSX: khoá xuất hiện sau 1000 document đầu bị bỏ khi không chỉ định `flatten_fields` (có cảnh báo). Redis export bỏ chuỗi > 512 MiB; consumer group của stream không được xuất.
 
 **Backup/restore**
-- File logical `formatVersion` 1 (bố cục của bản dựng trước) không verify/restore được; không restore một phần backup logical.
-- Chưa có backup logic cho MongoDB (chỉ `mongodump`) và Redis (chỉ `redis-cli --rdb`, restore RDB phải làm tay trên server); Oracle Data Pump chưa có.
-- MySQL restore không nguyên tử (DDL tự commit); chỉ PG chạy restore trong một transaction.
-- Backup/restore mới có IT cho PG (12, 16) và MySQL/MariaDB (+ tool native qua shim, SSH tunnel); MSSQL, Oracle, MongoDB, Redis chưa test.
-- Thông báo OS chỉ có tiếng Anh.
+- File logical `formatVersion` 1 không verify/restore được; restore một phần cần `formatVersion ≥ 3` (có `markerNonce`); Redis chỉ restore toàn bộ.
+- Không nguyên tử: MySQL/TiDB (DDL tự commit), YugabyteDB (không gói transaction), CockroachDB (`autocommit_before_ddl` commit trước DDL), CQL, ClickHouse, Redis. Chỉ PostgreSQL thật sự chạy restore trong một transaction.
+- Restore CQL tạo keyspace `SimpleStrategy` RF=1 (không mang replication của nguồn; đổi bằng `ALTER KEYSPACE`); `clean` với CQL bị từ chối, với MSSQL `Unsupported`.
+- Logical Redis/Mongo standalone không có snapshot (dữ liệu ghi trong lúc dump có thể lẫn). `RestoreOutcome` không có `warnings` (cảnh báo đi qua log job).
+- Oracle Data Pump chưa có; `redis-cli --rdb` chỉ backup; tool native ghi trên server (MSSQL, ClickHouse, CockroachDB) cần cấu hình/quyền phía server; `nodetool snapshot` ngoài phạm vi.
+- Backup/restore Oracle chưa test (chờ IT Oracle).
 
 **Nền tảng / kiểm chứng**
-- Chỉ kiểm trên macOS (unit + IT Docker + UI qua mock/dev bridge). Chưa kiểm: cửa sổ Tauri thật cho tính năng GĐ2–GĐ8 (tray, close-to-tray, autostart, single-instance, thông báo OS, xuất PNG/PDF trên WebView), Windows/Linux, NTLM thật, Azure, Oracle IT với DB thật (chờ RAM Docker), CI GitHub.
+- Chỉ kiểm trên macOS (unit + IT Docker + UI qua mock/dev bridge). Chưa kiểm: cửa sổ Tauri thật (tray, close-to-tray, autostart, single-instance, thông báo OS, xuất PNG/PDF trên WebView), Windows/Linux, NTLM thật, Azure, Oracle IT với DB thật (chờ RAM Docker), ClickHouse 23.8 (`clickhouse23`), CI GitHub.

@@ -9,7 +9,7 @@ released.** The six original database families have a driver
 (connect, tree, data grid, editing, query editor/console, leases and manual transactions). On top
 of them: SQL/Mongo/Redis statement classification as the safety layer (read-only connections,
 typed confirmation for destructive statements on production), query history, saved queries and
-restored editor tabs, EXPLAIN diagrams (8 plan formats), ERD with DDL generation, export/import
+restored editor tabs, EXPLAIN diagrams (12 plan formats with the newer databases), ERD with DDL generation, export/import
 (SQL, CSV, JSON, XLSX) as background jobs, SSH tunnels, and backup/restore: the `.dbsbak` container
 (gzip/zstd, optional AES-256-GCM), the integrated engine for SQL databases, native tools
 (`pg_dump`, `mysqldump`, `mongodump`, `redis-cli --rdb`, SQL Server `BACKUP DATABASE`), cron

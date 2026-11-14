@@ -1,6 +1,6 @@
 # DBStudio — Lộ trình
 
-> Trạng thái: v0.3 — GĐ0–GĐ1 xong; GĐ2–GĐ8 đã hiện thực trên nhánh `feature/quandh/phase2_complete` (còn phần chưa kiểm chứng, ghi ở từng giai đoạn). Mã yêu cầu theo [requirements.md](requirements.md) (cột Trạng thái); kiến trúc theo [architecture.md](architecture.md); hợp đồng GĐ2–GĐ8 theo [design/phase2-8.md](design/phase2-8.md).
+> Trạng thái: v0.4 — GĐ0–GĐ1 xong; GĐ2–GĐ8 đã hiện thực (còn phần chưa kiểm chứng, ghi ở từng giai đoạn); đợt **tồn đọng + GĐ9 driver mới** (trừ Oracle) xong **phần backend** trên nhánh `feature/quandh/backlog` theo [design/backlog-gd9.md](design/backlog-gd9.md) — phần UI tách thành mục "Việc UI để lại". Mã yêu cầu theo [requirements.md](requirements.md) (cột Trạng thái); kiến trúc theo [architecture.md](architecture.md); hợp đồng GĐ2–GĐ8 theo [design/phase2-8.md](design/phase2-8.md).
 
 ## 1. Cách làm việc
 
@@ -33,12 +33,13 @@ flowchart LR
     G6 --> G9
     G7 --> G9
     G8 --> G9
-    G9 --> G10["GĐ10+ Cassandra, ScyllaDB,<br/>ClickHouse, NewSQL"]
+    G8 --> G10["Driver mới: Cassandra, ScyllaDB,<br/>ClickHouse, NewSQL ✓ backend"]
+    G10 --> G9
 ```
 
-\* Oracle: integration test với DB thật chưa chạy.
+\* Oracle: integration test với DB thật chưa chạy. Driver mới được làm trước đóng gói (đợt tồn đọng + GĐ9), chỉ phần backend.
 
-**Trạng thái kiểm chứng chung của GĐ2–GĐ8**: unit test + integration test với Docker (PG 12/16, MySQL 5.7/8, MariaDB 10.4/10.6, SQL Server 2022, MongoDB 4.4/7, Redis 6.2/7.4, Valkey 8, sshd; backup/restore với PG và MySQL/MariaDB) + Vitest, clippy/fmt sạch — tất cả **chạy cục bộ trên macOS**. Chưa kiểm chứng: giao diện trong cửa sổ Tauri thật (tray, close-to-tray, autostart, thông báo OS, xuất PNG/PDF trên WebView), backup/restore với MSSQL/Oracle/MongoDB/Redis, Windows/Linux, NTLM thật, Azure SQL, Oracle IT với DB thật (chờ RAM Docker), CI trên GitHub.
+**Trạng thái kiểm chứng chung (GĐ2–GĐ8 + đợt tồn đọng)**: unit test + integration test với Docker (PG 12/16, MySQL 5.7/8, MariaDB 10.4/10.6, SQL Server 2022, MongoDB 4.4/7, Redis 6.2/7.4, Valkey 8, sshd; ScyllaDB 2026.1, Cassandra 5, ClickHouse 26.3, CockroachDB 25.4, TiDB 8.5, YugabyteDB 2025.2 cho export/backup; backup/restore với mọi hệ trừ Oracle) + Vitest, clippy/fmt sạch — tất cả **chạy cục bộ trên macOS**. Chưa kiểm chứng: giao diện trong cửa sổ Tauri thật, phần backend đợt tồn đọng chưa có UI, Windows/Linux, NTLM thật, Azure SQL, Oracle IT với DB thật (chờ RAM Docker), ClickHouse 23.8, CI trên GitHub.
 
 ---
 
@@ -77,7 +78,7 @@ Gói A (dbstudio-sql), B (editor backend: `lease_kit`, lease PG/MySQL, guard, l�
 - [x] Lịch sử query còn sau khi mở lại store.
 - [ ] Kiểm tay trong cửa sổ Tauri với DB thật. — *Mới kiểm qua mock IPC/dev bridge trong trình duyệt.*
 
-Chưa làm trong phạm vi: font editor, giới hạn dòng editor và timeout query trên trang Cài đặt (APP-05, QUERY-12, CONN-12 — đã có trong `AppSettings`), tự kết nối lại (CONN-12), command palette (APP-08, Could), sinh SELECT/INSERT mẫu và mở DDL trong editor (BROWSE-05/07).
+Chưa làm trong phạm vi GĐ2 (backend đã làm ở đợt tồn đọng, UI còn lại): font editor, giới hạn dòng editor và timeout query trên trang Cài đặt (APP-05, QUERY-12), tự kết nối lại (CONN-12), sinh SELECT/INSERT mẫu và mở DDL trong editor (BROWSE-05/07); command palette (APP-08, Could) chưa làm.
 
 ---
 
@@ -123,7 +124,7 @@ Gói G (`dbstudio-export`, `JobManager`, `PathGrants`, wizard, trung tâm job). 
 - [x] Huỷ giữa chừng không để lại file (file tạm + đổi tên); bảng lớn chạy stream (`DBSTUDIO_IT_BIG=1`).
 - [x] Xuất từ kết quả query (đúng một câu) cho mọi định dạng.
 - [x] Import CSV có mapping cột vào PG/MySQL, lỗi báo kèm số dòng.
-- [ ] Ma trận MSSQL/Oracle/Mongo/Redis. — *MSSQL/Oracle/Mongo export dùng chung engine (stream qua lease); chưa có IT export riêng cho các DB này. Redis export (`Keys`) và làm phẳng Mongo cho CSV/XLSX chưa làm.*
+- [ ] Ma trận MSSQL/Oracle/Mongo/Redis. — *Đợt tồn đọng: IT Mongo/Redis (export Keys, làm phẳng, import Mongo/Redis), khứ hồi giá trị lớn, ma trận 6 DB mới (`it_newdb`); MSSQL qua IT backup; Oracle chưa có IT.*
 
 ---
 
@@ -149,7 +150,7 @@ Gói E (`dbstudio-plan`, explain PG/MySQL, plan tab); explain MSSQL/Oracle/Mongo
 - [x] Cảnh báo full scan bảng lớn, ước lượng lệch ≥ 10×, spill, nested loop nhiều dòng.
 - [x] Chọn node đồng bộ sơ đồ / bảng / raw — Vitest.
 - [x] `EXPLAIN ANALYZE UPDATE` trong transaction rollback, dữ liệu không đổi (IT PG); MySQL ANALYZE câu ghi → `unsupported`.
-- [x] So sánh 2 plan (PLAN-06); lưu/mở `.dbplan.json`. Lịch sử plan (phần còn lại của PLAN-07) chưa làm.
+- [x] So sánh 2 plan (PLAN-06); lưu/mở `.dbplan.json`. Lịch sử plan (PLAN-07): backend xong ở đợt tồn đọng, panel UI chưa.
 
 ---
 
@@ -157,47 +158,85 @@ Gói E (`dbstudio-plan`, explain PG/MySQL, plan tab); explain MSSQL/Oracle/Mongo
 
 Gói H: `dbstudio-backup` (container `.dbsbak`, mã hoá, engine logic = `generate_ddl` + export engine, tool native, retention, scheduler), `dbstudio-cli`, tray/autostart/single-instance/thông báo OS, UI tab Backup. Chi tiết: architecture §12.
 
-- [x] Backup tích hợp rồi restore vào database trống: số dòng/dữ liệu khớp — IT PG 12/16, MySQL 8, MariaDB (gồm identity, partition, DB lớn không bị cắt, qua SSH tunnel). *MSSQL, Oracle chưa test; MongoDB/Redis chưa có engine logic.*
-- [x] Tool native: `pg_dump`/`mysqldump` backup + restore thành công (IT qua shim chạy tool trong container); không có tool → `problem` hiển thị. *`mongodump`, `redis-cli --rdb`, MSSQL `BACKUP DATABASE` chưa test; Oracle Data Pump chưa có.*
+- [x] Backup tích hợp rồi restore vào database trống: số dòng/dữ liệu khớp — IT PG 12/16, MySQL 8, MariaDB (gồm identity, partition, DB lớn không bị cắt, qua SSH tunnel); đợt tồn đọng thêm MSSQL 2022, MongoDB 7/4.4, Redis 7/Valkey 8 và 6 DB mới. *Oracle chưa test.*
+- [x] Tool native: `pg_dump`/`mysqldump` backup + restore thành công (IT qua shim chạy tool trong container); không có tool → `problem` hiển thị. *Đợt tồn đọng: MSSQL `BACKUP DATABASE`, ClickHouse/CockroachDB `BACKUP` phía server, `mysqldump` TiDB, `ysql_dump` có IT; Oracle Data Pump chưa có.*
 - [x] Nén zstd/gzip và mã hoá: sai passphrase / file bị sửa / bị cắt → `integrity` — unit test.
 - [x] Lịch `*/5 * * * *` đúng giờ, chạy bù đúng một lần, retention "giữ N" xoá đúng file và giữ bản mới nhất — unit test với đồng hồ giả.
 - [ ] Lịch chạy khi cửa sổ đã đóng (app ở tray). — *Code có (close-to-tray, scheduler trong tiến trình); chưa kiểm tay.*
-- [ ] Thông báo OS khi thành công/thất bại. — *Code có, nội dung chỉ tiếng Anh; chưa kiểm tay.* Nhật ký `backup_runs` ghi thời lượng, kích thước, lỗi — có test.
+- [ ] Thông báo OS khi thành công/thất bại. — *Code có, nội dung vi/en theo ngôn ngữ (đợt tồn đọng); chưa kiểm tay.* Nhật ký `backup_runs` ghi thời lượng, kích thước, lỗi — có test.
 - [ ] Autostart bật/tắt được trên cả 3 OS. — *Code có (`--background`); chưa kiểm trên OS nào.*
 - [x] Restore vào kết nối production (hoặc `clean`) bắt buộc gõ tên database; CLI cần `--yes --confirm-text` và database đích chỉ rõ.
 - [x] CLI `backup --job` dùng chung khoá file với app (job đang chạy → mã thoát 3).
 
 ---
 
-## Tồn đọng (sau GĐ2–GĐ8)
+## Tồn đọng (sau GĐ2–GĐ8) — đợt tồn đọng + GĐ9 *(backend xong)*
 
-**Kiểm chứng (không cần code mới):**
+Thiết kế và chia gói: [design/backlog-gd9.md](design/backlog-gd9.md) (khác biệt khi triển khai ở §9 của tài liệu đó). Đợt này **không làm UI** (một session khác đang sửa frontend); phần UI ghi ở "Việc UI để lại".
+
+**Code đã làm (backend, có test tự động):**
+- [x] MySQL `ANSI_QUOTES` trong lexer/guard (+ `/*T!` TiDB, `BATCH ON`); dialect theo từng lease (`Lease::script_dialect`).
+- [x] Import CSV nhận `null_text` (khứ hồi với export).
+- [x] Export Mongo CSV/XLSX làm phẳng (`flatten_fields`, ô EJSON mặc định); export nguồn `Keys` Redis → JSON/NDJSON.
+- [x] Import vào MongoDB (CSV/XLSX/JSON, `$document`, Skip/Update) và Redis (`KeyRecord`, `KeyChange::Put`).
+- [x] `KeyChange` list có `expected`; sửa document Mongo có `expected` (phát hiện sửa đồng thời).
+- [x] `Error::Invalid` và quét `Error::Other` cho đầu vào sai.
+- [x] Dọn file tạm export mồ côi khi khởi động (`export.recentDirs`).
+- [x] Preview import dùng dialect đã nhớ của kết nối (MariaDB), báo `dialectGuessed`.
+- [x] Lease keepalive; tự kết nối lại (CONN-12) giữ `sessionId`, mở lại lease nhàn rỗi, `lease_reopen`, event `session://state` — IT mất mạng giả lập PG/MySQL.
+- [x] Nhãn môi trường tuỳ chỉnh (CONN-03), setting mới (font, cỡ chữ, `autoReconnect`, `keepaliveSecs`, lịch sử plan, `language`) có validate, cờ `dirty` của tab, migration v7.
+- [x] `script_generate` (SELECT/INSERT/UPDATE/DELETE mẫu, 8 dialect); lịch sử plan (PLAN-07); `DriverDiagnostics.checks`; URI scheme mới; đổi tên thư mục saved query không trùng.
+- [x] PG: lease đổi database (kết nối mới / `SET database` trên Cockroach).
+- [x] MSSQL: đọc LOB của query tự do theo `maxLobBytes` (bản vá tiberius 5); export/backup đọc đủ LOB.
+- [x] Backup logical MongoDB/Redis; restore một phần backup logical (marker có nonce, `formatVersion` 3, CLI `--object`); IT backup/restore MSSQL/Mongo/Redis; thông báo OS vi/en.
+- [x] R6 (kiểm tên host TLS qua SSH) cho MySQL, Redis, MongoDB (SOCKS5, cả replica set), Cassandra/ScyllaDB, ClickHouse.
+- [x] Test tunnel MSSQL tự bỏ qua khi thiếu container (`DBSTUDIO_IT_STRICT=1` để bắt buộc).
+
+**Kiểm chứng còn lại (không cần code mới):**
 1. Chạy integration test Oracle với DB thật (`docker/oracle-it/run-tests.sh`, cần ~3 GB RAM cho Docker) và sửa lỗi phát sinh.
 2. Kiểm tay trong cửa sổ Tauri thật trên macOS với DB Docker: editor/lease/transaction, sửa dữ liệu, document/key view, plan, ERD (xuất PNG/PDF), export/import, SSH (hộp thoại host key), backup/restore + lịch, tray, close-to-tray, autostart, single-instance, thông báo OS.
-3. Đẩy repo lên remote, cho CI (3 OS + `integration`) chạy xanh.
+3. Đẩy repo lên remote, cho CI (3 OS + `integration` theo nhóm `core`/`wide`/`analytics`/`newsql` + `integration-extra`) chạy xanh. Lưu ý: lệnh nhóm `newsql` trong `ci.yml` lọc `-- cockroach`/`-- tidb` theo tên test, trong khi đa số test flavor PG mang hậu tố `_crdb`/`_yb` — nên chạy theo file (`--test it_flavor`, `--test it_tidb`).
 4. Build và chạy trên Windows, Linux; benchmark lưới 1 triệu dòng trên WKWebView, WebView2, WebKitGTK → chốt TanStack Virtual hay canvas grid.
 5. MSSQL: NTLM với domain thật; quyết định Azure AD (requirements §6 câu 6).
+6. Driver mới: profile `extra` (ClickHouse 23.8 — chưa kiểm; Cassandra 4.1, ScyllaDB 6.2), bộ `it_flavor` với YugabyteDB (profile `heavy`), R6 ClickHouse/Cassandra qua `sshd` thật.
+
+### Việc UI để lại
+
+Backend/command đã sẵn; chỉ còn giao diện (chi tiết dữ liệu/command ở backlog-gd9.md §7):
+
+| Tính năng | Việc UI | Dữ liệu/command sẵn có |
+|---|---|---|
+| Cài đặt (APP-05) | Font, cỡ chữ editor, `editorMaxRows`, `queryTimeoutMs`, `historyEnabled`, `autoReconnect`, `keepaliveSecs`, lịch sử plan, ngôn ngữ (đồng bộ i18n → `settings_set{language}`), hành vi đóng cửa sổ + autostart (chuyển từ tab Backup); xử lý lỗi `invalid` của `settings_set` (trước đây kẹp giá trị) | `settings_get/set`, `background_get/set` |
+| CONN-03 | Ô nhãn môi trường tuỳ chỉnh; hiển thị nhãn + màu ở cây/tab/status bar | `environmentLabel`, `color` |
+| CONN-12 | Banner mất/đang kết nối lại, hộp thoại mở lại lease có transaction, ô nhập mật khẩu khi `session_reconnect` cần | `session://state`, `session_reconnect`, `lease_reopen` |
+| BROWSE-05/07 | Menu "Sinh SELECT/INSERT/UPDATE/DELETE", "Mở DDL trong editor" | `script_generate`, `object_ddl` |
+| PLAN-07 | Panel lịch sử plan, mở lại thành plan tab | `plan_history_*` |
+| ERD-07/08 | Công tắc hiện comment, nét đứt cho quan hệ suy luận | `includeComments`, `Relation.inferred` |
+| Export | Nguồn Redis keys (pattern, database); chọn trường làm phẳng Mongo | `ExportSource::Keys`, `flattenFields`, `ejsonCells` |
+| Import | Đích Mongo/Redis, `PutMode`, ô "Chuỗi NULL" (`nullText`), ghi chú "dialect đoán" | `ImportTarget::{Existing,Keys}`, `nullText`, `dialectGuessed` |
+| Sửa dữ liệu | Gửi `expected` (list Redis — `ListRemoveAt` theo index giảm dần —, document Mongo), hiển thị xung đột; hiển thị `Editability.notes` (LWT, upsert, mutation); lưới ẩn tổng số khi `exactCount=false`, ẩn sort khi `tableSort=false` | `expected`, `notes`, `Capabilities` |
+| Backup | Engine logical Mongo/Redis trong form job; chọn đối tượng khi restore; tool native mới | `backup_inspect.objects`, `NativeTool` mới |
+| Chẩn đoán driver | Danh sách check | `DriverDiagnostics.checks` |
+| Driver mới | Kind mới trong dialog kết nối (icon, tên i18n, field: Cassandra `localDc`/`consistency`/`lwtEdits`/`singleNode`, ClickHouse HTTPS/nén/`editing`, Cockroach `cluster`); highlight + formatter CQL/ClickHouse; icon `Dictionary`, `FOLDER_KEYS` `dictionaries`/`aggregates` + i18n; mẫu dán URI mới; badge "read-only chỉ ở ứng dụng" cho TiDB (`readOnlyEnforcement`) | descriptor, `ScriptDialect`, `ObjectKind`, `ServerInfo.extra` |
+| R6 | Bỏ cảnh báo R6 (MySQL/MongoDB/Redis qua SSH) trong dialog kết nối | — |
+| Editor/tab | Đổi tên thư mục saved query; chấm "chưa lưu" + hỏi khi đóng theo cờ `dirty`; i18n lý do `write`/`keywordScan` | `saved_folder_save`, `EditorTabState.dirty`, `DestructiveReason` |
+| Từ trước (thuần UI) | Command palette (APP-08); `DocumentTable` ảo hoá cột; đếm ngược hạn token xác nhận (`expiresInMs`); chọn nhiều dòng trong lưới; close-to-tray/autostart trong trang Cài đặt | — |
+
+### Tồn đọng mới
 
 **Code còn thiếu / cần sửa:**
-- MySQL `ANSI_QUOTES` chưa được lexer mô hình hoá (`"x"` luôn là chuỗi).
-- Import CSV chưa nhận `null_text` tuỳ chỉnh (chỉ ô rỗng không ngoặc là NULL), nên CSV export với `null_text` khác rỗng không khứ hồi được.
-- Export Mongo ra CSV/XLSX chưa làm phẳng document (`flatten_fields` có trong spec nhưng engine chưa đọc).
-- Export nguồn `Keys` (Redis → JSON) chưa hiện thực (engine trả `Unsupported("export_keys")`), wizard chưa có nguồn Redis.
-- `KeyChange` cho list (`ListSet`, `ListRemoveAt`) chưa mang giá trị kỳ vọng: phần tử ở index đã bị client khác đổi vẫn bị ghi/xoá.
-- `dbstudio-core::Error` chưa có biến thể `Invalid` cho đầu vào không hợp lệ (đang dùng `Other`/`Query`).
-- Lưu danh sách thư mục export gần đây để dọn file tạm mồ côi (`.dbstudio-tmp-*`) khi khởi động app; hiện chỉ dọn khi có export kế tiếp vào cùng thư mục.
-- Xem trước import khi kết nối MariaDB chưa mở session: dialect suy từ `DbKind` nên coi là MySQL (`mariadb: false`).
-- Lease keepalive: lease nhàn rỗi bị đóng sau `idle_ttl` (8 giờ) và kết nối có thể bị server/NAT cắt trước đó; chưa có ping định kỳ.
-- `DocumentTable` (bảng phẳng của document view) chỉ ảo hoá hàng, chưa ảo hoá cột (tối đa 200 cột phẳng).
-- Trang Cài đặt: thêm font editor, `editorMaxRows`, `queryTimeoutMs`, `historyEnabled`, hành vi đóng cửa sổ (APP-05).
-- Tự kết nối lại khi mất kết nối (CONN-12); nhãn môi trường tuỳ chỉnh (CONN-03).
-- Menu ngữ cảnh: sinh SELECT/INSERT mẫu, mở DDL trong editor (BROWSE-05/07); ERD: tuỳ chọn hiện comment (ERD-07), đánh dấu quan hệ suy luận của Mongo (ERD-08); lịch sử plan (PLAN-07).
-- Import vào MongoDB/Redis; `Skip` khi import vào Oracle.
-- Oracle: chưa có UI chọn thư mục Instant Client (setting `oracle_client` chỉ đọc lúc khởi động; hiện dùng `DBSTUDIO_ORACLE_CLIENT_LIB_DIR`).
-- Backup: engine logic cho MongoDB (EJSON) và Redis; Oracle Data Pump (`expdp`/`impdp`); test backup/restore với MSSQL, Oracle, MongoDB, Redis; restore một phần backup logical; thông báo OS theo ngôn ngữ giao diện (hiện chỉ tiếng Anh); đưa hành vi đóng cửa sổ/autostart vào trang Cài đặt. File logical `formatVersion` 1 (bản dựng trước) không verify/restore được — chấp nhận, ghi ở architecture §18.3.
-- Command palette (APP-08, Could).
+- Oracle (loại khỏi đợt này): IT với DB thật, Data Pump (`expdp`/`impdp`), UI chọn Instant Client, `Skip` khi import Oracle, `DriverDiagnostics` của Oracle (`nativeClient`, `clientVersion`).
+- Redact chưa che đối số `s3(...)` của ClickHouse (khoá truy cập).
+- `PlanRule` mới: `FinalOnLargeTable` (ClickHouse `FINAL`), `Tombstones` và `SlowRequest` (CQL trace) — hiện chỉ là `warnings` ở node.
+- `Editability` chưa có trạng thái "insert-only" rõ ràng (ClickHouse `editing=insertOnly`, bảng `Replacing/Collapsing…MergeTree` đang là `editable=true` + `key_columns=[]`).
+- `RestoreOutcome` chưa có `warnings` (cảnh báo restore một phần đi qua log job).
+- MSSQL: test codepage (collation không UTF-8) của tiberius chưa viết.
+- Cassandra: `Require` không dùng `ca_cert_path`; `FirstNodeOnly` chọn node đầu tiên; bulk dùng literal thay prepared statement.
+- ClickHouse `FixedString` có NUL đệm: khứ hồi qua CSV/JSON chưa bảo đảm.
 
-**Giữ mở, chưa gắn giai đoạn:** phân trang keyset thay OFFSET; hạn chế TLS của `mysql_async` và R6 (MySQL/MongoDB/Redis qua SSH với `verify-full`); chế độ TLS mặc định (requirements §6 câu 8); Redis Cluster/Sentinel; phương án Oracle thuần Rust (`oracle-rs`).
+**Kiểm chứng / hạ tầng:** GUI native trong cửa sổ Tauri; CI trên GitHub; Windows/Linux; MSSQL NTLM với domain thật; ClickHouse 23.8 và R6 ClickHouse/Cassandra qua `sshd`; test MongoDB `wrong_password_is_an_authentication_error` thỉnh thoảng chậm (server selection 10 s).
+
+**Giữ mở, chưa gắn giai đoạn:** phân trang keyset thay OFFSET; hạn chế TLS của `mysql_async` (`verify-ca` = `verify-full`, `webpki-roots`); chế độ TLS mặc định (requirements §6 câu 8); Redis Cluster/Sentinel; phương án Oracle thuần Rust (`oracle-rs`); Cassandra qua SSH nhiều node.
 
 ---
 
@@ -213,15 +252,16 @@ Gói H: `dbstudio-backup` (container `.dbsbak`, mã hoá, engine logic = `genera
 - [ ] Dữ liệu cục bộ và keychain còn nguyên sau khi cập nhật.
 - [ ] Khởi động < 2 giây (NFR-PERF-01) trên bản release.
 
-### GĐ10+ — Cassandra, ScyllaDB, ClickHouse, NewSQL
+### Driver mới — Cassandra, ScyllaDB, ClickHouse, NewSQL *(backend xong trong đợt tồn đọng + GĐ9; UI chưa)*
 
-Mở rộng theo yêu cầu gốc bằng cách thêm crate driver, không sửa kiến trúc:
-- `drivers/cassandra` (crate `scylla`, dùng chung cho Cassandra 4+ và ScyllaDB 5+): keyspace/table/MV, CQL editor, paging, tracing cho PLAN.
-- `drivers/clickhouse` (HTTP): database/table/engine, SQL, `EXPLAIN PLAN/PIPELINE`.
-- NewSQL qua driver sẵn có: CockroachDB, YugabyteDB (driver PostgreSQL), TiDB (driver MySQL) — nhận diện qua `server_info`, chỉnh `Capabilities` và truy vấn metadata.
-- Mỗi DB mới cần: `ScriptDialect`/classifier trong `dbstudio-sql` (CQL), plan parser trong `dbstudio-plan` nếu có, IT bằng Docker; áp các nhóm CONN, BROWSE, DATA, QUERY, PLAN, ERD, EXPORT, BACKUP theo ma trận requirements §4.
+Làm trước đóng gói, theo [design/backlog-gd9.md](design/backlog-gd9.md) §3. Chỉ thêm crate/flavor; core chỉ thêm method có mặc định (`Session::capabilities()`, `scan_keys()`, `Lease::script_dialect()` — lý do ở architecture §4–§5).
 
-Tiêu chí (mỗi DB): driver mới chỉ thêm crate + đăng ký + view chuyên biệt nếu cần (sửa trait core thì ghi lý do trong `architecture.md`); đạt tiêu chí tương đương GĐ1–GĐ2 trong phạm vi ma trận; IT bằng Docker trong CI.
+- [x] `drivers/cassandra` (`scylla` 1.10, hai `Driver`): cây `system_schema`, CQL (lệnh cqlsh trong driver), phân trang, lease theo keyspace, sửa dữ liệu LWT, DDL (`DESCRIBE`), tracing → `CqlTrace`, export/import, backup logical — IT `scylla` 2026.1 (+ TLS), `cassandra5`.
+- [x] `drivers/clickhouse` (HTTP + RowBinary): cây (+ dictionary), kiểu chính xác, huỷ `KILL QUERY`, read-only `readonly=2`, lease HTTP session, sửa MergeTree (mutation, `count() = 1`), `EXPLAIN` JSON, bulk RowBinary, backup logical + `BACKUP` phía server — IT `clickhouse26`. *ClickHouse 23.8 chưa kiểm.*
+- [x] CockroachDB, YugabyteDB (flavor PG), TiDB (flavor MySQL): tự nhận diện qua `version()`, capabilities theo server, EXPLAIN riêng (Cockroach text, TiDB row), DDL, export/backup + tool native — IT `cockroach`, `tidb`; YugabyteDB có IT export/backup, bộ `it_flavor` chưa có báo cáo chạy xanh.
+- [x] `dbstudio-sql`: dialect CQL, ClickHouse (≥ 100 ca phân loại mỗi dialect, fuzz không panic); `dbstudio-plan`: 4 parser mới kèm fixture chụp từ server.
+- [ ] UI: kind mới trong dialog kết nối, highlight/formatter CQL/ClickHouse, field riêng, badge read-only TiDB (mục "Việc UI để lại").
+- [ ] IT trong CI (matrix nhóm `wide`/`analytics`/`newsql`, `heavy`/`extra` hằng tuần). — *Chưa chạy trên GitHub.*
 
 ---
 
@@ -229,18 +269,18 @@ Tiêu chí (mỗi DB): driver mới chỉ thêm crate + đăng ký + view chuyê
 
 | Nhóm | GĐ | Trạng thái (chi tiết: requirements, cột Trạng thái) |
 |---|---|---|
-| CONN-01..05, 07..09 | GĐ1 (+GĐ3, GĐ4 cho DB mới) | Xong; CONN-03 thiếu nhãn tuỳ chỉnh |
-| CONN-06 | GĐ3 | Xong (giới hạn R6) |
-| CONN-10..12 | GĐ2 | CONN-10/11 xong; CONN-12 một phần (không tự kết nối lại) |
+| CONN-01..05, 07..09 | GĐ1 (+GĐ3, GĐ4, đợt tồn đọng cho DB mới) | Xong; CONN-03 nhãn tuỳ chỉnh backend xong, UI chưa; dialog chưa có 6 kind mới |
+| CONN-06 | GĐ3 | Xong; R6 đã giải quyết (đợt tồn đọng) |
+| CONN-10..12 | GĐ2 | CONN-10/11 xong (TiDB read-only chỉ ở ứng dụng); CONN-12 backend xong, UI chưa |
 | CONN-13 | GĐ4 | Xong |
-| BROWSE-01..08 | GĐ1, GĐ4 | Xong trừ phần editor của BROWSE-05/07 |
+| BROWSE-01..08 | GĐ1, GĐ4 | Xong; BROWSE-05/07 backend (`script_generate`) xong, menu UI chưa |
 | DATA-01..12 | GĐ1, GĐ2, GĐ4 | Xong |
-| QUERY-01..16 | GĐ2–GĐ4 | Xong; QUERY-12 thiếu ô cài đặt |
-| PLAN-01..07 | GĐ7 | Xong trừ lịch sử plan |
+| QUERY-01..16 | GĐ2–GĐ4 | Xong; QUERY-12 thiếu ô cài đặt; QUERY-02 chưa highlight CQL/ClickHouse |
+| PLAN-01..07 | GĐ7 | Xong (12 định dạng); PLAN-07 lịch sử plan backend xong, UI chưa |
 | ERD-01..08 | GĐ6 | Xong; ERD-07/08 một phần |
-| EXPORT-01..10, IMPORT-01..03 | GĐ5 | Xong cho SQL DB; Mongo flatten, Redis export, import NoSQL chưa |
-| BACKUP-01..15 | GĐ8 | Xong cho SQL DB (IT PG/MySQL); BACKUP-02/03 một phần (Mongo/Redis logic, Data Pump chưa) |
-| APP-01..05, 07, 09 | GĐ0–GĐ5 | Xong; APP-05 một phần |
+| EXPORT-01..10, IMPORT-01..03 | GĐ5 | Xong; Mongo flatten, Redis export, import Mongo/Redis backend xong, wizard chưa |
+| BACKUP-01..15 | GĐ8 | Xong (IT mọi hệ trừ Oracle); BACKUP-03 một phần (Data Pump chưa); restore một phần backend xong, UI chưa |
+| APP-01..05, 07, 09 | GĐ0–GĐ5 | Xong; APP-05 một phần (backend setting xong, trang Cài đặt chưa) |
 | APP-06 | GĐ9 | Chưa |
 | APP-08 | — | Chưa (Could) |
 | NFR-PLAT-01/02, NFR-PERF-01 | GĐ9 | Chưa kiểm |

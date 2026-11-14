@@ -1,6 +1,6 @@
 # DBStudio — Thiết kế đợt "Tồn đọng + GĐ9+ driver mới" (trừ Oracle, chỉ backend)
 
-> Trạng thái: bản thiết kế v1 (kiến trúc sư), viết trên nhánh `feature/quandh/backlog` (tách từ `develop` @ `2cab204`).
+> Trạng thái: bản thiết kế v1 (kiến trúc sư), viết trên nhánh `feature/quandh/backlog` (tách từ `develop` @ `2cab204`). Phần backend đã hiện thực; khác biệt khi triển khai ở §9.
 > Nguồn đã đọc: `docs/{roadmap,requirements,architecture}.md`, `docs/design/phase2-8.md` (§7, §9), `crates/dbstudio-core/src/*`, `crates/dbstudio-{sql,plan,export,backup,store}`, `crates/drivers/*`, `src-tauri/src/{lib,state,session,lease,guard,events}.rs` + `commands/*`, `src/lib/types/**`, `src/lib/mock/*`, `docker/compose.test.yml`, `.github/workflows/ci.yml`, mã nguồn crate `scylla` 1.10.0, `clickhouse` 0.15.3, `mysql_async` 0.37.1, `mongodb` 3.10.1, `redis` 1.8.1 (registry cục bộ).
 > Phiên bản crate kiểm ngày 2026-11-14 bằng `cargo search`/`cargo info`; tag image kiểm qua Docker Hub API (`hub.docker.com/v2/repositories/<repo>/tags/<tag>`; `docker manifest inspect` bị treo trên máy này). Không pull image.
 > Quy ước giống `phase2-8.md`: "char offset" = chỉ số ký tự Unicode; serde camelCase; mọi field mới có `#[serde(default)]` để dữ liệu/JSON cũ vẫn đọc được.
@@ -842,7 +842,32 @@ Thứ tự merge khuyến nghị: Bước 0 → S1 → K → E → M → N1 → 
 
 ## 9. Khác biệt khi triển khai
 
-> Gói Z điền sau khi hiện thực (giống `phase2-8.md` §9).
+> Điền sau khi hiện thực phần backend (nhánh `feature/quandh/backlog`, tới commit `0370dff` + các commit dọn của gói Z). Chỉ ghi chỗ code khác thiết kế; giới hạn hiện hành xem `architecture.md` §18.3.
+
+| Mục thiết kế | Hiện thực | Lý do |
+|---|---|---|
+| §1 / §6.2 — core đóng băng sau Bước 0 | Thêm `Lease::script_dialect() -> Option<ScriptDialect>` (mặc định `None`) vào core sau Bước 0; guard và kiểm tra EXPLAIN của lease dùng nó trước `Session::script_dialect()`. | Review gói N2: `sql_mode` (`ANSI_QUOTES`, `NO_BACKSLASH_ESCAPES`) là của từng kết nối MySQL/TiDB, guard theo dialect session có thể tách khác lease → lỗ hổng guard. |
+| §3.1.4 — Cassandra tách câu bằng `dbstudio_sql::split(Cql)` | Gói C viết `split.rs` riêng trước, sau review bỏ và chuyển về splitter chung; luật **lệnh kiểu cqlsh kết thúc ở cuối dòng** (`CONSISTENCY`, `USE`, `DESCRIBE`…) đặt trong `dbstudio-sql` (`split.rs`). `USE` giữa script đổi keyspace cho các câu sau. Có test so ranh giới câu driver ↔ guard. | Splitter riêng làm guard và driver tách khác nhau. Từ đây mọi driver bắt buộc dùng splitter chung (architecture §6). |
+| §2.27 / §6.2 M — export nguồn Query cần cơ chế không giới hạn LOB | MSSQL: request có `max_rows == None` được coi là đọc kiểu export (`full_lob`, không áp `maxLobBytes`); editor luôn đặt `max_rows` nên vẫn cắt. `stream_table` cũng đọc đủ. | Không cần thêm field vào hợp đồng. |
+| §3.2.1 — `query_id` = `QueryRequest.query_id` | ClickHouse dùng query id riêng cho **từng câu** của script (`{id}`, `{id}-1`, …); huỷ = `KILL QUERY` theo tiền tố id (trúng mọi câu), kể cả khi request còn đang mở. | Câu bị cắt ở `max_rows` được kill bất đồng bộ, không được đụng câu kế tiếp. |
+| §2.2 — giá trị lồng của Mongo trong CSV/XLSX là relaxed EJSON text | `ValueFormat.ejson_cells` (mặc định `true`): mọi giá trị không phải chuỗi/số (ObjectId, Date, Decimal128, binary, document, mảng) ghi dạng EJSON; import CSV/XLSX vào Mongo đọc lại EJSON, **ô là JSON object thành sub-document**. | Khứ hồi CSV giữ kiểu BSON. |
+| §2.24 — marker `-- dbstudio:object kind=… phase=…` | Marker mang `nonce=<16 hex>` ngẫu nhiên mỗi file (ghi `markerNonce` trong preamble), thêm `-- dbstudio:common`; reader chỉ nhận marker đúng nonce ở đầu câu. Thiếu nonce → chỉ restore toàn bộ. | Dữ liệu (chuỗi trong `INSERT`) có thể trông giống marker. |
+| §2.24 — restore một phần | `objects` + `clean` bị từ chối (`Invalid`) ở SQL; đối tượng hỗ trợ cần thiết được restore kèm (ghi log); Redis chỉ restore toàn bộ (một database/backup); Mongo theo collection. Cảnh báo đi qua log job (`RestoreOutcome` không có `warnings`). | `clean` xoá cả DB/schema, chỉ trả lại vài đối tượng sẽ mất dữ liệu. |
+| §2.24 / §3.5 — câu PostData theo đối tượng | Câu cần bảng của sequence (`ALTER SEQUENCE … OWNED BY`, `setval` của sequence thuộc bảng) nằm dưới marker của **bảng chủ**; sequence độc lập giữ khối riêng. | Restore một phần không có bảng thì không chạy câu tham chiếu bảng đó. |
+| §2.23 — B tự xử lý `IDENTITY_INSERT` khi restore MSSQL | Sửa gốc ở writer SQL: MSSQL mỗi `INSERT` một batch (`GO`), có cột identity thì `SET IDENTITY_INSERT … ON/OFF` trong cùng batch. Restore MSSQL tạo DB trên `master`; `clean` MSSQL `Unsupported`. | `IDENTITY_INSERT` chỉ sống trong batch; marker luôn ở ranh giới batch, tách tuyến tính. |
+| §3.4 — hàm bảng ClickHouse | Hàm bảng chạm tài nguyên ngoài (`file`, `url`, `s3`, `remote`, `mysql`, `postgresql`, `executable`, …) và `crdb_internal.unsafe_*` làm câu thành `Admin` → kết nối read-only chặn (quyết định mặc định, cần chủ dự án xác nhận). `CREATE OR REPLACE TABLE` là `Drop`; `ALTER` ClickHouse xét từng lệnh con. Redact `s3()` chưa làm. | Review gói S. |
+| §3.3.3 — TiDB `read_only_session` chờ IT | IT xác nhận server từ chối `SET SESSION TRANSACTION READ ONLY`/`START TRANSACTION READ ONLY` (1235): `read_only_session = false`, đọc bảng dùng transaction thường, `ServerInfo.extra["readOnlyEnforcement"] = "application"`; transaction read-only do người dùng yêu cầu → `Unsupported`. | Không có lớp read-only phía server. |
+| §3.3.1 — Cockroach cancel thử pgwire trước | Huỷ bằng `CANCEL QUERIES` qua kết nối riêng (lọc theo user); huỷ query trước khi đóng session. Bulk insert không dùng `COPY`. Restore: chạy trong transaction nhưng `autocommit_before_ddl` commit trước DDL (thực tế không nguyên tử); `clean` xoá từng đối tượng của `public` (không drop được schema này). | Hành vi server v25.4 trong IT. |
+| §3.3.2 — YugabyteDB như PG | Restore **không** gói một transaction; `last_value` đọc từ chính sequence. | YB huỷ transaction trộn nhiều DDL + dữ liệu lúc COMMIT. |
+| §3.1.9 — Cassandra bulk = prepared INSERT, 64 request đồng thời; backup logical | Bulk dùng literal CQL theo kiểu cột (DEFAULT/timestamp xử lý riêng). Restore tạo keyspace `SimpleStrategy` RF=1 (backup không mang replication nguồn); `clean` CQL bị từ chối. Script không qualify bỏ `CREATE KEYSPACE`/`CREATE DATABASE` của nguồn (CQL, ClickHouse). | Literal dùng chung writer/guard; replication nguồn có thể nhắc DC không tồn tại ở đích. |
+| §3.1.6 — LWT mặc định | Keyspace tablets của ScyllaDB tự tắt LWT (ghi upsert, `notes=[UpsertSemantics]`). Update/Delete chỉ `IF EXISTS`, không so giá trị ô. | R14. |
+| §2.14 — lỗi `Timeout` = mất kết nối | `Timeout` chỉ tính khi liên tiếp 3 lần (`TIMEOUT_STRIKES`); `session_reconnect` thủ công không bị backoff đè; session "đỗ" (đã bỏ cuộc) vẫn được thăm dò; lease mất từ chối lệnh. | Review gói E: pool bận/server chậm cũng trả timeout. |
+| §2.13 — `LeaseManager::spawn_keepalive` + cờ `Activity::Keepalive` | Vòng keepalive `LeaseManager::keepalive_tick` (song song ≤ 8, có hạn giờ, bỏ lease đang chạy/giữ kết quả treo); `lease_kit` không gia hạn `idle_ttl` và không huỷ kết quả treo khi nhận ping. | Cùng ngữ nghĩa, ít trạng thái hơn. |
+| §2.29 — bảng chuỗi thông báo trong `src-tauri` | Module `dbstudio-backup::notify` (dùng chung app và CLI), thông điệp lỗi đã redact. | CLI không phụ thuộc `src-tauri`. |
+| §2.5 / §1.7 — `Put` dựng ở khoá tạm rồi `RENAME(NX)` | Khoá tạm có tiền tố theo khoá + hashtag (cùng slot), `PEXPIRE` mỗi lô và kiểm độ dài, `RENAME` trong `MULTI`; `scan_keys` ẩn khoá tạm; `TYPE` trước `LINDEX` khi kiểm `expected`; Mongo `expected` dùng `$eq`. Ghi đè khoá Redis trên production cần xác nhận gõ tên. | Review gói K/X. |
+| §2.4 — import vào DB không transaction | `ImportMode::SingleTransaction` bị từ chối với CQL/ClickHouse (chỉ theo lô); export Keys/import Keys chia lô theo cả số khoá và byte (8 MiB). | Tránh hứa nguyên tử giả. |
+| §1.14 — dependency `clickhouse` (`lz4`, `rustls-tls-ring`) | Workspace thêm feature `rustls-tls-native-roots` (gói H từng thêm tạm ở crate driver). | Driver cần feature này; khai báo dependency tập trung ở workspace như các crate khác. |
+| §5.1 — `mem_limit`/tham số RAM | `cockroach` 1 GB (768 MB bị OOM), `cassandra5` 1,5 GB, `scylla` `--memory=450M` trong `mem_limit` 1 GB. | Chạy được trên Docker VM ~8 GB. |
 
 ---
 
