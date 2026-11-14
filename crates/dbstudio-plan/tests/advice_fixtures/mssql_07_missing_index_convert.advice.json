@@ -1,0 +1,143 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "rewrite",
+        "label": "matchColumnType",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      },
+      {
+        "kind": "check",
+        "label": "showColumnType",
+        "lock": null,
+        "scope": "object",
+        "sql": "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'Orders' AND COLUMN_NAME = 'Code';",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "high",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "convertIssue",
+        "nodeId": 0,
+        "text": "Seek Plan: CONVERT_IMPLICIT(nvarchar(50),[shop].[dbo].[Orders].[Code] as [o].[Code],0)",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      2,
+      1
+    ],
+    "params": {
+      "column": "Code",
+      "convertTo": "nvarchar(50)",
+      "expression": "CONVERT_IMPLICIT(nvarchar(50),[shop].[dbo].[Orders].[Code] as [o].[Code],0)",
+      "issue": "Seek Plan",
+      "table": "dbo.Orders"
+    },
+    "rule": "implicitConversion",
+    "severity": "critical",
+    "share": 0.976,
+    "statementRange": null,
+    "table": "dbo.Orders"
+  },
+  {
+    "actions": [],
+    "basis": "time",
+    "caveats": [
+      "indexKeysFromSeek",
+      "noDdlForDialect"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "lookupExecutions",
+        "nodeId": 2,
+        "text": null,
+        "unit": "count",
+        "value": 25000.0
+      },
+      {
+        "actual": true,
+        "key": "selfTime",
+        "nodeId": 2,
+        "text": null,
+        "unit": "ms",
+        "value": 1700.0
+      },
+      {
+        "actual": false,
+        "key": "lookupColumns",
+        "nodeId": 2,
+        "text": "Total, Note",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [
+      "nestedLoopManyRows"
+    ],
+    "nodeIds": [
+      2,
+      1,
+      0
+    ],
+    "params": {
+      "columns": "CustomerId",
+      "include": "Total, Note",
+      "loops": "25000",
+      "table": "dbo.Orders",
+      "usedIndex": "IX_Orders_CustomerId"
+    },
+    "rule": "mssqlKeyLookup",
+    "severity": "critical",
+    "share": 0.997,
+    "statementRange": null,
+    "table": "dbo.Orders"
+  },
+  {
+    "actions": [],
+    "basis": "time",
+    "caveats": [
+      "missingIndexHint",
+      "noDdlForDialect",
+      "metadataUnavailable"
+    ],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "missingIndexImpact",
+        "nodeId": 2,
+        "text": null,
+        "unit": "pct",
+        "value": 94.31
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      2,
+      1
+    ],
+    "params": {
+      "columns": "CustomerId, Code, OrderDate",
+      "impact": "94.3",
+      "include": "Total, Note",
+      "table": "dbo.Orders"
+    },
+    "rule": "mssqlMissingIndex",
+    "severity": "critical",
+    "share": 0.976,
+    "statementRange": null,
+    "table": "dbo.Orders"
+  }
+]

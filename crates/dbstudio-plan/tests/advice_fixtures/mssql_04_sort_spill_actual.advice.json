@@ -1,0 +1,160 @@
+[
+  {
+    "actions": [],
+    "basis": "time",
+    "caveats": [
+      "indexForSortSpill",
+      "noDdlForDialect"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "sortRows",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 498000.0
+      },
+      {
+        "actual": false,
+        "key": "sortKey",
+        "nodeId": 0,
+        "text": "Amount",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [
+      "spillToDisk"
+    ],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "columns": "Amount",
+      "rows": "498000",
+      "table": "dbo.BigTransactions"
+    },
+    "rule": "indexForSort",
+    "severity": "warning",
+    "share": 0.56,
+    "statementRange": null,
+    "table": "dbo.BigTransactions"
+  },
+  {
+    "actions": [
+      {
+        "kind": "statistics",
+        "label": "refreshStatistics",
+        "lock": "none",
+        "scope": "object",
+        "sql": "UPDATE STATISTICS [dbo].[BigTransactions];",
+        "template": false
+      },
+      {
+        "kind": "hint",
+        "label": "minGrantPercentHint",
+        "lock": "none",
+        "scope": "query",
+        "sql": "OPTION (MIN_GRANT_PERCENT = 10)",
+        "template": true
+      }
+    ],
+    "basis": "time",
+    "caveats": [
+      "memoryGrantFeedback"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "spillLevel",
+        "nodeId": 0,
+        "text": null,
+        "unit": "count",
+        "value": 2.0
+      },
+      {
+        "actual": true,
+        "key": "tempdbWrites",
+        "nodeId": 0,
+        "text": null,
+        "unit": "blocks",
+        "value": 3120.0
+      },
+      {
+        "actual": true,
+        "key": "memoryGranted",
+        "nodeId": 0,
+        "text": null,
+        "unit": "bytes",
+        "value": 4194304.0
+      },
+      {
+        "actual": true,
+        "key": "memoryUsed",
+        "nodeId": 0,
+        "text": null,
+        "unit": "bytes",
+        "value": 4194304.0
+      }
+    ],
+    "fromWarnings": [
+      "spillToDisk"
+    ],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "detail": "SpillToTempDb, SortSpillDetails",
+      "table": "dbo.BigTransactions",
+      "tempdbWrites": "3120"
+    },
+    "rule": "sortSpill",
+    "severity": "warning",
+    "share": 0.56,
+    "statementRange": null,
+    "table": "dbo.BigTransactions"
+  },
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewFilter",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 500000.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "rows": "500000",
+      "table": "dbo.BigTransactions"
+    },
+    "rule": "fullScanReview",
+    "severity": "warning",
+    "share": 0.28,
+    "statementRange": null,
+    "table": "dbo.BigTransactions"
+  }
+]

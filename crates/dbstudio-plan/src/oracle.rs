@@ -6,7 +6,10 @@ use dbstudio_core::PlanFormat;
 
 use crate::build::{finish, join_conditions};
 use crate::json::{self, Js};
-use crate::{PlanError, PlanNode, PlanNodeKind, PlanObject, PlanTotals, PlanTree, RawRef};
+use crate::{
+    NodePredicate, PlanError, PlanNode, PlanNodeKind, PlanObject, PlanTotals, PlanTree,
+    PredicateRole, RawRef,
+};
 
 /// Row columns copied to `extra` when present.
 const EXTRA_COLUMNS: &[&str] = &[
@@ -19,6 +22,7 @@ const EXTRA_COLUMNS: &[&str] = &[
     "OBJECT_TYPE",
     "OPTIMIZER",
     "STARTS",
+    "LAST_STARTS",
     "LAST_CR_BUFFER_GETS",
     "LAST_DISK_READS",
     "LAST_MEMORY_USED",
@@ -88,7 +92,7 @@ pub(crate) fn parse(text: &str) -> Result<PlanTree, PlanError> {
     let mut seen = vec![false; rows.len()];
     let nodes: Vec<PlanNode> = roots
         .iter()
-        .map(|i| build(*i, &rows, &kids, &mut seen, 0))
+        .map(|i| build(*i, &rows, &ids, &kids, &mut seen, 0))
         .collect::<Result<_, _>>()?;
     let analyzed = nodes.iter().any(any_actual);
     let totals = PlanTotals {
@@ -108,6 +112,7 @@ fn any_actual(n: &PlanNode) -> bool {
 fn build(
     i: usize,
     rows: &[Row],
+    ids: &BTreeMap<u32, usize>,
     kids: &BTreeMap<u32, Vec<usize>>,
     seen: &mut [bool],
     depth: u32,
@@ -145,17 +150,40 @@ fn build(
     if let Some(name) = object_name {
         let is_index = operation.starts_with("INDEX") || operation.contains("BITMAP INDEX");
         if is_index {
-            // The row names the index; the table is the alias (`ORDERS@SEL$1`).
-            let table = j
+            // The row names the index; the table is the alias (`ORDERS@SEL$1`), unless the
+            // `TABLE ACCESS` row above it (same alias) names the real table.
+            let alias = j
                 .get_ci("OBJECT_ALIAS")
                 .and_then(Js::as_str)
+                .filter(|a| !a.is_empty());
+            let alias_name = alias
                 .and_then(|a| a.split('@').next())
-                .filter(|t| !t.is_empty())
-                .unwrap_or(name);
+                .filter(|t| !t.is_empty());
+            let parent = r
+                .parent
+                .and_then(|p| ids.get(&p))
+                .map(|p| rows[*p].j)
+                .filter(|p| {
+                    p.get_ci("OPERATION").and_then(Js::as_str) == Some("TABLE ACCESS")
+                        && p.get_ci("OBJECT_ALIAS").and_then(Js::as_str) == alias
+                });
+            let parent_table = parent
+                .and_then(|p| p.get_ci("OBJECT_NAME").and_then(Js::as_str))
+                .filter(|t| !t.is_empty());
+            let table = parent_table.or(alias_name).unwrap_or(name);
+            let table = table.trim_matches('"').to_string();
+            let owner = owner.or_else(|| {
+                parent
+                    .and_then(|p| p.get_ci("OBJECT_OWNER").and_then(Js::as_str))
+                    .filter(|o| !o.is_empty())
+                    .map(str::to_string)
+            });
             n.object = Some(PlanObject {
                 schema: owner,
-                name: table.trim_matches('"').to_string(),
-                alias: None,
+                alias: alias_name
+                    .filter(|a| parent_table.is_some() && !a.eq_ignore_ascii_case(&table))
+                    .map(str::to_string),
+                name: table,
                 index: Some(name.to_string()),
             });
         } else {
@@ -172,14 +200,41 @@ fn build(
             });
         }
     }
-    let access = j
+    let access_text = j
         .get_ci("ACCESS_PREDICATES")
         .and_then(Js::as_str)
-        .map(|s| format!("access: {s}"));
-    let filter = j
+        .filter(|s| !s.trim().is_empty());
+    let filter_text = j
         .get_ci("FILTER_PREDICATES")
         .and_then(Js::as_str)
-        .map(|s| format!("filter: {s}"));
+        .filter(|s| !s.trim().is_empty());
+    // Access predicates of a join are its join condition, of an index operation the seek keys.
+    let joins = matches!(
+        kind,
+        PlanNodeKind::NestedLoopJoin | PlanNodeKind::HashJoin | PlanNodeKind::MergeJoin
+    ) || (operation == "SORT" && options.is_some_and(|o| o.contains("JOIN")));
+    if let Some(t) = access_text {
+        n.predicates.push(NodePredicate {
+            role: if joins {
+                PredicateRole::JoinCond
+            } else {
+                PredicateRole::IndexCond
+            },
+            text: t.to_string(),
+        });
+    }
+    if let Some(t) = filter_text {
+        n.predicates.push(NodePredicate {
+            role: if joins {
+                PredicateRole::JoinFilter
+            } else {
+                PredicateRole::Filter
+            },
+            text: t.to_string(),
+        });
+    }
+    let access = access_text.map(|s| format!("access: {s}"));
+    let filter = filter_text.map(|s| format!("filter: {s}"));
     n.condition = join_conditions(access.into_iter().chain(filter).collect());
     n.est_cost = j.get_ci("COST").and_then(Js::as_f64);
     n.est_rows = j.get_ci("CARDINALITY").and_then(Js::as_f64);
@@ -207,10 +262,10 @@ fn build(
             }
         }
     }
-    if let Some(ids) = kids.get(&r.id) {
-        for c in ids {
+    if let Some(children) = kids.get(&r.id) {
+        for c in children {
             if !seen[*c] {
-                let child = build(*c, rows, kids, seen, depth + 1)?;
+                let child = build(*c, rows, ids, kids, seen, depth + 1)?;
                 n.children.push(child);
             }
         }

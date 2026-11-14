@@ -1,0 +1,126 @@
+[
+  {
+    "actions": [],
+    "basis": "time",
+    "caveats": [
+      "noDdlForDialect"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 2,
+        "text": null,
+        "unit": "rows",
+        "value": 410000.0
+      },
+      {
+        "actual": true,
+        "key": "rowsKept",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 12000.0
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      1,
+      2
+    ],
+    "params": {
+      "columns": "STATUS, TOTAL",
+      "examined": "410000",
+      "kept": "12000",
+      "table": "SHOP.ORDERS",
+      "usedIndex": "IX_ORDERS_CUST_STATUS"
+    },
+    "rule": "indexResidualFilter",
+    "severity": "critical",
+    "share": 0.997,
+    "statementRange": null,
+    "table": "SHOP.ORDERS"
+  },
+  {
+    "actions": [],
+    "basis": "time",
+    "caveats": [
+      "noDdlForDialect"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 2,
+        "text": null,
+        "unit": "rows",
+        "value": 410000.0
+      },
+      {
+        "actual": true,
+        "key": "selfTime",
+        "nodeId": 2,
+        "text": null,
+        "unit": "ms",
+        "value": 1900.0
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      2
+    ],
+    "params": {
+      "columns": "STATUS",
+      "scan": "INDEX SKIP SCAN",
+      "table": "SHOP.ORDERS",
+      "usedIndex": "IX_ORDERS_CUST_STATUS"
+    },
+    "rule": "oracleIndexSkipScan",
+    "severity": "critical",
+    "share": 0.644,
+    "statementRange": null,
+    "table": "SHOP.ORDERS"
+  },
+  {
+    "actions": [
+      {
+        "kind": "rewrite",
+        "label": "listColumns",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "planSign",
+        "nodeId": 1,
+        "text": "keyLookup",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "sign": "keyLookup"
+    },
+    "rule": "selectStar",
+    "severity": "info",
+    "share": 0.353,
+    "statementRange": {
+      "end": 8,
+      "start": 7
+    },
+    "table": null
+  }
+]

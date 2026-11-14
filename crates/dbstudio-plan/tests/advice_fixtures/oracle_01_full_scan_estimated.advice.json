@@ -1,0 +1,38 @@
+[
+  {
+    "actions": [],
+    "basis": "cost",
+    "caveats": [
+      "noDdlForDialect",
+      "estimatedOnly",
+      "metadataUnavailable"
+    ],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "rowsKept",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 1200000.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "columns": "STATUS",
+      "kept": "1200000",
+      "table": "SHOP.ORDERS"
+    },
+    "rule": "indexForFilter",
+    "severity": "critical",
+    "share": 1.0,
+    "statementRange": null,
+    "table": "SHOP.ORDERS"
+  }
+]
