@@ -32,6 +32,10 @@ pub enum Reply {
     /// Blocks until released (or cancelled).
     Block,
     Messages(Vec<&'static str>),
+    /// The statement ends the transaction (a COMMIT inside the script).
+    EndTx,
+    /// The statement opens a transaction (a BEGIN inside the script).
+    StartTx,
 }
 
 struct Rule {
@@ -175,6 +179,14 @@ impl Lease for FakeLease {
                     () = self.release.notified() => {}
                     () = self.cancelled.notified() => return Err(Error::Cancelled),
                 }
+                sink.on_statement_end(end(EndOutcome::Done))?;
+            }
+            Reply::EndTx => {
+                self.state.lock().unwrap().transaction = TxStatus::Idle;
+                sink.on_statement_end(end(EndOutcome::Done))?;
+            }
+            Reply::StartTx => {
+                self.state.lock().unwrap().transaction = TxStatus::Active;
                 sink.on_statement_end(end(EndOutcome::Done))?;
             }
             Reply::Messages(ms) => {

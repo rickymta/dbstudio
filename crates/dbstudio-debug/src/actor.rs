@@ -40,7 +40,7 @@ use crate::{
 
 type Reply<T> = oneshot::Sender<Result<T>>;
 
-const TX_ENDED: &str = "the debug transaction was ended by the statement";
+const TX_ENDED: &str = "the debug transaction ended (commit, rollback or an error): the rest of the script runs in autocommit. Resume continues, Stop ends the session";
 
 enum Cmd {
     Act(DebugAction, Option<ConfirmationGrant>, Reply<DebugState>),
@@ -381,6 +381,8 @@ struct Core {
     muted: bool,
     watches: Vec<WatchSpec>,
     owned: bool,
+    /// A transaction was already open on the lease when the session started (not the script's).
+    tx_open_at_start: bool,
     tx_since: Option<Instant>,
     warned: bool,
     last_cmd: Instant,
@@ -811,6 +813,9 @@ impl Core {
             let _ = self.load_children(&format!("g:{}", p.group)).await;
         }
         self.state.watches = self.eval_watches().await;
+        // A failing watch can roll the transaction back (MSSQL XACT_ABORT): tell, do not go on
+        // silently in autocommit.
+        self.tx_lost();
         self.state.step_into_targets = vec![];
         if self.routine_ok && self.routine_ctx.is_none() && !at_end {
             if let (Some(i), Some(r)) = (idx, self.routine.as_mut()) {
@@ -823,6 +828,24 @@ impl Core {
             }
         }
         self.publish();
+    }
+
+    /// The transaction the debugger opened is gone (a statement committed it, or an error rolled
+    /// it back): say so; the caller pauses instead of silently going on in autocommit.
+    fn tx_lost(&mut self) -> bool {
+        self.tx_lost_since(self.owned)
+    }
+
+    /// Same, for a caller that noted `owned` before running something (a completed step already
+    /// refreshed the flag).
+    fn tx_lost_since(&mut self, was_owned: bool) -> bool {
+        let lost = was_owned
+            && self.lease.state().transaction == TxStatus::Idle
+            && !self.lease.state().broken;
+        if lost {
+            self.refresh_tx();
+        }
+        lost
     }
 
     fn refresh_tx(&mut self) {
@@ -1241,7 +1264,10 @@ impl Core {
                 .map(str::trim)
                 .filter(|c| !c.is_empty())
             {
-                let r = self.evaluator(None).condition(c).await;
+                // MULTI open (Redis) or counters to keep (MySQL): no evaluation, so a failing
+                // condition that stops the script and says why.
+                let skip = self.eval_skip();
+                let r = self.evaluator(skip.as_deref()).condition(c).await;
                 match r {
                     Ok(b) => hit = b,
                     Err(e) => {
@@ -1262,7 +1288,8 @@ impl Core {
                 }
             }
             if let Some(t) = bp.log_message.as_deref().filter(|t| !t.is_empty()) {
-                let text = self.evaluator(None).render(t).await;
+                let skip = self.eval_skip();
+                let text = self.evaluator(skip.as_deref()).render(t).await;
                 self.emit(DebugOutput::Message {
                     text,
                     source: MessageSource::Log,
@@ -1272,7 +1299,11 @@ impl Core {
                 stop_ids.push(bp.id.clone());
             }
         }
-        (!stop_ids.is_empty()).then_some(RunEnd::Paused(PauseReason::Breakpoint { ids: stop_ids }))
+        if stop_ids.is_empty() {
+            // A condition on MSSQL with XACT_ABORT can roll the debug transaction back.
+            return self.tx_lost().then_some(RunEnd::Paused(PauseReason::Step));
+        }
+        Some(RunEnd::Paused(PauseReason::Breakpoint { ids: stop_ids }))
     }
 
     // --------------------------------------------------------------------------------- stepping
@@ -1629,8 +1660,16 @@ impl Core {
                 }
             }
             first = false;
+            let was_owned = self.owned;
             match self.exec_step(idx).await {
-                StepRes::Done => self.cursor = idx + 1,
+                StepRes::Done => {
+                    self.cursor = idx + 1;
+                    if self.tx_lost_since(was_owned)
+                        && self.program.next_stop(self.cursor).is_some()
+                    {
+                        return RunEnd::Paused(PauseReason::Step);
+                    }
+                }
                 StepRes::Pause(r) => return RunEnd::Paused(r),
                 StepRes::Stopped => return RunEnd::Stopped,
                 StepRes::LeaseLost => return RunEnd::LeaseLost,
@@ -1738,9 +1777,13 @@ impl Core {
             ),
         };
         let idx = ctx.prepared.idx;
+        let was_owned = self.owned;
         match self.complete(ctx.prepared, res, sink).await {
             StepRes::Done => {
                 self.cursor = idx + 1;
+                if self.tx_lost_since(was_owned) && self.program.next_stop(self.cursor).is_some() {
+                    return RunEnd::Paused(PauseReason::Step);
+                }
                 if act == RoutineAct::Continue {
                     self.run_steps(RunMode::Resume, false).await
                 } else {
@@ -1806,7 +1849,22 @@ impl Core {
     }
 
     async fn end_transaction(&mut self, end: DebugEndAction) {
-        if !self.owned || self.lease.state().transaction == TxStatus::Idle {
+        // A transaction the script itself opened (BEGIN, Redis MULTI) is ended with the session
+        // too: leaving it open would hold locks / queue commands on the tab for nobody.
+        if self.multi_open && !matches!(end, DebugEndAction::Keep) {
+            // Redis: a MULTI the script left open queues commands of the tab for ever.
+            let mut sink = StepSink::new(1);
+            let _ = self
+                .lease
+                .execute(QueryRequest::new("DISCARD"), &mut sink)
+                .await;
+            self.multi_open = false;
+        }
+        let script_tx = !self.owned
+            && !self.tx_open_at_start
+            && self.lease.state().transaction != TxStatus::Idle
+            && !matches!(end, DebugEndAction::Keep);
+        if !(self.owned || script_tx) || self.lease.state().transaction == TxStatus::Idle {
             return;
         }
         match end {
@@ -2067,6 +2125,7 @@ impl Core {
                 self.publish();
                 let skip = self.eval_skip();
                 let result = self.eval_expression(&expr, skip.as_deref()).await;
+                self.tx_lost();
                 if echo {
                     self.emit(DebugOutput::Evaluated {
                         expr: expr.clone(),
@@ -2593,6 +2652,7 @@ pub async fn start(
         muted,
         watches,
         owned,
+        tx_open_at_start: lstate.transaction != TxStatus::Idle,
         tx_since,
         warned: false,
         last_cmd: now,

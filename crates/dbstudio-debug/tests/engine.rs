@@ -1263,3 +1263,99 @@ async fn a_failed_begin_gives_the_idle_timeout_back() {
         1
     );
 }
+
+#[tokio::test]
+async fn losing_the_debug_transaction_pauses_instead_of_running_on_in_autocommit() {
+    let mut req = request("SELECT 1;\nSELECT 2;\nSELECT 3;");
+    req.options.end_action = DebugEndAction::Rollback;
+    req.options.stop_on_entry = Some(true);
+    let lease = FakeLease::new(true);
+    lease.on("select 2", vec![Reply::EndTx]);
+    let rig = begin_with(PG, req, lease, DebugSettings::default(), None).await;
+    let s = rig.paused().await;
+    assert!(s.transaction.owned);
+    let s = rig.resume().await;
+    assert_eq!(
+        reason(&s),
+        Some(PauseReason::Step),
+        "{:?} {:?}",
+        s.status,
+        rig.lease.log()
+    );
+    assert!(!s.transaction.owned);
+    assert_eq!(
+        rig.lease.ran("SELECT 3"),
+        0,
+        "paused before the autocommit statement"
+    );
+    assert!(
+        rig.sink
+            .messages()
+            .iter()
+            .any(|(m, _)| m.contains("autocommit"))
+    );
+    let s = rig.resume().await;
+    assert_eq!(terminated(&s), Some(TerminateReason::Finished));
+    assert_eq!(rig.lease.ran("SELECT 3"), 1);
+}
+
+#[tokio::test]
+async fn a_transaction_the_script_opened_is_rolled_back_with_the_session() {
+    let mut req = request("BEGIN;\nSELECT 1;");
+    req.options.tx_mode = dbstudio_core::debug::DebugTxMode::Lease;
+    req.options.stop_on_entry = Some(true);
+    let lease = FakeLease::new(false);
+    lease.on("begin", vec![Reply::StartTx]);
+    let rig = begin_with(PG, req, lease, DebugSettings::default(), None).await;
+    rig.paused().await;
+    rig.step().await; // the script's BEGIN ran
+    assert_eq!(rig.lease.state().transaction, TxStatus::Active);
+    rig.h.stop(Some(DebugEndAction::Rollback)).await.unwrap();
+    assert_eq!(rig.lease.ran("<rollback>"), 1);
+    // ... but one that was open before the session is the tab's and stays.
+    let mut req = request("SELECT 1;");
+    req.options.tx_mode = dbstudio_core::debug::DebugTxMode::Lease;
+    req.options.stop_on_entry = Some(true);
+    let lease = FakeLease::new(false);
+    lease.set_tx(TxStatus::Active);
+    let rig = begin_with(PG, req, lease, DebugSettings::default(), None).await;
+    rig.paused().await;
+    rig.h.stop(Some(DebugEndAction::Rollback)).await.unwrap();
+    assert_eq!(rig.lease.ran("<rollback>"), 0);
+}
+
+#[tokio::test]
+async fn a_breakpoint_condition_is_not_evaluated_while_multi_is_open() {
+    let mut req = request("MULTI\nSET b 2\nEXEC");
+    req.options.end_action = DebugEndAction::Rollback;
+    req.options.stop_on_entry = Some(true);
+    let mut b = bp("c", 2);
+    b.condition = Some("GET zzz".into());
+    req.breakpoints = vec![b];
+    let rig = begin_with(
+        ScriptDialect::RedisCli,
+        req,
+        FakeLease::new(true),
+        DebugSettings::default(),
+        None,
+    )
+    .await;
+    rig.paused().await;
+    let s = rig.resume().await;
+    assert!(
+        matches!(reason(&s), Some(PauseReason::Breakpoint { .. })),
+        "{:?}",
+        reason(&s)
+    );
+    assert_eq!(
+        rig.lease.ran("GET zzz"),
+        0,
+        "the condition would have been queued"
+    );
+    assert!(
+        rig.sink
+            .messages()
+            .iter()
+            .any(|(m, _)| m.contains("condition failed"))
+    );
+}
