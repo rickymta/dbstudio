@@ -194,7 +194,7 @@ fn aliases_of(sigs: &[Sig]) -> Vec<Alias> {
         let s = &sigs[i];
         if s.kind == TokenKind::Word {
             match s.lower.as_str() {
-                "from" | "join" | "update" => {
+                "from" | "join" | "straight_join" | "update" => {
                     if !in_from.contains(&s.depth) {
                         in_from.push(s.depth);
                     }
@@ -313,6 +313,29 @@ pub(super) fn stmt_info(cx: &Cx<'_>) -> StmtInfo {
     }
 }
 
+/// The statement gives `name` to more than one table.
+pub(super) fn is_ambiguous(info: &StmtInfo, name: &str) -> bool {
+    let mut seen: Option<&Alias> = None;
+    for a in info
+        .aliases
+        .iter()
+        .filter(|a| a.alias.eq_ignore_ascii_case(name))
+    {
+        match seen {
+            None => seen = Some(a),
+            Some(f) => {
+                if !f.table.eq_ignore_ascii_case(&a.table)
+                    || f.db.as_deref().map(str::to_lowercase)
+                        != a.db.as_deref().map(str::to_lowercase)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// The table behind a name the plan printed (JSON v1 and the tree text print the alias).
 pub(super) fn resolve_table(info: &StmtInfo, t: &TableRef) -> TableRef {
     let Some(a) = info
@@ -322,6 +345,10 @@ pub(super) fn resolve_table(info: &StmtInfo, t: &TableRef) -> TableRef {
     else {
         return t.clone();
     };
+    // The same alias for different tables (two subqueries): which one the plan means is a guess.
+    if is_ambiguous(info, &t.name) {
+        return t.clone();
+    }
     let mut r = t.clone();
     if r.schema.is_none() {
         r.schema = a.db.clone();
@@ -553,6 +580,32 @@ pub(crate) fn node_rules(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
     mariadb_sort_spill(cx, node, out);
     full_scan_answer(cx, &info, node, out);
     histograms(cx, &info, node, out);
+    drop_ambiguous_tables(&info, out);
+}
+
+/// An alias that more than one table of the statement carries cannot name a table: advice that
+/// would put it in DDL keeps only a pointer to review.
+fn drop_ambiguous_tables(info: &StmtInfo, out: &mut [Draft]) {
+    for d in out.iter_mut() {
+        let name = d
+            .candidate
+            .as_ref()
+            .map(|c| c.table.name.clone())
+            .or_else(|| d.table.as_ref().map(|t| t.name.clone()));
+        let Some(name) = name.filter(|n| is_ambiguous(info, n)) else {
+            continue;
+        };
+        let quoted = format!("`{name}`");
+        d.candidate = None;
+        d.table = None;
+        d.confidence = Confidence::Low;
+        d.actions
+            .retain(|a| a.sql.as_deref().is_none_or(|q| !q.contains(&quoted)));
+        if d.actions.is_empty() {
+            d.actions
+                .push(check_action("reviewFilter", None, ActionScope::Query));
+        }
+    }
 }
 
 /// Rules evaluated once per plan.

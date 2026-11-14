@@ -10,7 +10,7 @@
           "table": "orders"
         },
         "scope": "object",
-        "sql": "db.getSiblingDB(\"shop\").orders.createIndex({ status: 1 }, { name: \"status_1\" })",
+        "sql": "db.getSiblingDB(\"shop\").getCollection(\"orders\").createIndex({ status: 1 }, { name: \"status_1\" })",
         "template": false
       }
     ],

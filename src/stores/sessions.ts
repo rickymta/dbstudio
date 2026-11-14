@@ -10,7 +10,11 @@ interface SessionsState {
   /** Connection ids with a `session_open` in flight. */
   opening: Record<Uuid, true>;
   /** Open (or reuse) the session of a connection. Rejects with an `IpcError`. */
-  open: (connectionId: Uuid, password?: string | null) => Promise<SessionInfo>;
+  open: (
+    connectionId: Uuid,
+    password?: string | null,
+    opts?: { replace?: boolean },
+  ) => Promise<SessionInfo>;
   /** Close the session of a connection and every tab that belongs to it. */
   close: (connectionId: Uuid) => Promise<void>;
   /**
@@ -34,9 +38,11 @@ const cancelled = new Set<Uuid>();
 export const useSessionsStore = create<SessionsState>((set, get) => ({
   sessionsByConnection: {},
   opening: {},
-  open: (connectionId, password) => {
+  open: (connectionId, password, opts) => {
     const existing = get().sessionsByConnection[connectionId];
-    if (existing) return Promise.resolve(existing);
+    // `replace`: the entry is a session the backend forgot; it is swapped once a new one opens
+    // and stays as it was when opening fails.
+    if (existing && !opts?.replace) return Promise.resolve(existing);
     const pending = inFlight.get(connectionId);
     if (pending) {
       // Asking again while a cancelled open is still in flight revives it.

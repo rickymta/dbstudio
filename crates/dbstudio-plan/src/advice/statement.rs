@@ -4,7 +4,7 @@
 //! rule) and scanned for a few well known anti-patterns. The plan, when it confirms the
 //! suspicion (a full scan of the table the column belongs to), raises the confidence.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use dbstudio_core::{PlanFormat, ScriptDialect, TextRange};
 use dbstudio_sql::lexer::{TokenKind, tokenize};
@@ -37,6 +37,8 @@ struct Sig {
     end: u32,
     depth: u32,
     clause: Clause,
+    /// For `(`: index of the matching `)`; `usize::MAX` when unmatched or not a `(`.
+    close: usize,
 }
 
 impl Sig {
@@ -125,6 +127,7 @@ fn lex(cx: &Cx<'_>) -> Vec<Sig> {
     let mut sigs: Vec<Sig> = Vec::new();
     let mut stack = vec![Clause::Other];
     let mut depth = 0u32;
+    let mut opens: Vec<usize> = Vec::new();
     for t in tokenize(cx.ctx.dialect, cx.statement) {
         if t.kind.is_trivia() {
             continue;
@@ -142,12 +145,17 @@ fn lex(cx: &Cx<'_>) -> Vec<Sig> {
             end: t.range.end,
             depth,
             clause: *stack.last().unwrap_or(&Clause::Other),
+            close: usize::MAX,
         };
         if sig.is_punct('(') {
             let top = *stack.last().unwrap_or(&Clause::Other);
             stack.push(top);
+            opens.push(sigs.len());
             depth += 1;
         } else if sig.is_punct(')') {
+            if let Some(o) = opens.pop() {
+                sigs[o].close = sigs.len();
+            }
             if stack.len() > 1 {
                 stack.pop();
             }
@@ -176,20 +184,9 @@ fn lex(cx: &Cx<'_>) -> Vec<Sig> {
     sigs
 }
 
-/// Index of the `)` matching the `(` at `open`.
+/// Index of the `)` matching the `(` at `open` (precomputed by `lex`, O(1)).
 fn close_of(sigs: &[Sig], open: usize) -> Option<usize> {
-    let mut depth = 0i32;
-    for (i, s) in sigs.iter().enumerate().skip(open) {
-        if s.is_punct('(') {
-            depth += 1;
-        } else if s.is_punct(')') {
-            depth -= 1;
-            if depth == 0 {
-                return Some(i);
-            }
-        }
-    }
-    None
+    sigs.get(open).map(|s| s.close).filter(|c| *c != usize::MAX)
 }
 
 /// Length in tokens of a comparison operator at `i` (`=`, `<=`, `<>`, `LIKE`, `IN`...).
@@ -214,30 +211,71 @@ fn range(a: &Sig, b: &Sig) -> TextRange {
     }
 }
 
-fn text_of(cx: &Cx<'_>, r: TextRange) -> String {
-    cx.statement
-        .chars()
-        .skip(r.start as usize)
-        .take((r.end - r.start) as usize)
-        .collect()
+fn text_of(chars: &[char], r: TextRange) -> String {
+    chars
+        .get(r.start as usize..(r.end as usize).min(chars.len()))
+        .map(|c| c.iter().collect())
+        .unwrap_or_default()
 }
 
-/// A scan the plan did as a full scan of the table `qualifier` names (or any, when unqualified).
-fn confirm_scan<'a>(cx: &'a Cx<'_>, qualifier: Option<&str>) -> Option<&'a PlanNode> {
-    cx.nodes.iter().copied().find(|n| {
-        n.kind == PlanNodeKind::FullScan
-            && n.loops != Some(0)
-            && table_ref(n).is_some()
-            && match qualifier {
-                None => true,
-                Some(q) => n.object.as_ref().is_some_and(|o| {
+/// A scan the plan did as a full scan of the table `qualifier` names. Unqualified: only when the
+/// plan reads a single table, or the catalog says exactly one of the plan's tables has `column`
+/// (otherwise the column could belong to any table of a join).
+fn confirm_scan<'a>(cx: &'a Cx<'_>, qualifier: Option<&str>, column: &str) -> Option<&'a PlanNode> {
+    let is_scan = |n: &PlanNode| {
+        n.kind == PlanNodeKind::FullScan && n.loops != Some(0) && table_ref(n).is_some()
+    };
+    match qualifier {
+        Some(q) => cx.nodes.iter().copied().find(|n| {
+            is_scan(n)
+                && n.object.as_ref().is_some_and(|o| {
                     o.name.eq_ignore_ascii_case(q)
                         || o.alias
                             .as_deref()
                             .is_some_and(|a| a.eq_ignore_ascii_case(q))
-                }),
+                })
+        }),
+        None => {
+            let mut tables: Vec<(Option<String>, String)> = Vec::new();
+            for n in &cx.nodes {
+                if let Some(t) = table_ref(n) {
+                    let k = (t.schema.map(|s| s.to_lowercase()), t.name.to_lowercase());
+                    if !tables.contains(&k) {
+                        tables.push(k);
+                    }
+                }
             }
-    })
+            let owner: Option<(Option<String>, String)> = if tables.len() == 1 {
+                tables.pop()
+            } else {
+                // Every table must have metadata, and exactly one holds the column.
+                let mut holders = Vec::new();
+                let mut all_known = true;
+                for (schema, name) in &tables {
+                    match cx.ctx.table_meta(schema.as_deref(), name) {
+                        Some(m) => {
+                            if m.columns
+                                .iter()
+                                .any(|c| c.name.eq_ignore_ascii_case(column))
+                            {
+                                holders.push((schema.clone(), name.clone()));
+                            }
+                        }
+                        None => all_known = false,
+                    }
+                }
+                (all_known && holders.len() == 1).then(|| holders.remove(0))
+            };
+            let (schema, name) = owner?;
+            cx.nodes.iter().copied().find(|n| {
+                is_scan(n)
+                    && table_ref(n).is_some_and(|t| {
+                        t.name.eq_ignore_ascii_case(&name)
+                            && t.schema.as_deref().map(str::to_lowercase) == schema
+                    })
+            })
+        }
+    }
 }
 
 fn action(
@@ -286,12 +324,13 @@ pub(crate) fn run(cx: &Cx<'_>, drafts: &mut Vec<Draft>) {
         return;
     }
     let sigs = lex(cx);
-    non_sargable(cx, &sigs, drafts);
+    let chars: Vec<char> = cx.statement.chars().collect();
+    non_sargable(cx, &chars, &sigs, drafts);
     leading_wildcard(cx, &sigs, drafts);
-    or_across_columns(cx, &sigs, drafts);
+    or_across_columns(cx, &chars, &sigs, drafts);
     select_star(cx, &sigs, drafts);
     large_offset(cx, &sigs, drafts);
-    not_in_subquery(cx, &sigs, drafts);
+    not_in_subquery(cx, &chars, &sigs, drafts);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -328,8 +367,25 @@ const INDEXABLE_FUNCS: &[&str] = &[
     "lower", "upper", "abs", "trim", "btrim", "ltrim", "rtrim", "length",
 ];
 
-fn non_sargable(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
-    let mut seen: Vec<String> = Vec::new();
+/// Upper bound of advice one static rule raises for a statement (a generated 1 MB statement
+/// must not produce thousands of drafts).
+const MAX_STATIC_HITS: usize = 64;
+
+/// `OR` branches above which `orAcrossColumns` stays silent.
+const MAX_OR_BRANCHES: usize = 64;
+
+fn non_sargable(cx: &Cx<'_>, chars: &[char], sigs: &[Sig], drafts: &mut Vec<Draft>) {
+    let mut seen: HashSet<String> = HashSet::new();
+    // Advice the plan raised for `function on column`, by lower-cased column.
+    let mut explained: HashMap<String, usize> = HashMap::new();
+    for (idx, d) in drafts.iter().enumerate() {
+        if d.rule == AdviceRule::PgFunctionOnColumn {
+            if let Some(c) = d.params.get("column") {
+                explained.entry(c.to_lowercase()).or_insert(idx);
+            }
+        }
+    }
+    let mut raised = 0usize;
     for i in 0..sigs.len() {
         let s = &sigs[i];
         if !matches!(s.clause, Clause::Where | Clause::On) {
@@ -341,7 +397,9 @@ fn non_sargable(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
             && !is_keyword(&s.lower)
             && sigs.get(i + 1).is_some_and(|n| n.is_punct('('))
         {
-            if let Some(close) = close_of(sigs, i + 1) {
+            // Calls spanning hundreds of tokens are not a plain `f(col)`; skipping them keeps
+            // deeply nested generated calls linear.
+            if let Some(close) = close_of(sigs, i + 1).filter(|c| c - i <= 256) {
                 let after_cmp = comparison_at(sigs, close + 1);
                 let before_cmp = i > 0 && comparison_at(sigs, i - 1) && !sigs[i - 1].is_word("in");
                 let args = &sigs[i + 2..close];
@@ -401,23 +459,24 @@ fn non_sargable(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
             continue;
         };
         let r = range(&sigs[start], &sigs[end]);
-        let expr_text = text_of(cx, r);
+        let expr_text = text_of(chars, r);
         let key = format!("{}|{}", func, column.to_lowercase());
-        if seen.contains(&key) {
+        if !seen.insert(key.clone()) {
             continue;
         }
-        seen.push(key.clone());
         // The plan already explained it: only point at the text.
-        if let Some(existing) = drafts.iter_mut().find(|d| {
-            d.rule == AdviceRule::PgFunctionOnColumn
-                && d.params
-                    .get("column")
-                    .is_some_and(|c| c.eq_ignore_ascii_case(&column))
-        }) {
+        if let Some(existing) = explained
+            .get(&column.to_lowercase())
+            .and_then(|i| drafts.get_mut(*i))
+        {
             existing.statement_range.get_or_insert(r);
             continue;
         }
-        let confirm = confirm_scan(cx, qualifier.as_deref());
+        if raised >= MAX_STATIC_HITS {
+            break;
+        }
+        raised += 1;
+        let confirm = confirm_scan(cx, qualifier.as_deref(), &column);
         let confirmed = confirm.is_some();
         let mut d = Draft::new(
             AdviceRule::NonSargablePredicate,
@@ -489,7 +548,8 @@ fn non_sargable(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
 }
 
 fn leading_wildcard(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut raised = 0usize;
     for i in 0..sigs.len() {
         let s = &sigs[i];
         if !(s.is_word("like") || s.is_word("ilike"))
@@ -517,11 +577,14 @@ fn leading_wildcard(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
             continue;
         };
         let key = format!("{}|{}", column.to_lowercase(), content);
-        if seen.contains(&key) {
+        if !seen.insert(key.clone()) {
             continue;
         }
-        seen.push(key.clone());
-        let confirm = confirm_scan(cx, qualifier.as_deref());
+        if raised >= MAX_STATIC_HITS {
+            break;
+        }
+        raised += 1;
+        let confirm = confirm_scan(cx, qualifier.as_deref(), &column);
         let confirmed = confirm.is_some();
         let r = range(s, lit);
         let mut d = Draft::new(
@@ -600,7 +663,7 @@ fn leading_wildcard(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
     }
 }
 
-fn or_across_columns(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
+fn or_across_columns(cx: &Cx<'_>, chars: &[char], sigs: &[Sig], drafts: &mut Vec<Draft>) {
     let Some(w) = sigs.iter().position(|s| s.is_word("where")) else {
         return;
     };
@@ -637,7 +700,8 @@ fn or_across_columns(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
         .filter(|(_, s)| s.depth == depth && s.is_word("or"))
         .map(|(i, _)| i)
         .collect();
-    if cuts.is_empty() {
+    // Hundreds of branches (generated statements) are not a rewrite candidate.
+    if cuts.is_empty() || cuts.len() > MAX_OR_BRANCHES {
         return;
     }
     let mut parts: Vec<&[Sig]> = Vec::new();
@@ -685,7 +749,13 @@ fn or_across_columns(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
     let r = range(first, last);
     let texts: Vec<String> = parts
         .iter()
-        .filter_map(|p| Some(text_of(cx, range(p.first()?, p.last()?)).trim().to_string()))
+        .filter_map(|p| {
+            Some(
+                text_of(chars, range(p.first()?, p.last()?))
+                    .trim()
+                    .to_string(),
+            )
+        })
         .collect();
     let mut d = Draft::new(
         AdviceRule::OrAcrossColumns,
@@ -962,7 +1032,8 @@ fn large_offset(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
     drafts.push(d);
 }
 
-fn not_in_subquery(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
+fn not_in_subquery(cx: &Cx<'_>, chars: &[char], sigs: &[Sig], drafts: &mut Vec<Draft>) {
+    let mut raised = 0usize;
     for i in 0..sigs.len() {
         let s = &sigs[i];
         if !(s.is_word("not")
@@ -1003,7 +1074,7 @@ fn not_in_subquery(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
             .find(|j| sigs[*j].is_word("where") && sigs[*j].depth == sigs[from].depth);
         let from_end = where_at.unwrap_or(close);
         let from_text = text_of(
-            cx,
+            chars,
             TextRange {
                 start: sigs[from + 1].start,
                 end: sigs[from_end - 1].end,
@@ -1012,7 +1083,7 @@ fn not_in_subquery(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
         let where_text = where_at.and_then(|w| {
             (w + 1 < close).then(|| {
                 text_of(
-                    cx,
+                    chars,
                     TextRange {
                         start: sigs[w + 1].start,
                         end: sigs[close - 1].end,
@@ -1038,6 +1109,10 @@ fn not_in_subquery(cx: &Cx<'_>, sigs: &[Sig], drafts: &mut Vec<Draft>) {
         }
         sql.push(')');
         let r = range(s, &sigs[close]);
+        if raised >= MAX_STATIC_HITS {
+            break;
+        }
+        raised += 1;
         // The plan already found the per-row subplan: enrich that advice with the text.
         if let Some(existing) = drafts
             .iter_mut()

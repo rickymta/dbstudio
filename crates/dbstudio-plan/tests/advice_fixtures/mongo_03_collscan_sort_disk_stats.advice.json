@@ -10,7 +10,7 @@
           "table": "events"
         },
         "scope": "object",
-        "sql": "db.getSiblingDB(\"shop\").events.createIndex({ kind: 1, ts: -1 }, { name: \"kind_1_ts_-1\" })",
+        "sql": "db.getSiblingDB(\"shop\").getCollection(\"events\").createIndex({ kind: 1, ts: -1 }, { name: \"kind_1_ts_-1\" })",
         "template": false
       }
     ],

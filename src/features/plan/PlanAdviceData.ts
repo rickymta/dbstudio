@@ -100,7 +100,14 @@ export function useAdviceRefresh(planId: string): void {
     let alive = true;
     set(planId, { raw, advice: null, status: { kind: 'checking', metadata: null, error: null } });
     ipc
-      .planAdvise(entry.sessionId, entry.leaseId, raw, entry.request?.database ?? null)
+      .planAdvise(
+        entry.sessionId,
+        entry.leaseId,
+        raw,
+        entry.request?.database ?? null,
+        null,
+        entry.catalog !== false,
+      )
       .then((report) => {
         if (!alive) return;
         set(planId, { raw, advice: report.advice, status: statusOfReport(report.metadata) });

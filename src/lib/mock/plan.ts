@@ -164,13 +164,27 @@ export const planMock = {
     leaseId: Uuid | null,
     raw: RawPlan,
     database: string | null,
+    useCatalog = true,
   ): Promise<AdviceReport> {
     void [leaseId, database];
     mockSessionKind(sessionId);
     await sleep(40, 120);
     const sample = allSamples().find((s) => s.text === raw.text && s.format === raw.format);
     if (!sample) throw ipcError('other', 'invalid plan: unknown to the browser mock');
-    return sampleReport(structuredClone(SAMPLE_ADVICE[sample.file] ?? []));
+    const report = sampleReport(structuredClone(SAMPLE_ADVICE[sample.file] ?? []));
+    if (useCatalog) return report;
+    // Like the backend: no connection to ask, so the advice stays as the tier-1 text.
+    return {
+      advice: report.advice.map((a) => ({ ...a, table: a.table && { ...a.table, path: null } })),
+      metadata: {
+        state: 'unavailable',
+        checked: [],
+        failed: [],
+        skipped: 0,
+        elapsedMs: 0,
+        reason: 'planWithoutConnection',
+      },
+    };
   },
   async planFileSave(raw: RawPlan): Promise<string | null> {
     savedPlan = structuredClone(raw);

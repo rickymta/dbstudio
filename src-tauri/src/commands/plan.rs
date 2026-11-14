@@ -1,5 +1,6 @@
 //! Query plan commands (package E): EXPLAIN, parsing and `.dbplan.json` files.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9,7 +10,9 @@ use dbstudio_core::{
     ExplainRequest, ObjectSearchRequest, RawPlan, ScriptDialect, StatementClass, TextRange,
     TxStatus,
 };
-use dbstudio_plan::advice::{Flavor, Resolution, resolve_table, search_kind, search_scope};
+use dbstudio_plan::advice::{
+    Flavor, Resolution, ServerFacts, resolve_table, search_kind, search_scope,
+};
 use dbstudio_plan::{
     AdviceMetadata, AdviceReport, AdvisorContext, Caveat, MetadataState, PlanError, PlanRules,
     PlanTree, TableFailure, TableKey, TableMeta, TableRef,
@@ -333,12 +336,15 @@ async fn record_history(
     }
 }
 
-pub(crate) fn parse_impl(
+/// Parse and analyse a plan (with its advice) on a blocking thread: a big plan or statement
+/// must not stall the async runtime.
+pub(crate) async fn parse_impl(
     state: &AppState,
     raw: RawPlan,
     rules: Option<PlanRules>,
 ) -> Result<PlanTree> {
-    dbstudio_plan::parse_and_analyze(&raw, &effective_rules(state, rules)).map_err(plan_error)
+    let rules = effective_rules(state, rules);
+    blocking(move || dbstudio_plan::parse_and_analyze(&raw, &rules).map_err(plan_error)).await
 }
 
 /// Limits of the catalog lookup behind `plan_advise` (design section 5.5).
@@ -410,7 +416,7 @@ async fn lookup_table(
     flavor: Flavor,
     table: TableRef,
     request_database: Option<String>,
-    default_schema: Option<String>,
+    search_path: Vec<String>,
 ) -> std::result::Result<TableMeta, LookupFailure> {
     let found = session
         .search_objects(ObjectSearchRequest {
@@ -421,7 +427,7 @@ async fn lookup_table(
         })
         .await
         .map_err(LookupFailure::from_error)?;
-    let path = match resolve_table(flavor, &table, default_schema.as_deref(), &found) {
+    let path = match resolve_table(flavor, &table, &search_path, &found) {
         Resolution::Found(path) => path,
         Resolution::Ambiguous => return Err(LookupFailure::Ambiguous),
         Resolution::NotFound => return Err(LookupFailure::NotFound),
@@ -458,6 +464,7 @@ pub(crate) async fn advise_impl(
     raw: RawPlan,
     database: Option<String>,
     rules: Option<PlanRules>,
+    use_catalog: bool,
 ) -> Result<AdviceReport> {
     let enabled = state
         .connections
@@ -471,6 +478,7 @@ pub(crate) async fn advise_impl(
         database,
         rules,
         enabled,
+        use_catalog,
         AdviseLimits::default(),
     )
     .await
@@ -485,11 +493,13 @@ pub(crate) async fn advise_with(
     database: Option<String>,
     rules: Option<PlanRules>,
     metadata_enabled: bool,
+    use_catalog: bool,
     limits: AdviseLimits,
 ) -> Result<AdviceReport> {
     let started = Instant::now();
     let (session, _config) = state.sessions.get_with_config(session_id)?;
-    let (dialect, in_transaction) = match lease_id {
+    let plan_dialect = dbstudio_plan::advice::dialect_of_format(raw.format, &raw.server_version);
+    let (conn_dialect, in_transaction) = match lease_id {
         Some(id) => {
             let lease = state.leases.get(id)?;
             (
@@ -502,16 +512,52 @@ pub(crate) async fn advise_with(
         None => (session.script_dialect(), false),
     };
     let rules = effective_rules(state, rules);
-    let mut ctx = AdvisorContext::basic(&raw, &rules);
-    ctx.dialect = dialect;
-    ctx.server.in_transaction = in_transaction;
-    let mut tree = dbstudio_plan::parse_analyze_advise(&raw, &rules, &ctx).map_err(plan_error)?;
+    // The connection's dialect (quoting flags of the live session) only applies to a plan of its
+    // own product; a plan of another product keeps its own dialect and never meets this catalog.
+    let same_product =
+        std::mem::discriminant(&conn_dialect) == std::mem::discriminant(&plan_dialect);
+    let dialect = if same_product {
+        conn_dialect
+    } else {
+        plan_dialect
+    };
+    let mut facts = ServerFacts {
+        in_transaction: same_product && in_transaction,
+        ..ServerFacts::default()
+    };
+    let tree = {
+        let (raw, rules, facts) = (raw.clone(), rules.clone(), facts.clone());
+        blocking(move || {
+            let mut ctx = AdvisorContext::basic(&raw, &rules);
+            ctx.dialect = dialect;
+            ctx.server = facts;
+            dbstudio_plan::parse_analyze_advise(&raw, &rules, &ctx).map_err(plan_error)
+        })
+        .await?
+    };
     let mut metadata = AdviceMetadata {
         state: MetadataState::NotRequested,
         ..AdviceMetadata::default()
     };
     if !metadata_enabled {
         metadata.state = MetadataState::Disabled;
+        return Ok(AdviceReport {
+            advice: tree.advice,
+            metadata,
+        });
+    }
+    // A plan of another product, or one that has no known connection (opened from a file),
+    // says nothing reliable about this catalog: matching it would index the wrong tables.
+    if !same_product || !use_catalog {
+        metadata.state = MetadataState::Unavailable;
+        metadata.reason = Some(
+            if same_product {
+                "planWithoutConnection"
+            } else {
+                "dialectMismatch"
+            }
+            .into(),
+        );
         return Ok(AdviceReport {
             advice: tree.advice,
             metadata,
@@ -537,30 +583,61 @@ pub(crate) async fn advise_with(
         u32::try_from(wanted.len().saturating_sub(limits.max_tables)).unwrap_or(u32::MAX);
     wanted.truncate(limits.max_tables);
     let deadline = started + limits.total;
-    let flavor = ctx.flavor();
-    // Edition and default schema (one `server_info` call, SQL Server and Oracle only).
-    let mut default_schema = match flavor {
-        Flavor::Postgres | Flavor::Yugabyte | Flavor::Cockroach => Some("public".to_string()),
-        Flavor::MsSql => Some("dbo".to_string()),
-        _ => None,
+    let flavor = {
+        let mut probe = AdvisorContext::basic(&raw, &rules);
+        probe.dialect = dialect;
+        probe.flavor()
     };
-    if matches!(flavor, Flavor::MsSql | Flavor::Oracle) {
+    // Schemas a bare table name resolves against, in order (PostgreSQL: the session's
+    // `search_path`, led by the lease's current schema).
+    let mut search_path: Vec<String> = match flavor {
+        Flavor::MsSql => vec!["dbo".to_string()],
+        _ => Vec::new(),
+    };
+    let pg_like = matches!(
+        flavor,
+        Flavor::Postgres | Flavor::Yugabyte | Flavor::Cockroach
+    );
+    if pg_like {
+        if let Some(schema) = lease_id
+            .and_then(|id| state.leases.get(id).ok())
+            .and_then(|l| l.state().schema)
+            .filter(|s| !s.is_empty())
+        {
+            search_path.push(schema);
+        }
+    }
+    // Edition and search path (one `server_info` call).
+    if pg_like || matches!(flavor, Flavor::MsSql | Flavor::Oracle) {
         let wait = limits
             .per_table
             .min(deadline.saturating_duration_since(Instant::now()));
         if let Ok(Ok(info)) = tokio::time::timeout(wait, session.server_info()).await {
-            ctx.server.edition = info
+            facts.edition = info
                 .extra
                 .get("edition")
                 .or_else(|| info.extra.get("banner"))
                 .cloned();
-            ctx.server.engine_edition =
-                info.extra.get("engineEdition").and_then(|e| e.parse().ok());
+            facts.engine_edition = info.extra.get("engineEdition").and_then(|e| e.parse().ok());
             if flavor == Flavor::Oracle {
-                default_schema = info.extra.get("user").cloned();
+                search_path.extend(info.extra.get("user").cloned());
+            }
+            if pg_like {
+                search_path.extend(
+                    info.extra
+                        .get("searchPath")
+                        .into_iter()
+                        .flat_map(|p| p.split('\u{1f}'))
+                        .filter(|s| !s.is_empty() && *s != "pg_catalog")
+                        .map(str::to_string),
+                );
             }
         }
     }
+    if pg_like && search_path.is_empty() {
+        search_path.push("public".into());
+    }
+    let mut tables: BTreeMap<TableKey, TableMeta> = BTreeMap::new();
     // Read the tables, a few at a time.
     let gate = Arc::new(Semaphore::new(limits.parallel.max(1)));
     let mut tasks: JoinSet<(usize, std::result::Result<TableMeta, LookupFailure>)> = JoinSet::new();
@@ -569,7 +646,7 @@ pub(crate) async fn advise_with(
         let gate = Arc::clone(&gate);
         let table = table.clone();
         let database = database.clone();
-        let default_schema = default_schema.clone();
+        let search_path = search_path.clone();
         let per_table = limits.per_table;
         tasks.spawn(async move {
             let _permit = gate.acquire_owned().await;
@@ -580,7 +657,7 @@ pub(crate) async fn advise_with(
             } else {
                 match tokio::time::timeout(
                     wait,
-                    lookup_table(session, flavor, table, database, default_schema),
+                    lookup_table(session, flavor, table, database, search_path),
                 )
                 .await
                 {
@@ -606,7 +683,7 @@ pub(crate) async fn advise_with(
                 let mut checked = table.clone();
                 checked.path = Some(meta.path.clone());
                 metadata.checked.push(checked);
-                ctx.tables.insert(key.clone(), meta);
+                tables.insert(key.clone(), meta);
             }
             Err(f) => {
                 metadata.failed.push(TableFailure {
@@ -625,8 +702,24 @@ pub(crate) async fn advise_with(
     } else {
         MetadataState::Partial
     };
-    ctx.metadata = metadata.state;
-    tree.advice = dbstudio_plan::advise(&tree, &raw.statement, &ctx);
+    let state_now = metadata.state;
+    let (tree, tables) = {
+        let (raw, rules, facts) = (raw.clone(), rules.clone(), facts.clone());
+        blocking(move || {
+            let mut ctx = AdvisorContext::basic(&raw, &rules);
+            ctx.dialect = dialect;
+            ctx.server = facts;
+            ctx.tables = tables;
+            ctx.metadata = state_now;
+            let mut tree = tree;
+            tree.advice = dbstudio_plan::advise(&tree, &raw.statement, &ctx);
+            Ok((tree, ctx.tables))
+        })
+        .await?
+    };
+    let mut tree = tree;
+    let mut ctx = AdvisorContext::basic(&raw, &rules);
+    ctx.tables = tables;
     for a in &mut tree.advice {
         let Some(t) = a.table.as_mut() else { continue };
         let key = TableKey::new(t.schema.as_deref(), &t.name);
@@ -771,13 +864,13 @@ pub async fn plan_explain(
 }
 
 #[tauri::command]
-pub fn plan_parse(
+pub async fn plan_parse(
     state: State<'_, AppState>,
     raw: RawPlan,
     rules: Option<PlanRules>,
 ) -> Result<PlanTree> {
     tracing::debug!(command = "plan_parse", "ipc call");
-    parse_impl(&state, raw, rules)
+    parse_impl(&state, raw, rules).await
 }
 
 #[tauri::command]
@@ -788,9 +881,19 @@ pub async fn plan_advise(
     raw: RawPlan,
     database: Option<String>,
     rules: Option<PlanRules>,
+    use_catalog: Option<bool>,
 ) -> Result<AdviceReport> {
     tracing::debug!(command = "plan_advise", session = %session_id, "ipc call");
-    advise_impl(&state, session_id, lease_id, raw, database, rules).await
+    advise_impl(
+        &state,
+        session_id,
+        lease_id,
+        raw,
+        database,
+        rules,
+        use_catalog.unwrap_or(true),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -831,10 +934,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parse_returns_an_analysed_tree() {
+    #[tokio::test]
+    async fn parse_returns_an_analysed_tree() {
         let (state, _, _) = test_state_with_host(DriverRegistry::new());
-        let tree = parse_impl(&state, raw(PlanFormat::PostgresJson, PG_SPILL), None).unwrap();
+        let tree = parse_impl(&state, raw(PlanFormat::PostgresJson, PG_SPILL), None)
+            .await
+            .unwrap();
         assert!(tree.analyzed);
         assert!(
             tree.warnings
@@ -847,8 +952,9 @@ mod tests {
             large_table_rows: 10.0,
             ..PlanRules::default()
         };
-        let strict =
-            parse_impl(&state, raw(PlanFormat::PostgresJson, PG_SPILL), Some(rules)).unwrap();
+        let strict = parse_impl(&state, raw(PlanFormat::PostgresJson, PG_SPILL), Some(rules))
+            .await
+            .unwrap();
         assert!(
             strict
                 .warnings
@@ -857,10 +963,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parse_errors_are_plain_errors() {
+    #[tokio::test]
+    async fn parse_errors_are_plain_errors() {
         let (state, _, _) = test_state_with_host(DriverRegistry::new());
-        let e = parse_impl(&state, raw(PlanFormat::PostgresJson, "{}"), None).unwrap_err();
+        let e = parse_impl(&state, raw(PlanFormat::PostgresJson, "{}"), None)
+            .await
+            .unwrap_err();
         assert!(matches!(e, Error::Invalid(_)), "{e:?}");
     }
 
@@ -1384,6 +1492,8 @@ mod advise_tests {
         indexes: HashMap<String, Vec<IndexDetail>>,
         calls: Arc<Calls>,
         lost_details: Mutex<bool>,
+        /// What `server_info` reports as the session's `search_path` (unit separated).
+        search_path: Option<String>,
     }
 
     struct FakeDriver(Arc<Catalog>);
@@ -1424,7 +1534,11 @@ mod advise_tests {
             Ok(())
         }
         async fn server_info(&self) -> Result<ServerInfo> {
-            Ok(ServerInfo::default())
+            let mut info = ServerInfo::default();
+            if let Some(p) = &self.0.search_path {
+                info.extra.insert("searchPath".into(), p.clone());
+            }
+            Ok(info)
         }
         async fn execute(&self, _: QueryRequest, _: &mut dyn ResultSink) -> Result<ExecSummary> {
             Err(Error::Unsupported("execute".into()))
@@ -1497,6 +1611,7 @@ mod advise_tests {
             indexes: HashMap::new(),
             calls: Arc::new(Calls::default()),
             lost_details: Mutex::new(false),
+            search_path: None,
         }
     }
 
@@ -1566,6 +1681,7 @@ mod advise_tests {
             None,
             None,
             enabled,
+            true,
             limits,
         )
         .await
@@ -1574,7 +1690,7 @@ mod advise_tests {
     async fn run_estimate(state: &AppState, sid: Uuid, limits: AdviseLimits) -> AdviceReport {
         let mut r = raw(ESTIMATE_PLAN);
         r.analyzed = false;
-        advise_with(state, sid, None, r, None, None, true, limits)
+        advise_with(state, sid, None, r, None, None, true, true, limits)
             .await
             .unwrap()
     }
@@ -1680,7 +1796,7 @@ mod advise_tests {
         assert_eq!(calls.searches.load(Ordering::SeqCst), 0);
         assert_eq!(calls.details.load(Ordering::SeqCst), 0);
         // The real entry point reads the setting (on by default).
-        let on = advise_impl(&state, sid, None, raw(JOIN_PLAN), None, None)
+        let on = advise_impl(&state, sid, None, raw(JOIN_PLAN), None, None, true)
             .await
             .unwrap();
         assert_eq!(on.metadata.state, MetadataState::Checked);
@@ -1689,11 +1805,19 @@ mod advise_tests {
     #[tokio::test]
     async fn a_lost_session_is_not_found_and_a_bad_plan_is_invalid() {
         let (state, sid, _) = open(catalog(&[])).await;
-        let lost = advise_impl(&state, Uuid::new_v4(), None, raw(JOIN_PLAN), None, None)
-            .await
-            .unwrap_err();
+        let lost = advise_impl(
+            &state,
+            Uuid::new_v4(),
+            None,
+            raw(JOIN_PLAN),
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(lost.kind(), "notFound");
-        let bad = advise_impl(&state, sid, None, raw("nope"), None, None)
+        let bad = advise_impl(&state, sid, None, raw("nope"), None, None, true)
             .await
             .unwrap_err();
         assert_eq!(bad.kind(), "invalid");
@@ -1705,6 +1829,7 @@ mod advise_tests {
             raw(JOIN_PLAN),
             None,
             None,
+            true,
         )
         .await
         .unwrap_err();
@@ -1741,6 +1866,104 @@ mod advise_tests {
         .await;
         let report = run(&state, sid, true, quick()).await.unwrap();
         assert_eq!(report.metadata.state, MetadataState::Checked);
+    }
+
+    #[tokio::test]
+    async fn the_session_search_path_decides_between_schemas() {
+        let tables = [
+            ("sales", "orders"),
+            ("archive", "orders"),
+            ("sales", "customers"),
+        ];
+        // `archive` is first on the path: its `orders` is the one a bare name means.
+        let mut cat = catalog(&tables);
+        cat.search_path = Some("archive\u{1f}sales\u{1f}pg_catalog".into());
+        let (state, sid, _) = open(cat).await;
+        let report = run(&state, sid, true, quick()).await.unwrap();
+        assert_eq!(
+            report.metadata.state,
+            MetadataState::Checked,
+            "{:?}",
+            report.metadata
+        );
+        let orders = report
+            .metadata
+            .checked
+            .iter()
+            .find(|t| t.name == "orders")
+            .unwrap();
+        let path = orders.path.as_ref().unwrap();
+        assert!(
+            path.segments.iter().any(|s| s.name == "archive"),
+            "{path:?}"
+        );
+        // Same tables, `public` hard-coded would have said ambiguous: with neither schema on
+        // the path it is still ambiguous (never a guess).
+        let mut cat = catalog(&tables);
+        cat.search_path = Some("elsewhere".into());
+        let (state, sid, _) = open(cat).await;
+        let report = run(&state, sid, true, quick()).await.unwrap();
+        assert!(
+            report
+                .metadata
+                .failed
+                .iter()
+                .any(|f| f.table == "orders" && f.reason == "ambiguous")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plan_of_another_product_or_without_a_connection_never_reads_the_catalog() {
+        let (state, sid, calls) =
+            open(catalog(&[("public", "orders"), ("public", "customers")])).await;
+        // A MySQL plan on a PostgreSQL session.
+        let mysql = RawPlan {
+            format: PlanFormat::MySqlJson,
+            text: r#"{"query_block":{"select_id":1,"table":{"table_name":"orders","access_type":"ALL",
+                "rows_examined_per_scan":1000000,"filtered":"0.1","attached_condition":"(`s`.`orders`.`a` = 1)"}}}"#
+                .into(),
+            statement: "select * from orders where a = 1".into(),
+            analyzed: false,
+            rolled_back: false,
+            server_version: "8.0.36".into(),
+            captured_at: "2025-01-01T00:00:00Z".into(),
+            extra: BTreeMap::new(),
+        };
+        let report = advise_with(&state, sid, None, mysql, None, None, true, true, quick())
+            .await
+            .unwrap();
+        assert_eq!(report.metadata.state, MetadataState::Unavailable);
+        assert_eq!(report.metadata.reason.as_deref(), Some("dialectMismatch"));
+        // Tier 1 still speaks, in the plan's own dialect (backticks, not PostgreSQL quoting).
+        for a in &report.advice {
+            for act in &a.actions {
+                if let Some(sql) = &act.sql {
+                    assert!(!sql.contains("CONCURRENTLY"), "{sql}");
+                }
+            }
+        }
+        // A plan from a file: same product, but no connection to ask.
+        let report = advise_with(
+            &state,
+            sid,
+            None,
+            raw(JOIN_PLAN),
+            None,
+            None,
+            true,
+            false,
+            quick(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.metadata.state, MetadataState::Unavailable);
+        assert_eq!(
+            report.metadata.reason.as_deref(),
+            Some("planWithoutConnection")
+        );
+        assert!(!report.advice.is_empty());
+        assert_eq!(calls.searches.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.details.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -1801,9 +2024,19 @@ mod advise_tests {
         let plan = r#"[{"Plan":{"Node Type":"Result","Startup Cost":0.0,"Total Cost":0.01,
             "Plan Rows":1,"Actual Startup Time":0.0,"Actual Total Time":0.0,"Actual Rows":1,
             "Actual Loops":1},"Execution Time":0.1}]"#;
-        let report = advise_with(&state, sid, None, raw(plan), None, None, true, quick())
-            .await
-            .unwrap();
+        let report = advise_with(
+            &state,
+            sid,
+            None,
+            raw(plan),
+            None,
+            None,
+            true,
+            true,
+            quick(),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.metadata.state, MetadataState::NotRequested);
         assert_eq!(calls.searches.load(Ordering::SeqCst), 0);
     }

@@ -255,7 +255,66 @@ fn lex(d: ScriptDialect, text: &str) -> Vec<Tok> {
             }
         }
     }
+    if d == ScriptDialect::MsSql {
+        drop_output_alias(out)
+    } else {
+        out
+    }
+}
+
+/// SQL Server prints scalars as `[db].[dbo].[T].[c] as [t].[c]=(1)`: drop the `as [t].[c]` part
+/// (a dotted name after a top level `AS`; `CAST(x AS type)` has no dot and stays).
+fn drop_output_alias(toks: Vec<Tok>) -> Vec<Tok> {
+    let mut out = Vec::with_capacity(toks.len());
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < toks.len() {
+        match &toks[i] {
+            Tok::LP | Tok::LB => depth += 1,
+            Tok::RP | Tok::RB => depth = depth.saturating_sub(1),
+            t if depth == 0 && is_word(t, "as") => {
+                let mut j = i + 1;
+                let mut parts = 0;
+                while matches!(toks.get(j), Some(Tok::QIdent(_) | Tok::Word(_))) {
+                    parts += 1;
+                    j += 1;
+                    if matches!(toks.get(j), Some(Tok::Dot)) {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if parts >= 2 {
+                    i = j;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        out.push(toks[i].clone());
+        i += 1;
+    }
     out
+}
+
+/// Maximum nesting (parentheses, brackets, chained unary operators) the recursive parser handles;
+/// deeper input is classified as "other" so it can never overflow the stack.
+pub(crate) const MAX_DEPTH: usize = 128;
+
+fn too_deep(toks: &[Tok]) -> bool {
+    let (mut depth, mut run) = (0usize, 0usize);
+    for t in toks {
+        match t {
+            Tok::LP | Tok::LB => depth += 1,
+            Tok::RP | Tok::RB => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        run = if matches!(t, Tok::Op(_)) { run + 1 } else { 0 };
+        if depth > MAX_DEPTH || run > MAX_DEPTH {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_word(t: &Tok, w: &str) -> bool {
@@ -558,6 +617,8 @@ fn parse_atom(toks: &[Tok], i: usize) -> (Operand, usize) {
             }
             parse_colref(toks, i)
         }
+        // T-SQL parameter shown bracketed: `[@p1]`, `[@1]`.
+        Some(Tok::QIdent(q)) if q.starts_with('@') => (Operand::Lit(String::new()), i + 1),
         Some(Tok::QIdent(_)) => parse_colref(toks, i),
         Some(_) => (Operand::Opaque, i + 1),
     }
@@ -824,6 +885,19 @@ fn classify(toks: &[Tok], own: &[String]) -> Conjunct {
                         c.col = None;
                     }
                 }
+                Operand::Func { cols, .. } | Operand::Expr { cols, .. }
+                    if cols.iter().any(|x| {
+                        // `(SELECT 1)`, `(InitPlan 1)`: subqueries, not columns.
+                        is_own(x, own)
+                            && !matches!(
+                                x.name.to_ascii_lowercase().as_str(),
+                                "select" | "with" | "values" | "initplan" | "subplan" | "hashed"
+                            )
+                    }) =>
+                {
+                    // Column against an expression over columns of the same table: no index helps.
+                    c.col = None;
+                }
                 _ => {
                     c.kind = match op.as_str() {
                         "=" | "in" => CondKind::Eq,
@@ -871,6 +945,9 @@ fn classify(toks: &[Tok], own: &[String]) -> Conjunct {
 /// tables of the join.
 pub(crate) fn parse_conjuncts(d: ScriptDialect, text: &str, own: &[String]) -> Vec<Conjunct> {
     let toks = lex(d, text);
+    if too_deep(&toks) {
+        return vec![Conjunct::new(CondKind::Other)];
+    }
     split_and(&toks)
         .into_iter()
         .map(|part| classify(part, own))
@@ -889,6 +966,9 @@ pub(crate) struct SortKey {
 /// Parse a sort / group key element.
 pub(crate) fn parse_sort_key(d: ScriptDialect, text: &str) -> Option<SortKey> {
     let toks = lex(d, text);
+    if too_deep(&toks) {
+        return None;
+    }
     let mut desc = false;
     let mut end = toks.len();
     // Trailing `ASC|DESC [NULLS FIRST|LAST]`.
@@ -1358,6 +1438,65 @@ mod tests {
     }
 
     // ---- MySQL ---------------------------------------------------------------------------
+    #[test]
+    fn mssql_scalar_string_with_output_alias_is_still_an_equality() {
+        let c = one(
+            MSSQL,
+            "[shop].[dbo].[Orders].[Status] as [o].[Status]=(N'x')",
+            &["o", "Orders"],
+        );
+        assert_eq!(c.kind, CondKind::Eq, "{c:?}");
+        assert_eq!(col(&c), "Status");
+        // `CAST(x AS type)` keeps its AS.
+        let c = one(MSSQL, "CAST([o].[Id] AS bigint)=(5)", &["o"]);
+        assert_eq!(c.kind, CondKind::NonSargable, "{c:?}");
+    }
+
+    #[test]
+    fn mssql_bracketed_parameters_are_values_not_columns() {
+        for p in ["[@p1]", "[@1]", "[@Status]"] {
+            let c = one(MSSQL, &format!("[o].[Status]={p}"), &["o"]);
+            assert_eq!(c.kind, CondKind::Eq, "{p}: {c:?}");
+            assert_eq!(col(&c), "Status");
+        }
+    }
+
+    #[test]
+    fn too_deep_input_is_other_not_a_crash() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let n = 5000;
+                let deep = format!("{}a = 1{}", "(b = 1 AND ".repeat(n), ")".repeat(n));
+                let v = parse_conjuncts(PG, &deep, &own(&["t"]));
+                assert!(v.iter().all(|c| c.kind == CondKind::Other));
+                let calls = format!("{}a{} = 1", "f(".repeat(n), ")".repeat(n));
+                assert!(
+                    parse_conjuncts(PG, &calls, &own(&["t"]))
+                        .iter()
+                        .all(|c| c.kind == CondKind::Other)
+                );
+                let sum = format!("a = 1{}", "+1".repeat(n));
+                let _ = parse_conjuncts(PG, &sum, &own(&["t"]));
+                assert!(parse_sort_key(PG, &calls).is_none());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn column_against_expression_of_own_columns_is_other() {
+        let c = one(PG, "(qty = (reserved + 1))", &["t"]);
+        assert_ne!(c.kind, CondKind::Eq, "{c:?}");
+        assert!(c.col.is_none());
+        let c = one(PG, "(a > lower(b))", &["t"]);
+        assert!(c.col.is_none());
+        // A constant function stays indexable.
+        let c = one(PG, "(a > now())", &["t"]);
+        assert_eq!(c.kind, CondKind::Range);
+    }
+
     #[test]
     fn mysql_backticks() {
         let c = one(MYSQL, "(`shop`.`orders`.`customer_id` = 42)", &["orders"]);

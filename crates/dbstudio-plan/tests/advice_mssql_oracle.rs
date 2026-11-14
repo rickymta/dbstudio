@@ -640,3 +640,35 @@ fn oracle_internal_function_only_counts_on_a_bare_column() {
     let miss = rows("INTERNAL_FUNCTION(\"A\"+\"B\")=5");
     assert!(!rules_of(&miss).contains(&AdviceRule::ImplicitConversion));
 }
+
+#[test]
+fn mssql_key_lookup_keeps_the_desc_of_catalog_columns() {
+    let c = case("mssql_07_missing_index_convert");
+    let advice = with_meta(
+        &c,
+        vec![(
+            Some("dbo"),
+            "Orders",
+            meta(
+                Some(1_200_000),
+                vec![index(
+                    "IX_Orders_CustomerId",
+                    &["CustomerId", "OrderDate DESC"],
+                )],
+                Vec::new(),
+            ),
+        )],
+    );
+    let kl = advice
+        .iter()
+        .find(|a| a.rule == AdviceRule::MssqlKeyLookup)
+        .unwrap();
+    let sql: Vec<String> = kl.actions.iter().filter_map(|a| a.sql.clone()).collect();
+    let all = sql.join("\n");
+    assert!(!all.contains("DESC]"), "{all}");
+    assert!(all.contains("[OrderDate] DESC"), "{all}");
+    assert_eq!(
+        kl.params.get("columns").map(String::as_str),
+        Some("CustomerId, OrderDate DESC")
+    );
+}

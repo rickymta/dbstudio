@@ -16,7 +16,10 @@ use super::common::{
     check_action, columns_text, conjuncts, ev, ev_text, first_scan, index_columns, num,
     statistics_action, table_ref,
 };
-use super::index::{IndexCandidate, IndexKey, MAX_INCLUDE_COLUMNS, MAX_KEY_COLUMNS, quote_ident};
+use super::index::{
+    IndexCandidate, IndexKey, MAX_INCLUDE_COLUMNS, MAX_KEY_COLUMNS, has_desc, quote_ident,
+    strip_direction,
+};
 use super::model::{
     ActionKind, ActionScope, AdviceAction, AdviceRule, Caveat, Confidence, EvidenceUnit, LockRisk,
     PredicateRole, TableRef,
@@ -347,6 +350,16 @@ fn key_lookup(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
             .filter(|c| !c.is_empty())
     });
     let from_catalog = meta_cols.is_some();
+    // Catalog columns come as `OrderDate DESC`: keep the direction apart from the name.
+    let key_desc: Vec<bool> = meta_cols
+        .as_ref()
+        .map(|c| c.iter().map(|k| has_desc(k)).collect())
+        .unwrap_or_default();
+    let meta_cols = meta_cols.map(|c| {
+        c.iter()
+            .map(|k| strip_direction(k).to_string())
+            .collect::<Vec<_>>()
+    });
     let keys: Vec<String> = meta_cols.unwrap_or_else(|| {
         sibling
             .map(|s| {
@@ -428,7 +441,10 @@ fn key_lookup(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
             keys: keys
                 .iter()
                 .take(MAX_KEY_COLUMNS)
-                .map(|k| IndexKey::column(cx.ctx, k, false))
+                .enumerate()
+                .map(|(i, k)| {
+                    IndexKey::column(cx.ctx, k, key_desc.get(i).copied().unwrap_or(false))
+                })
                 .collect(),
             eq_count: keys.len().min(MAX_KEY_COLUMNS),
             include,

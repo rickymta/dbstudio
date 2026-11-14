@@ -38,11 +38,11 @@ oracle/include: CREATE INDEX IX_ORDERS_CUSTOMER_ID ON SHOP.ORDERS (CUSTOMER_ID);
 oracle/longName: CREATE INDEX IX_ORDER_LINE_ITEMS_ARCHIVE_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD ON SHOP.ORDER_LINE_ITEMS_ARCHIVE (CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC, DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD);
 oracle/quote: CREATE INDEX "IX_Weird__Table__Order_Id_user" ON SHOP."Weird ""Table""" ("Order Id", "user");
 oracle/duplicateName: CREATE INDEX IX_ORDERS_CUSTOMER_ID_2 ON SHOP.ORDERS (CUSTOMER_ID);
-mongo/basic: db.getSiblingDB("shop").orders.createIndex({ customer_id: 1, created_at: 1 }, { name: "customer_id_1_created_at_1" })
-mongo/include: db.getSiblingDB("shop").orders.createIndex({ customer_id: 1 }, { name: "customer_id_1" })
-mongo/longName: db.getSiblingDB("shop").order_line_items_archive.createIndex({ cccccccccccccccccccccccccccccccccccccccc: 1, dddddddddddddddddddddddddddddddddddddddd: 1 }, { name: "cccccccccccccccccccccccccccccccccccccccc_1_dddddddddddddddddddddddddddddddddddddddd_1" })
+mongo/basic: db.getSiblingDB("shop").getCollection("orders").createIndex({ customer_id: 1, created_at: 1 }, { name: "customer_id_1_created_at_1" })
+mongo/include: db.getSiblingDB("shop").getCollection("orders").createIndex({ customer_id: 1 }, { name: "customer_id_1" })
+mongo/longName: db.getSiblingDB("shop").getCollection("order_line_items_archive").createIndex({ cccccccccccccccccccccccccccccccccccccccc: 1, dddddddddddddddddddddddddddddddddddddddd: 1 }, { name: "cccccccccccccccccccccccccccccccccccccccc_1_dddddddddddddddddddddddddddddddddddddddd_1" })
 mongo/quote: db.getSiblingDB("shop").getCollection("Weird Table").createIndex({ "Order Id": 1, user: 1 }, { name: "Order Id_1_user_1" })
-mongo/duplicateName: db.getSiblingDB("shop").orders.createIndex({ customer_id: 1 }, { name: "customer_id_1_2" })
+mongo/duplicateName: db.getSiblingDB("shop").getCollection("orders").createIndex({ customer_id: 1 }, { name: "customer_id_1_2" })
 clickhouse/basic: ALTER TABLE `shop`.`orders` ADD INDEX IF NOT EXISTS `ix_customer_id` `customer_id` TYPE bloom_filter GRANULARITY 4;
 clickhouse/include: ALTER TABLE `shop`.`orders` ADD INDEX IF NOT EXISTS `ix_customer_id` `customer_id` TYPE bloom_filter GRANULARITY 4;
 clickhouse/longName: ALTER TABLE `shop`.`order_line_items_archive` ADD INDEX IF NOT EXISTS `ix_cccccccccccccccccccccccccccccccccccccccc` `cccccccccccccccccccccccccccccccccccccccc` TYPE bloom_filter GRANULARITY 4;

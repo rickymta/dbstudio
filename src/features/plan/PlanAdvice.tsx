@@ -273,7 +273,9 @@ export function AdviceStatusLine({ status }: { status: AdviceStatus }) {
       ? t('advice.status.checking')
       : status.kind === 'checked'
         ? t('advice.status.checked', { count })
-        : t(`advice.status.${status.kind}`, { count });
+        : status.kind === 'unavailable' && status.metadata?.reason
+          ? t(`advice.status.reason.${status.metadata.reason}`)
+          : t(`advice.status.${status.kind}`, { count });
   return (
     <span
       className="inline-flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground"

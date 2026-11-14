@@ -23,10 +23,11 @@ import { Spinner } from '@/components/ui/Spinner';
 import { useToastStore } from '@/components/ui/toastStore';
 import { useConnectionProfile } from '@/features/connections/queries';
 import { useHostKeyPrompt } from '@/features/connections/useHostKeyPrompt';
+import { useSessionReconnect } from '@/features/connections/useSessionReconnect';
 import { ipc, toIpcError } from '@/lib/ipc';
 import type { ParamRef, ParamValue, ScriptAnalysis } from '@/lib/types';
 import { useIsOpening, useSession, useSessionsStore } from '@/stores/sessions';
-import { isSessionLost, reconnectSession } from '@/stores/sessionRecovery';
+import { isSessionLost } from '@/stores/sessionRecovery';
 import type { EditorTabPayload } from '@/stores/tabs';
 import { analyzeTab, cancelRun, fetchMore, registerEditorTab, runText } from './editorRunner';
 import {
@@ -85,6 +86,7 @@ function EditorBody({
   const profile = useConnectionProfile(connectionId ?? '');
   // An SSH tunnel to an unknown host stops with `sshHostKey`: ask, trust, then connect again.
   const { run: runWithHostKey, dialog: hostKeyDialog } = useHostKeyPrompt();
+  const { reconnect: reconnectWithPrompts, dialog: reconnectDialog } = useSessionReconnect();
   const toast = useToastStore.getState().push;
   const editor = useRef<SqlEditorHandle>(null);
   const panel = data.historyOpen;
@@ -128,13 +130,13 @@ function EditorBody({
   const reconnect = useCallback(
     (lostSessionId: string) => {
       if (!connectionId) return;
-      void runWithHostKey(() => reconnectSession(lostSessionId, connectionId))
+      void reconnectWithPrompts(lostSessionId, connectionId)
         .then(() => toast('success', t('connection.reconnected')))
         .catch((e: unknown) =>
           toast('error', t('connection.reconnectFailed', { message: toIpcError(e).message })),
         );
     },
-    [connectionId, runWithHostKey, t, toast],
+    [connectionId, reconnectWithPrompts, t, toast],
   );
 
   /**
@@ -371,6 +373,7 @@ function EditorBody({
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="editor-tab">
       {hostKeyDialog}
+      {reconnectDialog}
       <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-3 border-b border-border px-3 py-1">
         {connectionId && <ConnectionContext connectionId={connectionId} />}
         {context && (

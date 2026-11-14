@@ -503,6 +503,8 @@ describe('catalog matching (tier 2)', () => {
       null,
       expect.objectContaining({ format: 'postgresJson' }),
       null,
+      null,
+      true,
     );
   });
 

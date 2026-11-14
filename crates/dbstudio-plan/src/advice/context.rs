@@ -243,12 +243,12 @@ pub fn search_kind(flavor: Flavor) -> ObjectKind {
 }
 
 /// Pick the table `table` names among `found` (design section 5.5): exact name first, then
-/// case-insensitive; the plan's schema filters; without one the default schema wins when it
-/// holds exactly one match.
+/// case-insensitive; the plan's schema filters; without one the first schema of `search_path`
+/// (in order, as PostgreSQL resolves a bare name) that holds a match wins.
 pub fn resolve_table(
     flavor: Flavor,
     table: &TableRef,
-    default_schema: Option<&str>,
+    search_path: &[String],
     found: &[ObjectNode],
 ) -> Resolution {
     let kind = search_kind(flavor);
@@ -285,15 +285,15 @@ pub fn resolve_table(
         let want = schema.to_lowercase();
         cands.retain(|n| schema_of(n).contains(&want));
     } else if cands.len() > 1 {
-        if let Some(d) = default_schema {
-            let want = d.to_lowercase();
-            let in_default: Vec<&ObjectNode> = cands
+        for want in search_path.iter().map(|d| d.to_lowercase()) {
+            let in_schema: Vec<&ObjectNode> = cands
                 .iter()
                 .copied()
                 .filter(|n| schema_of(n).contains(&want))
                 .collect();
-            if in_default.len() == 1 {
-                cands = in_default;
+            if !in_schema.is_empty() {
+                cands = in_schema;
+                break;
             }
         }
     }
@@ -390,7 +390,7 @@ mod tests {
         let r = resolve_table(
             Flavor::Postgres,
             &table(Some("SALES"), "orders"),
-            None,
+            &[],
             &found,
         );
         assert!(matches!(r, Resolution::Found(p) if p.segments[1].name == "sales"));
@@ -399,7 +399,7 @@ mod tests {
             resolve_table(
                 Flavor::Postgres,
                 &table(None, "orders"),
-                Some("public"),
+                &["public".to_string()],
                 &found
             ),
             Resolution::Ambiguous
@@ -408,32 +408,40 @@ mod tests {
         let r = resolve_table(
             Flavor::Postgres,
             &table(None, "orders"),
-            Some("archive"),
+            &["archive".to_string()],
             &found,
         );
         assert!(matches!(r, Resolution::Found(p) if p.segments[1].name == "archive"));
+        // The search path decides in order: `archive` first even though `public` has one too.
+        let path = ["archive".to_string(), "public".to_string()];
+        let r = resolve_table(Flavor::Postgres, &table(None, "orders"), &path, &found);
+        assert!(matches!(r, Resolution::Found(p) if p.segments[1].name == "archive"));
+        let path = ["public".to_string(), "archive".to_string()];
+        let r = resolve_table(Flavor::Postgres, &table(None, "orders"), &path, &found);
+        assert!(matches!(r, Resolution::Found(p) if p.segments[1].name == "public"));
+        // Neither schema on the path: guessing would be wrong.
+        let path = ["elsewhere".to_string()];
+        assert_eq!(
+            resolve_table(Flavor::Postgres, &table(None, "orders"), &path, &found),
+            Resolution::Ambiguous
+        );
         // Only exact names count (`orders_old` is a substring match of the search).
         assert_eq!(
             resolve_table(
                 Flavor::Postgres,
                 &table(Some("public"), "orders"),
-                None,
+                &[],
                 &found
             ),
             Resolution::NotFound
         );
         // Case-insensitive fallback.
-        let r = resolve_table(
-            Flavor::Oracle,
-            &table(Some("sales"), "ORDERS"),
-            None,
-            &found,
-        );
+        let r = resolve_table(Flavor::Oracle, &table(Some("sales"), "ORDERS"), &[], &found);
         assert!(matches!(r, Resolution::Found(_)));
         // Views are not tables.
         let only_view = vec![node(ObjectKind::View, "sales", "v")];
         assert_eq!(
-            resolve_table(Flavor::Postgres, &table(None, "v"), None, &only_view),
+            resolve_table(Flavor::Postgres, &table(None, "v"), &[], &only_view),
             Resolution::NotFound
         );
     }

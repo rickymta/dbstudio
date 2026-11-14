@@ -82,7 +82,9 @@ export function openPlan(opts: OpenPlanOptions): string {
 /** Open a plan from raw text (e.g. a `.dbplan.json` already read). */
 export function openRawPlan(session: PlanSession, raw: RawPlan): string {
   const planId = crypto.randomUUID();
-  usePlanStore.getState().add(newEntry(session, planId, { statement: raw.statement, raw }));
+  usePlanStore
+    .getState()
+    .add(newEntry(session, planId, { statement: raw.statement, raw, catalog: false }));
   openTab(session, planId);
   void loadRawPlan(planId, raw);
   return planId;
