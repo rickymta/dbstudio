@@ -1,0 +1,1 @@
+SELECT k, SUM(v) FROM t GROUP BY k

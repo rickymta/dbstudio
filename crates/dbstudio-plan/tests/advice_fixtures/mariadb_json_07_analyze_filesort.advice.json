@@ -1,0 +1,90 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewFilter",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 2,
+        "text": null,
+        "unit": "rows",
+        "value": 200000.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      2
+    ],
+    "params": {
+      "rows": "200000",
+      "table": "plan_fx_items"
+    },
+    "rule": "fullScanReview",
+    "severity": "warning",
+    "share": 0.994,
+    "statementRange": null,
+    "table": "plan_fx_items"
+  },
+  {
+    "actions": [],
+    "basis": "time",
+    "caveats": [
+      "noDdlForDialect"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "sortRows",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 40000.0
+      },
+      {
+        "actual": true,
+        "key": "limitRows",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 5000.0
+      },
+      {
+        "actual": false,
+        "key": "sortKey",
+        "nodeId": 1,
+        "text": "sku",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "columns": "qty, sku",
+      "rows": "40000",
+      "table": "plan_fx_items"
+    },
+    "rule": "indexForSort",
+    "severity": "info",
+    "share": 0.006,
+    "statementRange": null,
+    "table": "plan_fx_items"
+  }
+]

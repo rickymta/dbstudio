@@ -1,0 +1,55 @@
+[
+  {
+    "actions": [],
+    "basis": "cost",
+    "caveats": [
+      "noDdlForDialect",
+      "estimatedOnly"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "rowsRead",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 100270.0
+      },
+      {
+        "actual": false,
+        "key": "rowsKept",
+        "nodeId": 0,
+        "text": null,
+        "unit": "rows",
+        "value": 10027.0
+      },
+      {
+        "actual": false,
+        "key": "selectivity",
+        "nodeId": 0,
+        "text": null,
+        "unit": "pct",
+        "value": 10.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      0
+    ],
+    "params": {
+      "columns": "status",
+      "examined": "100270",
+      "kept": "10027",
+      "selectivity": "10%",
+      "table": "plan_fx_orders"
+    },
+    "rule": "indexForFilter",
+    "severity": "warning",
+    "share": 1.0,
+    "statementRange": null,
+    "table": "plan_fx_orders"
+  }
+]

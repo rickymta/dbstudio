@@ -1,0 +1,157 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "statistics",
+        "label": "refreshStatistics",
+        "lock": "none",
+        "scope": "object",
+        "sql": "ANALYZE TABLE `plan_fx_items`;",
+        "template": false
+      },
+      {
+        "kind": "statistics",
+        "label": "updateHistogram",
+        "lock": "none",
+        "scope": "object",
+        "sql": "ANALYZE TABLE `plan_fx_items` UPDATE HISTOGRAM ON `qty` WITH 64 BUCKETS;",
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "estimatedRows",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 199752.0
+      },
+      {
+        "actual": true,
+        "key": "actualRows",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 5000.0
+      },
+      {
+        "actual": true,
+        "key": "misestimateFactor",
+        "nodeId": 1,
+        "text": null,
+        "unit": "ratio",
+        "value": 40.0
+      }
+    ],
+    "fromWarnings": [
+      "misestimate"
+    ],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "actual": "5000",
+      "direction": "over",
+      "estimated": "199752",
+      "factor": "40",
+      "table": "plan_fx_items"
+    },
+    "rule": "staleStatistics",
+    "severity": "warning",
+    "share": 1.0,
+    "statementRange": null,
+    "table": "plan_fx_items"
+  },
+  {
+    "actions": [
+      {
+        "kind": "check",
+        "label": "reviewFilter",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "time",
+    "caveats": [],
+    "confidence": "low",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "rowsRead",
+        "nodeId": 3,
+        "text": null,
+        "unit": "rows",
+        "value": 200000.0
+      }
+    ],
+    "fromWarnings": [
+      "fullScanLargeTable"
+    ],
+    "nodeIds": [
+      3
+    ],
+    "params": {
+      "rows": "200000",
+      "table": "plan_fx_items"
+    },
+    "rule": "fullScanReview",
+    "severity": "warning",
+    "share": 0.669,
+    "statementRange": null,
+    "table": "plan_fx_items"
+  },
+  {
+    "actions": [],
+    "basis": "time",
+    "caveats": [
+      "noDdlForDialect"
+    ],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": true,
+        "key": "sortRows",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 40000.0
+      },
+      {
+        "actual": true,
+        "key": "limitRows",
+        "nodeId": 1,
+        "text": null,
+        "unit": "rows",
+        "value": 5000.0
+      },
+      {
+        "actual": false,
+        "key": "sortKey",
+        "nodeId": 1,
+        "text": "sku",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      1
+    ],
+    "params": {
+      "columns": "qty, sku",
+      "rows": "40000",
+      "table": "plan_fx_items"
+    },
+    "rule": "indexForSort",
+    "severity": "warning",
+    "share": 0.159,
+    "statementRange": null,
+    "table": "plan_fx_items"
+  }
+]

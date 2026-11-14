@@ -1,0 +1,43 @@
+[
+  {
+    "actions": [
+      {
+        "kind": "rewrite",
+        "label": "listColumns",
+        "lock": null,
+        "scope": "query",
+        "sql": null,
+        "template": false
+      }
+    ],
+    "basis": "none",
+    "caveats": [],
+    "confidence": "medium",
+    "evidence": [
+      {
+        "actual": false,
+        "key": "planSign",
+        "nodeId": 4,
+        "text": "keyLookup",
+        "unit": null,
+        "value": null
+      }
+    ],
+    "fromWarnings": [],
+    "nodeIds": [
+      4,
+      7
+    ],
+    "params": {
+      "sign": "keyLookup"
+    },
+    "rule": "selectStar",
+    "severity": "info",
+    "share": null,
+    "statementRange": {
+      "end": 8,
+      "start": 7
+    },
+    "table": null
+  }
+]

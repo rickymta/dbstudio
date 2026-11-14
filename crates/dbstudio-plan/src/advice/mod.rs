@@ -21,6 +21,7 @@ mod oracle;
 mod pg;
 mod predicate;
 mod statement;
+mod tidb;
 
 use std::collections::BTreeMap;
 
@@ -191,7 +192,7 @@ fn family_node_rules(cx: &Cx<'_>, node: &PlanNode, out: &mut Vec<Draft>) {
         | PlanFormat::MariaDbJson => mysql::node_rules(cx, node, out),
         PlanFormat::TiDbRows => {
             mysql::node_rules(cx, node, out);
-            newsql::node_rules(cx, node, out);
+            tidb::node_rules(cx, node, out);
         }
         PlanFormat::CockroachText => newsql::node_rules(cx, node, out),
         PlanFormat::MsSqlShowplanXml => mssql::node_rules(cx, node, out),
@@ -211,7 +212,7 @@ fn family_tree_rules(cx: &Cx<'_>, out: &mut Vec<Draft>) {
         | PlanFormat::MariaDbJson => mysql::tree_rules(cx, out),
         PlanFormat::TiDbRows => {
             mysql::tree_rules(cx, out);
-            newsql::tree_rules(cx, out);
+            tidb::tree_rules(cx, out);
         }
         PlanFormat::CockroachText => newsql::tree_rules(cx, out),
         PlanFormat::MsSqlShowplanXml => mssql::tree_rules(cx, out),
