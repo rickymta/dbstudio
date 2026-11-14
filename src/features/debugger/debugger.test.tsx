@@ -554,6 +554,82 @@ describe('routine source tab', () => {
     expect(list).toHaveLength(1);
     expect(list[0]!.routine.signature).toBe(source.payload.signature);
   });
+
+  async function intoRoutine() {
+    const session = await openSession();
+    const id = openEditor(session, { text: 'select f_outer(1);\nselect 2;' });
+    const tab = useTabsStore.getState().tabs.find((t) => t.id === editorTabId(id))!;
+    if (tab.kind !== 'editor') throw new Error('not an editor tab');
+    render(
+      <Providers>
+        <EditorTab {...tab.payload} />
+        <EditorHost />
+      </Providers>,
+    );
+    await screen.findByTestId('sql-editor', undefined, { timeout: 5000 });
+    await startSession(id);
+    await userEvent.click(screen.getByRole('button', { name: /^Step Into/ }));
+    await waitFor(() =>
+      expect(useTabsStore.getState().tabs.some((t) => t.kind === 'debugSource')).toBe(true),
+    );
+    const source = useTabsStore.getState().tabs.find((t) => t.kind === 'debugSource')!;
+    if (source.kind !== 'debugSource') throw new Error('unreachable');
+    return { id, source };
+  }
+
+  it('the routine tab shows the same Debug tool window; Routine variables come first and open', async () => {
+    const { id, source } = await intoRoutine();
+    const frames = sessionOf(id)!.state.frames;
+    expect(frames[sessionOf(id)!.state.selectedFrame]!.kind).toBe('routine');
+    const listeners = vi.spyOn(ipc, 'debugStart');
+    render(
+      <Providers>
+        <DebugSourceTab {...source.payload} />
+      </Providers>,
+    );
+    expect(listeners).not.toHaveBeenCalled();
+    const windows = await screen.findAllByTestId('debug-tool-window');
+    const win = windows[windows.length - 1]!;
+    const grid = await within(win).findByRole('treegrid', { name: 'Variables' });
+    const rows = () => within(grid).getAllByRole('row');
+    expect(rows()[0]!.textContent).toMatch(/^Routine/);
+    expect(rows()[0]).toHaveAttribute('aria-expanded', 'true');
+    await waitFor(() => expect(rows().map((r) => r.textContent)).toContain('p_n=1{int4}'));
+    expect(rows()[1]!.getAttribute('aria-level')).toBe('2');
+    // the user's choice sticks across steps
+    await userEvent.click(within(rows()[0]!).getByRole('button', { name: 'Collapse' }));
+    emitState(id, {});
+    await waitFor(() => expect(rows()[0]).toHaveAttribute('aria-expanded', 'false'));
+  });
+
+  it('Enter in the Variables prompt evaluates inline, Shift+Enter adds a watch', async () => {
+    const { id } = await mountEditor();
+    await startSession(id);
+    const evaluate = vi.spyOn(ipc, 'debugEvaluate').mockResolvedValue({
+      context: 'lease',
+      elapsedMs: 1,
+      value: { kind: 'scalar', value: { t: 'int', v: 6 }, typeName: 'integer' },
+    });
+    const input = screen.getByLabelText(/Evaluate expression/);
+    await typeInto(input, 's{Enter}');
+    const out = await screen.findByTestId('variables-inline-eval');
+    await waitFor(() => expect(out.textContent).toContain('s ='));
+    expect(out.textContent).toContain('6');
+    expect(out.textContent).toContain('{integer}');
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog', { name: 'Evaluate Expression' })).not.toBeInTheDocument();
+    evaluate.mockResolvedValue({
+      context: 'lease',
+      elapsedMs: 1,
+      value: { kind: 'error', error: { kind: 'sql', message: 'column "zz" does not exist' } },
+    });
+    await typeInto(input, 'zz{Enter}');
+    await waitFor(() => expect(out.textContent).toContain('does not exist'));
+    await typeInto(input, 'w{Shift>}{Enter}{/Shift}');
+    await waitFor(() =>
+      expect(useDebugStore.getState().watches[id]!.map((w) => w.expr)).toEqual(['w']),
+    );
+  });
 });
 
 describe('breakpoints follow the text and the tab state', () => {

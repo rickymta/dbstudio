@@ -12,12 +12,22 @@ import {
 import { toast } from '@/components/ui/toastStore';
 import { valueToText } from '@/features/data/format';
 import { cn } from '@/lib/cn';
-import type { DebugVariable } from '@/lib/types';
-import { addWatch, loadChildren, setVariable } from './debugActions';
+import type { DebugVariable, EvalResult } from '@/lib/types';
+import {
+  addWatch,
+  evaluateExpression,
+  loadChildren,
+  pushHistory,
+  setVariable,
+} from './debugActions';
+import { EvalView } from './ConsolePanel';
 import { useDebugStore } from './debugStore';
 import { useDebugUi } from './debugUiStore';
 
 const NO_OVERRIDES: Record<string, DebugVariable> = {};
+
+const isRoutineGroup = (v: DebugVariable): boolean =>
+  v.kind === 'group' && /^routine\b/i.test(v.name);
 
 interface Row {
   variable: DebugVariable;
@@ -39,6 +49,9 @@ export const VariablesPanel: FC<{ tabId: string }> = ({ tabId }) => {
     map: Record<string, DebugVariable>;
   }>({ seq: 0, map: {} });
   const [prompt, setPrompt] = useState('');
+  const [inline, setInline] = useState<{ expr: string; result: EvalResult | null } | null>(null);
+  const userToggled = useRef(new Set<string>());
+  const autoOpened = useRef(new Set<string>());
   const seq = state?.seq ?? 0;
   // Edited values are shown until the next snapshot replaces them.
   const overrides = overrideState.seq === seq ? overrideState.map : NO_OVERRIDES;
@@ -61,6 +74,27 @@ export const VariablesPanel: FC<{ tabId: string }> = ({ tabId }) => {
     }
   }, [tabId, seq]);
 
+  // JetBrains style: inside a routine frame its local variables come first and open.
+  const inRoutine = useDebugStore((s) => {
+    const st = s.sessions[tabId]?.state;
+    return st?.frames[st.selectedFrame]?.kind === 'routine';
+  });
+  const ordered = useMemo(() => {
+    const list = state?.variables ?? [];
+    if (!inRoutine) return list;
+    const at = list.findIndex(isRoutineGroup);
+    if (at <= 0) return list;
+    return [list[at]!, ...list.slice(0, at), ...list.slice(at + 1)];
+  }, [state?.variables, inRoutine]);
+  const routineRef = inRoutine ? (ordered.find(isRoutineGroup)?.reference ?? null) : null;
+  useEffect(() => {
+    if (!routineRef || autoOpened.current.has(routineRef) || userToggled.current.has(routineRef))
+      return;
+    autoOpened.current.add(routineRef);
+    setExpanded((prev) => new Set(prev).add(routineRef));
+    void loadChildren(tabId, routineRef).catch(() => undefined);
+  }, [tabId, routineRef]);
+
   const rows = useMemo(() => {
     const out: Row[] = [];
     const walk = (list: DebugVariable[], depth: number) => {
@@ -72,12 +106,13 @@ export const VariablesPanel: FC<{ tabId: string }> = ({ tabId }) => {
         }
       }
     };
-    walk(state?.variables ?? [], 0);
+    walk(ordered, 0);
     return out;
-  }, [state?.variables, children, expanded, overrides]);
+  }, [ordered, children, expanded, overrides]);
 
   const toggle = (v: DebugVariable) => {
     if (!v.hasChildren) return;
+    userToggled.current.add(v.reference);
     if (expanded.has(v.reference)) {
       setExpanded((prev) => {
         const next = new Set(prev);
@@ -135,9 +170,17 @@ export const VariablesPanel: FC<{ tabId: string }> = ({ tabId }) => {
   const onPrompt = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter' || !prompt.trim()) return;
     e.preventDefault();
-    if (e.shiftKey) void addWatch(tabId, prompt);
-    else useDebugUi.getState().openDialog(tabId, { kind: 'evaluate', expr: prompt });
+    const expr = prompt.trim();
     setPrompt('');
+    if (e.shiftKey) {
+      void addWatch(tabId, expr);
+      return;
+    }
+    pushHistory(tabId, expr);
+    setInline({ expr, result: null });
+    void evaluateExpression(tabId, expr).then((result) =>
+      setInline((cur) => (cur?.expr !== expr ? cur : result ? { expr, result } : null)),
+    );
   };
 
   return (
@@ -154,6 +197,22 @@ export const VariablesPanel: FC<{ tabId: string }> = ({ tabId }) => {
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={onPrompt}
         />
+        {inline && (
+          <div
+            className="px-1 pt-1 text-[13px]"
+            aria-live="polite"
+            data-testid="variables-inline-eval"
+          >
+            {inline.result ? (
+              <div className="flex items-baseline gap-1">
+                <span className="shrink-0 font-mono">{inline.expr} =</span>
+                <EvalView result={inline.result} />
+              </div>
+            ) : (
+              <span className="text-muted-foreground">{inline.expr} …</span>
+            )}
+          </div>
+        )}
       </div>
       <div
         role="treegrid"

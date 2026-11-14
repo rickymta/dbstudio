@@ -14,6 +14,7 @@ import { BreakpointPopover } from './BreakpointPopover';
 import { ensureDebugEvents, ensureRoutineScope } from './debugActions';
 import { routineScope, tabOfRoutine, useDebugStore } from './debugStore';
 import { DebugDialogs } from './DebugDialogs';
+import { DebugToolWindow } from './DebugToolWindow';
 import { StepBar } from './DebugToolbar';
 
 /** Read-only tab with the source of a routine the debugger stopped in (or will stop in). */
@@ -24,6 +25,7 @@ const DebugSourceTab: FC<DebugSourcePayload> = ({ sessionId, connectionId, signa
   const [error, setError] = useState<IpcError | null>(null);
   const scopeKey = routineScope(connectionId, signature);
   const sessionTab = useDebugStore(() => tabOfRoutine(signature));
+  const hasSession = useDebugStore((s) => !!sessionTab && !!s.sessions[sessionTab]);
   const hasScope = useDebugStore((s) => !!s.scopes[scopeKey]);
 
   useEffect(() => {
@@ -113,6 +115,11 @@ const DebugSourceTab: FC<DebugSourcePayload> = ({ sessionId, connectionId, signa
         </div>
       )}
       <div ref={host} className="min-h-0 flex-1" data-testid="debug-source-editor" />
+      {sessionTab && hasSession && (
+        <div className="h-[40%] min-h-48 shrink-0 border-t border-border">
+          <DebugToolWindow tabId={sessionTab} passive />
+        </div>
+      )}
       <BreakpointPopover
         match={(scope) => scope.routine?.signature === signature}
         moreTabId={sessionTab}

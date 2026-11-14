@@ -2,7 +2,7 @@
 // Variables, Watches) / Console tabs with the step bar, status line and banners.
 
 import { TriangleAlert, X } from 'lucide-react';
-import { useEffect, useRef, useState, type FC, type KeyboardEvent } from 'react';
+import { useEffect, useState, type FC, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { Button } from '@/components/ui/Button';
@@ -24,6 +24,9 @@ import { statusText } from './status';
 import { SessionToolbar, StepBar } from './DebugToolbar';
 import { VariablesPanel } from './VariablesPanel';
 import { WatchesPanel } from './WatchesPanel';
+
+// Several windows may show one session: each confirmation token is asked once, app-wide.
+const askedTokens = new Set<string>();
 
 const fmtDuration = (ms: number): string => {
   const s = Math.floor(ms / 1000);
@@ -50,13 +53,16 @@ const Banner: FC<{ tone: 'warning' | 'danger' | 'info'; children: React.ReactNod
   </div>
 );
 
-export const DebugToolWindow: FC<{ tabId: string }> = ({ tabId }) => {
+export const DebugToolWindow: FC<{
+  tabId: string;
+  /** A second view of the same session (routine tab). */
+  passive?: boolean;
+}> = ({ tabId, passive = false }) => {
   const { t } = useTranslation('debugger');
   const session = useDebugStore((s) => s.sessions[tabId]);
   const keymap = useDebugStore((s) => s.keymap);
   const panel = useDebugStore((s) => s.ui[tabId]?.panel ?? 'debugger');
   const [warnDismissed, setWarnDismissed] = useState(false);
-  const confirmedToken = useRef<string | null>(null);
   const state = session?.state;
   const live = isLive(session);
 
@@ -64,8 +70,8 @@ export const DebugToolWindow: FC<{ tabId: string }> = ({ tabId }) => {
   const reason = state?.status.kind === 'paused' ? state.status.reason : null;
   const token = reason?.kind === 'confirmation' ? reason.request.token : null;
   useEffect(() => {
-    if (token && confirmedToken.current !== token) {
-      confirmedToken.current = token;
+    if (token && !askedTokens.has(token)) {
+      askedTokens.add(token);
       void confirmPending(tabId);
     }
   }, [tabId, token]);
@@ -143,7 +149,7 @@ export const DebugToolWindow: FC<{ tabId: string }> = ({ tabId }) => {
             forceMount
             className="min-h-0 flex-1 data-[state=inactive]:hidden"
           >
-            <Group orientation="horizontal" id={`debug-panels-${tabId}`}>
+            <Group orientation="horizontal" id={`debug-panels-${passive ? 'src-' : ''}${tabId}`}>
               <Panel id="frames" defaultSize="22%" minSize="10%">
                 <FramesPanel tabId={tabId} />
               </Panel>
