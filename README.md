@@ -15,6 +15,14 @@ restored editor tabs, EXPLAIN diagrams (12 plan formats with the newer databases
 (`pg_dump`, `mysqldump`, `mongodump`, `redis-cli --rdb`, SQL Server `BACKUP DATABASE`), cron
 schedules with catch-up and retention, tray/autostart, and a headless CLI.
 
+The **SQL debugger** (JetBrains-style, [docs/sql-debugger.md](docs/sql-debugger.md)) runs the
+script of an editor tab one statement at a time on its lease, for every dialect: breakpoints
+(condition, hit count, log message, mute), Step Over / Into / Out, Run to Cursor, a Debug tool
+window (Frames, Variables, Watches, Console), inline values and read-only Evaluate, a debug
+transaction that ends with Commit or Rollback (Rollback suggested) and a paused TTL, and every step
+through the same guard as the editor. Step Into stored routines works on PostgreSQL with the
+`pldebugger` extension.
+
 The backlog + phase 9 round ([docs/design/backlog-gd9.md](docs/design/backlog-gd9.md)) added the
 backend for: Cassandra/ScyllaDB and ClickHouse drivers; CockroachDB and YugabyteDB as flavours of
 the PostgreSQL driver and TiDB as a flavour of the MySQL driver (detected from `version()`); CQL
@@ -45,6 +53,7 @@ Oracle backup/restore), ClickHouse 23.8, and CI on GitHub. Details: [docs/roadma
 | `crates/dbstudio-cli`       | `dbstudio-cli` binary: backup/restore/verify/tools without the GUI.                                                         |
 | `crates/dbstudio-ssh`       | SSH tunnel (russh): password, private key + passphrase, agent; host key check.                                              |
 | `crates/dbstudio-store`     | SQLite store (profiles, history, saved queries, tabs, ERD layouts, presets) + keychain.                                     |
+| `crates/dbstudio-debug`     | SQL debugger engine: session actor, step program, read-only evaluation, PostgreSQL routine debugger (`pldbgapi`). No Tauri. |
 | `crates/drivers/postgres`   | PostgreSQL (`tokio-postgres`); CockroachDB and YugabyteDB YSQL flavours.                                                    |
 | `crates/drivers/mysql`      | MySQL / MariaDB (`mysql_async`); TiDB flavour.                                                                              |
 | `crates/drivers/mssql`      | SQL Server (`tiberius` 0.13, minimal patch in `vendor/tiberius-patch`).                                                     |
@@ -219,6 +228,17 @@ Running one group at a time (start the listed services first):
 | Command layer (`src-tauri`) | `pg16`, `mysql8`, `redis6`                                                                  | `DBSTUDIO_IT=1 cargo test -p dbstudio`                                  |
 | Query Advisor (`src-tauri`) | `pg16`, `mysql8`, `mariadb` (+ `mssql2022`, `mongo7`, `clickhouse26`)                       | `DBSTUDIO_IT=1 cargo test -p dbstudio --lib plan_advice_it`             |
 | Oracle driver               | `oraclefree`                                                                                | `docker/oracle-it/run-tests.sh` (see below)                             |
+| SQL debugger                | `pg16dbg` (profile `debug`), `pg16`, `mysql8`                                               | see below                                                               |
+
+The SQL debugger suites (`crates/dbstudio-debug/tests`) need `pg16dbg`, a PostgreSQL 16 image with
+`pldebugger` built locally from `docker/pg16dbg` (profile `debug`, ~300 MB, port `54317`,
+`DBSTUDIO_IT_PGDBG_PORT`, login `dbstudio` / `dbstudio_test`, superuser), plus `pg16` and `mysql8`
+for the script debugger:
+
+```sh
+docker compose -f docker/compose.test.yml --profile debug up -d --wait pg16dbg pg16 mysql8
+DBSTUDIO_IT=1 DBSTUDIO_IT_PGDBG_PORT=54317 cargo test -p dbstudio-debug -- --test-threads=2
+```
 
 The Query Advisor suite (`src-tauri/src/plan_advice_it.rs`, one test per service) seeds a 200 000 row
 table in a `dbstudio_it_adv*` schema / database, runs the DDL the advice generates and explains
@@ -245,7 +265,7 @@ compose file). Alternatively install Instant Client locally and set
 
 The Keychain test of the secret store runs only with `DBSTUDIO_KEYCHAIN_IT=1 cargo test -p dbstudio-store real_keychain` and uses a separate test service name. These credentials are throw-away and
 bound to localhost only. CI runs the same steps in the `integration` job, one matrix entry per
-group (`core` = every service without a profile, `wide`, `analytics`, `newsql`) with
+group (`core` = every service without a profile, `wide`, `analytics`, `newsql`, `debug`) with
 `DBSTUDIO_IT_STRICT=1`; `heavy` and `extra` run weekly in `integration-extra`.
 
 ## IPC types

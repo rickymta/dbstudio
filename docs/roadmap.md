@@ -1,6 +1,6 @@
 # DBStudio — Lộ trình
 
-> Trạng thái: v0.4 — GĐ0–GĐ1 xong; GĐ2–GĐ8 đã hiện thực (còn phần chưa kiểm chứng, ghi ở từng giai đoạn); đợt **tồn đọng + GĐ9 driver mới** (trừ Oracle) xong **phần backend** trên nhánh `feature/quandh/backlog` theo [design/backlog-gd9.md](design/backlog-gd9.md) — phần UI tách thành mục "Việc UI để lại". Mã yêu cầu theo [requirements.md](requirements.md) (cột Trạng thái); kiến trúc theo [architecture.md](architecture.md); hợp đồng GĐ2–GĐ8 theo [design/phase2-8.md](design/phase2-8.md).
+> Trạng thái: v0.4 — GĐ0–GĐ1 xong; GĐ2–GĐ8 đã hiện thực (còn phần chưa kiểm chứng, ghi ở từng giai đoạn); đợt **tồn đọng + GĐ9 driver mới** (trừ Oracle) xong **phần backend** trên nhánh `feature/quandh/backlog` theo [design/backlog-gd9.md](design/backlog-gd9.md) — phần UI tách thành mục "Việc UI để lại". **SQL debugger** (script debugger mọi dialect + routine debugger PostgreSQL) đã hiện thực trên nhánh `feature/quandh/sql_debugger` theo [design/sql-debugger.md](design/sql-debugger.md), hướng dẫn dùng ở [sql-debugger.md](sql-debugger.md). Mã yêu cầu theo [requirements.md](requirements.md) (cột Trạng thái); kiến trúc theo [architecture.md](architecture.md); hợp đồng GĐ2–GĐ8 theo [design/phase2-8.md](design/phase2-8.md).
 
 ## 1. Cách làm việc
 
@@ -263,6 +263,20 @@ Làm trước đóng gói, theo [design/backlog-gd9.md](design/backlog-gd9.md) �
 - [ ] UI: kind mới trong dialog kết nối, highlight/formatter CQL/ClickHouse, field riêng, badge read-only TiDB (mục "Việc UI để lại").
 - [ ] IT trong CI (matrix nhóm `wide`/`analytics`/`newsql`, `heavy`/`extra` hằng tuần). — *Chưa chạy trên GitHub.*
 
+### SQL debugger *(đã hiện thực; chưa kiểm trong cửa sổ Tauri thật)*
+
+Theo [design/sql-debugger.md](design/sql-debugger.md) (Bước 0 hợp đồng + gói D engine, P routine PG, T Tauri, F frontend, E mock/e2e; review sửa các lỗi H/M/L). Hướng dẫn người dùng: [sql-debugger.md](sql-debugger.md).
+
+- [x] Crate `dbstudio-debug`: chương trình bước theo splitter của lease (khối `DO`/PL/SQL/`CREATE FUNCTION`/`BEGIN BATCH` = một bước, `DELIMITER`/`GO`/SQL*Plus = meta), actor một phiên (Resume/Pause/Stop/Step*/Run to Cursor/Jump To), breakpoint (điều kiện, hit count, log, mute), transaction `Wrap` + kết thúc Ask/Commit/Rollback/Keep, cảnh báo 60 s, TTL dừng 900 s, `idle_in_transaction_session_timeout` (PG), khung chỉ đọc cho watch/evaluate/điều kiện (+ denylist hàm có tác dụng phụ PG/MySQL), shim biến T-SQL (`GO n`), giữ `ROW_COUNT()` MySQL, theo dõi `MULTI` Redis — unit test + IT `it_script` (pg16, mysql8).
+- [x] Routine debugger PostgreSQL qua `pldbgapi` (Step Into/Smart/Force, Step Out mô phỏng, Variables + `pldbg_deposit_value`, evaluate trên proxy); các điểm "(cần kiểm)" của thiết kế đã đo trên `pg16dbg` và ghi ở đầu `crates/dbstudio-debug/src/routine/pg.rs` — IT `it_pgdbg`.
+- [x] `src-tauri`: `DebugManager` (8 phiên/app, 1 phiên/lease, `claim_debug` làm lệnh editor trả `Busy`), `HostGate`, `EventSink` (`debug://state`, `debug://output`), `HostProxy`, command `debug_*` + `routine_breakpoints_get/set`, store migration v8.
+- [x] Frontend `src/features/debugger/**`: tool window kiểu JetBrains, gutter, inline values, hover, dialog Evaluate/Breakpoints/kết thúc transaction/Smart Step Into, tab nguồn routine, keymap JetBrains + VS Code; mock debugger cho chế độ trình duyệt.
+- [x] CI: nhóm `debug` của job `integration` (`pg16dbg`, `pg16`, `mysql8`; `cargo test -p dbstudio-debug -- --test-threads=2`). — *Chưa chạy trên GitHub.*
+- [ ] Breakpoint routine chỉ được gắn khi Step Into (Step Over/Resume không dừng trong routine) và bỏ qua điều kiện/hit count/log/suspend/mute; trong routine chưa có Run to Cursor, Pause.
+- [ ] UI: Jump To, "Mở routine…" trước khi chạy, ô cài đặt debug trong trang Cài đặt, chế độ script cho tab Redis (Q6), nhóm phím Debug trong `ShortcutsDialog` (Q12); Force Step Into vào `DO` (Q10) chưa làm.
+- [ ] Oracle `DBMS_DEBUG` (gói O): mới có feature `oracle-debug-spike` và file stub, chưa có nguyên mẫu/IT, chưa có đề xuất go/no-go.
+- [ ] Kiểm chứng: cửa sổ Tauri thật; IT script debugger trên MSSQL, Oracle, Mongo, Redis, CQL, ClickHouse, NewSQL (hiện chỉ unit test với lease giả); YugabyteDB có pldebugger.
+
 ---
 
 ## 3. Bảng truy vết yêu cầu → giai đoạn
@@ -284,4 +298,5 @@ Làm trước đóng gói, theo [design/backlog-gd9.md](design/backlog-gd9.md) �
 | APP-06 | GĐ9 | Chưa |
 | APP-08 | — | Chưa (Could) |
 | NFR-PLAT-01/02, NFR-PERF-01 | GĐ9 | Chưa kiểm |
+| DEBUG-01..06 | SQL debugger | Xong phần lớn; DEBUG-03 một phần (breakpoint routine), DEBUG-06 Oracle chưa |
 | NFR khác | Mọi GĐ | Xem requirements §3 |

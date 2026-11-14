@@ -1,0 +1,841 @@
+{
+  "Breakpoint": {
+    "condition": "i = 3",
+    "enabled": true,
+    "hitCount": 2,
+    "id": "b1",
+    "line": 12,
+    "logMessage": "i = {i}",
+    "suspend": true
+  },
+  "BreakpointStatus": {
+    "id": "b1",
+    "line": 9,
+    "message": "cannot stop inside a block",
+    "verified": false
+  },
+  "DebugAction": {
+    "kind": "resume"
+  },
+  "DebugAction#forceStepInto": {
+    "kind": "forceStepInto"
+  },
+  "DebugAction#jumpTo": {
+    "kind": "jumpTo",
+    "line": 3
+  },
+  "DebugAction#pause": {
+    "kind": "pause"
+  },
+  "DebugAction#runToCursor": {
+    "force": false,
+    "kind": "runToCursor",
+    "line": 12,
+    "source": {
+      "kind": "script"
+    }
+  },
+  "DebugAction#smartStepInto": {
+    "kind": "smartStepInto",
+    "signature": "public.f_tax(numeric)"
+  },
+  "DebugAction#stepInto": {
+    "kind": "stepInto"
+  },
+  "DebugAction#stepOut": {
+    "kind": "stepOut"
+  },
+  "DebugAction#stepOver": {
+    "kind": "stepOver"
+  },
+  "DebugEndAction": "ask",
+  "DebugEndReport": {
+    "committed": true,
+    "rolledBack": false,
+    "stepsRun": 1
+  },
+  "DebugFrame": {
+    "args": "amount=120.50",
+    "id": 0,
+    "kind": "routine",
+    "language": "plpgsql",
+    "line": 12,
+    "name": "f_tax(numeric):12",
+    "source": {
+      "kind": "routine",
+      "routine": {
+        "oid": "16421",
+        "path": {
+          "segments": [
+            {
+              "kind": "database",
+              "name": "app"
+            },
+            {
+              "kind": "folder",
+              "name": "functions"
+            },
+            {
+              "kind": "function",
+              "name": "f_tax(numeric)"
+            }
+          ]
+        },
+        "signature": "public.f_tax(numeric)"
+      }
+    }
+  },
+  "DebugOptions": {
+    "breakOnError": true,
+    "endAction": "ask",
+    "maxRowsPerStep": null,
+    "recordHistory": true,
+    "routine": true,
+    "statementTimeoutMs": null,
+    "stopOnEntry": null,
+    "tsqlStepUnit": "statement",
+    "txMode": "wrap"
+  },
+  "DebugOptions#custom": {
+    "breakOnError": false,
+    "endAction": "keep",
+    "maxRowsPerStep": 50,
+    "recordHistory": false,
+    "routine": false,
+    "statementTimeoutMs": 30000,
+    "stopOnEntry": false,
+    "tsqlStepUnit": "batch",
+    "txMode": "lease"
+  },
+  "DebugOutput": {
+    "kind": "stepStart",
+    "line": 12,
+    "step": 1,
+    "text": "UPDATE t SET a = 1"
+  },
+  "DebugOutput#error": {
+    "error": {
+      "kind": "query",
+      "message": "boom"
+    },
+    "kind": "error",
+    "step": 2
+  },
+  "DebugOutput#evaluated": {
+    "expr": "1 + 1",
+    "kind": "evaluated",
+    "result": {
+      "context": "lease",
+      "elapsedMs": 3,
+      "value": {
+        "kind": "rows",
+        "result": {
+          "columns": [
+            {
+              "name": "n",
+              "nullable": false,
+              "typeName": "int8",
+              "valueKind": "int"
+            }
+          ],
+          "rows": [
+            [
+              {
+                "t": "int",
+                "v": 1
+              }
+            ],
+            [
+              {
+                "t": "int",
+                "v": 2
+              }
+            ]
+          ],
+          "truncated": false
+        }
+      }
+    }
+  },
+  "DebugOutput#message": {
+    "kind": "message",
+    "source": "notice",
+    "text": "text"
+  },
+  "DebugOutput#messageDbmsOutput": {
+    "kind": "message",
+    "source": "dbmsOutput",
+    "text": "text"
+  },
+  "DebugOutput#messageInfo": {
+    "kind": "message",
+    "source": "info",
+    "text": "text"
+  },
+  "DebugOutput#messageLog": {
+    "kind": "message",
+    "source": "log",
+    "text": "text"
+  },
+  "DebugOutput#messagePrint": {
+    "kind": "message",
+    "source": "print",
+    "text": "text"
+  },
+  "DebugOutput#query": {
+    "event": {
+      "message": "NOTICE: hi",
+      "type": "message"
+    },
+    "kind": "query",
+    "step": 1
+  },
+  "DebugOutput#stepEnd": {
+    "end": {
+      "elapsedMs": 4,
+      "outcome": {
+        "kind": "affected",
+        "rows": 3
+      }
+    },
+    "kind": "stepEnd",
+    "step": 1,
+    "truncatedAt": 200
+  },
+  "DebugOutputEvent": {
+    "debugId": "00000000-0000-0000-0000-000000000001",
+    "output": {
+      "kind": "message",
+      "source": "info",
+      "text": "done"
+    },
+    "seq": 8
+  },
+  "DebugPosition": {
+    "line": 8,
+    "range": {
+      "end": 71,
+      "start": 40
+    },
+    "source": {
+      "kind": "script"
+    },
+    "step": 2,
+    "stepCount": 12
+  },
+  "DebugSessionCaps": {
+    "jumpTo": true,
+    "pauseRunning": true,
+    "routine": false,
+    "setVariable": false,
+    "stepInto": false,
+    "stepOut": false
+  },
+  "DebugStartRequest": {
+    "breakpoints": [
+      {
+        "condition": "i = 3",
+        "enabled": true,
+        "hitCount": 2,
+        "id": "b1",
+        "line": 12,
+        "logMessage": "i = {i}",
+        "suspend": true
+      }
+    ],
+    "leaseId": "00000000-0000-0000-0000-000000000002",
+    "muted": true,
+    "options": {
+      "breakOnError": true,
+      "endAction": "ask",
+      "maxRowsPerStep": null,
+      "recordHistory": true,
+      "routine": true,
+      "statementTimeoutMs": null,
+      "stopOnEntry": null,
+      "tsqlStepUnit": "statement",
+      "txMode": "wrap"
+    },
+    "params": [
+      {
+        "name": ":n",
+        "value": {
+          "kind": "null"
+        }
+      }
+    ],
+    "range": {
+      "end": 9,
+      "start": 0
+    },
+    "routineBreakpoints": [],
+    "text": "SELECT 1;\nSELECT :n;",
+    "watches": []
+  },
+  "DebugState": {
+    "breakpoints": [
+      {
+        "id": "b1",
+        "line": 8,
+        "message": null,
+        "verified": true
+      }
+    ],
+    "caps": {
+      "jumpTo": true,
+      "pauseRunning": false,
+      "routine": true,
+      "setVariable": true,
+      "stepInto": true,
+      "stepOut": true
+    },
+    "debugId": "00000000-0000-0000-0000-000000000001",
+    "frames": [
+      {
+        "args": "amount=120.50",
+        "id": 0,
+        "kind": "routine",
+        "language": "plpgsql",
+        "line": 12,
+        "name": "f_tax(numeric):12",
+        "source": {
+          "kind": "routine",
+          "routine": {
+            "oid": "16421",
+            "path": {
+              "segments": [
+                {
+                  "kind": "database",
+                  "name": "app"
+                },
+                {
+                  "kind": "folder",
+                  "name": "functions"
+                },
+                {
+                  "kind": "function",
+                  "name": "f_tax(numeric)"
+                }
+              ]
+            },
+            "signature": "public.f_tax(numeric)"
+          }
+        }
+      },
+      {
+        "args": "amount=120.50",
+        "id": 1,
+        "kind": "script",
+        "language": "plpgsql",
+        "line": 12,
+        "name": "f_tax(numeric):12",
+        "source": {
+          "kind": "routine",
+          "routine": {
+            "oid": "16421",
+            "path": {
+              "segments": [
+                {
+                  "kind": "database",
+                  "name": "app"
+                },
+                {
+                  "kind": "folder",
+                  "name": "functions"
+                },
+                {
+                  "kind": "function",
+                  "name": "f_tax(numeric)"
+                }
+              ]
+            },
+            "signature": "public.f_tax(numeric)"
+          }
+        }
+      }
+    ],
+    "inlineValues": [
+      {
+        "kind": "result",
+        "line": 8,
+        "source": {
+          "kind": "script"
+        },
+        "text": "3 rows affected"
+      }
+    ],
+    "leaseId": "00000000-0000-0000-0000-000000000002",
+    "muted": false,
+    "position": {
+      "line": 8,
+      "range": {
+        "end": 71,
+        "start": 40
+      },
+      "source": {
+        "kind": "script"
+      },
+      "step": 2,
+      "stepCount": 12
+    },
+    "selectedFrame": 0,
+    "seq": 7,
+    "status": {
+      "kind": "paused",
+      "reason": {
+        "ids": ["b1"],
+        "kind": "breakpoint"
+      }
+    },
+    "stepIntoTargets": [
+      {
+        "oid": "16421",
+        "path": {
+          "segments": [
+            {
+              "kind": "database",
+              "name": "app"
+            },
+            {
+              "kind": "folder",
+              "name": "functions"
+            },
+            {
+              "kind": "function",
+              "name": "f_tax(numeric)"
+            }
+          ]
+        },
+        "signature": "public.f_tax(numeric)"
+      }
+    ],
+    "transaction": {
+      "openForMs": 61000,
+      "owned": true,
+      "status": "active",
+      "ttlLeftSecs": 839,
+      "warn": true
+    },
+    "variables": [
+      {
+        "changed": true,
+        "display": "120.50",
+        "editable": true,
+        "hasChildren": false,
+        "kind": "routineLocal",
+        "name": "v_total",
+        "reference": "g:routine:0",
+        "typeName": "numeric",
+        "value": {
+          "t": "decimal",
+          "v": "120.50"
+        }
+      }
+    ],
+    "watches": [
+      {
+        "expr": "count(*)",
+        "id": "w1",
+        "result": {
+          "context": "lease",
+          "elapsedMs": 3,
+          "value": {
+            "kind": "rows",
+            "result": {
+              "columns": [
+                {
+                  "name": "n",
+                  "nullable": false,
+                  "typeName": "int8",
+                  "valueKind": "int"
+                }
+              ],
+              "rows": [
+                [
+                  {
+                    "t": "int",
+                    "v": 1
+                  }
+                ],
+                [
+                  {
+                    "t": "int",
+                    "v": 2
+                  }
+                ]
+              ],
+              "truncated": false
+            }
+          }
+        }
+      }
+    ]
+  },
+  "DebugStatus": {
+    "kind": "paused",
+    "reason": {
+      "ids": ["b1"],
+      "kind": "breakpoint"
+    }
+  },
+  "DebugStatus#evaluating": {
+    "kind": "evaluating"
+  },
+  "DebugStatus#running": {
+    "kind": "running",
+    "step": 3
+  },
+  "DebugStatus#starting": {
+    "kind": "starting"
+  },
+  "DebugStatus#terminated": {
+    "kind": "terminated",
+    "reason": "finished",
+    "report": {
+      "committed": false,
+      "rolledBack": true,
+      "stepsRun": 12
+    }
+  },
+  "DebugSupport": {
+    "routine": {
+      "kind": "available"
+    },
+    "script": true,
+    "scriptVariables": false,
+    "transactions": true
+  },
+  "DebugTxInfo": {
+    "openForMs": null,
+    "owned": false,
+    "status": "idle",
+    "ttlLeftSecs": null,
+    "warn": false
+  },
+  "DebugTxMode": "wrap",
+  "DebugVariable": {
+    "changed": true,
+    "display": "120.50",
+    "editable": true,
+    "hasChildren": false,
+    "kind": "routineLocal",
+    "name": "v_total",
+    "reference": "g:routine:0",
+    "typeName": "numeric",
+    "value": {
+      "t": "decimal",
+      "v": "120.50"
+    }
+  },
+  "EvalContext": "proxy",
+  "EvalResult": {
+    "context": "lease",
+    "elapsedMs": 3,
+    "value": {
+      "kind": "rows",
+      "result": {
+        "columns": [
+          {
+            "name": "n",
+            "nullable": false,
+            "typeName": "int8",
+            "valueKind": "int"
+          }
+        ],
+        "rows": [
+          [
+            {
+              "t": "int",
+              "v": 1
+            }
+          ],
+          [
+            {
+              "t": "int",
+              "v": 2
+            }
+          ]
+        ],
+        "truncated": false
+      }
+    }
+  },
+  "EvalValue": {
+    "kind": "scalar",
+    "typeName": "int8",
+    "value": {
+      "t": "int",
+      "v": 42
+    }
+  },
+  "EvalValue#error": {
+    "error": {
+      "kind": "query",
+      "message": "boom"
+    },
+    "kind": "error"
+  },
+  "EvalValue#rows": {
+    "kind": "rows",
+    "result": {
+      "columns": [
+        {
+          "name": "n",
+          "nullable": false,
+          "typeName": "int8",
+          "valueKind": "int"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "t": "int",
+            "v": 1
+          }
+        ],
+        [
+          {
+            "t": "int",
+            "v": 2
+          }
+        ]
+      ],
+      "truncated": false
+    }
+  },
+  "EvalValue#skipped": {
+    "kind": "skipped",
+    "reason": "MULTI is open"
+  },
+  "FrameKind": "block",
+  "InlineKind": "error",
+  "InlineValue": {
+    "kind": "variable",
+    "line": 5,
+    "source": {
+      "kind": "routine",
+      "routine": {
+        "oid": "16421",
+        "path": {
+          "segments": [
+            {
+              "kind": "database",
+              "name": "app"
+            },
+            {
+              "kind": "folder",
+              "name": "functions"
+            },
+            {
+              "kind": "function",
+              "name": "f_tax(numeric)"
+            }
+          ]
+        },
+        "signature": "public.f_tax(numeric)"
+      }
+    },
+    "text": "v_total = 120.50"
+  },
+  "MessageSource": "notice",
+  "PauseReason": {
+    "kind": "entry"
+  },
+  "PauseReason#awaitingEnd": {
+    "kind": "awaitingEnd"
+  },
+  "PauseReason#blocked": {
+    "error": {
+      "kind": "query",
+      "message": "boom"
+    },
+    "kind": "blocked"
+  },
+  "PauseReason#breakpoint": {
+    "ids": ["b1"],
+    "kind": "breakpoint"
+  },
+  "PauseReason#confirmation": {
+    "kind": "confirmation",
+    "request": {
+      "confirmText": "app",
+      "expiresInMs": 120000,
+      "statements": [
+        {
+          "index": 0,
+          "range": {
+            "end": 12,
+            "start": 0
+          },
+          "reason": "drop",
+          "text": "DROP TABLE t"
+        }
+      ],
+      "token": "0123456789abcdef0123456789abcdef"
+    }
+  },
+  "PauseReason#error": {
+    "error": {
+      "kind": "query",
+      "message": "boom"
+    },
+    "kind": "error"
+  },
+  "PauseReason#pause": {
+    "kind": "pause"
+  },
+  "PauseReason#routineEntry": {
+    "kind": "routineEntry"
+  },
+  "PauseReason#runToCursor": {
+    "kind": "runToCursor"
+  },
+  "PauseReason#step": {
+    "kind": "step"
+  },
+  "RoutineBreakpoint": {
+    "breakpoint": {
+      "condition": "i = 3",
+      "enabled": true,
+      "hitCount": 2,
+      "id": "b1",
+      "line": 12,
+      "logMessage": "i = {i}",
+      "suspend": true
+    },
+    "routine": {
+      "oid": "16421",
+      "path": {
+        "segments": [
+          {
+            "kind": "database",
+            "name": "app"
+          },
+          {
+            "kind": "folder",
+            "name": "functions"
+          },
+          {
+            "kind": "function",
+            "name": "f_tax(numeric)"
+          }
+        ]
+      },
+      "signature": "public.f_tax(numeric)"
+    },
+    "sourceHash": "abababababababababababababababababababababababababababababababab"
+  },
+  "RoutineDebugSupport": {
+    "kind": "available"
+  },
+  "RoutineDebugSupport#needsExtension": {
+    "kind": "needsExtension",
+    "statement": "CREATE EXTENSION pldbgapi;"
+  },
+  "RoutineDebugSupport#needsServerConfig": {
+    "hint": "add plugin_debugger to shared_preload_libraries",
+    "kind": "needsServerConfig"
+  },
+  "RoutineDebugSupport#noPermission": {
+    "hint": "superuser required",
+    "kind": "noPermission"
+  },
+  "RoutineDebugSupport#unsupported": {
+    "kind": "unsupported",
+    "reason": "no debugger API"
+  },
+  "RoutineRef": {
+    "oid": "16421",
+    "path": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "functions"
+        },
+        {
+          "kind": "function",
+          "name": "f_tax(numeric)"
+        }
+      ]
+    },
+    "signature": "public.f_tax(numeric)"
+  },
+  "RoutineSource": {
+    "firstLine": 1,
+    "language": "plpgsql",
+    "sourceHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "text": "BEGIN RETURN 1; END"
+  },
+  "SourceRef": {
+    "kind": "script"
+  },
+  "SourceRef#routine": {
+    "kind": "routine",
+    "routine": {
+      "oid": "16421",
+      "path": {
+        "segments": [
+          {
+            "kind": "database",
+            "name": "app"
+          },
+          {
+            "kind": "folder",
+            "name": "functions"
+          },
+          {
+            "kind": "function",
+            "name": "f_tax(numeric)"
+          }
+        ]
+      },
+      "signature": "public.f_tax(numeric)"
+    }
+  },
+  "TerminateReason": "ttl",
+  "VariableKind": "tempTable",
+  "WatchResult": {
+    "expr": "count(*)",
+    "id": "w1",
+    "result": {
+      "context": "lease",
+      "elapsedMs": 3,
+      "value": {
+        "kind": "rows",
+        "result": {
+          "columns": [
+            {
+              "name": "n",
+              "nullable": false,
+              "typeName": "int8",
+              "valueKind": "int"
+            }
+          ],
+          "rows": [
+            [
+              {
+                "t": "int",
+                "v": 1
+              }
+            ],
+            [
+              {
+                "t": "int",
+                "v": 2
+              }
+            ]
+          ],
+          "truncated": false
+        }
+      }
+    }
+  },
+  "WatchSpec": {
+    "expr": "count(*)",
+    "id": "w1"
+  }
+}

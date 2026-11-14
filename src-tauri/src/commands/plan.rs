@@ -267,7 +267,10 @@ pub(crate) async fn explain_impl(
     )?;
     let database = request.database.clone();
     let raw = match lease_id {
-        Some(lease_id) => state.leases.get(lease_id)?.explain(request).await?,
+        Some(lease_id) => {
+            state.leases.ensure_not_debugging(lease_id)?;
+            state.leases.get(lease_id)?.explain(request).await?
+        }
         None => session.explain(request).await?,
     };
     let rules = effective_rules(state, rules);

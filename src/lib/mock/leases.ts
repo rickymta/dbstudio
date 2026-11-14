@@ -846,6 +846,11 @@ export const leasesMock = {
 };
 
 /** Dev/test helper: the connection of a lease is lost (emits `lease://state`). */
+/** Session behind a mock lease, or `undefined` when the lease does not exist. */
+export function mockLeaseSessionId(leaseId: Uuid): Uuid | undefined {
+  return leases.get(leaseId)?.sessionId;
+}
+
 export function mockBreakLease(leaseId: Uuid): void {
   const lease = leases.get(leaseId);
   if (!lease) return;

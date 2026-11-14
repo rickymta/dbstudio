@@ -1,4 +1,5 @@
 import { ConnectionContext } from '@/features/connections/ConnectionContext';
+import { DebugBottomHost, DebugButton, debuggerExtensions } from '@/features/debugger';
 import { useSavedLayout } from '@/features/workspace/layout';
 import { utf16ToCharOffset, charToUtf16Offset } from '@/lib/text';
 import {
@@ -407,6 +408,12 @@ function EditorBody({
           <Square size={13} aria-hidden />
           {t('toolbar.cancel')}
         </Button>
+        <DebugButton
+          tabStateId={id}
+          sessionId={sessionId}
+          connectionId={connectionId}
+          mode={mode}
+        />
         {mode !== 'redis' && (
           <IconButton
             label={`${t('toolbar.runAll')} (${formatKeys(keysOf('runAll'))})`}
@@ -549,6 +556,7 @@ function EditorBody({
                     target={target}
                     marks={marks}
                     ariaLabel={t('editor.label')}
+                    extraExtensions={debuggerExtensions(id)}
                     onShortcut={onShortcut}
                     onChange={(text) => patchTabData(id, { text })}
                     onSelection={(selection) =>
@@ -570,17 +578,19 @@ function EditorBody({
                     }
                   }}
                 >
-                  <ResultsPanel
-                    tabStateId={id}
-                    run={run}
-                    mode={mode}
-                    onRevealError={
-                      errorMark
-                        ? () => editor.current?.reveal(errorMark.from, errorMark.to)
-                        : undefined
-                    }
-                    onLoadMore={() => void fetchMore(id)}
-                  />
+                  <DebugBottomHost tabStateId={id}>
+                    <ResultsPanel
+                      tabStateId={id}
+                      run={run}
+                      mode={mode}
+                      onRevealError={
+                        errorMark
+                          ? () => editor.current?.reveal(errorMark.from, errorMark.to)
+                          : undefined
+                      }
+                      onLoadMore={() => void fetchMore(id)}
+                    />
+                  </DebugBottomHost>
                 </div>
               </Panel>
             </Group>

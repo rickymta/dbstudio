@@ -3,6 +3,7 @@ import { initReactI18next } from 'react-i18next';
 import enBackup from '../locales/en/backup.json';
 import enCommon from '../locales/en/common.json';
 import enConnections from '../locales/en/connections.json';
+import enDebugger from '../locales/en/debugger.json';
 import enData from '../locales/en/data.json';
 import enDocument from '../locales/en/document.json';
 import enEditor from '../locales/en/editor.json';
@@ -18,6 +19,7 @@ import enSsh from '../locales/en/ssh.json';
 import viBackup from '../locales/vi/backup.json';
 import viCommon from '../locales/vi/common.json';
 import viConnections from '../locales/vi/connections.json';
+import viDebugger from '../locales/vi/debugger.json';
 import viData from '../locales/vi/data.json';
 import viDocument from '../locales/vi/document.json';
 import viEditor from '../locales/vi/editor.json';
@@ -51,6 +53,7 @@ export const NAMESPACES = [
   'keyvalue',
   'safety',
   'ssh',
+  'debugger',
 ] as const;
 export type Namespace = (typeof NAMESPACES)[number];
 
@@ -99,6 +102,7 @@ void i18n.use(initReactI18next).init({
       keyvalue: enKeyvalue,
       safety: enSafety,
       ssh: enSsh,
+      debugger: enDebugger,
     },
     vi: {
       common: viCommon,
@@ -116,6 +120,7 @@ void i18n.use(initReactI18next).init({
       keyvalue: viKeyvalue,
       safety: viSafety,
       ssh: viSsh,
+      debugger: viDebugger,
     },
   },
   ns: [...NAMESPACES],

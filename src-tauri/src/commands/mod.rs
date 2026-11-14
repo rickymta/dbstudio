@@ -10,6 +10,7 @@ pub mod backup;
 pub mod browse;
 pub mod changes;
 pub mod connections;
+pub mod debug;
 pub mod editor;
 pub mod erd;
 pub mod export;

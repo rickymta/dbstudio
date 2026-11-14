@@ -1,6 +1,7 @@
 //! Persisted editor tabs (`editor_tabs`).
 
 use dbstudio_core::Result;
+use dbstudio_core::debug::{Breakpoint, WatchSpec};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -34,6 +35,24 @@ pub struct EditorTabState {
     /// Text differs from `file_path` on disk (or the tab was never saved).
     #[serde(default)]
     pub dirty: bool,
+    /// Breakpoints and watches of the SQL debugger for this tab (`None` = nothing saved).
+    #[serde(default)]
+    pub debug: Option<TabDebugState>,
+}
+
+/// Debugger state saved with an editor tab (`editor_tabs.debug_json`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabDebugState {
+    /// Script breakpoints (1-based lines of the tab text).
+    #[serde(default)]
+    pub breakpoints: Vec<Breakpoint>,
+    /// Watch expressions.
+    #[serde(default)]
+    pub watches: Vec<WatchSpec>,
+    /// Breakpoints muted.
+    #[serde(default)]
+    pub muted: bool,
 }
 
 impl Store {
@@ -43,7 +62,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT id, position, title, connection_id, database_name, schema_name, text,
-                        file_path, cursor, auto_commit, dirty
+                        file_path, cursor, auto_commit, dirty, debug_json
                  FROM editor_tabs ORDER BY position, updated_at, id",
             )
             .map_err(db_err)?;
@@ -61,6 +80,7 @@ impl Store {
                     r.get::<_, i64>(8)?,
                     r.get::<_, bool>(9)?,
                     r.get::<_, bool>(10)?,
+                    r.get::<_, Option<String>>(11)?,
                 ))
             })
             .map_err(db_err)?
@@ -80,6 +100,7 @@ impl Store {
                     cursor,
                     ac,
                     dirty,
+                    debug_json,
                 )| {
                     Ok(EditorTabState {
                         id: parse_uuid(&id)?,
@@ -93,6 +114,8 @@ impl Store {
                         cursor: cursor.clamp(0, i64::from(u32::MAX)) as u32,
                         auto_commit: ac,
                         dirty,
+                        // A damaged document must not hide the tab: drop only the debug state.
+                        debug: debug_json.and_then(|j| serde_json::from_str(&j).ok()),
                     })
                 },
             )
@@ -109,9 +132,10 @@ impl Store {
         for tab in tabs {
             tx.execute(
                 "INSERT OR REPLACE INTO editor_tabs (id, position, title, connection_id,
-                     database_name, schema_name, text, file_path, cursor, auto_commit, dirty, updated_at)
+                     database_name, schema_name, text, file_path, cursor, auto_commit, dirty, updated_at,
+                     debug_json)
                  VALUES (?1, ?2, ?3, (SELECT id FROM connections WHERE id = ?4), ?5, ?6, ?7, ?8,
-                     ?9, ?10, ?11, ?12)",
+                     ?9, ?10, ?11, ?12, ?13)",
                 params![
                     tab.id.to_string(),
                     i64::from(tab.position),
@@ -125,6 +149,11 @@ impl Store {
                     tab.auto_commit,
                     tab.dirty,
                     now,
+                    tab.debug
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(|e| dbstudio_core::Error::Storage(e.to_string()))?,
                 ],
             )
             .map_err(db_err)?;
@@ -152,6 +181,7 @@ mod tests {
             cursor: 7,
             auto_commit: false,
             dirty: true,
+            debug: None,
         }
     }
 
@@ -209,5 +239,42 @@ mod tests {
             .tabs_set(std::slice::from_ref(&t))
             .unwrap();
         assert_eq!(Store::open(&path).unwrap().tabs_get().unwrap(), vec![t]);
+    }
+
+    #[test]
+    fn debug_state_roundtrips_and_a_damaged_document_is_dropped() {
+        let s = Store::open_in_memory().unwrap();
+        let mut t = tab(0, "select 1", None);
+        t.debug = Some(TabDebugState {
+            breakpoints: vec![Breakpoint {
+                id: "b1".into(),
+                line: 1,
+                enabled: true,
+                suspend: true,
+                condition: Some("x = 1".into()),
+                log_message: None,
+                hit_count: Some(3),
+            }],
+            watches: vec![WatchSpec {
+                id: "w1".into(),
+                expr: "1 + 1".into(),
+            }],
+            muted: true,
+        });
+        s.tabs_set(std::slice::from_ref(&t)).unwrap();
+        assert_eq!(s.tabs_get().unwrap(), vec![t.clone()]);
+        s.lock()
+            .execute("UPDATE editor_tabs SET debug_json = '{broken'", [])
+            .unwrap();
+        let got = s.tabs_get().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].debug, None);
+        // Old clients' documents have no `debug` key at all.
+        let old: EditorTabState = serde_json::from_value(serde_json::json!({
+            "id": Uuid::nil(), "position": 0, "title": "t", "connectionId": null, "database": null,
+            "schema": null, "text": "", "filePath": null, "cursor": 0, "autoCommit": true
+        }))
+        .unwrap();
+        assert_eq!(old.debug, None);
     }
 }

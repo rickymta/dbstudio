@@ -27,4 +27,12 @@ awk '
   msg=${msg//$'\x01'/%0A}
   echo "::error title=$title::$msg"
 done
-grep -E "^test .* FAILED$" "$log" | head -40 || true
+failed=$(grep -E "^test .* FAILED\r?$" "$log" | sed -e 's/\r$//' | head -40 | awk '{printf "%s%%0A", $0}')
+[ -n "$failed" ] && echo "::error title=$title (failed tests)::$failed"
+# No test output and no compiler error (a test binary that could not start, e.g. a missing DLL on
+# Windows): show the end of the log instead.
+if ! grep -qE "^---- .* stdout ----\r?$|could not compile" "$log"; then
+  # One multi-line annotation (GitHub keeps only 10 per step).
+  msg=$(tail -n 25 "$log" | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e 's/\r$//' -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+  echo "::error title=$title (log tail)::$msg"
+fi

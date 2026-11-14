@@ -201,6 +201,18 @@ CREATE TABLE plan_history (
     warnings      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_plan_history_conn ON plan_history(connection_id, created_at DESC);"##,
+    // v8: SQL debugger. Per-tab breakpoints/watches and routine breakpoints per connection.
+    r##"ALTER TABLE editor_tabs ADD COLUMN debug_json TEXT;          -- NULL = nothing saved
+CREATE TABLE routine_breakpoints (
+    id            TEXT NOT NULL,               -- Breakpoint.id (unique per connection)
+    connection_id TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+    signature     TEXT NOT NULL,
+    source_hash   TEXT,
+    body_json     TEXT NOT NULL,               -- RoutineBreakpoint (JSON: routine + sourceHash + breakpoint)
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (connection_id, id)
+);
+CREATE INDEX routine_breakpoints_conn ON routine_breakpoints(connection_id);"##,
 ];
 
 const PROFILE_COLUMNS: &str = "id, name, kind, host, port, database_name, username, tls_mode, \
@@ -1085,13 +1097,13 @@ mod tests {
             insert_legacy(&s.lock(), "legacy", None)
         };
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 7);
+        assert_eq!(s.schema_version().unwrap(), 8);
         assert_eq!(s.get_profile(pid).unwrap().config.name, "legacy");
         assert_eq!(s.get_settings().unwrap(), AppSettings::default());
     }
 
     #[test]
-    fn v2_database_with_data_upgrades_to_v7() {
+    fn v2_database_with_data_upgrades_to_latest() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("v2.sqlite");
         let (gid, pid, settings) = {
@@ -1110,8 +1122,8 @@ mod tests {
             (g.id, pid, settings)
         };
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 7);
-        assert_eq!(MIGRATIONS.len(), 7);
+        assert_eq!(s.schema_version().unwrap(), 8);
+        assert_eq!(MIGRATIONS.len(), 8);
         for t in [
             "query_history",
             "saved_query_folders",
@@ -1162,7 +1174,7 @@ mod tests {
         drop(s);
         // Reopening is idempotent.
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 7);
+        assert_eq!(s.schema_version().unwrap(), 8);
         assert_eq!(s.get_profile(pid).unwrap().config.name, "old-conn");
     }
 
@@ -1278,7 +1290,7 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO editor_tabs (id, position, title, connection_id, text, updated_at)
-             VALUES ('t1', 0, 'T', ?1, '', 'x')",
+             VALUES ('00000000-0000-0000-0000-0000000000a1', 0, 'T', ?1, '', 'x')",
             params![id],
         )
         .unwrap();
@@ -1365,5 +1377,33 @@ mod tests {
             got.timestamp_display,
             crate::settings::TimestampDisplay::Local
         );
+    }
+
+    #[test]
+    fn migration_v8_upgrades_a_v7_database_with_tabs() {
+        assert_eq!(MIGRATIONS.len(), 8);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v7.sqlite");
+        {
+            let s = Store::init(Connection::open(&path).unwrap(), &MIGRATIONS[..7]).unwrap();
+            assert_eq!(s.schema_version().unwrap(), 7);
+            s.lock()
+                .execute(
+                    "INSERT INTO editor_tabs (id, position, title, text, cursor, auto_commit, dirty, updated_at)
+                     VALUES ('00000000-0000-0000-0000-0000000000a1', 0, 'Query', 'select 1', 0, 1, 0, 'now')",
+                    [],
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 8);
+        let tabs = s.tabs_get().unwrap();
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].debug, None);
+        let conn = s.lock();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM routine_breakpoints", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }
