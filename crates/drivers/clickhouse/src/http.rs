@@ -249,7 +249,7 @@ fn bracket(host: &str) -> String {
 /// URL and TLS decision. `HTTPS` is used for `Require`/`VerifyCa`/`VerifyFull`, for `Prefer` on
 /// the conventional TLS ports, or when the option `secure` is `true` (`false` forces HTTP).
 pub(crate) fn target(cfg: &ConnectionConfig) -> Result<Target> {
-    let secure = match cfg.options.get("secure").map(|s| s.trim().to_ascii_lowercase()) {
+    let secure = match crate::conn::option(cfg, "secure").map(|s| s.trim().to_ascii_lowercase()) {
         Some(v) if v == "true" || v == "1" => true,
         Some(v) if v == "false" || v == "0" => false,
         Some(v) => return Err(Error::Invalid(format!("invalid option secure `{v}`"))),
@@ -310,9 +310,7 @@ pub(crate) fn build_client(
     let hyper = HyperClient::builder(TokioExecutor::new())
         .pool_idle_timeout(Duration::from_secs(2))
         .build(connector);
-    let compression = match cfg
-        .options
-        .get("compression")
+    let compression = match crate::conn::option(cfg, "compression")
         .map(|s| s.trim().to_ascii_lowercase())
         .as_deref()
     {

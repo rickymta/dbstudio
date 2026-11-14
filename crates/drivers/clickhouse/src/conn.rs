@@ -52,6 +52,15 @@ pub(crate) struct Core {
     pub version: Version,
     /// Settings sent with every request (version gated and user supplied).
     pub settings: Vec<(String, String)>,
+    /// List the `system` / `INFORMATION_SCHEMA` databases in the tree.
+    pub show_system: bool,
+    /// Data editing is limited to inserts (option `clickhouse.editing = insertOnly`).
+    pub insert_only: bool,
+    /// The connection is configured read-only.
+    pub config_read_only: bool,
+    /// The user's profile is read-only (`readonly = 1`): the server refuses every setting
+    /// change, so no settings are sent at all.
+    pub settings_locked: bool,
 }
 
 /// Per-request parameters.
@@ -85,11 +94,10 @@ impl Core {
         if let Some(db) = db {
             c = c.with_database(db);
         }
-        for (k, v) in &self.settings {
-            c = c.with_setting(k, v);
-        }
-        for (k, v) in &req.settings {
-            c = c.with_setting(k, v);
+        if !self.settings_locked {
+            for (k, v) in self.settings.iter().chain(&req.settings) {
+                c = c.with_setting(k, v);
+            }
         }
         if self.readonly {
             c = c.with_setting("readonly", "2");
@@ -102,7 +110,7 @@ impl Core {
                 .with_setting("session_id", s)
                 .with_setting("session_timeout", "3600");
         }
-        if let Some(ms) = req.timeout_ms {
+        if let Some(ms) = req.timeout_ms.filter(|_| !self.settings_locked) {
             c = c.with_setting("max_execution_time", format!("{}", ms as f64 / 1000.0));
         }
         c
@@ -119,12 +127,25 @@ impl Core {
 
     /// Ask the server to kill the query `query_id` (and its JSON-fallback twin).
     pub(crate) async fn kill(&self, query_id: &str) -> Result<()> {
+        self.kill_with(query_id, false).await
+    }
+
+    /// Like [`Core::kill`] but returns only when the query has stopped (and released its HTTP
+    /// session, which a following statement of the same lease needs).
+    pub(crate) async fn kill_sync(&self, query_id: &str) -> Result<()> {
+        self.kill_with(query_id, true).await
+    }
+
+    async fn kill_with(&self, query_id: &str, sync: bool) -> Result<()> {
         // Query ids are UUID text; refuse anything else so the literal cannot be abused.
-        if !query_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        if query_id.is_empty()
+            || !query_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
             return Err(Error::Invalid("bad query id".into()));
         }
+        let mode = if sync { "SYNC" } else { "ASYNC" };
         let sql =
-            format!("KILL QUERY WHERE startsWith(query_id, '{query_id}') ASYNC FORMAT Null");
+            format!("KILL QUERY WHERE startsWith(query_id, '{query_id}') {mode} FORMAT Null");
         self.admin_client(&Req::default())
             .query_raw(&sql)
             .execute()
@@ -167,6 +188,14 @@ impl Core {
             .and_then(|r| r.into_iter().next())
             .map(|v| rowbinary::value_text(&v)))
     }
+}
+
+/// Connection option `name`, also accepted with the `clickhouse.` prefix.
+pub(crate) fn option<'a>(cfg: &'a dbstudio_core::ConnectionConfig, name: &str) -> Option<&'a str> {
+    cfg.options
+        .get(&format!("clickhouse.{name}"))
+        .or_else(|| cfg.options.get(name))
+        .map(String::as_str)
 }
 
 /// Text of a cell (empty for NULL).
@@ -342,7 +371,7 @@ impl Source {
         }
         // Unsupported column type: ask the server for JSON instead.
         drop(src);
-        let _ = core.kill(req.query_id.as_deref().unwrap_or("")).await;
+        let _ = core.kill_sync(req.query_id.as_deref().unwrap_or("")).await;
         Self::open_json(core, req, &sql).await
     }
 
@@ -352,6 +381,7 @@ impl Source {
             ("output_format_json_quote_64bit_integers".into(), "1".into()),
             ("output_format_json_quote_decimals".into(), "1".into()),
             ("output_format_json_quote_denormals".into(), "1".into()),
+            ("output_format_decimal_trailing_zeros".into(), "1".into()),
             ("session_timezone".into(), "UTC".into()),
         ]);
         if let Some(id) = &req.query_id {
@@ -597,6 +627,19 @@ fn json_row(types: &[CType], line: &str) -> Result<Vec<Value>> {
         .collect())
 }
 
+/// Give a decimal text exactly `scale` fractional digits.
+fn pad_decimal(text: &str, scale: u8) -> String {
+    let scale = usize::from(scale);
+    if scale == 0 {
+        return text.to_string();
+    }
+    match text.split_once('.') {
+        Some((int, frac)) if frac.len() < scale => format!("{int}.{frac}{}", "0".repeat(scale - frac.len())),
+        Some(_) => text.to_string(),
+        None => format!("{text}.{}", "0".repeat(scale)),
+    }
+}
+
 fn json_text(j: &serde_json::Value) -> String {
     match j {
         serde_json::Value::String(s) => s.clone(),
@@ -639,9 +682,10 @@ fn json_cell(t: &CType, j: &serde_json::Value) -> Value {
             J::String(s) => s.parse().map(Value::UInt).unwrap_or_else(|_| Value::Text(s.clone())),
             _ => json_generic(j),
         },
-        CType::Int128 | CType::Int256 | CType::UInt128 | CType::UInt256 | CType::Decimal(..) => {
+        CType::Int128 | CType::Int256 | CType::UInt128 | CType::UInt256 => {
             Value::Decimal(json_text(j))
         }
+        CType::Decimal(_, scale) => Value::Decimal(pad_decimal(&json_text(j), *scale)),
         CType::Float32 | CType::Float64 | CType::BFloat16 => match j {
             J::Number(n) => Value::Float(n.as_f64().unwrap_or(f64::NAN)),
             J::String(s) => Value::Float(match s.as_str() {
