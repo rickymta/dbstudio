@@ -464,7 +464,24 @@ async fn destructive_statements(
     let Ok(pre_json) = serde_json::to_value(&pre) else {
         return Vec::new();
     };
-    let mut texts = dbstudio_backup::logical::clean_preview(&pre_json, dialect, database);
+    let mut texts = match dialect {
+        // MongoDB: every collection of the backup is dropped before it is re-created.
+        "mongo" => pre_json["objects"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|o| o["name"].as_str())
+            .map(|n| {
+                format!(
+                    "db.getCollection({}).drop() // database {database}",
+                    serde_json::to_string(n).unwrap_or_default()
+                )
+            })
+            .collect(),
+        // Redis: the whole numbered database is emptied.
+        "redis" => vec![format!("FLUSHDB // database {database}")],
+        _ => dbstudio_backup::logical::clean_preview(&pre_json, dialect, database),
+    };
     if texts.is_empty() {
         texts.push(format!(
             "pg_restore / mysql with clean into database {database}"
@@ -474,7 +491,7 @@ async fn destructive_statements(
         .into_iter()
         .enumerate()
         .map(|(i, text)| {
-            let reason = if text.starts_with("DROP DATABASE") {
+            let reason = if text.starts_with("DROP DATABASE") || text.starts_with("FLUSHDB") {
                 DestructiveReason::DropDatabase
             } else {
                 DestructiveReason::Drop

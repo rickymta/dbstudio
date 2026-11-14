@@ -346,6 +346,37 @@ fn shell_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
 
+/// Run the `createCollection` statements of `schema` on a scratch collection and drop it again.
+async fn rehearse(
+    session: &Arc<dyn Session>,
+    database: &str,
+    name: &str,
+    schema: &Json,
+) -> Result<()> {
+    let tmp = format!(
+        "__dbstudio_try_{}",
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let head = format!("db.createCollection({}", shell_str(name));
+    for stmt in schema["pre"].as_array().into_iter().flatten() {
+        let Some(text) = stmt.as_str() else { continue };
+        // Views and anything else that does not start like that need no rehearsal.
+        let Some(rest) = text.strip_prefix(&head) else {
+            continue;
+        };
+        let attempt = format!("db.createCollection({}{rest}", shell_str(&tmp));
+        let result = run_statement(session, database, attempt).await;
+        let _ = run_statement(
+            session,
+            database,
+            format!("db.getCollection({}).drop();", shell_str(&tmp)),
+        )
+        .await;
+        result?;
+    }
+    Ok(())
+}
+
 fn read_json(path: &Path) -> Result<Json> {
     let bytes = std::fs::read(path)?;
     serde_json::from_slice(&bytes).map_err(|e| Error::Integrity(format!("bad schema file: {e}")))
@@ -370,6 +401,16 @@ pub(crate) async fn restore_mongo(
         .or_else(|| pre["database"].as_str().map(str::to_string))
         .ok_or_else(|| Error::Invalid("target database is not specified".into()))?;
     let plan = restore_plan(pre, &spec.objects)?;
+    if spec.clean {
+        if let Some(o) = plan.iter().find(|o| o["schemaFile"].is_null()) {
+            // A data-only backup cannot re-create what `clean` would drop.
+            return Err(Error::Invalid(format!(
+                "this backup holds only data (no structure of {}): a clean restore would lose \
+                 the collection's options and indexes",
+                o["name"].as_str().unwrap_or_default()
+            )));
+        }
+    }
     let cancel = reporter.cancel_token().clone();
     let mut outcome = RestoreOutcome {
         objects: 0,
@@ -401,7 +442,20 @@ pub(crate) async fn restore_mongo(
         let view = o["kind"] == "view";
         progress.object = Some(name.to_string());
         reporter.progress(&progress);
+        let schema = o["schemaFile"]
+            .as_str()
+            .and_then(|f| scanned.files.get(f))
+            .map(|p| read_json(p))
+            .transpose()?;
         if spec.clean {
+            // The structure statements are tried on a scratch name first: when they cannot run
+            // on this server the existing collection is still there.
+            if let Some(schema) = &schema {
+                if let Err(e) = rehearse(session, &target, name, schema).await {
+                    note(&mut outcome, name, e)?;
+                    continue;
+                }
+            }
             // The collection (or view) is replaced; the drop is a no-op when it is absent.
             let drop = format!("db.getCollection({}).drop();", shell_str(name));
             if let Err(e) = run_statement(session, &target, drop).await {
@@ -409,11 +463,6 @@ pub(crate) async fn restore_mongo(
                 continue;
             }
         }
-        let schema = o["schemaFile"]
-            .as_str()
-            .and_then(|f| scanned.files.get(f))
-            .map(|p| read_json(p))
-            .transpose()?;
         if let Some(schema) = &schema {
             for stmt in schema["pre"].as_array().into_iter().flatten() {
                 let Some(text) = stmt.as_str() else { continue };
@@ -478,6 +527,10 @@ pub(crate) async fn restore_mongo(
             for stmt in schema["post"].as_array().into_iter().flatten() {
                 let Some(text) = stmt.as_str() else { continue };
                 if let Err(e) = run_statement(session, &target, text.to_string()).await {
+                    reporter.log(&format!(
+                        "the collection {name} has its documents but this index is missing ({}): {text}",
+                        e.message()
+                    ));
                     note(&mut outcome, name, e)?;
                 }
             }

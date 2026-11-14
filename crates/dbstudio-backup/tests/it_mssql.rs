@@ -306,11 +306,9 @@ async fn mssql_logical_round_trip_keeps_big_lobs_and_types() {
     .await;
 }
 
-/// Known driver defect (package M, `crates/drivers/mssql`): `stream_table` reads each text /
-/// binary cell through `LEFT/SUBSTRING(col, 1, max_lob_bytes + 1)`, so a value over 8 MiB is
-/// cut silently in a backup. Remove `ignore` when the stream path no longer applies the limit.
+/// A value over the 8 MiB limit of free queries is not cut in a backup (the stream path does
+/// not apply the limit).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "driver M: stream_table cuts cells at max_lob_bytes (8 MiB)"]
 async fn values_over_the_driver_limit_are_not_cut() {
     if !enabled() {
         return;
@@ -372,5 +370,102 @@ async fn values_over_the_driver_limit_are_not_cut() {
     assert_eq!(
         int(&scalar(&*s, &dst, "SELECT DATALENGTH(b) FROM dbo.t").await),
         10_000_000
+    );
+}
+
+/// Partial restore on SQL Server: batches end with `GO`, so markers sit at batch boundaries.
+/// Five tables with foreign keys and identity columns, two come back.
+#[tokio::test(flavor = "multi_thread")]
+async fn mssql_partial_restore_selects_tables() {
+    if !enabled() {
+        return;
+    }
+    let Some((cfg, s)) = connect(Some("master")).await else {
+        return;
+    };
+    let n = Uuid::new_v4().simple().to_string()[..8].to_string();
+    let (src, dst) = (
+        format!("dbstudio_it_bp_src_{n}"),
+        format!("dbstudio_it_bp_dst_{n}"),
+    );
+    let _cleanup = Cleanup(vec![src.clone(), dst.clone()]);
+    exec(&*s, "master", &format!("CREATE DATABASE [{src}]")).await;
+    for sql in [
+        "CREATE TABLE dbo.t1 (id INT IDENTITY(1,1) PRIMARY KEY, v NVARCHAR(20))",
+        "CREATE TABLE dbo.t2 (id INT IDENTITY(1,1) PRIMARY KEY, t1_id INT, CONSTRAINT fk_t2_t1 FOREIGN KEY (t1_id) REFERENCES dbo.t1 (id))",
+        "CREATE TABLE dbo.t3 (id INT PRIMARY KEY, t2_id INT, CONSTRAINT fk_t3_t2 FOREIGN KEY (t2_id) REFERENCES dbo.t2 (id))",
+        "CREATE TABLE dbo.t4 (id INT IDENTITY(5,1) PRIMARY KEY, v NVARCHAR(20))",
+        "CREATE TABLE dbo.t5 (id INT PRIMARY KEY, t4_id INT, CONSTRAINT fk_t5_t4 FOREIGN KEY (t4_id) REFERENCES dbo.t4 (id))",
+        "INSERT INTO dbo.t1 (v) VALUES (N'a'), (N'b')",
+        "INSERT INTO dbo.t2 (t1_id) VALUES (1), (2), (2)",
+        "INSERT INTO dbo.t3 VALUES (1, 1)",
+        "INSERT INTO dbo.t4 (v) VALUES (N'x'), (N'y')",
+        "INSERT INTO dbo.t5 VALUES (1, 5)",
+    ] {
+        exec(&*s, &src, sql).await;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let rep = Arc::new(Rep::default());
+    let spec = BackupSpec {
+        connection_id: Uuid::nil(),
+        targets: vec![ObjectPath::root().child(ObjectKind::Database, &src)],
+        engine: BackupEngine::Logical {
+            content: ExportContent::Both,
+            ddl: Default::default(),
+        },
+        compression: Compression::None,
+        encrypted: false,
+        destination: Destination::LocalDir {
+            path: dir.path().to_string_lossy().into_owned(),
+            file_template: "{database}.dbsbak".into(),
+        },
+    };
+    let out = run_backup(ctx(&cfg, &s, &rep), &spec, None).await.unwrap();
+    let rspec = RestoreSpec {
+        file: out.files[0].clone(),
+        target_connection_id: Uuid::nil(),
+        target_database: Some(dst.clone()),
+        create_database: true,
+        clean: false,
+        objects: vec!["t2".into(), "t4".into()],
+        continue_on_error: false,
+    };
+    let res = run_restore(ctx(&cfg, &s, &rep), &rspec, None)
+        .await
+        .unwrap_or_else(|e| panic!("partial restore: {e}"));
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let names = scalar(
+        &*s,
+        &dst,
+        "SELECT STRING_AGG(name, ',') WITHIN GROUP (ORDER BY name) FROM sys.tables",
+    )
+    .await;
+    assert!(
+        matches!(&names, Value::Text(t) if t == "t2,t4"),
+        "{names:?}"
+    );
+    assert_eq!(
+        int(&scalar(&*s, &dst, "SELECT COUNT(*) FROM dbo.t2").await),
+        3
+    );
+    assert_eq!(
+        int(&scalar(&*s, &dst, "SELECT COUNT(*) FROM dbo.t4").await),
+        2
+    );
+    assert_eq!(
+        int(&scalar(&*s, &dst, "SELECT COUNT(*) FROM sys.foreign_keys").await),
+        0
+    );
+    let logs = rep.logs.lock().unwrap().join("\n");
+    assert!(
+        logs.contains("t1"),
+        "the skipped constraint is reported: {logs}"
+    );
+    let mut dirty = rspec.clone();
+    dirty.clean = true;
+    assert!(
+        run_restore(ctx(&cfg, &s, &rep), &dirty, None)
+            .await
+            .is_err()
     );
 }

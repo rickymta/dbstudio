@@ -600,7 +600,14 @@ pub fn restore_confirmation_text(config: &ConnectionConfig, spec: &RestoreSpec) 
     if !restore_is_guarded(config, spec) {
         return None;
     }
-    spec.target_database.clone().filter(|d| !d.is_empty())
+    let db = spec.target_database.clone().filter(|d| !d.is_empty())?;
+    // Redis databases are numbers: the text to type is `db<N>` so it cannot be mistaken for a
+    // count.
+    Some(if config.kind == dbstudio_core::DbKind::Redis {
+        format!("db{db}")
+    } else {
+        db
+    })
 }
 
 // ---------------------------------------------------------------------------------------------

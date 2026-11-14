@@ -118,7 +118,12 @@ pub(crate) struct Selection {
 fn is_support(kind: ObjectKind) -> bool {
     matches!(
         kind,
-        ObjectKind::Schema | ObjectKind::Sequence | ObjectKind::Type | ObjectKind::Database
+        ObjectKind::Schema
+            | ObjectKind::Sequence
+            | ObjectKind::Type
+            | ObjectKind::Database
+            | ObjectKind::Function
+            | ObjectKind::Procedure
     )
 }
 
@@ -142,21 +147,35 @@ impl Selection {
         let mut chosen = BTreeSet::new();
         let mut tables = Vec::new();
         for sel in selectors {
-            let mut found = false;
-            for o in objects {
-                let qualified = display(&o.schema, &o.name);
-                if o.name == *sel || qualified == *sel {
-                    found = true;
-                    chosen.insert((o.schema.clone(), o.name.clone()));
-                    if is_table_like(o.kind) {
-                        tables.push((o.schema.clone(), o.name.clone()));
-                    }
-                }
-            }
-            if !found {
+            // `schema.name` is exact; a bare name must be unambiguous.
+            let exact: Vec<&BackupObject> = objects
+                .iter()
+                .filter(|o| display(&o.schema, &o.name) == *sel)
+                .collect();
+            let matches: Vec<&BackupObject> = if exact.is_empty() {
+                objects.iter().filter(|o| o.name == *sel).collect()
+            } else {
+                exact
+            };
+            if matches.is_empty() {
                 return Err(Error::Invalid(format!(
                     "the object {sel:?} is not in this backup"
                 )));
+            }
+            if matches.len() > 1 {
+                let list: Vec<String> = matches
+                    .iter()
+                    .map(|o| display(&o.schema, &o.name))
+                    .collect();
+                return Err(Error::Invalid(format!(
+                    "the name {sel:?} matches several objects; use the full name: {}",
+                    list.join(", ")
+                )));
+            }
+            let o = matches[0];
+            chosen.insert((o.schema.clone(), o.name.clone()));
+            if is_table_like(o.kind) {
+                tables.push((o.schema.clone(), o.name.clone()));
             }
         }
         let support = objects
@@ -206,24 +225,6 @@ pub(crate) fn referenced_table(stmt: &str) -> Option<(Option<String>, String)> {
         from = after;
     }
     None
-}
-
-/// The table of an `INSERT INTO <table> ...` statement.
-pub(crate) fn insert_target(stmt: &str) -> Option<(Option<String>, String)> {
-    // Marker and other comment lines may lead the statement.
-    let mut t = stmt.trim_start();
-    while t.starts_with("--") {
-        t = t.split_once('\n').map_or("", |(_, r)| r).trim_start();
-    }
-    let head = t.get(..11)?;
-    if !head.eq_ignore_ascii_case("INSERT INTO") {
-        return None;
-    }
-    let rest = &t[11..];
-    if !rest.starts_with(|c: char| c.is_whitespace()) {
-        return None;
-    }
-    parse_qualified(rest.trim_start())
 }
 
 /// `a`, `"a"."b"`, `` `a`.`b` `` or `[a].[b]` at the start of `s`.
@@ -373,6 +374,13 @@ mod tests {
         assert_eq!(sel.support, ["app", "app.a_id_seq"]);
         assert!(sel.has_table(Some("app"), "a") && !sel.has_table(None, "b"));
         assert!(Selection::resolve(&objects, &["nope".into()]).is_err());
+        // A bare name matching two schemas must be written in full.
+        let twice = vec![
+            obj(ObjectKind::Table, Some("a"), "t"),
+            obj(ObjectKind::Table, Some("b"), "t"),
+        ];
+        assert!(Selection::resolve(&twice, &["t".into()]).is_err());
+        assert!(Selection::resolve(&twice, &["b.t".into()]).is_ok());
         // A bare name matches too.
         assert!(Selection::resolve(&objects, &["b".into()]).is_ok());
     }
@@ -396,26 +404,6 @@ mod tests {
         );
         assert_eq!(r("CREATE INDEX i ON t (a);"), None);
         assert_eq!(r("COMMENT ON COLUMN t.references IS 'x'"), None);
-    }
-
-    #[test]
-    fn insert_targets() {
-        assert_eq!(
-            insert_target("INSERT INTO [dbo].[child] ([id]) VALUES (1)"),
-            Some((Some("dbo".into()), "child".into()))
-        );
-        assert_eq!(
-            insert_target("  insert into t (a) values (1)"),
-            Some((None, "t".into()))
-        );
-        assert_eq!(
-            insert_target(
-                "-- dbstudio:object kind=table name=\"t\" phase=data\nINSERT INTO t (a) VALUES (1)"
-            ),
-            Some((None, "t".into()))
-        );
-        assert_eq!(insert_target("INSERTINTO t"), None);
-        assert_eq!(insert_target("CREATE TABLE t (a int)"), None);
     }
 
     #[test]

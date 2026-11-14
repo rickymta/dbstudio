@@ -437,6 +437,13 @@ pub(crate) async fn restore(
                 .into(),
         ));
     } else {
+        if spec.clean {
+            // `clean` empties the whole database (MySQL) or every schema of the backup (PostgreSQL):
+            // with only some objects coming back, everything else would be lost.
+            return Err(Error::Invalid(
+                "a clean restore cannot be combined with selected objects".into(),
+            ));
+        }
         let objects: Vec<crate::BackupObject> =
             serde_json::from_value(pre["objects"].clone()).unwrap_or_default();
         let sel = Selection::resolve(&objects, &spec.objects)?;
@@ -619,8 +626,6 @@ async fn run_script(
     let mut splitter = StreamSplitter::new(script_dialect_of(sd));
     let mut errors: Vec<RowError> = Vec::new();
     let (mut n, mut bytes) = (0u64, 0u64);
-    // SQL Server: rows go in with their identity values.
-    let mut identity = matches!(sd, ScriptDialect::MsSql).then(IdentityInsert::default);
     let mut line = String::new();
     let mut eof = false;
     // Partial restore: the block the next statements belong to.
@@ -681,7 +686,7 @@ async fn run_script(
                 }
             }
             n += 1;
-            match run_statement(target, cancel, identity.as_mut(), stmt).await {
+            match target.run(cancel, stmt).await {
                 Ok(()) => {}
                 Err(Error::Cancelled) => return Err(Error::Cancelled),
                 Err(e) if spec.continue_on_error => {
@@ -715,69 +720,6 @@ async fn run_script(
     progress.bytes_done = bytes;
     reporter.progress(progress);
     Ok((errors, n))
-}
-
-/// `SET IDENTITY_INSERT` handling for SQL Server: the export script inserts explicit values
-/// into identity columns, which the server only accepts with this switch on. The switch lives
-/// as long as the batch that sets it, so it goes in the same batch as the `INSERT`. A table
-/// without an identity column answers it with an error: the table is then remembered and its
-/// inserts run as they are.
-#[derive(Default)]
-struct IdentityInsert {
-    /// Quoted names of the tables known to have no identity column.
-    plain: std::collections::HashSet<String>,
-}
-
-fn quote_table(t: &(Option<String>, String)) -> String {
-    let q = |s: &str| format!("[{}]", s.replace(']', "]]"));
-    match &t.0 {
-        Some(schema) => format!("{}.{}", q(schema), q(&t.1)),
-        None => q(&t.1),
-    }
-}
-
-async fn run_statement(
-    target: &Target,
-    cancel: &CancelToken,
-    identity: Option<&mut IdentityInsert>,
-    stmt: String,
-) -> Result<()> {
-    let Some(id) = identity else {
-        return target.run(cancel, stmt).await;
-    };
-    if partial::insert_target(&stmt).is_none() {
-        return target.run(cancel, stmt).await;
-    }
-    // T-SQL batches end at `GO`, so one batch can hold the inserts of several tables: each
-    // `INSERT` gets its own switch. The split is lexical (quote aware), not textual.
-    let mut splitter = StreamSplitter::new(ScriptDialect::Postgres);
-    let mut pieces = splitter.push(&stmt);
-    pieces.extend(splitter.finish());
-    for piece in pieces {
-        if piece.trim().is_empty() {
-            continue;
-        }
-        let Some(table) = partial::insert_target(&piece) else {
-            target.run(cancel, piece).await?;
-            continue;
-        };
-        let name = quote_table(&table);
-        if id.plain.contains(&name) {
-            target.run(cancel, piece).await?;
-            continue;
-        }
-        let wrapped =
-            format!("SET IDENTITY_INSERT {name} ON;\n{piece}\n;SET IDENTITY_INSERT {name} OFF;");
-        match target.run(cancel, wrapped).await {
-            Err(e) if e.message().contains("does not have the identity property") => {
-                id.plain.insert(name);
-                target.run(cancel, piece).await?;
-            }
-            Err(e) => return Err(e),
-            Ok(()) => {}
-        }
-    }
-    Ok(())
 }
 
 /// Which statements of the script run during a partial restore.

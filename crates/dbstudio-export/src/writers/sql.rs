@@ -60,6 +60,32 @@ struct TableState {
     keep: Vec<usize>,
     /// Native type name of every result column (hint for CQL / ClickHouse collection literals).
     types: Vec<String>,
+    /// SQL Server: quoted table name when a written column is an identity column; every
+    /// `INSERT` then carries `SET IDENTITY_INSERT ... ON/OFF` in its own batch (the switch
+    /// only lasts as long as the batch).
+    identity: Option<String>,
+}
+
+/// Append the statement under construction to `buf`. SQL Server gets one batch (`GO`) per
+/// `INSERT`: a reader can then split at batch ends in linear time and a marker always sits
+/// at a batch boundary.
+fn push_statement(buf: &mut String, t: &mut TableState, mssql: bool) {
+    if mssql {
+        if let Some(n) = &t.identity {
+            buf.push_str(&format!("SET IDENTITY_INSERT {n} ON;\n"));
+        }
+        buf.push_str(&t.stmt);
+        buf.push_str(";\n");
+        if let Some(n) = &t.identity {
+            buf.push_str(&format!("SET IDENTITY_INSERT {n} OFF;\n"));
+        }
+        buf.push_str("GO\n");
+    } else {
+        buf.push_str(&t.stmt);
+        buf.push_str(";\n");
+    }
+    t.stmt.clear();
+    t.rows_in_stmt = 0;
 }
 
 /// `extra` text of a column that the server computes (`GENERATED ALWAYS AS`).
@@ -238,6 +264,9 @@ impl SqlWriter {
                 self.common_marker();
                 self.buf.push_str(b);
                 self.buf.push('\n');
+                if matches!(self.dialect, ScriptDialect::MsSql) {
+                    self.buf.push_str("GO\n");
+                }
                 self.tx_open = true;
             }
         }
@@ -246,18 +275,20 @@ impl SqlWriter {
     fn close_tx(&mut self) {
         if self.tx_open {
             self.common_marker();
-            self.buf.push_str("COMMIT;\n\n");
+            self.buf.push_str("COMMIT;\n");
+            if matches!(self.dialect, ScriptDialect::MsSql) {
+                self.buf.push_str("GO\n");
+            }
+            self.buf.push('\n');
             self.tx_open = false;
         }
     }
 
     fn flush_stmt(&mut self) {
+        let mssql = matches!(self.dialect, ScriptDialect::MsSql);
         if let Some(t) = self.table.as_mut() {
             if t.rows_in_stmt > 0 {
-                self.buf.push_str(&t.stmt);
-                self.buf.push_str(";\n");
-                t.stmt.clear();
-                t.rows_in_stmt = 0;
+                push_statement(&mut self.buf, t, mssql);
             }
         }
     }
@@ -416,16 +447,14 @@ impl ResultSink for SqlWriter {
                 .unwrap_or_default();
             let tuple = self.row_tuple(row, &keep, &types);
             let max_bytes = self.opts.max_statement_bytes as usize;
+            let mssql = matches!(self.dialect, ScriptDialect::MsSql);
             let t = self.table.as_mut().expect("checked above");
             if t.rows_in_stmt > 0
                 && (t.per_row
                     || t.rows_in_stmt >= t.batch_rows
                     || (max_bytes > 0 && t.stmt.len() + tuple.len() > max_bytes))
             {
-                self.buf.push_str(&t.stmt);
-                self.buf.push_str(";\n");
-                t.stmt.clear();
-                t.rows_in_stmt = 0;
+                push_statement(&mut self.buf, t, mssql);
             }
             if t.rows_in_stmt == 0 {
                 t.stmt.push_str(&t.prefix);
@@ -562,8 +591,17 @@ impl TableWriter for SqlWriter {
             rows_in_stmt: 0,
             per_row,
             batch_rows,
-            keep,
             types: meta.columns.iter().map(|c| c.type_name.clone()).collect(),
+            identity: (matches!(self.dialect, ScriptDialect::MsSql)
+                && keep.iter().any(|&i| {
+                    meta.details
+                        .as_ref()
+                        .and_then(|d| d.columns.iter().find(|x| x.name == meta.columns[i].name))
+                        .and_then(|d| d.extra.as_deref())
+                        .is_some_and(|e| e.to_ascii_lowercase().contains("identity"))
+                }))
+            .then(|| name.clone()),
+            keep,
         });
         Ok(())
     }

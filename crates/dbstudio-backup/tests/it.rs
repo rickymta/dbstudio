@@ -1401,6 +1401,14 @@ async fn partial_restore_case(kind: DbKind, port: u16) {
         logs.contains("references") && logs.contains("t1"),
         "the skipped constraint is reported: {logs}"
     );
+    // `clean` together with selected objects would lose everything else: refused.
+    let mut dirty = rspec.clone();
+    dirty.clean = true;
+    dirty.create_database = false;
+    let e = run_restore(ctx(&cfg, &s, &rep, BTreeMap::new()), &dirty, None)
+        .await
+        .unwrap_err();
+    assert!(e.message().contains("clean"), "{}", e.message());
     // A table that is not in the backup is refused.
     let mut bad = rspec.clone();
     bad.objects = vec!["nope".into()];
@@ -1418,4 +1426,93 @@ async fn partial_restore_postgres_and_mysql() {
     }
     partial_restore_case(DbKind::Postgres, 54316).await;
     partial_restore_case(DbKind::MySql, 33068).await;
+}
+
+/// PostgreSQL partial restore with serial and identity columns and a trigger: only the chosen
+/// table comes back, its sequence continues after the restored rows, the sequences of the other
+/// tables are not touched (no `OWNED BY` on a missing table) and the trigger function it needs
+/// is created.
+#[tokio::test(flavor = "multi_thread")]
+async fn partial_restore_postgres_serial_identity_and_trigger() {
+    if !enabled() {
+        return;
+    }
+    let (cfg, s) = connect_at(DbKind::Postgres, 54316).await;
+    let n = unique();
+    let (src, dst) = (
+        format!("dbstudio_it_pser_src_{n}"),
+        format!("dbstudio_it_pser_dst_{n}"),
+    );
+    let _cleanup = DbGuard::new(DbKind::Postgres, 54316, [&src, &dst]);
+    exec(&*s, None, &format!("CREATE DATABASE {src}")).await;
+    for sql in [
+        "CREATE TABLE a (id SERIAL PRIMARY KEY, v TEXT)",
+        "CREATE TABLE b (id SERIAL PRIMARY KEY, v TEXT, touched BOOLEAN DEFAULT false)",
+        "CREATE TABLE c (id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v TEXT)",
+        "CREATE FUNCTION touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.touched := true; RETURN NEW; END $$",
+        "CREATE TRIGGER b_touch BEFORE INSERT ON b FOR EACH ROW EXECUTE FUNCTION touch()",
+        "INSERT INTO a (v) VALUES ('x'), ('y'), ('z')",
+        "INSERT INTO b (v) VALUES ('p'), ('q')",
+        "INSERT INTO c (v) VALUES ('i'), ('j')",
+    ] {
+        exec(&*s, Some(&src), sql).await;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let rep = Arc::new(Rep::default());
+    let out = run_backup(
+        ctx(&cfg, &s, &rep, BTreeMap::new()),
+        &spec(&src, false, dir.path(), logical()),
+        None,
+    )
+    .await
+    .unwrap();
+    let restore = |objects: Vec<&str>| RestoreSpec {
+        file: out.files[0].clone(),
+        target_connection_id: Uuid::nil(),
+        target_database: Some(dst.clone()),
+        create_database: true,
+        clean: false,
+        objects: objects.into_iter().map(str::to_string).collect(),
+        continue_on_error: false,
+    };
+    let res = run_restore(
+        ctx(&cfg, &s, &rep, BTreeMap::new()),
+        &restore(vec!["a"]),
+        None,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("partial restore: {e}"));
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let tables = scalar(&*s, &dst, "SELECT string_agg(table_name, ',' ORDER BY table_name) FROM information_schema.tables WHERE table_schema = 'public'").await;
+    assert!(matches!(&tables, Value::Text(t) if t == "a"), "{tables:?}");
+    // The serial continues after the restored rows.
+    exec(&*s, Some(&dst), "INSERT INTO a (v) VALUES ('new')").await;
+    assert!(matches!(
+        scalar(&*s, &dst, "SELECT MAX(id) FROM a").await,
+        Value::Int(4)
+    ));
+    // The identity table and its trigger come back together with their own table.
+    let dst2 = format!("{dst}_2");
+    let _c2 = DbGuard::new(DbKind::Postgres, 54316, [&dst2]);
+    let mut sp = restore(vec!["b", "c"]);
+    sp.target_database = Some(dst2.clone());
+    let res = run_restore(ctx(&cfg, &s, &rep, BTreeMap::new()), &sp, None)
+        .await
+        .unwrap_or_else(|e| panic!("partial restore b,c: {e}"));
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    exec(&*s, Some(&dst2), "INSERT INTO b (v) VALUES ('t')").await;
+    assert!(matches!(
+        scalar(&*s, &dst2, "SELECT touched FROM b WHERE v = 't'").await,
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        scalar(&*s, &dst2, "SELECT MAX(id) FROM b").await,
+        Value::Int(3)
+    ));
+    exec(
+        &*s,
+        Some(&dst2),
+        "INSERT INTO c (v) OVERRIDING SYSTEM VALUE VALUES ('k')",
+    )
+    .await;
 }
