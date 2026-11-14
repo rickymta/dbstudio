@@ -40,7 +40,7 @@ enum State {
     Idle,
     /// Collecting the first documents to learn the header.
     Sampling {
-        meta: ObjectMeta,
+        meta: Box<ObjectMeta>,
         docs: Vec<Vec<Value>>,
     },
     /// Header known: documents are mapped onto `keys`.
@@ -272,10 +272,10 @@ impl ResultSink for FlattenWriter {
                 if self.paths.is_empty() {
                     // Rows beyond the sample are mapped like any later row.
                     let rest = docs.split_off(SAMPLE_DOCUMENTS);
-                    self.start_flattening(meta, docs)?;
+                    self.start_flattening(*meta, docs)?;
                     return self.on_rows(rest);
                 }
-                self.start_flattening(meta, docs)
+                self.start_flattening(*meta, docs)
             }
             State::Flattening {
                 keys,
@@ -325,7 +325,7 @@ impl TableWriter for FlattenWriter {
         }
         if self.paths.is_empty() {
             self.state = State::Sampling {
-                meta: meta.clone(),
+                meta: Box::new(meta.clone()),
                 docs: Vec::new(),
             };
             Ok(())
@@ -346,7 +346,7 @@ impl TableWriter for FlattenWriter {
 
     fn end_object(&mut self) -> Result<()> {
         if let State::Sampling { meta, docs } = std::mem::replace(&mut self.state, State::Idle) {
-            self.start_flattening(meta, docs)?;
+            self.start_flattening(*meta, docs)?;
         }
         self.state = State::Idle;
         self.inner.end_object()

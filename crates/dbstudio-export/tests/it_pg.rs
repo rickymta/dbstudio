@@ -12,6 +12,7 @@ async fn all_scenarios(env: Env) {
     it_support::query_export(&env).await;
     it_support::csv_round_trip(&env).await;
     it_support::csv_null_text(&env).await;
+    it_support::lob_round_trip(&env).await;
     it_support::import_conflicts(&env).await;
     it_support::csv_import(&env, 20_000).await;
     it_support::cross_database(&env).await;

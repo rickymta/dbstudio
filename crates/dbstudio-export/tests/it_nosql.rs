@@ -317,7 +317,7 @@ async fn redis_round_trip(r: Redis) {
     .await
     .unwrap();
     assert_eq!(again.skipped, 9, "{again:?}");
-    assert_eq!(dump(&*s, db).await["s:plain"].1.contains("changed"), true);
+    assert!(dump(&*s, db).await["s:plain"].1.contains("changed"));
     redis_cmd(&*s, db, "FLUSHDB").await;
 }
 
@@ -803,4 +803,243 @@ async fn mongo7_export_and_import() {
 #[tokio::test(flavor = "multi_thread")]
 async fn mongo44_export_and_import() {
     mongo_scenarios(false).await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Large values
+// ---------------------------------------------------------------------------------------------
+
+fn digest(v: &Value) -> String {
+    use std::hash::{Hash, Hasher};
+    fn hash_bytes(b: &[u8]) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        b.hash(&mut h);
+        h.finish()
+    }
+    match v {
+        Value::Text(t) => format!("t{}:{}", t.len(), hash_bytes(t.as_bytes())),
+        Value::Bytes(b) => format!("b{}:{}", b.len(), hash_bytes(b)),
+        Value::Document(f) => f
+            .iter()
+            .map(|(k, v)| format!("{k}={}", digest(v)))
+            .collect::<Vec<_>>()
+            .join(","),
+        other => format!("{other:?}"),
+    }
+}
+
+/// A 20 MB string (text and binary) survives the Redis keys export and import.
+#[tokio::test(flavor = "multi_thread")]
+async fn redis_20mb_strings_round_trip() {
+    if !enabled() {
+        return;
+    }
+    let r = Redis {
+        name: "valkey8",
+        var: "DBSTUDIO_IT_VALKEY8_PORT",
+        default_port: 63798,
+        tls: false,
+        db: 10,
+    };
+    let Some(s) = redis_connect(r).await else {
+        return;
+    };
+    let db = r.db;
+    redis_cmd(&*s, db, "FLUSHDB").await;
+    let big_text: String = "héllo wörld ".repeat(1_747_627);
+    let big_bytes: Vec<u8> = (0..20 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    put(
+        &*s,
+        db,
+        vec![
+            KeyChange::Put {
+                key: "big:text".into(),
+                data: KeyData::String {
+                    value: Value::Text(big_text.clone()),
+                },
+                ttl_ms: None,
+                mode: PutMode::Replace,
+            },
+            KeyChange::Put {
+                key: "big:bytes".into(),
+                data: KeyData::String {
+                    value: Value::Bytes(big_bytes.clone()),
+                },
+                ttl_ms: None,
+                mode: PutMode::Replace,
+            },
+        ],
+    )
+    .await;
+    let read = |name: &'static str| {
+        let s = s.clone();
+        async move {
+            let p = s
+                .read_key(KeyReadRequest {
+                    key: db_path(db).child(ObjectKind::Key, name),
+                    cursor: None,
+                    count: 10,
+                    pattern: None,
+                    max_string_bytes: Some(64 * 1024 * 1024),
+                })
+                .await
+                .unwrap();
+            match p.entries {
+                dbstudio_core::KeyEntries::String {
+                    value, truncated, ..
+                } => {
+                    assert!(!truncated);
+                    digest(&value)
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    let want = (read("big:text").await, read("big:bytes").await);
+    assert!(
+        want.0.starts_with("t20971524:") || want.0.starts_with("t2097"),
+        "{want:?}"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let report = run_export(
+        redis_ctx(s.clone()),
+        ExportSpec {
+            connection_id: Uuid::nil(),
+            source: ExportSource::Keys {
+                database: db_path(db),
+                pattern: "big:*".into(),
+            },
+            content: ExportContent::Data,
+            format: ExportFormat::Json(JsonOptions {
+                layout: JsonLayout::Ndjson,
+                ..JsonOptions::default()
+            }),
+            destination: ExportDestination {
+                path: dir.path().join("big.ndjson").to_string_lossy().into_owned(),
+                overwrite: false,
+            },
+            values: ValueFormat::default(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.rows, 2, "{:?}", report.warnings);
+    redis_cmd(&*s, db, "FLUSHDB").await;
+    let imported = run_import(
+        redis_ctx(s.clone()),
+        ImportSpec {
+            connection_id: Uuid::nil(),
+            file: report.files[0].clone(),
+            format: ImportFormat::Json {
+                layout: JsonLayout::Ndjson,
+            },
+            target: ImportTarget::Keys {
+                database: db_path(db),
+                mode: PutMode::Replace,
+            },
+            mapping: vec![],
+            on_conflict: None,
+            mode: ImportMode::Batches { rows: 10 },
+            max_errors: 0,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(imported.inserted, 2, "{imported:?}");
+    assert_eq!((read("big:text").await, read("big:bytes").await), want);
+    redis_cmd(&*s, db, "FLUSHDB").await;
+}
+
+/// Large strings and binary values (7 MB each: a BSON document stops at 16 MB) survive the JSON
+/// (EJSON) export and import.
+#[tokio::test(flavor = "multi_thread")]
+async fn mongo_large_values_round_trip() {
+    if !enabled() {
+        return;
+    }
+    let Some(s) = mongo_connect(true).await else {
+        return;
+    };
+    let db = format!("dbs_lob_{}", Uuid::new_v4().simple());
+    let _guard = DropDatabase {
+        replica: true,
+        db: db.clone(),
+    };
+    let dir = tempfile::tempdir().unwrap();
+    // Seed through the import itself: one NDJSON record with both values.
+    use base64::Engine as _;
+    let bytes: Vec<u8> = (0..7 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let text = "héllo wörld ".repeat(7_000_000 / 13);
+    let seed = dir.path().join("seed.ndjson");
+    let line = format!(
+        "{{\"_id\":1,\"t\":{},\"b\":{{\"$binary\":{{\"base64\":\"{}\",\"subType\":\"00\"}}}}}}\n",
+        serde_json::to_string(&text).unwrap(),
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    );
+    std::fs::write(&seed, line).unwrap();
+    let target = |name: &str| ImportTarget::New {
+        parent: ObjectPath::root().child(ObjectKind::Database, &db),
+        name: name.into(),
+        columns: vec![],
+    };
+    let ndjson_in = ImportFormat::Json {
+        layout: JsonLayout::Ndjson,
+    };
+    run_import(
+        mongo_ctx(s.clone()),
+        import_spec(&seed, ndjson_in.clone(), target("src")),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("seed: {e}"));
+    let fingerprint = |coll: &'static str| {
+        let (s, db) = (s.clone(), db.clone());
+        async move {
+            let mut sink = CollectingSink::new();
+            s.fetch_table(
+                TableDataRequest {
+                    query_id: Uuid::new_v4(),
+                    table: coll_path(&db, coll),
+                    filters: vec![],
+                    raw_where: None,
+                    sort: vec![],
+                    offset: 0,
+                    limit: 10,
+                    batch_size: Some(1),
+                },
+                &mut sink,
+            )
+            .await
+            .unwrap();
+            match sink.into_results().remove(0).outcome {
+                StatementOutcome::Rows(rs) => digest(&rs.rows[0][0]),
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    let want = fingerprint("src").await;
+    assert!(want.contains("b7340032:"), "{want}");
+    let out = dir.path().join("out.ndjson");
+    let report = run_export(
+        mongo_ctx(s.clone()),
+        export_spec(
+            &db,
+            "src",
+            ExportFormat::Json(JsonOptions {
+                layout: JsonLayout::Ndjson,
+                extended_json: ExtendedJson::Relaxed,
+                ..JsonOptions::default()
+            }),
+            ValueFormat::default(),
+            &out,
+        ),
+    )
+    .await
+    .unwrap();
+    run_import(
+        mongo_ctx(s.clone()),
+        import_spec(Path::new(&report.files[0]), ndjson_in, target("copy")),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("copy: {e}"));
+    assert_eq!(fingerprint("copy").await, want);
 }

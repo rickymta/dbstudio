@@ -29,6 +29,16 @@ async fn mysql8() {
     all_scenarios(Env::mysql(33068, "mysql8").await).await;
 }
 
+/// 20 MB values need a `max_allowed_packet` above the MariaDB default (16 MB); MySQL 8 has 64 MB.
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql8_large_values() {
+    if !enabled() {
+        return;
+    }
+    let env = Env::mysql(33068, "mysql8-lob").await;
+    it_support::lob_round_trip(&env).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn mariadb() {
     if !enabled() {
