@@ -176,7 +176,7 @@ impl Conn {
                             last.push(cells);
                         }
                     }
-                    QueryItem::Info(_) => {}
+                    QueryItem::Info(_) | QueryItem::Truncated(_) => {}
                     QueryItem::Done(d) => {
                         // A cancel that hit this internal query: its results are incomplete.
                         if d.attention {

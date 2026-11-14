@@ -38,11 +38,11 @@ pub fn statements(
     key_columns: &[String],
 ) -> Result<Vec<(String, Reports)>> {
     if req.columns.is_empty() {
-        return Err(Error::Other("bulk insert without columns".into()));
+        return Err(Error::Invalid("bulk insert without columns".into()));
     }
     for r in &req.rows {
         if r.len() != req.columns.len() {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "a row has {} values for {} columns",
                 r.len(),
                 req.columns.len()
@@ -65,7 +65,7 @@ pub fn statements(
         if req.on_conflict != OnConflict::Error
             && !req.columns.iter().any(|c| c.eq_ignore_ascii_case(k))
         {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "conflict column `{k}` is not among the inserted columns"
             )));
         }
