@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, master, develop]
   pull_request:
   # Weekly run of the heavy / old-version service groups (`integration-extra`).
   schedule:
