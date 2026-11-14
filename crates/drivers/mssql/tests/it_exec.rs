@@ -314,9 +314,10 @@ async fn concurrent_queries_share_the_pool() {
     }
     got.sort_by_key(|v| if let Value::Int(i) = v { *i } else { -1 });
     assert_eq!(got, (0..8).map(Value::Int).collect::<Vec<_>>());
-    // Pool of 4: two waves of one second.
+    // Pool of 4: two waves of one second (an unlimited pool would take ~1 s; WAITFOR is not
+    // precise to the millisecond on a busy runner).
     assert!(
-        started.elapsed() >= Duration::from_millis(1900),
+        started.elapsed() >= Duration::from_millis(1500),
         "{:?}",
         started.elapsed()
     );

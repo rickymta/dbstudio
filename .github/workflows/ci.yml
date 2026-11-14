@@ -88,8 +88,10 @@ jobs:
           - group: core
             services: ''
             profile: ''
-            strict: pg16,pg12,mysql8,mariadb,mariadb104,mysql57,mssql2022,oraclefree,mongo44,mongo7,redis6,redis7,valkey8,sshd
-            test: cargo test --workspace -- --test-threads=2
+            # oraclefree is not strict here: the runner has no Oracle Instant Client, so the Oracle
+            # driver tests skip on the runner and run strictly in the oracle-it container below.
+            strict: pg16,pg12,mysql8,mariadb,mariadb104,mysql57,mssql2022,mongo44,mongo7,redis6,redis7,valkey8,sshd
+            test: cargo test --workspace --no-fail-fast -- --test-threads=2
             oracle: true
           # CQL: ScyllaDB (+TLS) and Cassandra 5.
           - group: wide

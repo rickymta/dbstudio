@@ -2,6 +2,7 @@
 //! YugabyteDB, TiDB): logical backup -> restore into an empty namespace gives identical rows,
 //! partial restore picks tables, clean restore replaces. Only with `DBSTUDIO_IT=1`; a server
 //! that is not running skips its test (`DBSTUDIO_IT_STRICT=1` fails instead).
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
 #[path = "../../dbstudio-export/tests/it_newdb/fixtures.rs"]
 mod fixtures;

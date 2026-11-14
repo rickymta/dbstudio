@@ -1,6 +1,7 @@
 //! Integration tests against the Docker databases (`DBSTUDIO_IT=1`): integrated backup ->
 //! restore into an empty database must give identical rows; native tools run through shims
 //! that forward to `docker exec` (the host has no `pg_dump` / `mysqldump`).
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

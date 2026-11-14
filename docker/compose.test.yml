@@ -207,6 +207,8 @@ services:
         condition: service_healthy
     environment:
       DBSTUDIO_IT: '1'
+      # Here the Instant Client is present: a client that does not load is a failure, not a skip.
+      DBSTUDIO_IT_STRICT: oraclefree
       # Inside the compose network the container port is used, not the host port.
       DBSTUDIO_IT_ORACLE_HOST: oraclefree
       DBSTUDIO_IT_ORACLE_PORT: '1521'
