@@ -72,6 +72,7 @@
           "table": "orders"
         }
       ],
+      "reason": null,
       "skipped": 1,
       "state": "partial"
     }

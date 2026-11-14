@@ -526,7 +526,7 @@ pub(crate) async fn advise_with(
         ..ServerFacts::default()
     };
     let tree = {
-        let (raw, rules, facts) = (raw.clone(), rules.clone(), facts.clone());
+        let (raw, rules, facts) = (raw.clone(), rules, facts.clone());
         blocking(move || {
             let mut ctx = AdvisorContext::basic(&raw, &rules);
             ctx.dialect = dialect;
@@ -704,7 +704,7 @@ pub(crate) async fn advise_with(
     };
     let state_now = metadata.state;
     let (tree, tables) = {
-        let (raw, rules, facts) = (raw.clone(), rules.clone(), facts.clone());
+        let (raw, rules, facts) = (raw.clone(), rules, facts.clone());
         blocking(move || {
             let mut ctx = AdvisorContext::basic(&raw, &rules);
             ctx.dialect = dialect;

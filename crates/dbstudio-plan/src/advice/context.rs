@@ -412,13 +412,17 @@ mod tests {
             &found,
         );
         assert!(matches!(r, Resolution::Found(p) if p.segments[1].name == "archive"));
-        // The search path decides in order: `archive` first even though `public` has one too.
+        // The search path decides in order: `archive` first even though `sales` has one too.
         let path = ["archive".to_string(), "public".to_string()];
         let r = resolve_table(Flavor::Postgres, &table(None, "orders"), &path, &found);
         assert!(matches!(r, Resolution::Found(p) if p.segments[1].name == "archive"));
-        let path = ["public".to_string(), "archive".to_string()];
+        let path = [
+            "public".to_string(),
+            "sales".to_string(),
+            "archive".to_string(),
+        ];
         let r = resolve_table(Flavor::Postgres, &table(None, "orders"), &path, &found);
-        assert!(matches!(r, Resolution::Found(p) if p.segments[1].name == "public"));
+        assert!(matches!(r, Resolution::Found(p) if p.segments[1].name == "sales"));
         // Neither schema on the path: guessing would be wrong.
         let path = ["elsewhere".to_string()];
         assert_eq!(
