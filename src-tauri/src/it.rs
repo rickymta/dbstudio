@@ -429,3 +429,95 @@ async fn mysql_end_to_end() {
     })
     .await;
 }
+
+/// MongoDB over SSH (`sshd` + `mongo7` services): one SOCKS5 proxy on the SSH session keeps the
+/// profile's original host, so `verifyFull` checks the certificate against `mongo7`, and a
+/// replica set (seed list `hosts`, no `directConnection`) reaches its member by its own name.
+#[cfg(feature = "mongodb")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mongodb_over_ssh_verifies_the_original_host_and_reaches_the_replica_set() {
+    use std::sync::Arc;
+
+    use dbstudio_core::{DriverRegistry, SshAuth, SshConfig};
+    use dbstudio_ssh::MemoryKnownHosts;
+
+    use crate::session::{SessionManager, SshEnv};
+
+    if !enabled() {
+        return;
+    }
+    let ssh_port: u16 = std::env::var("DBSTUDIO_IT_SSH_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(22022);
+    let known = Arc::new(MemoryKnownHosts::new());
+    let env = SshEnv {
+        known: known.clone(),
+        secret: Some(Secret::new("dbstudio_ssh")),
+    };
+    let mut registry = DriverRegistry::new();
+    registry.register(Arc::new(dbstudio_driver_mongodb::MongoDriver::new()));
+    let manager = SessionManager::new(Arc::new(registry));
+
+    let base = |direct: bool| {
+        let mut c = ConnectionConfig::new(DbKind::MongoDb, "it", "mongo7");
+        c.port = 27017;
+        c.username = Some("dbstudio".into());
+        c.tls = TlsConfig {
+            mode: TlsMode::VerifyFull,
+            ca_cert_path: Some(cert("ca.crt")),
+            ..TlsConfig::default()
+        };
+        c.options
+            .insert("authSource".to_string(), "admin".to_string());
+        if direct {
+            c.options
+                .insert("directConnection".to_string(), "true".to_string());
+        } else {
+            c.options
+                .insert("hosts".to_string(), "mongo7:27017".to_string());
+            c.options
+                .insert("replicaSet".to_string(), "rs0".to_string());
+        }
+        c.ssh = Some(SshConfig {
+            host: "127.0.0.1".into(),
+            port: ssh_port,
+            username: "dbstudio".into(),
+            auth: SshAuth::Password,
+            keepalive_secs: Some(15),
+            connect_timeout_ms: Some(15_000),
+        });
+        c
+    };
+    let password = Secret::new("dbstudio_test");
+
+    for direct in [true, false] {
+        let config = base(direct);
+        // The first connection stops at the unknown SSH host key; trust it and retry.
+        let mut attempt = manager
+            .open_with_ssh(&config, Some(&password), Some(&env))
+            .await;
+        if let Err(Error::SshHostKey {
+            host,
+            port,
+            key_type,
+            fingerprint,
+            ..
+        }) = &attempt
+        {
+            known.trust(host, *port, key_type, fingerprint);
+            attempt = manager
+                .open_with_ssh(&config, Some(&password), Some(&env))
+                .await;
+        }
+        let info = attempt.unwrap_or_else(|e| panic!("direct={direct}: {e}"));
+        let session = manager.get(info.session_id).unwrap();
+        let mut req = QueryRequest::new("db.runCommand({ping: 1})");
+        req.database = Some("admin".into());
+        let results = execute_collect(session.as_ref(), req)
+            .await
+            .unwrap_or_else(|e| panic!("ping direct={direct}: {e}"));
+        assert!(!results.is_empty());
+        manager.close(info.session_id).await.unwrap();
+    }
+}

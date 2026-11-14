@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use dbstudio_core::{
-    ConnectionConfig, DriverDescriptor, DriverRegistry, Error, Result, ScriptDialect, Secret,
-    ServerInfo, Session,
+    ConnectionConfig, DbKind, DriverDescriptor, DriverRegistry, Error, Result, ScriptDialect,
+    Secret, ServerInfo, Session,
 };
 use dbstudio_ssh::{KnownHosts, MemoryKnownHosts, Tunnel};
 use serde::Serialize;
@@ -34,6 +34,35 @@ pub struct SessionInfo {
     pub descriptor: DriverDescriptor,
     /// Script language of the session (editor lexer, splitter, parameters, classifier).
     pub dialect: ScriptDialect,
+}
+
+/// Destinations a MongoDB SOCKS5 proxy may reach: the profile's host and every member of the
+/// `hosts` seed list (`host[:port]`, `[v6]:port`, comma separated).
+fn mongo_allowed_hosts(config: &ConnectionConfig) -> Vec<(String, u16)> {
+    let mut out = vec![(config.host.clone(), config.port)];
+    if let Some(list) = config.options.get("hosts") {
+        for item in list.split(',').map(str::trim).filter(|h| !h.is_empty()) {
+            let (host, port) = match item.strip_prefix('[') {
+                Some(rest) => match rest.split_once(']') {
+                    Some((h, tail)) => (h, tail.strip_prefix(':')),
+                    None => (rest, None),
+                },
+                None => match item.rsplit_once(':') {
+                    Some((h, p)) => (h, Some(p)),
+                    None => (item, None),
+                },
+            };
+            let port = port.and_then(|p| p.parse().ok()).unwrap_or(27017);
+            let entry = (host.to_string(), port);
+            if !out
+                .iter()
+                .any(|(h, p)| h.eq_ignore_ascii_case(&entry.0) && *p == entry.1)
+            {
+                out.push(entry);
+            }
+        }
+    }
+    out
 }
 
 /// What a connection with an SSH tunnel needs besides the profile: the trusted host keys and
@@ -361,20 +390,39 @@ impl SessionManager {
                     secret: None,
                 };
                 let env = ssh.unwrap_or(&fallback);
-                let t = Tunnel::open(
-                    cfg,
-                    env.secret.as_ref(),
-                    (config.host.clone(), config.port),
-                    env.known.as_ref(),
-                )
-                .await?;
-                let mut c = config.clone();
-                c.host = "127.0.0.1".to_string();
-                c.port = t.local_addr().port();
-                if c.tls.server_name.is_none() {
-                    c.tls.server_name = Some(config.host.clone());
+                if config.kind == DbKind::MongoDb {
+                    // MongoDB: one SOCKS5 proxy over the SSH session. The profile keeps its
+                    // original host / port (TLS verifies the real name, a replica set reaches
+                    // every member); the driver is told where the proxy listens.
+                    let t = Tunnel::open_socks5(
+                        cfg,
+                        env.secret.as_ref(),
+                        mongo_allowed_hosts(config),
+                        env.known.as_ref(),
+                    )
+                    .await?;
+                    let mut c = config.clone();
+                    c.options.insert(
+                        "socks5Proxy".into(),
+                        format!("127.0.0.1:{}", t.local_addr().port()),
+                    );
+                    (Some(c), Some(t))
+                } else {
+                    let t = Tunnel::open(
+                        cfg,
+                        env.secret.as_ref(),
+                        (config.host.clone(), config.port),
+                        env.known.as_ref(),
+                    )
+                    .await?;
+                    let mut c = config.clone();
+                    c.host = "127.0.0.1".to_string();
+                    c.port = t.local_addr().port();
+                    if c.tls.server_name.is_none() {
+                        c.tls.server_name = Some(config.host.clone());
+                    }
+                    (Some(c), Some(t))
                 }
-                (Some(c), Some(t))
             }
             None => (None, None),
         };
@@ -1385,6 +1433,26 @@ mod tests {
 
     fn config(kind: DbKind) -> ConnectionConfig {
         ConnectionConfig::new(kind, "t", "localhost")
+    }
+
+    #[test]
+    fn mongo_proxy_allows_the_profile_and_every_seed_host() {
+        let mut c = ConnectionConfig::new(DbKind::MongoDb, "m", "Mongo7");
+        c.port = 27017;
+        assert_eq!(mongo_allowed_hosts(&c), vec![("Mongo7".to_string(), 27017)]);
+        c.options.insert(
+            "hosts".into(),
+            "mongo7:27017, a.example:27018,[::1]:27019,bare".into(),
+        );
+        assert_eq!(
+            mongo_allowed_hosts(&c),
+            vec![
+                ("Mongo7".to_string(), 27017),
+                ("a.example".to_string(), 27018),
+                ("::1".to_string(), 27019),
+                ("bare".to_string(), 27017),
+            ]
+        );
     }
 
     fn manager(driver: Arc<MockDriver>) -> SessionManager {
