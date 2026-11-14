@@ -55,7 +55,7 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [features]
-default = ["postgres", "mysql", "mssql", "oracle", "mongodb", "redis"]
+default = ["postgres", "mysql", "mssql", "oracle", "mongodb", "redis", "clickhouse"]
 postgres = ["dep:dbstudio-driver-postgres"]
 mysql = ["dep:dbstudio-driver-mysql"]
 mssql = ["dep:dbstudio-driver-mssql"]

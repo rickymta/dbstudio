@@ -1,0 +1,171 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Expression",
+      "Node Id": "Expression_8",
+      "Description": "(Project names + Projection)",
+      "Expression": {
+        "Inputs": [
+          {
+            "Name": "count()",
+            "Type": "UInt64"
+          }
+        ],
+        "Actions": [
+          {
+            "Node Type": "INPUT",
+            "Result Type": "UInt64",
+            "Result Name": "count()",
+            "Arguments": [
+              0
+            ],
+            "Removed Arguments": [
+              0
+            ],
+            "Result": 0
+          }
+        ],
+        "Outputs": [
+          {
+            "Name": "count()",
+            "Type": "UInt64"
+          }
+        ],
+        "Positions": [
+          0
+        ]
+      },
+      "Plans": [
+        {
+          "Node Type": "Aggregating",
+          "Node Id": "Aggregating_4",
+          "Keys": [],
+          "Aggregates": [
+            {
+              "Name": "count()",
+              "Function": {
+                "Name": "count",
+                "Argument Types": [],
+                "Result Type": "UInt64"
+              },
+              "Arguments": []
+            }
+          ],
+          "Skip merging": false,
+          "Plans": [
+            {
+              "Node Type": "Expression",
+              "Node Id": "Expression_3",
+              "Description": "Before GROUP BY",
+              "Expression": {
+                "Inputs": [],
+                "Actions": [],
+                "Outputs": [],
+                "Positions": []
+              },
+              "Plans": [
+                {
+                  "Node Type": "Filter",
+                  "Node Id": "Filter_7",
+                  "Description": "(WHERE + Change column names to column identifiers)",
+                  "Filter Column": "equals(__table1.payload, 'zzz'_String)",
+                  "Removes Filter": true,
+                  "Expression": {
+                    "Inputs": [
+                      {
+                        "Name": "payload",
+                        "Type": "String"
+                      }
+                    ],
+                    "Actions": [
+                      {
+                        "Node Type": "INPUT",
+                        "Result Type": "String",
+                        "Result Name": "payload",
+                        "Arguments": [
+                          0
+                        ],
+                        "Removed Arguments": [],
+                        "Result": 0
+                      },
+                      {
+                        "Node Type": "COLUMN",
+                        "Result Type": "String",
+                        "Result Name": "'zzz'_String",
+                        "Column": "Const(String)",
+                        "Arguments": [],
+                        "Removed Arguments": [],
+                        "Result": 1
+                      },
+                      {
+                        "Node Type": "FUNCTION",
+                        "Result Type": "UInt8",
+                        "Result Name": "equals(__table1.payload, 'zzz'_String)",
+                        "Function": "equals",
+                        "Compiled": false,
+                        "Arguments": [
+                          0,
+                          1
+                        ],
+                        "Removed Arguments": [
+                          0,
+                          1
+                        ],
+                        "Result": 2
+                      }
+                    ],
+                    "Outputs": [
+                      {
+                        "Name": "equals(__table1.payload, 'zzz'_String)",
+                        "Type": "UInt8"
+                      }
+                    ],
+                    "Positions": [
+                      2
+                    ]
+                  },
+                  "Plans": [
+                    {
+                      "Node Type": "ReadFromMergeTree",
+                      "Node Id": "ReadFromMergeTree_0",
+                      "Description": "plan_fx.events",
+                      "Read Type": "Default",
+                      "Parts": 10,
+                      "Granules": 247,
+                      "Indexes": [
+                        {
+                          "Type": "MinMax",
+                          "Condition": "true",
+                          "Initial Parts": 10,
+                          "Selected Parts": 10,
+                          "Initial Granules": 247,
+                          "Selected Granules": 247
+                        },
+                        {
+                          "Type": "Partition",
+                          "Condition": "true",
+                          "Initial Parts": 10,
+                          "Selected Parts": 10,
+                          "Initial Granules": 247,
+                          "Selected Granules": 247
+                        },
+                        {
+                          "Type": "PrimaryKey",
+                          "Condition": "true",
+                          "Initial Parts": 10,
+                          "Selected Parts": 10,
+                          "Initial Granules": 247,
+                          "Selected Granules": 247
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]
