@@ -423,6 +423,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_element_loop)] // Shrinks as each format's package lands.
     fn scaffolded_formats_are_unsupported_until_their_package_lands() {
         for format in [PlanFormat::CqlTrace] {
             assert_eq!(parse(&raw(format)), Err(PlanError::Unsupported(format)));
