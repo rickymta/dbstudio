@@ -300,6 +300,9 @@ enum StepRes {
 }
 
 enum RunEnd {
+    /// A statement under the routine debugger ended: the script goes on in `RunMode` (the
+    /// driver loop of `do_run` does it, so no async function calls itself).
+    Continue(RunMode),
     Paused(PauseReason),
     Finished,
     Stopped,
@@ -394,6 +397,13 @@ struct Core {
     pending_confirm: Option<ConfirmationGrant>,
     bps: Vec<BpEntry>,
     routine_bps: Vec<RoutineBreakpoint>,
+    /// Hits per routine breakpoint id (hit counts).
+    routine_hits: HashMap<String, u32>,
+    /// Mode of the script run that armed a statement for routine breakpoints (to go on with
+    /// after the statement).
+    resume_mode: Option<RunMode>,
+    /// Breakpoint of a Run to Cursor inside a routine.
+    temp_bp: Option<(RoutineRef, u32)>,
     muted: bool,
     watches: Vec<WatchSpec>,
     owned: bool,
@@ -549,10 +559,11 @@ impl Core {
         DebugSessionCaps {
             step_into: self.routine_ok,
             step_out: self.routine_ctx.is_some(),
-            pause_running: true,
+            // A routine that runs cannot be interrupted (only the script between statements)
+            pause_running: self.routine_ctx.is_none(),
             set_variable: true,
             routine: self.routine_ok,
-            jump_to: true,
+            jump_to: self.routine_ctx.is_none(),
         }
     }
 
@@ -682,9 +693,10 @@ impl Core {
         let started = Instant::now();
         let r = self.routine.as_mut()?;
         let vars = r.variables().await.ok()?;
+        // the last of equal names is the innermost (a loop variable shadows a local)
         let v = vars
             .iter()
-            .find(|v| v.name.eq_ignore_ascii_case(expr.trim()))?;
+            .rfind(|v| v.name.eq_ignore_ascii_case(expr.trim()))?;
         Some(EvalResult {
             value: EvalValue::Scalar {
                 value: v.value.clone().unwrap_or(Value::Null),
@@ -735,7 +747,7 @@ impl Core {
                 continue;
             }
             let w = lexed.slice(*s, *e);
-            if let Some(v) = vars.iter().find(|v| v.name.eq_ignore_ascii_case(&w)) {
+            if let Some(v) = vars.iter().rfind(|v| v.name.eq_ignore_ascii_case(&w)) {
                 text.push_str(&lexed.slice(pos, *s));
                 let lit = match v.value.as_ref() {
                     None | Some(Value::Null) => "NULL".to_string(),
@@ -1676,6 +1688,17 @@ impl Core {
                 }
             }
             first = false;
+            if self.routine_bps_active(idx).await {
+                // Routine breakpoints are armed for the statement: Step Over / Resume stop in a
+                // routine that has one (design 2.4).
+                self.resume_mode = Some(mode);
+                let act = if mode == RunMode::Step {
+                    RoutineAct::Over
+                } else {
+                    RoutineAct::Continue
+                };
+                return self.run_armed(vec![], act).await;
+            }
             let was_owned = self.owned;
             match self.exec_step(idx).await {
                 StepRes::Done => {
@@ -1702,7 +1725,35 @@ impl Core {
 
     // -------------------------------------------------------------------------- routine stepping
 
+    /// Enabled routine breakpoints exist, are not muted, and the statement at `idx` can stop:
+    /// then the statement runs under the routine debugger. Also refreshes what the routine
+    /// debugger knows about the target connection.
+    async fn routine_bps_active(&mut self, idx: usize) -> bool {
+        if !self.routine_ok || self.muted || self.routine.is_none() {
+            return false;
+        }
+        if !self.routine_bps.iter().any(|b| b.breakpoint.enabled) {
+            return false;
+        }
+        let step = self.program.steps[idx].clone();
+        if !step.is_stop() {
+            return false;
+        }
+        if let Some(r) = self.routine.as_mut() {
+            // learns the pid of the target (it changes when the tab reconnects)
+            let _ = r.step_into_targets(&*self.lease, &step, false).await;
+        }
+        true
+    }
+
     async fn run_step_into(&mut self, targets: Vec<RoutineRef>) -> RunEnd {
+        self.run_armed(targets, RoutineAct::Into).await
+    }
+
+    /// Run the statement at the cursor under the routine debugger: armed with the entries of
+    /// `targets` (Step Into) and the enabled routine breakpoints. `act` says how the script goes
+    /// on when the statement ends without a stop.
+    async fn run_armed(&mut self, targets: Vec<RoutineRef>, act: RoutineAct) -> RunEnd {
         let idx = self.cursor;
         let p = match self.prepare(idx).await {
             Ok(p) => p,
@@ -1711,7 +1762,15 @@ impl Core {
             Err(StepRes::Terminate(e)) => return RunEnd::Terminate(e),
             Err(_) => return RunEnd::Stopped,
         };
-        let bps = self.routine_bps.clone();
+        let bps: Vec<RoutineBreakpoint> = if self.muted {
+            vec![]
+        } else {
+            self.routine_bps
+                .iter()
+                .filter(|b| b.breakpoint.enabled)
+                .cloned()
+                .collect()
+        };
         if let Some(r) = self.routine.as_mut() {
             if let Err(e) = r.arm(&targets, &bps).await {
                 let msg = format!("cannot arm the routine debugger: {}", e.message());
@@ -1742,39 +1801,189 @@ impl Core {
             (Some(r), Some(ctx)) => r.wait(&mut ctx.done).await,
             _ => Ok(RoutineStop::TargetDone),
         };
-        self.handle_routine_stop(stop, RoutineAct::Into, true).await
+        let entry = !targets.is_empty();
+        self.handle_routine_stop(stop, act, true, entry).await
     }
 
+    /// The routine debugger answered. `first`: the answer to the first wait (the statement just
+    /// started); `entry`: Step Into armed an entry breakpoint, so that stop is the entry.
     async fn handle_routine_stop(
         &mut self,
         stop: Result<RoutineStop>,
         act: RoutineAct,
-        entering: bool,
+        first: bool,
+        entry: bool,
     ) -> RunEnd {
-        match stop {
-            Ok(RoutineStop::At {
-                routine,
-                line,
-                depth,
-            }) => {
-                let frames = match self.routine.as_mut() {
-                    Some(r) => r.frames().await.unwrap_or_default(),
-                    None => vec![],
-                };
-                if let Some(ctx) = self.routine_ctx.as_mut() {
-                    ctx.at = Some((routine, line, depth));
-                    ctx.frames = frames;
+        let mut stop = stop;
+        let mut act = act;
+        loop {
+            match stop {
+                Ok(RoutineStop::At {
+                    routine,
+                    line,
+                    depth,
+                }) => {
+                    let frames = match self.routine.as_mut() {
+                        Some(r) => r.frames().await.unwrap_or_default(),
+                        None => vec![],
+                    };
+                    if let Some(ctx) = self.routine_ctx.as_mut() {
+                        ctx.at = Some((routine.clone(), line, depth));
+                        ctx.frames = frames;
+                    }
+                    // Run to Cursor reached (or passed by another stop): drop its breakpoint.
+                    let temp = self.temp_bp.take();
+                    if let (Some((tr, tl)), Some(r)) = (&temp, self.routine.as_mut()) {
+                        let _ = r.clear_temp_breakpoint(tr, *tl).await;
+                    }
+                    if first && entry {
+                        return RunEnd::Paused(PauseReason::RoutineEntry);
+                    }
+                    let from_breakpoint = (first && !entry) || act == RoutineAct::Continue;
+                    if let Some((tr, tl)) = &temp {
+                        if tr.signature == routine.signature && *tl == line {
+                            return RunEnd::Paused(PauseReason::RunToCursor);
+                        }
+                    }
+                    if from_breakpoint {
+                        match self.routine_bp_hit(&routine, line).await {
+                            Some(ids) => {
+                                return RunEnd::Paused(PauseReason::Breakpoint { ids });
+                            }
+                            None => {
+                                // a condition said no, a hit count is not reached, or the
+                                // breakpoint only logs: go on
+                                act = RoutineAct::Continue;
+                                let next = match (self.routine.as_mut(), self.routine_ctx.as_mut())
+                                {
+                                    (Some(r), Some(ctx)) => {
+                                        r.command(RoutineCommand::Continue, &mut ctx.done).await
+                                    }
+                                    _ => Ok(RoutineStop::TargetDone),
+                                };
+                                stop = next;
+                                continue;
+                            }
+                        }
+                    }
+                    return RunEnd::Paused(PauseReason::Step);
                 }
-                RunEnd::Paused(match act {
-                    _ if entering => PauseReason::RoutineEntry,
-                    RoutineAct::Continue => PauseReason::Breakpoint { ids: vec![] },
-                    _ => PauseReason::Step,
-                })
-            }
-            Ok(RoutineStop::TargetDone | RoutineStop::Aborted) | Err(_) => {
-                self.finish_routine_step(act).await
+                Ok(RoutineStop::TargetDone | RoutineStop::Aborted) | Err(_) => {
+                    return self.finish_routine_step(act).await;
+                }
             }
         }
+    }
+
+    /// The routine stopped at `line` because of a breakpoint: apply condition, hit count, log
+    /// message and `suspend` of the breakpoints there (design 4.2.7). `Some(ids)` stops.
+    async fn routine_bp_hit(&mut self, routine: &RoutineRef, line: u32) -> Option<Vec<String>> {
+        let here: Vec<Breakpoint> = self
+            .routine_bps
+            .iter()
+            .filter(|b| {
+                b.breakpoint.enabled
+                    && b.routine.signature == routine.signature
+                    && b.breakpoint.line == line
+            })
+            .map(|b| b.breakpoint.clone())
+            .collect();
+        if here.is_empty() {
+            // a stop nothing explains (first statement alias, a stale breakpoint): show it
+            return Some(vec![]);
+        }
+        let mut ids = vec![];
+        for bp in here {
+            if let Some(c) = bp
+                .condition
+                .as_deref()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+            {
+                let query = self.kit.condition_query(c);
+                let r = self.eval_expression(&query, None).await;
+                match r.value {
+                    EvalValue::Scalar { value, .. } => {
+                        if !crate::eval::truthy(&value) {
+                            continue;
+                        }
+                    }
+                    EvalValue::Rows { result } => {
+                        let yes = result
+                            .rows
+                            .first()
+                            .and_then(|r| r.first())
+                            .is_some_and(crate::eval::truthy);
+                        if !yes {
+                            continue;
+                        }
+                    }
+                    other => {
+                        // a failing condition stops, like JetBrains
+                        self.info(format!(
+                            "breakpoint condition failed: {}",
+                            crate::eval::eval_display(&other)
+                        ));
+                        ids.push(bp.id.clone());
+                        continue;
+                    }
+                }
+            }
+            let hits = self.routine_hits.entry(bp.id.clone()).or_insert(0);
+            *hits += 1;
+            if let Some(n) = bp.hit_count {
+                if *hits < n {
+                    continue;
+                }
+            }
+            if let Some(t) = bp.log_message.as_deref().filter(|t| !t.is_empty()) {
+                let text = self.render_in_routine(t).await;
+                self.emit(DebugOutput::Message {
+                    text,
+                    source: MessageSource::Log,
+                });
+            }
+            if bp.suspend {
+                ids.push(bp.id.clone());
+            }
+        }
+        (!ids.is_empty()).then_some(ids)
+    }
+
+    /// `{expr}` placeholders of a log message, evaluated in the routine frame.
+    async fn render_in_routine(&mut self, template: &str) -> String {
+        let chars: Vec<char> = template.chars().collect();
+        let mut out = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                '{' if chars.get(i + 1) == Some(&'{') => {
+                    out.push('{');
+                    i += 2;
+                }
+                '}' if chars.get(i + 1) == Some(&'}') => {
+                    out.push('}');
+                    i += 2;
+                }
+                '{' => {
+                    let rest = &chars[i + 1..];
+                    if let Some(close) = rest.iter().position(|c| *c == '}') {
+                        let expr: String = rest[..close].iter().collect();
+                        let r = self.eval_expression(expr.trim(), None).await;
+                        out.push_str(&crate::eval::eval_display(&r.value));
+                        i += close + 2;
+                    } else {
+                        out.push('{');
+                        i += 1;
+                    }
+                }
+                c => {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        }
+        out
     }
 
     /// The statement on the target finished: complete the script step.
@@ -1801,7 +2010,7 @@ impl Core {
                     return RunEnd::Paused(PauseReason::Step);
                 }
                 if act == RoutineAct::Continue {
-                    self.run_steps(RunMode::Resume, false).await
+                    RunEnd::Continue(self.resume_mode.take().unwrap_or(RunMode::Resume))
                 } else {
                     match self.program.next_stop(self.cursor) {
                         Some(_) => RunEnd::Paused(PauseReason::Step),
@@ -1843,7 +2052,7 @@ impl Core {
                 last
             }
         };
-        self.handle_routine_stop(stop, act, false).await
+        self.handle_routine_stop(stop, act, false, false).await
     }
 
     // ---------------------------------------------------------------------------- termination
@@ -2005,6 +2214,7 @@ impl Core {
         match end {
             RunEnd::Paused(r) => self.enter_pause(r).await,
             RunEnd::Finished => self.finish_script().await,
+            RunEnd::Continue(_) => self.enter_pause(PauseReason::Step).await,
             RunEnd::Stopped => {
                 let _ = self.stop_now(None).await;
             }
@@ -2260,7 +2470,30 @@ impl Core {
             };
         }
         self.shared.pause.store(false, Ordering::SeqCst);
+        // a new command of the user: what an earlier armed run meant to do afterwards is void
+        self.resume_mode = None;
         if self.routine_ctx.is_some() {
+            if let DebugAction::RunToCursor { source, line, .. } = &action {
+                // Run to Cursor inside a routine: a temporary breakpoint, then continue.
+                let SourceRef::Routine { routine } = source else {
+                    return Err(Error::Invalid(
+                        "Run to Cursor in the script is not available while a routine is stopped"
+                            .into(),
+                    ));
+                };
+                let Some(r) = self.routine.as_mut() else {
+                    return Err(Error::Unsupported(
+                        "routine debugging is not available".into(),
+                    ));
+                };
+                if !r.set_temp_breakpoint(routine, *line).await? {
+                    return Err(Error::Invalid(format!(
+                        "the server did not accept a breakpoint at line {line}"
+                    )));
+                }
+                self.temp_bp = Some((routine.clone(), *line));
+                return Ok(Some(RunRequest::Routine(RoutineAct::Continue)));
+            }
             let act = match action {
                 DebugAction::StepInto
                 | DebugAction::ForceStepInto
@@ -2346,6 +2579,14 @@ impl Core {
     }
 
     async fn do_run(&mut self, req: RunRequest) -> RunEnd {
+        let mut end = self.do_run_once(req).await;
+        while let RunEnd::Continue(mode) = end {
+            end = self.run_steps(mode, false).await;
+        }
+        end
+    }
+
+    async fn do_run_once(&mut self, req: RunRequest) -> RunEnd {
         match req {
             RunRequest::Script {
                 mode, first, into, ..
@@ -2665,6 +2906,9 @@ pub async fn start(
         pending_confirm: None,
         bps: vec![],
         routine_bps,
+        routine_hits: HashMap::new(),
+        resume_mode: None,
+        temp_bp: None,
         muted,
         watches,
         owned,

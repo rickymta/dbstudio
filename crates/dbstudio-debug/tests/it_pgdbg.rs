@@ -1095,6 +1095,14 @@ it!(
 // ------------------------------------------------------------------------------------------
 
 async fn engine_session(text: &str) -> (dbstudio_debug::DebugHandle, Arc<dyn Session>) {
+    engine_session_with(text, vec![], false).await
+}
+
+async fn engine_session_with(
+    text: &str,
+    routine_breakpoints: Vec<RoutineBreakpoint>,
+    muted: bool,
+) -> (dbstudio_debug::DebugHandle, Arc<dyn Session>) {
     use dbstudio_core::Capabilities;
     use dbstudio_core::debug::{DebugEndAction, DebugOptions, DebugStartRequest};
     let session = connect().await;
@@ -1117,13 +1125,13 @@ async fn engine_session(text: &str) -> (dbstudio_debug::DebugHandle, Arc<dyn Ses
         range: None,
         params: vec![],
         breakpoints: vec![],
-        routine_breakpoints: vec![],
+        routine_breakpoints,
         watches: vec![],
         options: DebugOptions {
             end_action: DebugEndAction::Rollback,
             ..Default::default()
         },
-        muted: false,
+        muted,
     };
     let h = timed(dbstudio_debug::DebugEngine::start(
         profile,
@@ -1221,4 +1229,181 @@ it!(pgdbg_engine_resume_runs_the_routine_to_the_end, async {
         "{:?}",
         s.status
     );
+});
+
+// Line 7 of dbgt_outer is `total := total + public.dbgt_inner(i)` inside the loop.
+const LOOP_LINE: u32 = 7;
+
+fn routine_pause_line(s: &dbstudio_core::debug::DebugState) -> Option<(String, u32)> {
+    match s.position.as_ref()? {
+        dbstudio_core::debug::DebugPosition {
+            source: dbstudio_core::debug::SourceRef::Routine { routine },
+            line,
+            ..
+        } => Some((routine.signature.clone(), *line)),
+        _ => None,
+    }
+}
+
+it!(pgdbg_engine_resume_stops_at_a_routine_breakpoint, async {
+    use dbstudio_core::debug::{DebugAction, DebugStatus, PauseReason};
+    let (h, _s) = engine_session_with(
+        "SELECT dbgt_outer(2);",
+        vec![user_bp(OUTER, "rb", LOOP_LINE)],
+        false,
+    )
+    .await;
+    settle(&h).await;
+    timed(h.act(DebugAction::Resume, None)).await.unwrap();
+    let s = settle(&h).await;
+    assert!(
+        matches!(
+            s.status,
+            DebugStatus::Paused {
+                reason: PauseReason::Breakpoint { .. }
+            }
+        ),
+        "{:?}",
+        s.status
+    );
+    assert_eq!(routine_pause_line(&s), Some((OUTER.into(), LOOP_LINE)));
+    timed(h.stop(None)).await.unwrap();
+});
+
+it!(
+    pgdbg_engine_step_over_the_call_stops_at_a_routine_breakpoint,
+    async {
+        use dbstudio_core::debug::{DebugAction, DebugStatus, PauseReason};
+        let (h, _s) = engine_session_with(
+            "SELECT dbgt_outer(2);",
+            vec![user_bp(INNER, "rb", 5)],
+            false,
+        )
+        .await;
+        settle(&h).await;
+        timed(h.act(DebugAction::StepOver, None)).await.unwrap();
+        let s = settle(&h).await;
+        assert!(
+            matches!(
+                s.status,
+                DebugStatus::Paused {
+                    reason: PauseReason::Breakpoint { .. }
+                }
+            ),
+            "{:?}",
+            s.status
+        );
+        assert_eq!(routine_pause_line(&s), Some((INNER.into(), 5)));
+        // Resume goes on to the next hit (second call), then to the end.
+        timed(h.act(DebugAction::Resume, None)).await.unwrap();
+        let s = settle(&h).await;
+        assert_eq!(routine_pause_line(&s), Some((INNER.into(), 5)));
+        timed(h.act(DebugAction::Resume, None)).await.unwrap();
+        let s = settle(&h).await;
+        assert!(
+            matches!(s.status, DebugStatus::Terminated { .. }),
+            "{:?}",
+            s.status
+        );
+    }
+);
+
+it!(pgdbg_engine_muted_routine_breakpoints_do_not_stop, async {
+    use dbstudio_core::debug::{DebugAction, DebugStatus, TerminateReason};
+    let (h, _s) = engine_session_with(
+        "SELECT dbgt_outer(2);",
+        vec![user_bp(OUTER, "rb", LOOP_LINE)],
+        true,
+    )
+    .await;
+    settle(&h).await;
+    timed(h.act(DebugAction::Resume, None)).await.unwrap();
+    let s = settle(&h).await;
+    assert!(
+        matches!(
+            s.status,
+            DebugStatus::Terminated {
+                reason: TerminateReason::Finished,
+                ..
+            }
+        ),
+        "{:?}",
+        s.status
+    );
+});
+
+it!(
+    pgdbg_engine_routine_breakpoint_condition_and_hit_count,
+    async {
+        use dbstudio_core::debug::{DebugAction, DebugStatus};
+        // condition: only the call with i = 2 stops
+        let mut bp = user_bp(OUTER, "rb", LOOP_LINE);
+        bp.breakpoint.condition = Some("i = 2".into());
+        let (h, _s) = engine_session_with("SELECT dbgt_outer(3);", vec![bp], false).await;
+        settle(&h).await;
+        timed(h.act(DebugAction::Resume, None)).await.unwrap();
+        let s = settle(&h).await;
+        assert_eq!(
+            routine_pause_line(&s),
+            Some((OUTER.into(), LOOP_LINE)),
+            "{:?}",
+            s.status
+        );
+        let vars = timed(h.variable_children("g:Routine")).await.unwrap();
+        let i = vars.iter().rfind(|v| v.name == "i").expect("variable i");
+        assert_eq!(i.display, "2");
+        timed(h.act(DebugAction::Resume, None)).await.unwrap();
+        let s = settle(&h).await;
+        assert!(
+            matches!(s.status, DebugStatus::Terminated { .. }),
+            "{:?}",
+            s.status
+        );
+
+        // hit count: the third pass
+        let mut bp = user_bp(OUTER, "rb", LOOP_LINE);
+        bp.breakpoint.hit_count = Some(3);
+        let (h, _s) = engine_session_with("SELECT dbgt_outer(3);", vec![bp], false).await;
+        settle(&h).await;
+        timed(h.act(DebugAction::Resume, None)).await.unwrap();
+        let s = settle(&h).await;
+        assert_eq!(routine_pause_line(&s), Some((OUTER.into(), LOOP_LINE)));
+        timed(h.stop(None)).await.unwrap();
+    }
+);
+
+it!(pgdbg_engine_run_to_cursor_inside_a_routine, async {
+    use dbstudio_core::debug::{DebugAction, DebugStatus, PauseReason, SourceRef};
+    let (h, _s) = engine_session("SELECT dbgt_outer(2);").await;
+    settle(&h).await;
+    timed(h.act(DebugAction::StepInto, None)).await.unwrap();
+    settle(&h).await;
+    // RETURN total is line 9
+    timed(h.act(
+        DebugAction::RunToCursor {
+            source: SourceRef::Routine {
+                routine: rref(OUTER),
+            },
+            line: 9,
+            force: false,
+        },
+        None,
+    ))
+    .await
+    .unwrap();
+    let s = settle(&h).await;
+    assert!(
+        matches!(
+            s.status,
+            DebugStatus::Paused {
+                reason: PauseReason::RunToCursor
+            }
+        ),
+        "{:?}",
+        s.status
+    );
+    assert_eq!(routine_pause_line(&s), Some((OUTER.into(), 9)));
+    // the caps of a stopped routine: no jump
+    assert!(!s.caps.jump_to);
+    timed(h.stop(None)).await.unwrap();
 });

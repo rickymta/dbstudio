@@ -16,7 +16,7 @@ use dbstudio_core::debug::{
     RoutineDebugSupport, RoutineRef, RoutineSource, SourceRef, WatchResult, WatchSpec,
 };
 use dbstudio_core::{
-    Capabilities, ConfirmationGrant, DbKind, Lease, ParamValue, Result, ScriptAnalysis,
+    Capabilities, ConfirmationGrant, DbKind, Error, Lease, ParamValue, Result, ScriptAnalysis,
     ScriptDialect, TxStatus,
 };
 use uuid::Uuid;
@@ -272,6 +272,18 @@ pub trait RoutineDebugger: Send {
     async fn source(&mut self, routine: &RoutineRef) -> Result<RoutineSource>;
     /// Remove every breakpoint and listener.
     async fn disarm(&mut self) -> Result<()>;
+    /// A breakpoint on the stopped target for Run to Cursor (`false` = the server refused).
+    async fn set_temp_breakpoint(&mut self, routine: &RoutineRef, line: u32) -> Result<bool> {
+        let _ = (routine, line);
+        Err(Error::Unsupported(
+            "run to cursor inside a routine is not available on this server".into(),
+        ))
+    }
+    /// Remove the breakpoint of [`RoutineDebugger::set_temp_breakpoint`].
+    async fn clear_temp_breakpoint(&mut self, routine: &RoutineRef, line: u32) -> Result<()> {
+        let _ = (routine, line);
+        Ok(())
+    }
 }
 
 /// Entry point: starts one debug session.

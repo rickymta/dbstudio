@@ -1362,83 +1362,11 @@ fn session_capabilities(
 // Routine support and routine source (PostgreSQL family), design 4.2.1
 // ---------------------------------------------------------------------------------------------
 
-const PROBE_EXTENSION: &str = "SELECT \
-    (SELECT extversion FROM pg_extension WHERE extname = 'pldbgapi'), \
-    EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pldbgapi'), \
-    current_setting('shared_preload_libraries', true)";
-const PROBE_PRIVILEGES: &str = "SELECT \
-    has_function_privilege('pldbg_create_listener()', 'EXECUTE'), \
-    has_function_privilege('pldbg_set_global_breakpoint(integer,oid,integer,integer)', 'EXECUTE')";
-
-/// Facts the probe reads from the server.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct RoutineProbe {
-    /// `pldbgapi` is created in this database.
-    pub extension_created: bool,
-    /// The package is installed on the server (`pg_available_extensions`).
-    pub extension_available: bool,
-    /// `shared_preload_libraries`.
-    pub preload: String,
-    /// `EXECUTE` on the `pldbg_*` functions (known only once the extension exists).
-    pub privileges: Option<bool>,
-}
-
-/// The decision of design 4.2.1 on what the probe found.
-pub(crate) fn classify_routine_support(p: &RoutineProbe) -> RoutineDebugSupport {
-    if !p.extension_created {
-        return if p.extension_available {
-            RoutineDebugSupport::NeedsExtension {
-                statement: "CREATE EXTENSION pldbgapi;".into(),
-            }
-        } else {
-            RoutineDebugSupport::Unsupported {
-                reason: "the pldbgapi extension (pldebugger) is not installed on the server".into(),
-            }
-        };
-    }
-    if !p.preload.split(',').any(|l| l.trim() == "plugin_debugger") {
-        return RoutineDebugSupport::NeedsServerConfig {
-            hint: "add plugin_debugger to shared_preload_libraries and restart the server".into(),
-        };
-    }
-    if p.privileges == Some(false) {
-        return RoutineDebugSupport::NoPermission {
-            hint: "the connected role cannot execute the pldbg_* functions".into(),
-        };
-    }
-    RoutineDebugSupport::Available
-}
-
 fn text_cell(v: &Value) -> Option<String> {
     match v {
         Value::Text(t) => Some(t.clone()),
         _ => None,
     }
-}
-
-fn bool_cell(v: &Value) -> Option<bool> {
-    match v {
-        Value::Bool(b) => Some(*b),
-        _ => None,
-    }
-}
-
-async fn first_row(
-    session: &Arc<dyn dbstudio_core::Session>,
-    database: Option<&str>,
-    sql: &str,
-) -> Result<Vec<Value>> {
-    let mut req = QueryRequest::new(sql);
-    req.max_rows = Some(1);
-    req.database = database.map(str::to_string);
-    let results = execute_collect(&**session, req).await?;
-    results
-        .into_iter()
-        .find_map(|r| match r.outcome {
-            StatementOutcome::Rows(rs) => rs.rows.into_iter().next(),
-            _ => None,
-        })
-        .ok_or_else(|| Error::Other("the debug probe returned no row".into()))
 }
 
 /// Can this server debug routines (a probe on the session, not on the lease, so a lease in
@@ -1463,25 +1391,23 @@ async fn routine_support(
             };
         }
     }
+    // The engine's own detection on a short-lived lease of the same session: one function
+    // decides for the UI and for the session, so they cannot disagree.
     let probe = async {
-        let row = first_row(session, database, PROBE_EXTENSION).await?;
-        let mut p = RoutineProbe {
-            extension_created: row.first().and_then(text_cell).is_some(),
-            extension_available: row.get(1).and_then(bool_cell).unwrap_or(false),
-            preload: row.get(2).and_then(text_cell).unwrap_or_default(),
-            privileges: None,
-        };
-        if p.extension_created {
-            let row = first_row(session, database, PROBE_PRIVILEGES).await?;
-            let a = row.first().and_then(bool_cell);
-            let b = row.get(1).and_then(bool_cell);
-            p.privileges = a.zip(b).map(|(a, b)| a && b);
-        }
-        Ok::<_, Error>(p)
+        let lease = session
+            .open_lease(LeaseOptions {
+                database: database.map(str::to_string),
+                schema: None,
+                auto_commit: true,
+            })
+            .await?;
+        let found = dbstudio_debug::routine::pg::PgRoutineDebugger::probe_support(&*lease).await;
+        let _ = lease.close().await;
+        found
     }
     .await;
     match probe {
-        Ok(p) => classify_routine_support(&p),
+        Ok(support) => support,
         Err(e) => RoutineDebugSupport::Unsupported {
             reason: format!("cannot probe the server: {e}"),
         },
@@ -2618,41 +2544,6 @@ mod tests {
     }
 
     // ----- pure helpers -----
-
-    #[test]
-    fn routine_support_follows_design_4_2_1() {
-        let probe = |created, available, preload: &str, privileges| RoutineProbe {
-            extension_created: created,
-            extension_available: available,
-            preload: preload.into(),
-            privileges,
-        };
-        assert!(matches!(
-            classify_routine_support(&probe(false, true, "", None)),
-            RoutineDebugSupport::NeedsExtension { statement } if statement == "CREATE EXTENSION pldbgapi;"
-        ));
-        assert!(matches!(
-            classify_routine_support(&probe(false, false, "plugin_debugger", None)),
-            RoutineDebugSupport::Unsupported { .. }
-        ));
-        assert!(matches!(
-            classify_routine_support(&probe(true, true, "pg_stat_statements", Some(true))),
-            RoutineDebugSupport::NeedsServerConfig { .. }
-        ));
-        assert!(matches!(
-            classify_routine_support(&probe(
-                true,
-                true,
-                "pg_stat_statements, plugin_debugger",
-                Some(false)
-            )),
-            RoutineDebugSupport::NoPermission { .. }
-        ));
-        assert_eq!(
-            classify_routine_support(&probe(true, true, "plugin_debugger", Some(true))),
-            RoutineDebugSupport::Available
-        );
-    }
 
     #[test]
     fn source_hash_is_sha256_hex() {

@@ -762,6 +762,14 @@ impl PgRoutineDebugger {
         Ok(pid)
     }
 
+    /// What this server and role can do for routine debugging, decided by the same facts and the
+    /// same rules the engine uses at start (`debug_support` of the host calls this, so the UI
+    /// never promises more than a session delivers).
+    pub async fn probe_support(lease: &dyn Lease) -> Result<RoutineDebugSupport> {
+        let (facts, _) = Self::gather_facts(lease).await?;
+        Ok(decide_support(&facts))
+    }
+
     async fn gather_facts(lease: &dyn Lease) -> Result<(SupportFacts, Option<String>)> {
         let rows = Self::rows(
             lease,
@@ -1586,6 +1594,14 @@ impl RoutineDebugger for PgRoutineDebugger {
             first_line: 1,
             text,
         })
+    }
+
+    async fn set_temp_breakpoint(&mut self, routine: &RoutineRef, line: u32) -> Result<bool> {
+        self.add_breakpoint(routine, line).await
+    }
+
+    async fn clear_temp_breakpoint(&mut self, routine: &RoutineRef, line: u32) -> Result<()> {
+        self.remove_breakpoint(routine, line).await.map(|_| ())
     }
 
     async fn disarm(&mut self) -> Result<()> {

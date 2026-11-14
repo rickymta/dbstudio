@@ -310,3 +310,55 @@ async fn smart_step_into_filters_targets_and_unavailable_servers_step_over() {
 async fn rig_unavailable() -> (Rig, Arc<Mutex<Vec<String>>>) {
     rig(false).await
 }
+
+#[tokio::test]
+async fn resume_stops_in_a_routine_that_has_a_breakpoint() {
+    use dbstudio_core::debug::{Breakpoint, RoutineBreakpoint};
+    let lease = FakeLease::new(true);
+    lease.on("f_outer", vec![Reply::Block]);
+    let calls = Arc::new(Mutex::new(vec![]));
+    let routine = FakeRoutine {
+        lease: lease.clone(),
+        line: 0,
+        calls: calls.clone(),
+        available: true,
+    };
+    let mut req = request("SELECT f_outer(1);\nSELECT 2;");
+    req.options.end_action = DebugEndAction::Rollback;
+    req.routine_breakpoints = vec![RoutineBreakpoint {
+        routine: f_outer(),
+        source_hash: None,
+        breakpoint: Breakpoint {
+            id: "rb".into(),
+            line: 1,
+            enabled: true,
+            suspend: true,
+            condition: None,
+            log_message: None,
+            hit_count: None,
+        },
+    }];
+    let rig = begin_with(
+        ScriptDialect::Postgres,
+        req,
+        lease,
+        DebugSettings::default(),
+        Some(Box::new(routine)),
+    )
+    .await;
+    rig.paused().await;
+    rig.h.act(DebugAction::Resume, None).await.unwrap();
+    let s = rig.paused().await;
+    assert_eq!(
+        reason(&s),
+        Some(PauseReason::Breakpoint {
+            ids: vec!["rb".into()]
+        })
+    );
+    assert_eq!(s.frames[0].kind, FrameKind::Routine);
+    // nothing armed an entry: Resume, not Step Into
+    assert!(calls.lock().unwrap().iter().any(|c| c == "arm 0"));
+    // inside a routine nothing can be jumped to and a running routine cannot be paused
+    assert!(!s.caps.jump_to);
+    rig.h.stop(None).await.unwrap();
+}
