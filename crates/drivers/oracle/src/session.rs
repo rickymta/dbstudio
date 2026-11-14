@@ -132,7 +132,7 @@ impl Session for OracleSession {
             .timeout_ms
             .filter(|t| *t > 0)
             .map(std::time::Duration::from_millis);
-        let result = stream(conn, ctl, timeout, sink, move |conn, em, ctl| {
+        let result = stream(conn, ctl.clone(), timeout, sink, move |conn, em, ctl| {
             let r = run_script(conn, &params, em, ctl);
             if r.is_err() {
                 let _ = conn.rollback();
@@ -184,7 +184,7 @@ impl Session for OracleSession {
         let max_lob = self.shared.target.max_lob_bytes;
         let started = Instant::now();
         let id = req.query_id;
-        let result = stream(conn, ctl, None, sink, move |conn, em, ctl| {
+        let result = stream(conn, ctl.clone(), None, sink, move |conn, em, ctl| {
             data::fetch_table_worker(
                 conn,
                 &schema,
@@ -202,7 +202,7 @@ impl Session for OracleSession {
         })
         .await;
         self.shared.unregister(id);
-        if let Err(Error::Connection(_)) = &result {
+        if ctl.is_abandoned() || matches!(&result, Err(Error::Connection(_))) {
             pooled.discard();
         }
         result.map(|()| ExecSummary {
@@ -324,16 +324,22 @@ impl Session for OracleSession {
             .map(std::time::Duration::from_millis);
         let read_only = self.shared.read_only;
         let id = req.query_id;
-        let result = stream(conn, ctl, timeout, &mut NullSink, move |conn, _em, _ctl| {
-            let r = explain::explain(conn, &req, read_only, TxMode::Detached);
-            if r.is_err() {
-                let _ = conn.rollback();
-            }
-            r
-        })
+        let result = stream(
+            conn,
+            ctl.clone(),
+            timeout,
+            &mut NullSink,
+            move |conn, _em, _ctl| {
+                let r = explain::explain(conn, &req, read_only, TxMode::Detached);
+                if r.is_err() {
+                    let _ = conn.rollback();
+                }
+                r
+            },
+        )
         .await;
         self.shared.unregister(id);
-        if let Err(Error::Connection(_)) = &result {
+        if ctl.is_abandoned() || matches!(&result, Err(Error::Connection(_))) {
             pooled.discard();
         }
         result
