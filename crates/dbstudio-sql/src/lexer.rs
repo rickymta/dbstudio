@@ -125,7 +125,8 @@ impl Rules {
                 r.backslash = true;
                 r.dash_comment = false;
             }
-            ScriptDialect::Opaque => {}
+            // CQL and ClickHouse behave like `Opaque` until package S adds their lexers.
+            ScriptDialect::Opaque | ScriptDialect::Cql | ScriptDialect::ClickHouse => {}
         }
         r
     }
@@ -547,14 +548,8 @@ mod tests {
     use super::*;
 
     const PG: ScriptDialect = ScriptDialect::Postgres;
-    const MY: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
-    const MY_NB: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: false,
-    };
+    const MY: ScriptDialect = ScriptDialect::mysql(false, true);
+    const MY_NB: ScriptDialect = ScriptDialect::mysql(false, false);
 
     fn kinds(d: ScriptDialect, text: &str) -> Vec<(TokenKind, String)> {
         let chars: Vec<char> = text.chars().collect();

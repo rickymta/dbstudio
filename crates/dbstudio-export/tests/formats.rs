@@ -842,10 +842,7 @@ async fn the_sql_script_does_not_depend_on_the_session_modes() {
     let session = FakeSession::with_tables(&[("orders", 1)]);
     // A MySQL source running with NO_BACKSLASH_ESCAPES.
     let mut ctx = context(session.clone(), Recorder::new());
-    ctx.dialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: false,
-    };
+    ctx.dialect = ScriptDialect::mysql(false, false);
     let report = run_export(
         ctx,
         query_spec(

@@ -13,7 +13,7 @@ pub const MAX_FIELD_CHARS: usize = 255;
 pub const IMPORT_OPTION_ALLOWLIST: &[&str] = &["application_name", "pool_max"];
 
 fn invalid(msg: impl std::fmt::Display) -> Error {
-    Error::Storage(format!("invalid data: {msg}"))
+    Error::Invalid(msg.to_string())
 }
 
 /// Check length and reject control characters.

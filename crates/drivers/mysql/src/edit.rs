@@ -25,6 +25,7 @@ pub(crate) async fn editability(session: &MySqlSession, path: &ObjectPath) -> Re
         read_only_columns: vec![],
         reason: Some(reason),
         atomic: true,
+        notes: vec![],
     };
     let d = match session.table_details(path).await {
         Ok(d) => d,
@@ -48,6 +49,7 @@ pub(crate) async fn editability(session: &MySqlSession, path: &ObjectPath) -> Re
         read_only_columns,
         reason: (!editable).then_some(NotEditableReason::NoUniqueKey),
         atomic: true,
+        notes: vec![],
     })
 }
 

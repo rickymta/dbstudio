@@ -10,6 +10,7 @@ authors.workspace = true
 [dependencies]
 dbstudio-core.workspace = true
 dbstudio-sql.workspace = true
+dbstudio-store.workspace = true
 calamine.workspace = true
 rust_xlsxwriter = { workspace = true, features = ["constant_memory"] }
 serde.workspace = true

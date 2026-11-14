@@ -6,7 +6,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use dbstudio_core::{DbKind, DriverDescriptor, DriverStatus, Error, Result, UnavailableReason};
 use dbstudio_store::AppSettings;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
@@ -53,6 +53,23 @@ pub struct DriverDiagnostics {
     pub status: DriverStatus,
     pub message: String,
     pub help_url: Option<String>,
+    /// Structured checks behind `message` (empty until package E fills them in).
+    #[serde(default)]
+    pub checks: Vec<DiagnosticCheck>,
+}
+
+/// One line of the diagnostics report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticCheck {
+    /// Stable id: `driverRegistered`, `nativeTool:<tool>`, `nativeClient`, `clientVersion`, ...
+    pub id: String,
+    /// The check passed.
+    pub ok: bool,
+    /// Measured value (a version, a path), when there is one.
+    pub value: Option<String>,
+    /// Explanation or hint.
+    pub detail: Option<String>,
 }
 
 /// Status of the driver of `kind` and an explanation. Oracle has its own report
@@ -95,6 +112,7 @@ pub(crate) fn driver_diagnostics_impl(state: &AppState, kind: DbKind) -> Result<
         status: descriptor.status,
         message,
         help_url,
+        checks: Vec::new(),
     })
 }
 
@@ -147,6 +165,7 @@ pub(crate) fn oracle_diagnostics_impl(state: &AppState) -> Result<DriverDiagnost
         status: descriptor.status,
         message: oracle_report(&report),
         help_url,
+        checks: Vec::new(),
     })
 }
 
@@ -245,16 +264,16 @@ pub fn sanitize_file_name(name: &str) -> String {
 pub fn decode_cell(data_base64: &str) -> Result<Vec<u8>> {
     // 4 characters encode 3 bytes; reject before allocating.
     if data_base64.len() / 4 * 3 > MAX_SAVE_BYTES + 3 {
-        return Err(Error::Other(format!(
+        return Err(Error::Invalid(format!(
             "value is larger than {} MB",
             MAX_SAVE_BYTES >> 20
         )));
     }
     let bytes = STANDARD
         .decode(data_base64.trim())
-        .map_err(|e| Error::Other(format!("invalid base64 data: {e}")))?;
+        .map_err(|e| Error::Invalid(format!("invalid base64 data: {e}")))?;
     if bytes.len() > MAX_SAVE_BYTES {
-        return Err(Error::Other(format!(
+        return Err(Error::Invalid(format!(
             "value is larger than {} MB",
             MAX_SAVE_BYTES >> 20
         )));
@@ -266,7 +285,7 @@ pub fn decode_cell(data_base64: &str) -> Result<Vec<u8>> {
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let name = path
         .file_name()
-        .ok_or_else(|| Error::Other("save path has no file name".into()))?;
+        .ok_or_else(|| Error::Invalid("save path has no file name".into()))?;
     let _ = name;
     // Short temporary name: the target's own name may already be near the length limit.
     let tmp = path.with_file_name(format!(".dbs-{}.tmp", Uuid::new_v4().simple()));

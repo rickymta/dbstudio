@@ -1,0 +1,20 @@
+[package]
+name = "dbstudio-driver-cassandra"
+description = "Cassandra / ScyllaDB driver for DBStudio."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+# Contract scaffold: the driver is empty (connect -> Unsupported). Package C adds the real
+# dependencies (`scylla`, declared in the workspace) and the implementation.
+[dependencies]
+dbstudio-core.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

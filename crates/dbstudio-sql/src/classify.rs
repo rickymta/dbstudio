@@ -34,7 +34,10 @@ pub fn analyze(d: ScriptDialect, text: &str) -> ScriptAnalysis {
         | ScriptDialect::Oracle => analyze_sql(d, &chars),
         ScriptDialect::MongoShell => analyze_mongo(text, &chars),
         ScriptDialect::RedisCli => analyze_redis(&chars),
-        ScriptDialect::Opaque => analyze_opaque(&chars),
+        // CQL and ClickHouse behave like `Opaque` until package S adds their lexers.
+        ScriptDialect::Opaque | ScriptDialect::Cql | ScriptDialect::ClickHouse => {
+            analyze_opaque(&chars)
+        }
     };
     ScriptAnalysis {
         dialect: d,
@@ -1662,10 +1665,7 @@ mod tests {
     use StatementClass as C;
 
     const PG: ScriptDialect = ScriptDialect::Postgres;
-    const MY: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
+    const MY: ScriptDialect = ScriptDialect::mysql(false, true);
     const MS: ScriptDialect = ScriptDialect::MsSql;
     const ORA: ScriptDialect = ScriptDialect::Oracle;
 

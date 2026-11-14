@@ -69,7 +69,10 @@ pub(crate) fn scan(
     eof: bool,
 ) -> (Vec<Unit>, usize) {
     let (mut units, consumed) = match d {
-        ScriptDialect::Opaque => scan_opaque(chars, eof),
+        // CQL and ClickHouse behave like `Opaque` until package S adds their splitters.
+        ScriptDialect::Opaque | ScriptDialect::Cql | ScriptDialect::ClickHouse => {
+            scan_opaque(chars, eof)
+        }
         ScriptDialect::RedisCli => scan_lines(chars, eof),
         ScriptDialect::MongoShell => scan_mongo(chars, eof),
         _ => {
@@ -707,10 +710,7 @@ mod tests {
     use super::*;
 
     const PG: ScriptDialect = ScriptDialect::Postgres;
-    const MY: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
+    const MY: ScriptDialect = ScriptDialect::mysql(false, true);
     const MS: ScriptDialect = ScriptDialect::MsSql;
     const ORA: ScriptDialect = ScriptDialect::Oracle;
 

@@ -43,6 +43,8 @@ pub enum ObjectKind {
     Package,
     /// User-defined type (PostgreSQL, SQL Server, Oracle); optional for drivers.
     Type,
+    /// ClickHouse dictionary.
+    Dictionary,
 }
 
 /// Stable keys used as the `name` of [`ObjectKind::Folder`] path segments. The UI translates
@@ -62,6 +64,10 @@ pub mod folder {
     pub const TRIGGERS: &str = "triggers";
     /// Sequences folder.
     pub const SEQUENCES: &str = "sequences";
+    /// Dictionaries folder (ClickHouse).
+    pub const DICTIONARIES: &str = "dictionaries";
+    /// User-defined aggregates folder (CQL).
+    pub const AGGREGATES: &str = "aggregates";
     /// Indexes folder.
     pub const INDEXES: &str = "indexes";
     /// Columns folder.

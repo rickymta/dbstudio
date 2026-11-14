@@ -36,6 +36,42 @@
     },
     "pattern": "user:*"
   },
+  "KeyData": {
+    "members": [
+      [
+        {
+          "t": "text",
+          "v": "ann"
+        },
+        "10.5"
+      ]
+    ],
+    "type": "zSet"
+  },
+  "KeyData#json": {
+    "text": "{}",
+    "type": "json"
+  },
+  "KeyData#stream": {
+    "entries": [
+      {
+        "fields": [
+          [
+            {
+              "t": "text",
+              "v": "f"
+            },
+            {
+              "t": "text",
+              "v": "v"
+            }
+          ]
+        ],
+        "id": "1-0"
+      }
+    ],
+    "type": "stream"
+  },
   "KeyEntries": {
     "totalBytes": 5,
     "truncated": false,
@@ -62,6 +98,41 @@
     },
     "maxStringBytes": 1048576,
     "pattern": "a*"
+  },
+  "KeyRecord": {
+    "data": {
+      "items": [
+        {
+          "t": "text",
+          "v": "a"
+        },
+        {
+          "t": "bytes",
+          "v": "AP8="
+        }
+      ],
+      "type": "list"
+    },
+    "expireAtMs": 1800000000000,
+    "key": "user:1"
+  },
+  "KeyScanPage": {
+    "keys": ["user:1", "\u0000b64:AJ+Slv8="],
+    "nextCursor": "17"
+  },
+  "KeyScanRequest": {
+    "count": 1000,
+    "cursor": null,
+    "database": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "0"
+        }
+      ]
+    },
+    "pattern": "user:*",
+    "typeFilter": "hash"
   },
   "KeyValuePage": {
     "encoding": "listpack",
@@ -122,6 +193,28 @@
         {
           "kind": "keyPrefix",
           "name": "user:1:"
+        }
+      ]
+    }
+  },
+  "ObjectNode#dictionary": {
+    "detail": null,
+    "hasChildren": false,
+    "kind": "dictionary",
+    "name": "countries",
+    "path": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "dictionaries"
+        },
+        {
+          "kind": "dictionary",
+          "name": "countries"
         }
       ]
     }

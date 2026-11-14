@@ -90,6 +90,10 @@ pub struct ConnectionConfig {
     /// `<connId>#ssh`.
     #[serde(default)]
     pub ssh: Option<SshConfig>,
+    /// Custom environment label shown instead of the standard name (at most 32 characters).
+    /// Safety rules still follow `environment` (production = confirmations).
+    #[serde(default)]
+    pub environment_label: Option<String>,
 }
 
 impl ConnectionConfig {
@@ -109,6 +113,7 @@ impl ConnectionConfig {
             environment: None,
             options: BTreeMap::new(),
             ssh: None,
+            environment_label: None,
         }
     }
 }
@@ -195,6 +200,7 @@ mod tests {
         });
         let cfg: ConnectionConfig = serde_json::from_value(json).unwrap();
         assert!(cfg.ssh.is_none());
+        assert!(cfg.environment_label.is_none());
         assert!(cfg.tls.server_name.is_none());
         let mut cfg = cfg;
         cfg.tls.server_name = Some("db.internal".into());

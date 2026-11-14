@@ -64,7 +64,7 @@ fn database_name(database: &ObjectPath) -> Result<String> {
         .iter()
         .find(|s| s.kind == ObjectKind::Database)
         .map(|s| s.name.clone())
-        .ok_or_else(|| Error::Other("path does not name a database".into()))
+        .ok_or_else(|| Error::Invalid("path does not name a database".into()))
 }
 
 /// Reports the progress of the delete scan to the job and stops it on cancellation.
@@ -126,7 +126,7 @@ pub(crate) async fn keys_delete_pattern_impl(
     }
     guard::ensure_writable(&config, "deleting keys")?;
     if pattern.is_empty() {
-        return Err(Error::Other("the pattern must not be empty".into()));
+        return Err(Error::Invalid("the pattern must not be empty".into()));
     }
     let db = database_name(&database)?;
     let (_, production) = guard::policy_flags(&config);

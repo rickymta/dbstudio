@@ -1314,7 +1314,7 @@ mod tests {
     #[test]
     fn no_tool_anywhere_is_a_visible_problem() {
         let infos = detect_in(&BTreeMap::new(), &[], &[]);
-        assert_eq!(infos.len(), 10);
+        assert_eq!(infos.len(), 12);
         for i in &infos {
             assert!(i.path.is_none());
             assert!(i.problem.as_deref().unwrap().contains("not found"), "{i:?}");

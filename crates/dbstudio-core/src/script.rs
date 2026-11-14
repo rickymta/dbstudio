@@ -23,6 +23,9 @@ pub enum ScriptDialect {
         mariadb: bool,
         /// `NO_BACKSLASH_ESCAPES` is off: `\` escapes inside string literals.
         backslash_escapes: bool,
+        /// `sql_mode` has `ANSI_QUOTES` (or `ANSI`): `"x"` is an identifier, not a string.
+        #[serde(default)]
+        ansi_quotes: bool,
     },
     /// SQL Server (T-SQL, `GO` batches).
     MsSql,
@@ -32,8 +35,23 @@ pub enum ScriptDialect {
     MongoShell,
     /// redis-cli lines.
     RedisCli,
+    /// CQL (Cassandra / ScyllaDB).
+    Cql,
+    /// ClickHouse SQL.
+    ClickHouse,
     /// Unknown language: one statement, classified `Unknown` (treated as a write).
     Opaque,
+}
+
+impl ScriptDialect {
+    /// MySQL dialect without `ANSI_QUOTES` (helper for the many call sites that do not track it).
+    pub const fn mysql(mariadb: bool, backslash_escapes: bool) -> Self {
+        ScriptDialect::MySql {
+            mariadb,
+            backslash_escapes,
+            ansi_quotes: false,
+        }
+    }
 }
 
 /// Range of characters in a text (Unicode scalar offsets from 0, `end` exclusive).
@@ -165,6 +183,12 @@ pub enum DestructiveReason {
     Restore,
     /// Import in replace mode (app operation).
     ImportReplace,
+    /// An ordinary data-modifying statement listed for confirmation (e.g. EXPLAIN ANALYZE of a
+    /// write on a production connection). Replaces the `UpdateWithoutWhere` placeholder.
+    Write,
+    /// A destructive keyword (DROP/TRUNCATE/ALTER/DELETE/UPDATE) found while scanning a
+    /// statement the classifier did not understand (`Unknown`/`Procedural`).
+    KeywordScan,
 }
 
 /// A lexer problem.
@@ -322,12 +346,32 @@ mod tests {
         );
         assert_eq!(rt(&ScriptDialect::RedisCli), json!({"name": "redisCli"}));
         assert_eq!(rt(&ScriptDialect::Opaque), json!({"name": "opaque"}));
+        assert_eq!(rt(&ScriptDialect::Cql), json!({"name": "cql"}));
+        assert_eq!(
+            rt(&ScriptDialect::ClickHouse),
+            json!({"name": "clickHouse"})
+        );
         assert_eq!(
             rt(&ScriptDialect::MySql {
                 mariadb: true,
-                backslash_escapes: false
+                backslash_escapes: false,
+                ansi_quotes: false
             }),
-            json!({"name": "mySql", "mariadb": true, "backslashEscapes": false})
+            json!({"name": "mySql", "mariadb": true, "backslashEscapes": false, "ansiQuotes": false})
+        );
+        // JSON written before `ansiQuotes` existed still reads.
+        let old: ScriptDialect = serde_json::from_value(
+            json!({"name": "mySql", "mariadb": false, "backslashEscapes": true}),
+        )
+        .unwrap();
+        assert_eq!(old, ScriptDialect::mysql(false, true));
+        assert_eq!(
+            serde_json::to_value(DestructiveReason::Write).unwrap(),
+            json!("write")
+        );
+        assert_eq!(
+            serde_json::to_value(DestructiveReason::KeywordScan).unwrap(),
+            json!("keywordScan")
         );
     }
 

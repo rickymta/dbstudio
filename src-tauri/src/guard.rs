@@ -438,6 +438,7 @@ fn split_ambiguity(dialect: ScriptDialect, text: &str) -> Option<String> {
     let ScriptDialect::MySql {
         mariadb,
         backslash_escapes,
+        ansi_quotes,
     } = dialect
     else {
         return None;
@@ -445,6 +446,7 @@ fn split_ambiguity(dialect: ScriptDialect, text: &str) -> Option<String> {
     let other = ScriptDialect::MySql {
         mariadb,
         backslash_escapes: !backslash_escapes,
+        ansi_quotes,
     };
     (dbstudio_sql::split(dialect, text) != dbstudio_sql::split(other, text)).then(|| {
         "the statement boundaries depend on the NO_BACKSLASH_ESCAPES sql_mode (a quote escaped \
@@ -1140,10 +1142,7 @@ mod tests {
             words(ScriptDialect::Postgres, "do $f$ drop $f$ ; select 1"),
             ["DO", ";", "SELECT"]
         );
-        let mysql = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        };
+        let mysql = ScriptDialect::mysql(false, true);
         assert_eq!(words(mysql, "select 'it\\'s' # drop\n, 1"), ["SELECT"]);
         let t = scan_tokens(ScriptDialect::Postgres, "é; DROP");
         assert_eq!((t[2].start, t[2].end), (3, 7));
@@ -1152,19 +1151,13 @@ mod tests {
     #[test]
     fn mysql_scripts_with_sql_mode_dependent_boundaries_are_refused() {
         let attack = "SELECT 'a\\'; DROP TABLE t; -- '";
-        let mysql = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        };
+        let mysql = ScriptDialect::mysql(false, true);
         let (t, _) = tokens();
         let mut i = input(attack, false, false, None);
         i.dialect = mysql;
         let err = run_guard(&t, &i).unwrap_err();
         assert!(err.to_string().contains("NO_BACKSLASH_ESCAPES"), "{err}");
-        i.dialect = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: false,
-        };
+        i.dialect = ScriptDialect::mysql(false, false);
         assert!(run_guard(&t, &i).is_err());
         // Unambiguous scripts and other dialects are untouched.
         i.dialect = mysql;
@@ -1177,10 +1170,7 @@ mod tests {
 
     #[test]
     fn confirmation_asks_for_the_database_the_statement_really_hits() {
-        let mysql = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        };
+        let mysql = ScriptDialect::mysql(false, true);
         let text = "USE other; DROP TABLE t";
         let (t, _) = tokens();
         let mut i = input(text, false, true, None);

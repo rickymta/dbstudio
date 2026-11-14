@@ -27,6 +27,17 @@ pub(crate) async fn open_impl(
         .await
 }
 
+/// Reconnect a lost session, keeping its `session_id` (package E). `secret` is the password when
+/// it is neither stored in the keychain nor still held in memory.
+pub(crate) async fn reconnect_impl(
+    state: &AppState,
+    session_id: Uuid,
+    secret: Option<Secret>,
+) -> Result<SessionInfo> {
+    let _ = (state, session_id, secret);
+    Err(Error::Unsupported("session_reconnect".into()))
+}
+
 pub(crate) async fn close_impl(state: &AppState, session_id: Uuid) -> Result<()> {
     state.sessions.close(session_id).await
 }
@@ -73,6 +84,17 @@ pub async fn session_open(
 ) -> Result<SessionInfo> {
     tracing::debug!(command = "session_open", connection = %connection_id, "ipc call");
     open_impl(&state, connection_id, password).await
+}
+
+/// Reconnect a lost session; the session id is kept.
+#[tauri::command]
+pub async fn session_reconnect(
+    state: State<'_, AppState>,
+    session_id: Uuid,
+    secret: Option<Secret>,
+) -> Result<SessionInfo> {
+    tracing::debug!(command = "session_reconnect", session = %session_id, "ipc call");
+    reconnect_impl(&state, session_id, secret).await
 }
 
 /// Close a session.

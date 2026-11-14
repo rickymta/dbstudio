@@ -84,7 +84,7 @@ impl Store {
     pub fn presets_save(&self, preset: &ExportPreset) -> Result<ExportPreset> {
         let name = preset.name.trim();
         if name.is_empty() {
-            return Err(Error::Storage("invalid data: preset name is empty".into()));
+            return Err(Error::Invalid("preset name is empty".into()));
         }
         let now = now_iso();
         let conn = self.lock();
@@ -218,7 +218,7 @@ mod tests {
         assert!(
             store
                 .presets_save(&preset("  ", None))
-                .is_err_and(|e| e.kind() == "storage")
+                .is_err_and(|e| e.kind() == "invalid")
         );
     }
 }

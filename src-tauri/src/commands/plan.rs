@@ -39,7 +39,7 @@ fn plan_filters() -> Vec<FileFilter> {
 fn plan_error(e: PlanError) -> Error {
     match e {
         PlanError::Unsupported(format) => Error::Unsupported(format!("plan_format:{format:?}")),
-        PlanError::Invalid(message) => Error::Other(message),
+        PlanError::Invalid(message) => Error::Invalid(message),
     }
 }
 
@@ -300,9 +300,82 @@ pub(crate) async fn file_open_impl(state: &AppState) -> Result<Option<RawPlan>> 
         let bytes = std::fs::read(Path::new(&path))?;
         serde_json::from_slice(&bytes)
             .map(Some)
-            .map_err(|e| Error::Other(format!("not a DBStudio plan file: {e}")))
+            .map_err(|e| Error::Invalid(format!("not a DBStudio plan file: {e}")))
     })
     .await
+}
+
+/// Plan history (PLAN-07, package E): newest first, without the raw plans.
+pub(crate) async fn history_list_impl(
+    state: &AppState,
+    connection_id: Option<Uuid>,
+    limit: u32,
+    before: Option<String>,
+) -> Result<Vec<dbstudio_store::PlanHistoryEntry>> {
+    let svc = state.connections.clone();
+    blocking(move || {
+        svc.store()
+            .plan_history_list(connection_id, limit, before.as_deref())
+    })
+    .await
+}
+
+/// One plan history entry with its raw plan.
+pub(crate) async fn history_get_impl(
+    state: &AppState,
+    id: Uuid,
+) -> Result<dbstudio_store::PlanHistoryRecord> {
+    let svc = state.connections.clone();
+    blocking(move || svc.store().plan_history_get(id)).await
+}
+
+pub(crate) async fn history_delete_impl(state: &AppState, id: Uuid) -> Result<()> {
+    let svc = state.connections.clone();
+    blocking(move || svc.store().plan_history_delete(id)).await
+}
+
+/// Delete the plan history of one connection (all when `None`); returns how many rows went.
+pub(crate) async fn history_clear_impl(
+    state: &AppState,
+    connection_id: Option<Uuid>,
+) -> Result<u32> {
+    let svc = state.connections.clone();
+    blocking(move || svc.store().plan_history_clear(connection_id)).await
+}
+
+#[tauri::command]
+pub async fn plan_history_list(
+    state: State<'_, AppState>,
+    connection_id: Option<Uuid>,
+    limit: u32,
+    before: Option<String>,
+) -> Result<Vec<dbstudio_store::PlanHistoryEntry>> {
+    tracing::debug!(command = "plan_history_list", "ipc call");
+    history_list_impl(&state, connection_id, limit, before).await
+}
+
+#[tauri::command]
+pub async fn plan_history_get(
+    state: State<'_, AppState>,
+    id: Uuid,
+) -> Result<dbstudio_store::PlanHistoryRecord> {
+    tracing::debug!(command = "plan_history_get", "ipc call");
+    history_get_impl(&state, id).await
+}
+
+#[tauri::command]
+pub async fn plan_history_delete(state: State<'_, AppState>, id: Uuid) -> Result<()> {
+    tracing::debug!(command = "plan_history_delete", "ipc call");
+    history_delete_impl(&state, id).await
+}
+
+#[tauri::command]
+pub async fn plan_history_clear(
+    state: State<'_, AppState>,
+    connection_id: Option<Uuid>,
+) -> Result<u32> {
+    tracing::debug!(command = "plan_history_clear", "ipc call");
+    history_clear_impl(&state, connection_id).await
 }
 
 #[tauri::command]
@@ -396,7 +469,7 @@ mod tests {
     fn parse_errors_are_plain_errors() {
         let (state, _, _) = test_state_with_host(DriverRegistry::new());
         let e = parse_impl(&state, raw(PlanFormat::PostgresJson, "{}"), None).unwrap_err();
-        assert!(matches!(e, Error::Other(_)), "{e:?}");
+        assert!(matches!(e, Error::Invalid(_)), "{e:?}");
     }
 
     #[test]

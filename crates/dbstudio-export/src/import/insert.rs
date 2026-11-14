@@ -235,10 +235,7 @@ mod tests {
 
     #[test]
     fn mysql_conflict_modes() {
-        let my = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        };
+        let my = ScriptDialect::mysql(false, true);
         let mut t = target();
         t.table = "`t`".into();
         // Skipping a duplicate is a no-op update, not `INSERT IGNORE` (which hides bad values).

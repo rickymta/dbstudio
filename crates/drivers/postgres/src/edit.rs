@@ -28,6 +28,7 @@ pub(crate) async fn editability(
         read_only_columns: vec![],
         reason: Some(reason),
         atomic: true,
+        notes: vec![],
     };
     let rel = details::resolve_relation(path)?;
     if rel.kind != ObjectKind::Table {
@@ -61,6 +62,7 @@ pub(crate) async fn editability(
         read_only_columns,
         reason: (!editable).then_some(NotEditableReason::NoUniqueKey),
         atomic: true,
+        notes: vec![],
     })
 }
 

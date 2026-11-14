@@ -121,7 +121,7 @@ fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
     for (i, ch) in set.changes.iter().enumerate() {
         let index = i as u32;
         match ch {
-            DocumentChange::Delete { id } => {
+            DocumentChange::Delete { id, .. } => {
                 let query = q(id)?;
                 deletes.push(Step {
                     index,
@@ -135,7 +135,9 @@ fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
                     is_insert: false,
                 });
             }
-            DocumentChange::Update { id, set: s, unset } => {
+            DocumentChange::Update {
+                id, set: s, unset, ..
+            } => {
                 let query = q(id)?;
                 let u = update_docs(s, unset)?;
                 updates.push(Step {
@@ -151,7 +153,7 @@ fn steps(set: &DocumentChangeSet) -> Result<Vec<Step>> {
                     is_insert: false,
                 });
             }
-            DocumentChange::Replace { id, document } => {
+            DocumentChange::Replace { id, document, .. } => {
                 let query = q(id)?;
                 let d = input_doc(document)?;
                 if d.keys().next().is_some_and(|k| k.starts_with('$')) {
@@ -333,8 +335,12 @@ mod tests {
                     value: Value::Text("Hue".into()),
                 }],
                 unset: vec![vec!["old".into()]],
+                expected: vec![],
             },
-            DocumentChange::Delete { id },
+            DocumentChange::Delete {
+                id,
+                expected: vec![],
+            },
         ]))
         .unwrap();
         assert!(
@@ -360,6 +366,7 @@ mod tests {
                     value: Value::Int(1),
                 }],
                 unset: vec![],
+                expected: vec![],
             }]))
         };
         assert!(upd(&["a", "b"]).is_ok());
@@ -374,12 +381,14 @@ mod tests {
             id: Value::Int(1),
             set: vec![],
             unset: vec![vec!["x.y".into()]],
+            expected: vec![],
         }]));
         assert!(unset.is_err());
         let rep = |text: &str| {
             preview(&set(vec![DocumentChange::Replace {
                 id: Value::Int(1),
                 document: DocInput::Ejson { text: text.into() },
+                expected: vec![],
             }]))
         };
         assert!(rep("{\"a\": 1}").is_ok());
@@ -399,6 +408,7 @@ mod tests {
             id: Value::Int(1),
             set: vec![],
             unset: vec![],
+            expected: vec![],
         }]))
         .unwrap_err();
         assert_eq!(e.kind(), "query");

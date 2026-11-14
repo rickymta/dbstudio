@@ -128,7 +128,7 @@ impl SessionManager {
         let driver = self.registry.get(config.kind).ok_or_else(|| {
             Error::Unsupported(format!("driver for {}", config.kind.display_name()))
         })?;
-        let descriptor = driver.descriptor();
+        let mut descriptor = driver.descriptor();
         let limit = Duration::from_millis(
             config
                 .connect_timeout_ms
@@ -176,6 +176,10 @@ impl SessionManager {
         let (session, info) = tokio::time::timeout(limit, attempt)
             .await
             .map_err(|_| Error::Timeout)??;
+        // The server may differ from the driver's static description (flavour, version gates).
+        if let Some(capabilities) = session.capabilities() {
+            descriptor.capabilities = capabilities;
+        }
         let dialect = session.script_dialect();
         Ok(Connected {
             session,
@@ -184,6 +188,16 @@ impl SessionManager {
             dialect,
             tunnel,
         })
+    }
+
+    /// Start the background health monitor: every `keepalive_secs` ping each session, publish
+    /// `session://state` and reconnect when `auto_reconnect` is on (CONN-12).
+    ///
+    /// Contract scaffold of the backlog contract v2: package E implements it (it does nothing
+    /// now). It takes the whole [`AppState`] because reconnecting needs the settings, the
+    /// credentials and the SSH environment.
+    pub fn spawn_health(self: &Arc<Self>, state: &crate::state::AppState) {
+        let _ = (self, state);
     }
 
     /// Open a new session for `config`.

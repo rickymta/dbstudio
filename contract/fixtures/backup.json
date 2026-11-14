@@ -24,6 +24,35 @@
       "formatVersion": 1
     },
     "native": null,
+    "objects": [],
+    "preamble": {
+      "engine": "postgres"
+    }
+  },
+  "BackupInspection#objects": {
+    "encrypted": false,
+    "header": {
+      "compression": "zstd",
+      "encryption": null,
+      "formatVersion": 1
+    },
+    "native": null,
+    "objects": [
+      {
+        "kind": "table",
+        "name": "orders",
+        "phases": ["pre", "data", "post"],
+        "rows": 1200,
+        "schema": "public"
+      },
+      {
+        "kind": "collection",
+        "name": "users",
+        "phases": ["data"],
+        "rows": null,
+        "schema": null
+      }
+    ],
     "preamble": {
       "engine": "postgres"
     }
@@ -169,6 +198,10 @@
     "kind": "localDir",
     "path": "/backups"
   },
+  "NativeTool": "clickHouseServerBackup",
+  "NativeTool#cockroach": "cockroachServerBackup",
+  "NativeTool#ysqlDump": "ysqlDump",
+  "NativeTool#ysqlsh": "ysqlsh",
   "NativeToolInfo": {
     "path": "/usr/bin/pg_dump",
     "problem": null,

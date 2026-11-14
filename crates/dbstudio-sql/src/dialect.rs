@@ -14,10 +14,7 @@ pub fn mysql_dialect_from_sql_mode(sql_mode: &str, mariadb: bool) -> ScriptDiale
     let no_bs = sql_mode
         .split(',')
         .any(|m| m.trim().eq_ignore_ascii_case("NO_BACKSLASH_ESCAPES"));
-    ScriptDialect::MySql {
-        mariadb,
-        backslash_escapes: !no_bs,
-    }
+    ScriptDialect::mysql(mariadb, !no_bs)
 }
 
 /// Oracle string literals are limited to 4000 bytes; longer text becomes `TO_CLOB(..)||..`.
@@ -160,10 +157,7 @@ fn oracle_text(s: &str) -> String {
 mod tests {
     use super::*;
 
-    const MY: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
+    const MY: ScriptDialect = ScriptDialect::mysql(false, true);
 
     #[test]
     fn quote_ident_per_dialect() {
@@ -183,10 +177,7 @@ mod tests {
             "'it''s'"
         );
         assert_eq!(Dialect(MY).literal_text("a\\b'c"), "'a\\\\b''c'");
-        let my_no_bs = ScriptDialect::MySql {
-            mariadb: true,
-            backslash_escapes: false,
-        };
+        let my_no_bs = ScriptDialect::mysql(true, false);
         assert_eq!(Dialect(my_no_bs).literal_text("a\\b"), "'a\\b'");
         assert_eq!(Dialect(ScriptDialect::MsSql).literal_text("x"), "N'x'");
         let long = "a".repeat(4001);
@@ -330,17 +321,11 @@ mod tests {
         assert_eq!(d("STRICT_TRANS_TABLES,ONLY_FULL_GROUP_BY", false), MY);
         assert_eq!(
             d("ANSI,NO_BACKSLASH_ESCAPES", true),
-            ScriptDialect::MySql {
-                mariadb: true,
-                backslash_escapes: false
-            }
+            ScriptDialect::mysql(true, false)
         );
         assert_eq!(
             d("no_backslash_escapes", false),
-            ScriptDialect::MySql {
-                mariadb: false,
-                backslash_escapes: false
-            }
+            ScriptDialect::mysql(false, false)
         );
     }
 }

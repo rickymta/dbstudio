@@ -1555,6 +1555,8 @@ dependencies = [
  "base64 0.23.1",
  "dbstudio-backup",
  "dbstudio-core",
+ "dbstudio-driver-cassandra",
+ "dbstudio-driver-clickhouse",
  "dbstudio-driver-mongodb",
  "dbstudio-driver-mssql",
  "dbstudio-driver-mysql",
@@ -1627,6 +1629,8 @@ dependencies = [
  "clap",
  "dbstudio-backup",
  "dbstudio-core",
+ "dbstudio-driver-cassandra",
+ "dbstudio-driver-clickhouse",
  "dbstudio-driver-mongodb",
  "dbstudio-driver-mssql",
  "dbstudio-driver-mysql",
@@ -1654,6 +1658,24 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "dbstudio-driver-cassandra"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dbstudio-core",
+ "tokio",
+]
+
+[[package]]
+name = "dbstudio-driver-clickhouse"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dbstudio-core",
+ "tokio",
 ]
 
 [[package]]
@@ -1769,6 +1791,7 @@ dependencies = [
  "dbstudio-driver-mysql",
  "dbstudio-driver-postgres",
  "dbstudio-sql",
+ "dbstudio-store",
  "regex",
  "rust_xlsxwriter",
  "serde",
@@ -2361,6 +2384,20 @@ name = "fast-float2"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6e8948ce679d00a02a94739ea185595dca7118ed04feb991127e443bd3d761f"
+
+[[package]]
+name = "fast-socks5"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d09fe4a491909a716088083eeb5bcc25427330fdbcd4ecd3dfa5469b3da795df"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "log",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+]
 
 [[package]]
 name = "fastrand"
@@ -4083,6 +4120,7 @@ dependencies = [
  "bitflags 2.13.2",
  "bson",
  "derive-where",
+ "fast-socks5",
  "futures-core",
  "futures-io",
  "futures-util",

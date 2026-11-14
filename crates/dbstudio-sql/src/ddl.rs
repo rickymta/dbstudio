@@ -91,10 +91,7 @@ mod tests {
     #[test]
     fn quotes_per_dialect() {
         let cols = vec![col("a`b", "int", false, false)];
-        let my = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        };
+        let my = ScriptDialect::mysql(false, true);
         assert_eq!(
             create_table(my, "t`x", &cols),
             "CREATE TABLE `t``x` (\n  `a``b` int NOT NULL\n)"

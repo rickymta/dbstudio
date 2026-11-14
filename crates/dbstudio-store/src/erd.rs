@@ -152,7 +152,7 @@ impl Store {
     pub fn erd_save(&self, layout: &ErdLayout) -> Result<ErdLayout> {
         let name = layout.name.trim();
         if name.is_empty() {
-            return Err(Error::Storage("invalid data: layout name is empty".into()));
+            return Err(Error::Invalid("layout name is empty".into()));
         }
         let now = now_iso();
         let conn = self.lock();
@@ -212,7 +212,7 @@ impl Store {
                 if f.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
                 if msg.as_deref().is_some_and(|m| m.contains("UNIQUE")) {
-                    Error::Other(format!("a layout named `{name}` already exists"))
+                    Error::Invalid(format!("a layout named `{name}` already exists"))
                 } else {
                     Error::NotFound(format!("connection {}", layout.connection_id))
                 }
@@ -350,7 +350,7 @@ mod tests {
         let b = conn(&s, "b");
         s.erd_save(&layout(a, "Main")).unwrap();
         let err = s.erd_save(&layout(a, "Main")).unwrap_err();
-        assert!(matches!(err, Error::Other(m) if m.contains("already exists")));
+        assert!(matches!(err, Error::Invalid(m) if m.contains("already exists")));
         // Same name on another connection is fine.
         s.erd_save(&layout(b, "Main")).unwrap();
         assert!(s.erd_save(&layout(a, "  ")).is_err());

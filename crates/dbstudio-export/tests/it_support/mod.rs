@@ -691,6 +691,7 @@ pub fn csv_import_spec(file: &Path, target: ObjectPath, max_errors: u32, batch: 
             quote: '"',
             header: true,
             encoding: TextEncoding::Utf8,
+            null_text: None,
         },
         target: ImportTarget::Existing { table: target },
         mapping: vec![
@@ -888,6 +889,7 @@ pub async fn csv_round_trip(env: &Env) {
                 quote: '"',
                 header: true,
                 encoding: TextEncoding::Utf8Bom,
+                null_text: None,
             },
             target: ImportTarget::Existing { table },
             mapping: vec![],
@@ -1169,6 +1171,7 @@ pub async fn cross_database(env: &Env) {
                 quote: '"',
                 header: true,
                 encoding: TextEncoding::Utf8Bom,
+                null_text: None,
             },
             target: ImportTarget::Existing { table },
             mapping: vec![],
@@ -1382,6 +1385,7 @@ pub async fn typed_round_trips(env: &Env) {
                 quote: '"',
                 header: true,
                 encoding: TextEncoding::Utf8Bom,
+                null_text: None,
             },
         ),
         (

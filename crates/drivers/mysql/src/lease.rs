@@ -76,10 +76,7 @@ pub(crate) async fn open(session: &MySqlSession, opts: LeaseOptions) -> Result<B
             opts: inner.opts.clone(),
             conn_id,
         }),
-        dialect: ScriptDialect::MySql {
-            mariadb: inner.is_mariadb,
-            backslash_escapes: inner.backslash_escapes,
-        },
+        dialect: ScriptDialect::mysql(inner.is_mariadb, inner.backslash_escapes),
         conn: Some(conn),
         auto_commit: opts.auto_commit,
         in_tx: false,
@@ -220,6 +217,7 @@ pub(crate) fn ambiguity(script: &str, dialect: ScriptDialect) -> Option<String> 
     let ScriptDialect::MySql {
         mariadb,
         backslash_escapes,
+        ansi_quotes,
     } = dialect
     else {
         return None;
@@ -227,6 +225,7 @@ pub(crate) fn ambiguity(script: &str, dialect: ScriptDialect) -> Option<String> 
     let other = ScriptDialect::MySql {
         mariadb,
         backslash_escapes: !backslash_escapes,
+        ansi_quotes,
     };
     (dbstudio_sql::split(dialect, script) != dbstudio_sql::split(other, script)).then(|| {
         "the statement boundaries depend on the NO_BACKSLASH_ESCAPES sql_mode (a quote that \
@@ -1485,10 +1484,7 @@ impl LeaseBackend for MyBackend {
 mod tests {
     use super::*;
 
-    const MYSQL: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
+    const MYSQL: ScriptDialect = ScriptDialect::mysql(false, true);
 
     fn texts(script: &str) -> Vec<String> {
         split_statements(script, MYSQL)
@@ -1536,16 +1532,7 @@ mod tests {
     fn ambiguous_scripts_are_detected() {
         let attack = "SELECT 'a\\'; DROP TABLE t; -- '";
         assert!(ambiguity(attack, MYSQL).is_some());
-        assert!(
-            ambiguity(
-                attack,
-                ScriptDialect::MySql {
-                    mariadb: false,
-                    backslash_escapes: false
-                }
-            )
-            .is_some()
-        );
+        assert!(ambiguity(attack, ScriptDialect::mysql(false, false)).is_some());
         assert!(ambiguity("SELECT 1; SELECT 'it''s'", MYSQL).is_none());
         assert!(ambiguity("SELECT 'a\\nb'", MYSQL).is_none());
         assert!(ambiguity("SELECT 1", ScriptDialect::Postgres).is_none());

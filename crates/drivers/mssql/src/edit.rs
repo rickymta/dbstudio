@@ -26,6 +26,7 @@ pub async fn editability(sess: &MssqlSession, path: &ObjectPath) -> Result<Edita
         read_only_columns: Vec::new(),
         reason: Some(reason),
         atomic: true,
+        notes: vec![],
     };
     if !matches!(obj.kind, ObjectKind::Table | ObjectKind::View) {
         return Ok(not_editable(NotEditableReason::NotATable));
@@ -74,6 +75,7 @@ pub async fn editability(sess: &MssqlSession, path: &ObjectPath) -> Result<Edita
             read_only_columns,
             reason: Some(NotEditableReason::ReadOnlyConnection),
             atomic: true,
+            notes: vec![],
         });
     }
     if key.is_empty() {
@@ -83,6 +85,7 @@ pub async fn editability(sess: &MssqlSession, path: &ObjectPath) -> Result<Edita
             read_only_columns,
             reason: Some(NotEditableReason::NoUniqueKey),
             atomic: true,
+            notes: vec![],
         });
     }
     Ok(Editability {
@@ -91,6 +94,7 @@ pub async fn editability(sess: &MssqlSession, path: &ObjectPath) -> Result<Edita
         read_only_columns,
         reason: None,
         atomic: true,
+        notes: vec![],
     })
 }
 

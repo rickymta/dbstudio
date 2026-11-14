@@ -29,6 +29,16 @@ pub struct LeaseInfo {
     pub state: LeaseState,
 }
 
+/// Returned by `lease_reopen`: the lease keeps its id.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseReopened {
+    /// The reopened lease (same `lease_id`).
+    pub lease: LeaseInfo,
+    /// A transaction was open when the connection broke and its changes are lost.
+    pub transaction_lost: bool,
+}
+
 /// Payload of the `lease://state` event.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

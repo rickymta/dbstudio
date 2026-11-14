@@ -362,7 +362,7 @@ mod tests {
         let cfg = saved_connection(&state).await;
         let mut settings = state.connections.settings().unwrap();
         settings.history_enabled = false;
-        state.connections.set_settings(settings).unwrap();
+        state.connections.set_settings(settings.clone()).unwrap();
         assert!(
             Tracker::start(
                 &state,

@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use dbstudio_core::{
     ColumnMeta, DbKind, DdlItem, DdlOptions, DdlSection, JobReporter, ObjectPath, OnConflict,
-    Result, ResultSink, ScriptDialect, Session, StatementInfo, TableModel, Value, ValueKind,
+    PutMode, Result, ResultSink, ScriptDialect, Session, StatementInfo, TableModel, Value,
+    ValueKind,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -26,6 +27,14 @@ mod writers;
 
 pub use engine::{run_export, run_export_tuned};
 pub use fsio::cleanup_orphans;
+
+/// Remove orphan temporary export files left in the recently used export directories
+/// (`export.recentDirs` setting) by a crash. Called once, in the background, after startup.
+///
+/// Contract scaffold of the backlog contract v2: package X implements it (it does nothing now).
+pub fn startup_cleanup(store: &dbstudio_store::Store) {
+    let _ = store;
+}
 pub use import::{preview_import, run_import};
 
 // ---------------------------------------------------------------------------------------------
@@ -454,6 +463,7 @@ pub struct ImportSpec {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ImportFormat {
     /// Delimited text.
+    #[serde(rename_all = "camelCase")]
     Csv {
         /// Field delimiter.
         delimiter: char,
@@ -463,6 +473,11 @@ pub enum ImportFormat {
         header: bool,
         /// Encoding.
         encoding: TextEncoding,
+        /// Text that stands for NULL. `None` keeps the old behaviour (an empty unquoted cell is
+        /// NULL). `Some(t)`: an unquoted cell equal to `t` is NULL, an empty cell is an empty
+        /// string, a quoted cell is always text (matches the CSV writer).
+        #[serde(default)]
+        null_text: Option<String>,
     },
     /// Excel sheet.
     Xlsx {
@@ -507,6 +522,14 @@ pub enum ImportTarget {
         /// Database to run it in.
         #[serde(default)]
         database: Option<String>,
+    },
+    /// Redis keys: every record must have the shape of [`dbstudio_core::KeyRecord`].
+    Keys {
+        /// Database node (`[Database "0"]`).
+        database: ObjectPath,
+        /// What to do with a key that exists.
+        #[serde(default)]
+        mode: PutMode,
     },
 }
 
@@ -592,6 +615,9 @@ pub struct ImportPreview {
     pub estimated_rows: Option<u64>,
     /// SQL: first 50 statements.
     pub statements_preview: Vec<StatementInfo>,
+    /// The dialect was guessed from the connection kind (no live session, no remembered one).
+    #[serde(default)]
+    pub dialect_guessed: bool,
 }
 
 /// Outcome of an import.
@@ -667,6 +693,7 @@ mod tests {
                 quote: '"',
                 header: true,
                 encoding: TextEncoding::Utf8,
+                null_text: None,
             },
             target: ImportTarget::New {
                 parent: ObjectPath::root().child(ObjectKind::Database, "app"),
@@ -764,6 +791,7 @@ mod tests {
             suggested_kinds: vec![ValueKind::Int, ValueKind::Text],
             estimated_rows: Some(1000),
             statements_preview: vec![],
+            dialect_guessed: false,
         }
     }
 
@@ -900,6 +928,30 @@ mod tests {
                 "ExportSpec": j(&export_spec()),
                 "ImportSpec": j(&import_spec()),
                 "ImportPreview": j(&import_preview()),
+                "ImportPreview#guessed": j(&ImportPreview {
+                    dialect_guessed: true,
+                    ..import_preview()
+                }),
+                "ImportSpec#csvNullText": j(&ImportSpec {
+                    format: ImportFormat::Csv {
+                        delimiter: ';',
+                        quote: '"',
+                        header: true,
+                        encoding: TextEncoding::Utf8,
+                        null_text: Some("\\N".into()),
+                    },
+                    ..import_spec()
+                }),
+                "ImportSpec#keys": j(&ImportSpec {
+                    format: ImportFormat::Json {
+                        layout: JsonLayout::Ndjson,
+                    },
+                    target: ImportTarget::Keys {
+                        database: ObjectPath::root().child(ObjectKind::Database, "0"),
+                        mode: PutMode::IfAbsent,
+                    },
+                    ..import_spec()
+                }),
                 "ExportReport": j(&export_report()),
                 "ImportReport": j(&import_report()),
                 "RowError": j(&row_error()),

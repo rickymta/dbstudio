@@ -101,12 +101,12 @@ fn validate_spec(state: &AppState, spec: &BackupSpec) -> Result<()> {
     match (&spec.destination, &spec.engine) {
         (Destination::ServerDir { .. }, BackupEngine::Native { .. }) => {}
         (Destination::ServerDir { .. }, _) => {
-            return Err(Error::Other(
+            return Err(Error::Invalid(
                 "a server directory needs the SQL Server native backup".into(),
             ));
         }
         (Destination::LocalDir { path, .. }, _) if path.trim().is_empty() => {
-            return Err(Error::Other("choose a destination directory".into()));
+            return Err(Error::Invalid("choose a destination directory".into()));
         }
         _ => {}
     }
@@ -132,7 +132,7 @@ pub(crate) async fn job_save_impl(
     passphrase: SecretChange,
 ) -> Result<BackupJob> {
     if job.name.trim().is_empty() {
-        return Err(Error::Other("the job needs a name".into()));
+        return Err(Error::Invalid("the job needs a name".into()));
     }
     if let Some(s) = &job.schedule {
         dbstudio_backup::parse_cron(&s.cron)?;
@@ -158,17 +158,17 @@ pub(crate) async fn job_save_impl(
         match (encrypted, passphrase) {
             (true, SecretChange::Set { value }) => {
                 if value.expose().is_empty() {
-                    return Err(Error::Other("the passphrase cannot be empty".into()));
+                    return Err(Error::Invalid("the passphrase cannot be empty".into()));
                 }
                 secrets.set_account(&account, &value)?;
             }
             (true, SecretChange::Keep) => {
                 if secrets.get_account(&account)?.is_none() {
-                    return Err(Error::Other("an encrypted job needs a passphrase".into()));
+                    return Err(Error::Invalid("an encrypted job needs a passphrase".into()));
                 }
             }
             (true, SecretChange::Clear) => {
-                return Err(Error::Other("an encrypted job needs a passphrase".into()));
+                return Err(Error::Invalid("an encrypted job needs a passphrase".into()));
             }
             (false, _) => secrets.delete_account(&account)?,
         }
@@ -293,7 +293,7 @@ pub(crate) async fn run_manual_impl(
         }
         match pass2 {
             Some(p) if p.expose().is_empty() => {
-                Err(Error::Other("the passphrase cannot be empty".into()))
+                Err(Error::Invalid("the passphrase cannot be empty".into()))
             }
             Some(p) => {
                 if save_passphrase {
@@ -305,7 +305,7 @@ pub(crate) async fn run_manual_impl(
             None => secrets
                 .get_account(&acc2)?
                 .map(Some)
-                .ok_or_else(|| Error::Other("an encrypted backup needs a passphrase".into())),
+                .ok_or_else(|| Error::Invalid("an encrypted backup needs a passphrase".into())),
         }
     })
     .await?;

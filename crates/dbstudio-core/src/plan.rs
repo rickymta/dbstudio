@@ -82,6 +82,17 @@ pub enum PlanFormat {
     OraclePlanRows,
     /// Canonical EJSON of `explain("queryPlanner"|"executionStats")`.
     MongoExplain,
+    /// ClickHouse `EXPLAIN json = 1, indexes = 1, actions = 1 PLAN ...`; `extra["estimate"]` =
+    /// JSON rows of `EXPLAIN ESTIMATE`, `extra["pipeline"]` = text of `EXPLAIN PIPELINE`.
+    ClickHouseJson,
+    /// CockroachDB `EXPLAIN [ANALYZE] (VERBOSE)` text tree (`• node`, `│ attr: value`).
+    CockroachText,
+    /// TiDB `EXPLAIN [ANALYZE] FORMAT='row'` rows packed by the driver as a JSON array of objects
+    /// (`id`, `estRows`, `actRows`, `task`, `access object`, `execution info`, `operator info`,
+    /// `memory`, `disk`).
+    TiDbRows,
+    /// CQL tracing session (`system_traces.events`) as JSON.
+    CqlTrace,
 }
 
 #[cfg(test)]
@@ -130,6 +141,10 @@ mod tests {
             (PlanFormat::MariaDbJson, "mariaDbJson"),
             (PlanFormat::OraclePlanRows, "oraclePlanRows"),
             (PlanFormat::MongoExplain, "mongoExplain"),
+            (PlanFormat::ClickHouseJson, "clickHouseJson"),
+            (PlanFormat::CockroachText, "cockroachText"),
+            (PlanFormat::TiDbRows, "tiDbRows"),
+            (PlanFormat::CqlTrace, "cqlTrace"),
         ] {
             assert_eq!(serde_json::to_value(f).unwrap(), s);
         }

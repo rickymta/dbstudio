@@ -28,6 +28,7 @@ fn csv_format() -> ImportFormat {
         quote: '"',
         header: true,
         encoding: TextEncoding::Utf8,
+        null_text: None,
     }
 }
 

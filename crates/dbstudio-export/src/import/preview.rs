@@ -242,10 +242,7 @@ fn preview_blocking(
 /// `DELIMITER` mean MySQL, everything else PostgreSQL.
 pub(crate) fn guess_dialect(sample: &str) -> ScriptDialect {
     if sample.contains('`') || sample.contains("DELIMITER ") {
-        ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        }
+        ScriptDialect::mysql(false, true)
     } else {
         ScriptDialect::Postgres
     }

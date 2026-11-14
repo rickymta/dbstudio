@@ -193,9 +193,60 @@ impl Driver for MySqlDriver {
     }
 }
 
+/// Driver of the TiDB flavour (MySQL protocol).
+///
+/// Contract scaffold of the backlog contract v2: package N2 replaces `connect` with the shared
+/// MySQL implementation plus flavour detection. Until then it answers `Unsupported`, and the
+/// application does not register it (see [`register_flavors`]).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TiDbDriver;
+
+impl TiDbDriver {
+    /// Create the driver.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Driver for TiDbDriver {
+    fn descriptor(&self) -> DriverDescriptor {
+        DriverDescriptor::new(
+            DbKind::TiDb,
+            Capabilities::planned_for(DbKind::TiDb),
+            DriverStatus::Available,
+        )
+    }
+
+    async fn connect(
+        &self,
+        _config: &ConnectionConfig,
+        _secret: Option<&Secret>,
+    ) -> Result<Box<dyn Session>> {
+        Err(Error::Unsupported(DbKind::TiDb.id().into()))
+    }
+}
+
+/// Register the TiDB driver. Not called by the application until package N2 makes it real (a
+/// registered driver is shown as available).
+pub fn register_flavors(registry: &mut dbstudio_core::DriverRegistry) {
+    registry.register(std::sync::Arc::new(TiDbDriver::new()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tidb_registers_and_connect_is_unsupported() {
+        let mut registry = dbstudio_core::DriverRegistry::new();
+        register_flavors(&mut registry);
+        let driver = registry.get(DbKind::TiDb).expect("registered");
+        assert_eq!(driver.descriptor().default_port, 4000);
+        let cfg = ConnectionConfig::new(DbKind::TiDb, "t", "localhost");
+        let err = driver.connect(&cfg, None).await.err().unwrap();
+        assert!(matches!(err, Error::Unsupported(c) if c == "tidb"));
+    }
 
     #[test]
     fn descriptor_is_available() {

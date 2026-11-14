@@ -732,10 +732,7 @@ impl MySqlSession {
 #[async_trait]
 impl Session for MySqlSession {
     fn script_dialect(&self) -> ScriptDialect {
-        ScriptDialect::MySql {
-            mariadb: self.inner.is_mariadb,
-            backslash_escapes: self.inner.backslash_escapes,
-        }
+        ScriptDialect::mysql(self.inner.is_mariadb, self.inner.backslash_escapes)
     }
 
     async fn open_lease(&self, opts: LeaseOptions) -> Result<Box<dyn Lease>> {

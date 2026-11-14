@@ -19,6 +19,46 @@ pub const LEASE_STATE: &str = "lease://state";
 #[allow(dead_code)] // emitted by the backup package
 pub const BACKUP_CHANGED: &str = "backup://changed";
 
+/// Event name of [`SessionStateEvent`] payloads (connection health, CONN-12).
+#[allow(dead_code)] // emitted by the session health monitor (package E)
+pub const SESSION_STATE: &str = "session://state";
+
+/// Health of a live session as reported by `session://state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // produced by the session health monitor (package E)
+pub enum SessionHealth {
+    /// Connected (also sent after a manual reconnect).
+    Connected,
+    /// The connection was lost.
+    Lost,
+    /// A reconnect attempt is running (`attempt` counts from 1).
+    Reconnecting,
+    /// The session is connected again; its id did not change.
+    Reconnected,
+    /// Automatic reconnect gave up.
+    GaveUp,
+}
+
+/// Payload of `session://state`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // produced by the session health monitor (package E)
+pub struct SessionStateEvent {
+    /// Session whose health changed.
+    pub session_id: uuid::Uuid,
+    /// Profile of the session.
+    pub connection_id: uuid::Uuid,
+    /// New health.
+    pub state: SessionHealth,
+    /// Reconnect attempt number (0 when not reconnecting).
+    pub attempt: u32,
+    /// The error that caused the state (a serialized `dbstudio_core::Error`), if any.
+    pub error: Option<Value>,
+    /// Leases that could not be reopened because a transaction was open.
+    pub leases_broken: Vec<uuid::Uuid>,
+}
+
 /// Capacity of the broadcast channel; slow subscribers lose the oldest events.
 const CHANNEL_CAPACITY: usize = 256;
 
@@ -124,6 +164,23 @@ mod tests {
             assert_eq!(first.payload["type"], "progress");
             assert_eq!(rx.recv().await.unwrap().name, "backup://changed");
         }
+    }
+
+    #[test]
+    fn session_state_event_shape() {
+        let event = SessionStateEvent {
+            session_id: uuid::Uuid::nil(),
+            connection_id: uuid::Uuid::nil(),
+            state: SessionHealth::GaveUp,
+            attempt: 5,
+            error: Some(json!({"kind": "connection", "message": "refused"})),
+            leases_broken: vec![],
+        };
+        let v = serde_json::to_value(&event).unwrap();
+        assert_eq!(v["state"], "gaveUp");
+        assert_eq!(v["leasesBroken"], json!([]));
+        assert_eq!(v["error"]["kind"], "connection");
+        assert_eq!(SESSION_STATE, "session://state");
     }
 
     #[test]

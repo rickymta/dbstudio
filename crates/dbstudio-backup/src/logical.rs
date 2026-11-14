@@ -399,10 +399,7 @@ fn is_word(s: &str) -> bool {
 pub fn clean_preview(pre: &Json, dialect: &str, database: &str) -> Vec<String> {
     let sd = match dialect {
         "postgres" => ScriptDialect::Postgres,
-        "mysql" => ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        },
+        "mysql" => ScriptDialect::mysql(false, true),
         _ => return Vec::new(),
     };
     clean_statements(pre, sd, database, None)
@@ -656,10 +653,7 @@ async fn run_script(
 
 fn script_dialect_of(sd: ScriptDialect) -> ScriptDialect {
     match sd {
-        ScriptDialect::MySql { mariadb, .. } => ScriptDialect::MySql {
-            mariadb,
-            backslash_escapes: true,
-        },
+        ScriptDialect::MySql { mariadb, .. } => ScriptDialect::mysql(mariadb, true),
         other => other,
     }
 }
@@ -703,22 +697,11 @@ mod tests {
         let pg = clean_statements(&pre, ScriptDialect::Postgres, "d", None);
         assert_eq!(pg[0], "DROP SCHEMA IF EXISTS \"app\" CASCADE");
         assert_eq!(pg.len(), 2);
-        let my = clean_statements(
-            &pre,
-            ScriptDialect::MySql {
-                mariadb: false,
-                backslash_escapes: true,
-            },
-            "d",
-            None,
-        );
+        let my = clean_statements(&pre, ScriptDialect::mysql(false, true), "d", None);
         assert_eq!(my, ["DROP DATABASE IF EXISTS `d`", "CREATE DATABASE `d`"]);
         let kept = clean_statements(
             &pre,
-            ScriptDialect::MySql {
-                mariadb: false,
-                backslash_escapes: true,
-            },
+            ScriptDialect::mysql(false, true),
             "d",
             Some(("utf8mb4".into(), "utf8mb4_0900_ai_ci".into())),
         );
@@ -729,10 +712,7 @@ mod tests {
         // Anything that is not a plain name is not spliced into SQL.
         let odd = clean_statements(
             &pre,
-            ScriptDialect::MySql {
-                mariadb: false,
-                backslash_escapes: true,
-            },
+            ScriptDialect::mysql(false, true),
             "d",
             Some(("x; DROP".into(), "y".into())),
         );

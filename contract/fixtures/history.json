@@ -1,13 +1,20 @@
 {
   "AppSettings": {
+    "autoReconnect": true,
     "closeToTray": "always",
+    "editorFontFamily": "JetBrains Mono",
+    "editorFontSize": 13,
     "editorMaxRows": 1000,
     "gridMaxCells": 20000000,
     "gridMaxRows": 1000000,
     "historyEnabled": true,
     "historyMaxPerConnection": 5000,
+    "keepaliveSecs": 240,
+    "language": "vi",
     "logLevel": "info",
     "maxLobBytes": 16777216,
+    "planHistoryEnabled": true,
+    "planHistoryMaxPerConnection": 200,
     "planMisestimateFactor": 10,
     "queryTimeoutMs": 0,
     "timestampDisplay": "utc"
@@ -17,6 +24,7 @@
     "connectionId": "00000000-0000-0000-0000-000000000003",
     "cursor": 8,
     "database": "app",
+    "dirty": true,
     "filePath": "/tmp/q.sql",
     "id": "00000000-0000-0000-0000-000000000004",
     "position": 0,
@@ -116,6 +124,40 @@
     "search": "users",
     "status": "error"
   },
+  "PlanHistoryEntry": {
+    "analyze": true,
+    "connectionId": "00000000-0000-0000-0000-000000000003",
+    "createdAt": "2026-11-14T00:00:00Z",
+    "database": "app",
+    "format": "postgresJson",
+    "id": "00000000-0000-0000-0000-000000000007",
+    "statement": "SELECT * FROM users WHERE id = '***'",
+    "totalCost": 12.5,
+    "totalMs": 1.25,
+    "warnings": 2
+  },
+  "PlanHistoryRecord": {
+    "analyze": true,
+    "connectionId": "00000000-0000-0000-0000-000000000003",
+    "createdAt": "2026-11-14T00:00:00Z",
+    "database": "app",
+    "format": "postgresJson",
+    "id": "00000000-0000-0000-0000-000000000007",
+    "rawPlan": {
+      "analyzed": false,
+      "capturedAt": "2026-11-14T00:00:00Z",
+      "extra": {},
+      "format": "postgresJson",
+      "rolledBack": false,
+      "serverVersion": "17.2",
+      "statement": "SELECT 1",
+      "text": "[]"
+    },
+    "statement": "SELECT * FROM users WHERE id = '***'",
+    "totalCost": 12.5,
+    "totalMs": 1.25,
+    "warnings": 2
+  },
   "SavedFolder": {
     "id": "00000000-0000-0000-0000-000000000001",
     "name": "Reports",
@@ -159,5 +201,6 @@
     "sortOrder": 1,
     "text": "SELECT * FROM users WHERE active",
     "updatedAt": "2024-05-02T10:00:00Z"
-  }
+  },
+  "UiLanguage": "en"
 }

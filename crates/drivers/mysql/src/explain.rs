@@ -72,12 +72,12 @@ async fn run_on(
         .unwrap_or_default();
     let version = normalize_version(&raw_version);
     // The dialect follows this very connection's sql_mode (backslash escapes in strings).
-    let dialect = ScriptDialect::MySql {
+    let dialect = ScriptDialect::mysql(
         mariadb,
-        backslash_escapes: !sql_mode
+        !sql_mode
             .to_ascii_uppercase()
             .contains("NO_BACKSLASH_ESCAPES"),
-    };
+    );
     let (statement, class) = single_statement(dialect, &req.text)?;
     if req.analyze {
         match kind_of(class, &statement) {
@@ -327,10 +327,7 @@ mod tests {
     use super::*;
 
     fn kind(sql: &str) -> Kind {
-        let d = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        };
+        let d = ScriptDialect::mysql(false, true);
         let (body, class) = single_statement(d, sql).unwrap();
         kind_of(class, &body)
     }
@@ -360,10 +357,7 @@ mod tests {
 
     #[test]
     fn only_one_statement_and_no_versioned_comments() {
-        let d = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        };
+        let d = ScriptDialect::mysql(false, true);
         for bad in [
             "SELECT 1; DROP TABLE t",
             "select 1; commit; /*!update t set a=2*/",
@@ -384,10 +378,7 @@ mod tests {
             assert!(single_statement(d, ok).is_ok(), "{ok}");
         }
         // With NO_BACKSLASH_ESCAPES the backslash does not escape the quote.
-        let no_bs = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: false,
-        };
+        let no_bs = ScriptDialect::mysql(false, false);
         assert!(single_statement(no_bs, "select '\\'; drop table t; select '").is_err());
         assert!(matches!(
             single_statement(d, "  ").unwrap_err(),

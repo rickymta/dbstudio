@@ -675,10 +675,12 @@ async fn run_rows(
             )
         }
         ImportTarget::Script { .. } => {
-            return Err(Error::Other(
+            return Err(Error::Invalid(
                 "a table import needs an existing or a new table as target".into(),
             ));
         }
+        // Scaffold of the backlog contract v2: package X implements the Redis key import.
+        ImportTarget::Keys { .. } => return Err(Error::Unsupported("import_keys".into())),
     };
 
     let mapping = resolve_mapping(&spec.mapping, src.columns(), &table_columns)?;

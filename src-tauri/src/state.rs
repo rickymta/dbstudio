@@ -104,6 +104,10 @@ pub fn build_registry() -> DriverRegistry {
     dbstudio_driver_mongodb::register(&mut registry);
     #[cfg(feature = "redis")]
     dbstudio_driver_redis::register(&mut registry);
+    #[cfg(feature = "cassandra")]
+    dbstudio_driver_cassandra::register(&mut registry);
+    #[cfg(feature = "clickhouse")]
+    dbstudio_driver_clickhouse::register(&mut registry);
     registry
 }
 

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use dbstudio_core::Result;
+use dbstudio_core::{Error, Result};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
@@ -60,13 +60,35 @@ pub const QUERY_TIMEOUT_MAX_MS: u64 = 86_400_000;
 /// Smallest and largest accepted `plan_misestimate_factor`.
 pub const PLAN_FACTOR_RANGE: (u32, u32) = (2, 10_000);
 
+/// Longest accepted `editor_font_family` (characters).
+pub const FONT_FAMILY_MAX_CHARS: usize = 100;
+/// Smallest and largest accepted `editor_font_size`.
+pub const FONT_SIZE_RANGE: (u16, u16) = (8, 32);
+/// Smallest and largest accepted non-zero `keepalive_secs` (0 turns keepalive off).
+pub const KEEPALIVE_RANGE: (u32, u32) = (30, 3_600);
+/// Smallest and largest accepted `plan_history_max_per_connection`.
+pub const PLAN_HISTORY_MAX_RANGE: (u32, u32) = (10, 5_000);
+
+/// Language of OS notifications (the UI language is chosen by the frontend and mirrored here).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UiLanguage {
+    /// Follow the operating system locale (default).
+    #[default]
+    System,
+    /// Vietnamese.
+    Vi,
+    /// English.
+    En,
+}
+
 /// Smallest and largest accepted `grid_max_rows`.
 pub const GRID_ROWS_RANGE: (u32, u32) = (1_000, 5_000_000);
 /// Smallest and largest accepted `grid_max_cells`.
 pub const GRID_CELLS_RANGE: (u64, u64) = (100_000, 200_000_000);
 
 /// User-adjustable settings. Every field has a default so older stored values stay readable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
     /// Log verbosity (applied immediately; `RUST_LOG` still wins when set).
@@ -91,6 +113,20 @@ pub struct AppSettings {
     pub plan_misestimate_factor: u32,
     /// Behaviour of closing the main window.
     pub close_to_tray: CloseBehavior,
+    /// Editor font family; empty = the theme's default monospace font.
+    pub editor_font_family: String,
+    /// Editor font size in pixels.
+    pub editor_font_size: u16,
+    /// Reconnect a lost session automatically (CONN-12).
+    pub auto_reconnect: bool,
+    /// Seconds between lease keepalives and session health checks; 0 turns them off.
+    pub keepalive_secs: u32,
+    /// Whether explained plans are recorded in the plan history (PLAN-07).
+    pub plan_history_enabled: bool,
+    /// Plan history entries kept per connection.
+    pub plan_history_max_per_connection: u32,
+    /// Language of OS notifications.
+    pub language: UiLanguage,
 }
 
 impl Default for AppSettings {
@@ -107,6 +143,13 @@ impl Default for AppSettings {
             max_lob_bytes: 16 * 1024 * 1024,
             plan_misestimate_factor: 10,
             close_to_tray: CloseBehavior::Auto,
+            editor_font_family: String::new(),
+            editor_font_size: 13,
+            auto_reconnect: true,
+            keepalive_secs: 240,
+            plan_history_enabled: true,
+            plan_history_max_per_connection: 200,
+            language: UiLanguage::System,
         }
     }
 }
@@ -127,6 +170,17 @@ impl AppSettings {
         }
         let d = AppSettings::default();
         let s = AppSettings {
+            editor_font_family: field(value, "editorFontFamily", d.editor_font_family.clone()),
+            editor_font_size: field(value, "editorFontSize", d.editor_font_size),
+            auto_reconnect: field(value, "autoReconnect", d.auto_reconnect),
+            keepalive_secs: field(value, "keepaliveSecs", d.keepalive_secs),
+            plan_history_enabled: field(value, "planHistoryEnabled", d.plan_history_enabled),
+            plan_history_max_per_connection: field(
+                value,
+                "planHistoryMaxPerConnection",
+                d.plan_history_max_per_connection,
+            ),
+            language: field(value, "language", d.language),
             log_level: field(value, "logLevel", d.log_level),
             grid_max_rows: field(value, "gridMaxRows", d.grid_max_rows),
             grid_max_cells: field(value, "gridMaxCells", d.grid_max_cells),
@@ -171,7 +225,82 @@ impl AppSettings {
         self.plan_misestimate_factor = self
             .plan_misestimate_factor
             .clamp(PLAN_FACTOR_RANGE.0, PLAN_FACTOR_RANGE.1);
+        self.editor_font_family = self
+            .editor_font_family
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(FONT_FAMILY_MAX_CHARS)
+            .collect::<String>()
+            .trim()
+            .to_string();
+        self.editor_font_size = self
+            .editor_font_size
+            .clamp(FONT_SIZE_RANGE.0, FONT_SIZE_RANGE.1);
+        if self.keepalive_secs != 0 {
+            self.keepalive_secs = self
+                .keepalive_secs
+                .clamp(KEEPALIVE_RANGE.0, KEEPALIVE_RANGE.1);
+        }
+        self.plan_history_max_per_connection = self
+            .plan_history_max_per_connection
+            .clamp(PLAN_HISTORY_MAX_RANGE.0, PLAN_HISTORY_MAX_RANGE.1);
         self
+    }
+
+    /// Strict validation for `settings_set`: out-of-range values are rejected (as
+    /// [`Error::Invalid`]) instead of clamped, so the caller learns that input was wrong.
+    pub fn validate(&self) -> Result<()> {
+        fn range<T: PartialOrd + std::fmt::Display>(
+            name: &str,
+            v: T,
+            (lo, hi): (T, T),
+        ) -> Result<()> {
+            if v < lo || v > hi {
+                return Err(Error::Invalid(format!(
+                    "{name} must be between {lo} and {hi}, got {v}"
+                )));
+            }
+            Ok(())
+        }
+        range("gridMaxRows", self.grid_max_rows, GRID_ROWS_RANGE)?;
+        range("gridMaxCells", self.grid_max_cells, GRID_CELLS_RANGE)?;
+        range("editorMaxRows", self.editor_max_rows, EDITOR_ROWS_RANGE)?;
+        range(
+            "queryTimeoutMs",
+            self.query_timeout_ms,
+            (0, QUERY_TIMEOUT_MAX_MS),
+        )?;
+        range(
+            "historyMaxPerConnection",
+            self.history_max_per_connection,
+            HISTORY_MAX_RANGE,
+        )?;
+        range("maxLobBytes", self.max_lob_bytes, LOB_BYTES_RANGE)?;
+        range(
+            "planMisestimateFactor",
+            self.plan_misestimate_factor,
+            PLAN_FACTOR_RANGE,
+        )?;
+        range("editorFontSize", self.editor_font_size, FONT_SIZE_RANGE)?;
+        if self.keepalive_secs != 0 {
+            range("keepaliveSecs", self.keepalive_secs, KEEPALIVE_RANGE)?;
+        }
+        range(
+            "planHistoryMaxPerConnection",
+            self.plan_history_max_per_connection,
+            PLAN_HISTORY_MAX_RANGE,
+        )?;
+        if self.editor_font_family.chars().count() > FONT_FAMILY_MAX_CHARS {
+            return Err(Error::Invalid(format!(
+                "editorFontFamily is longer than {FONT_FAMILY_MAX_CHARS} characters"
+            )));
+        }
+        if self.editor_font_family.chars().any(char::is_control) {
+            return Err(Error::Invalid(
+                "editorFontFamily contains control characters".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -246,12 +375,15 @@ mod tests {
     fn defaults_and_partial_documents() {
         let d = AppSettings::default();
         assert_eq!(
-            serde_json::to_value(d).unwrap(),
+            serde_json::to_value(&d).unwrap(),
             json!({
                 "logLevel": "info", "gridMaxRows": 1_000_000, "gridMaxCells": 20_000_000,
                 "timestampDisplay": "utc", "editorMaxRows": 1000, "queryTimeoutMs": 0,
                 "historyEnabled": true, "historyMaxPerConnection": 5000,
-                "maxLobBytes": 16_777_216, "planMisestimateFactor": 10, "closeToTray": "auto"
+                "maxLobBytes": 16_777_216, "planMisestimateFactor": 10, "closeToTray": "auto",
+                "editorFontFamily": "", "editorFontSize": 13, "autoReconnect": true,
+                "keepaliveSecs": 240, "planHistoryEnabled": true,
+                "planHistoryMaxPerConnection": 200, "language": "system"
             })
         );
         let old: AppSettings = serde_json::from_value(json!({"logLevel": "debug"})).unwrap();
@@ -295,6 +427,58 @@ mod tests {
         assert_eq!(s.editor_max_rows, 2500);
         assert_eq!(s.max_lob_bytes, 16 * 1024 * 1024);
         assert!(serde_json::from_value::<AppSettings>(json!({"closeToTray": "x"})).is_err());
+    }
+
+    #[test]
+    fn backlog_fields_default_clamp_and_validate() {
+        // JSON written before the 7 new fields existed still reads with their defaults.
+        let s = AppSettings::from_value_lenient(&json!({"gridMaxRows": 5000}));
+        assert_eq!(s.grid_max_rows, 5000);
+        assert_eq!(s.editor_font_size, 13);
+        assert_eq!(s.keepalive_secs, 240);
+        assert!(s.auto_reconnect && s.plan_history_enabled);
+        assert_eq!(s.language, UiLanguage::System);
+        // An unusable value only resets its own field.
+        let s = AppSettings::from_value_lenient(&json!({
+            "language": "klingon", "editorFontSize": 99, "keepaliveSecs": 5,
+            "editorFontFamily": "Fira\u{7}Code", "planHistoryMaxPerConnection": 1
+        }));
+        assert_eq!(s.language, UiLanguage::System);
+        assert_eq!(s.editor_font_size, 32);
+        assert_eq!(s.keepalive_secs, 30);
+        assert_eq!(s.editor_font_family, "FiraCode");
+        assert_eq!(s.plan_history_max_per_connection, 10);
+        let off = AppSettings {
+            keepalive_secs: 0,
+            ..AppSettings::default()
+        };
+        assert_eq!(off.clone().normalized().keepalive_secs, 0);
+        assert!(off.validate().is_ok());
+        assert!(AppSettings::default().validate().is_ok());
+        for bad in [
+            AppSettings {
+                editor_font_size: 7,
+                ..AppSettings::default()
+            },
+            AppSettings {
+                keepalive_secs: 29,
+                ..AppSettings::default()
+            },
+            AppSettings {
+                plan_history_max_per_connection: 5_001,
+                ..AppSettings::default()
+            },
+            AppSettings {
+                editor_font_family: "a\nb".into(),
+                ..AppSettings::default()
+            },
+            AppSettings {
+                editor_font_family: "x".repeat(101),
+                ..AppSettings::default()
+            },
+        ] {
+            assert!(matches!(bad.validate(), Err(Error::Invalid(_))), "{bad:?}");
+        }
     }
 
     #[test]

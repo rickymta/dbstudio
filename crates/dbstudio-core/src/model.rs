@@ -184,6 +184,8 @@ pub enum DdlLanguage {
     Sql,
     /// MongoDB shell commands.
     MongoShell,
+    /// CQL (Cassandra / ScyllaDB).
+    Cql,
 }
 
 /// One executable DDL unit. The order of the returned `Vec` is the creation order.

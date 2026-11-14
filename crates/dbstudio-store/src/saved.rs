@@ -76,10 +76,10 @@ fn fk_not_found(what: &str) -> impl Fn(rusqlite::Error) -> Error + '_ {
 fn check_name(name: &str) -> Result<String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(Error::Other("the name must not be empty".into()));
+        return Err(Error::Invalid("the name must not be empty".into()));
     }
     if name.chars().count() > NAME_MAX_CHARS {
-        return Err(Error::Other(format!(
+        return Err(Error::Invalid(format!(
             "the name must be at most {NAME_MAX_CHARS} characters"
         )));
     }
@@ -176,7 +176,7 @@ impl Store {
             let mut hops = 0;
             while let Some(current) = cursor {
                 if current == folder.id {
-                    return Err(Error::Other(
+                    return Err(Error::Invalid(
                         "a folder cannot be moved into itself or its subfolders".into(),
                     ));
                 }

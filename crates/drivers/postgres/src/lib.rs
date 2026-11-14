@@ -26,10 +26,12 @@ mod sql;
 mod stream;
 mod tls;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use dbstudio_core::{
-    Capabilities, ConnectionConfig, DbKind, Driver, DriverDescriptor, DriverStatus, Result, Secret,
-    Session,
+    Capabilities, ConnectionConfig, DbKind, Driver, DriverDescriptor, DriverRegistry, DriverStatus,
+    Error, Result, Secret, Session,
 };
 
 pub use session::PostgresSession;
@@ -65,9 +67,66 @@ impl Driver for PostgresDriver {
     }
 }
 
+/// Driver of a PostgreSQL-protocol flavour (CockroachDB, YugabyteDB YSQL).
+///
+/// Contract scaffold of the backlog contract v2: package N1 replaces `connect` with the shared
+/// PostgreSQL implementation plus flavour detection. Until then it answers `Unsupported`, and
+/// the application does not register it (see [`register_flavors`]).
+#[derive(Debug, Clone, Copy)]
+pub struct PostgresFlavorDriver {
+    kind: DbKind,
+}
+
+impl PostgresFlavorDriver {
+    /// Driver for `kind` (`CockroachDb` or `YugabyteDb`).
+    pub fn new(kind: DbKind) -> Self {
+        Self { kind }
+    }
+}
+
+#[async_trait]
+impl Driver for PostgresFlavorDriver {
+    fn descriptor(&self) -> DriverDescriptor {
+        DriverDescriptor::new(
+            self.kind,
+            Capabilities::planned_for(self.kind),
+            DriverStatus::Available,
+        )
+    }
+
+    async fn connect(
+        &self,
+        _config: &ConnectionConfig,
+        _secret: Option<&Secret>,
+    ) -> Result<Box<dyn Session>> {
+        Err(Error::Unsupported(self.kind.id().into()))
+    }
+}
+
+/// Register the CockroachDB and YugabyteDB drivers. Not called by the application until package
+/// N1 makes them real (a registered driver is shown as available).
+pub fn register_flavors(registry: &mut DriverRegistry) {
+    for kind in [DbKind::CockroachDb, DbKind::YugabyteDb] {
+        registry.register(Arc::new(PostgresFlavorDriver::new(kind)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn flavours_register_and_connect_is_unsupported() {
+        let mut registry = DriverRegistry::new();
+        register_flavors(&mut registry);
+        for kind in [DbKind::CockroachDb, DbKind::YugabyteDb] {
+            let driver = registry.get(kind).expect("registered");
+            assert_eq!(driver.descriptor().kind, kind);
+            let cfg = ConnectionConfig::new(kind, "t", "localhost");
+            let err = driver.connect(&cfg, None).await.err().unwrap();
+            assert!(matches!(err, Error::Unsupported(c) if c == kind.id()));
+        }
+    }
 
     #[test]
     fn descriptor_is_available() {

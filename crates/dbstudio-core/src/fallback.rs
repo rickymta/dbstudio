@@ -176,6 +176,7 @@ pub async fn editability_from_details<S: Session + ?Sized>(
         read_only_columns: vec![],
         reason: Some(reason),
         atomic: true,
+        notes: vec![],
     };
     let details = match s.table_details(path).await {
         Ok(d) => d,
@@ -199,6 +200,7 @@ pub async fn editability_from_details<S: Session + ?Sized>(
         read_only_columns,
         reason: (!editable).then_some(NotEditableReason::NoUniqueKey),
         atomic: true,
+        notes: vec![],
     })
 }
 

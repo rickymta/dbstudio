@@ -241,7 +241,14 @@ fn spill_signal(
             (no_queue && rows >= rules.large_table_rows / 10.0)
                 .then(|| (Severity::Info, format!("filesort {} rows", fmt_num(rows))))
         }
-        PlanFormat::MySqlJson | PlanFormat::MySqlJsonV2 | PlanFormat::MySqlTree => None,
+        // Spill detection for the new formats is added together with their parsers.
+        PlanFormat::MySqlJson
+        | PlanFormat::MySqlJsonV2
+        | PlanFormat::MySqlTree
+        | PlanFormat::ClickHouseJson
+        | PlanFormat::CockroachText
+        | PlanFormat::TiDbRows
+        | PlanFormat::CqlTrace => None,
     }
 }
 

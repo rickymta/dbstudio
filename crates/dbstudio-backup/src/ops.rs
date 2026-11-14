@@ -513,6 +513,8 @@ pub async fn inspect(path: &Path, passphrase: Option<&Secret>) -> Result<BackupI
             preamble,
             encrypted,
             native,
+            // Filled in by package B once logical backups carry `formatVersion: 3` markers.
+            objects: Vec::new(),
         })
     })
     .await

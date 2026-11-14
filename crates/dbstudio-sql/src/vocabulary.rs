@@ -379,7 +379,9 @@ pub fn vocabulary(d: ScriptDialect) -> Vocabulary {
                 })
                 .collect(),
         },
-        ScriptDialect::Opaque => Vocabulary::default(),
+        ScriptDialect::Opaque | ScriptDialect::Cql | ScriptDialect::ClickHouse => {
+            Vocabulary::default()
+        }
     }
 }
 
@@ -410,10 +412,7 @@ mod tests {
     fn sql_vocabularies_have_keywords_and_functions() {
         for d in [
             ScriptDialect::Postgres,
-            ScriptDialect::MySql {
-                mariadb: false,
-                backslash_escapes: true,
-            },
+            ScriptDialect::mysql(false, true),
             ScriptDialect::MsSql,
             ScriptDialect::Oracle,
         ] {

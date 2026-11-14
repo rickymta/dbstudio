@@ -741,6 +741,7 @@ impl Session for MongoSession {
             read_only_columns: vec![],
             reason: Some(reason),
             atomic: self.conn.transactions,
+            notes: vec![],
         };
         if kind == Some(ObjectKind::View) {
             return Ok(not(NotEditableReason::NotATable));
@@ -757,6 +758,7 @@ impl Session for MongoSession {
             read_only_columns: vec!["_id".into()],
             reason: None,
             atomic: self.conn.transactions,
+            notes: vec![],
         })
     }
 

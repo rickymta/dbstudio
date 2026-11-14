@@ -251,10 +251,7 @@ mod tests {
             .child(ObjectKind::Database, "d")
             .child(ObjectKind::Folder, "tables")
             .child(ObjectKind::Table, "t");
-        let my = ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        };
+        let my = ScriptDialect::mysql(false, true);
         assert_eq!(qualifier(Some(&m), None, my).as_deref(), Some("d"));
         assert_eq!(qualifier(Some(&m), None, ScriptDialect::Postgres), None);
         assert_eq!(qualifier(None, None, my), None);

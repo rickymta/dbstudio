@@ -81,6 +81,12 @@ pub struct Capabilities {
     /// Connections can go through an SSH tunnel.
     #[serde(default)]
     pub ssh_tunnel: bool,
+    /// The data grid can sort by any column server-side (false: CQL, only clustering order).
+    #[serde(default)]
+    pub table_sort: bool,
+    /// `count_table` returns an exact count cheaply enough for the grid (false: CQL full scan).
+    #[serde(default)]
+    pub exact_count: bool,
 }
 
 impl Capabilities {
@@ -115,6 +121,8 @@ impl Capabilities {
                 native_backup: true,
                 read_only_session: true,
                 ssh_tunnel: true,
+                table_sort: true,
+                exact_count: true,
                 ..none
             },
             DbKind::MySql => Capabilities {
@@ -141,6 +149,8 @@ impl Capabilities {
                 native_backup: true,
                 read_only_session: true,
                 ssh_tunnel: true,
+                table_sort: true,
+                exact_count: true,
                 ..none
             },
             DbKind::SqlServer => Capabilities {
@@ -169,6 +179,8 @@ impl Capabilities {
                 bulk_insert: true,
                 native_backup: true,
                 ssh_tunnel: true,
+                table_sort: true,
+                exact_count: true,
                 ..none
             },
             DbKind::Oracle => Capabilities {
@@ -196,6 +208,8 @@ impl Capabilities {
                 bulk_insert: true,
                 native_backup: true,
                 ssh_tunnel: true,
+                table_sort: true,
+                exact_count: true,
                 ..none
             },
             DbKind::MongoDb => Capabilities {
@@ -219,6 +233,8 @@ impl Capabilities {
                 bulk_insert: true,
                 native_backup: true,
                 ssh_tunnel: true,
+                table_sort: true,
+                exact_count: true,
                 ..none
             },
             DbKind::Redis => Capabilities {
@@ -234,36 +250,74 @@ impl Capabilities {
                 ssh_tunnel: true,
                 ..none
             },
-            DbKind::Cassandra => Capabilities {
-                object_search: true,
-                sql: true,
-                multiple_databases: true,
-                data_editing: true,
-                stored_routines: true,
-                triggers: true,
-                views: true,
-                ..none
-            },
-            DbKind::ScyllaDb => Capabilities {
-                object_search: true,
-                sql: true,
-                multiple_databases: true,
-                data_editing: true,
-                stored_routines: true,
-                views: true,
-                ..none
-            },
+            DbKind::Cassandra => cassandra_family(true),
+            DbKind::ScyllaDb => cassandra_family(false),
             DbKind::ClickHouse => Capabilities {
                 object_search: true,
                 sql: true,
                 multiple_databases: true,
                 explain: true,
                 cancel_query: true,
+                logical_backup: true,
                 data_editing: true,
                 views: true,
+                leases: true,
+                query_params: true,
+                ddl_generation: true,
+                schema_model: true,
+                table_stream: true,
+                bulk_insert: true,
+                native_backup: true,
+                read_only_session: true,
+                ssh_tunnel: true,
+                table_sort: true,
+                exact_count: true,
                 ..none
             },
+            // PostgreSQL flavours. `triggers` of CockroachDB depends on the server version (>= 24.3)
+            // and is switched on by `Session::capabilities()`.
+            DbKind::CockroachDb => Capabilities {
+                triggers: false,
+                ..Capabilities::planned_for(DbKind::Postgres)
+            },
+            DbKind::YugabyteDb => Capabilities::planned_for(DbKind::Postgres),
+            // TiDB: MySQL protocol; no stored routines/triggers, has sequences. Read-only sessions
+            // stay off until integration tests prove them.
+            DbKind::TiDb => Capabilities {
+                stored_routines: false,
+                triggers: false,
+                sequences: true,
+                read_only_session: false,
+                ..Capabilities::planned_for(DbKind::MySql)
+            },
         }
+    }
+}
+
+/// Cassandra (`cassandra = true`) and ScyllaDB (`false`): same driver, Scylla has no triggers and
+/// its UDFs are experimental.
+fn cassandra_family(cassandra: bool) -> Capabilities {
+    Capabilities {
+        sql: true,
+        multiple_databases: true,
+        // Tracing (`system_traces`) is exposed as the plan.
+        explain_analyze: true,
+        // Client-side cancel (the request future is dropped).
+        cancel_query: true,
+        logical_backup: true,
+        data_editing: true,
+        stored_routines: cassandra,
+        triggers: cassandra,
+        views: true,
+        object_search: true,
+        leases: true,
+        query_params: true,
+        ddl_generation: true,
+        schema_model: true,
+        table_stream: true,
+        bulk_insert: true,
+        ssh_tunnel: true,
+        ..Capabilities::default()
     }
 }
 
@@ -313,6 +367,41 @@ mod tests {
     }
 
     #[test]
+    fn backlog_v2_table() {
+        for kind in [
+            DbKind::Postgres,
+            DbKind::MySql,
+            DbKind::SqlServer,
+            DbKind::Oracle,
+            DbKind::MongoDb,
+            DbKind::ClickHouse,
+            DbKind::CockroachDb,
+            DbKind::YugabyteDb,
+            DbKind::TiDb,
+        ] {
+            let c = Capabilities::planned_for(kind);
+            assert!(c.table_sort && c.exact_count, "{kind:?}");
+        }
+        let redis = Capabilities::planned_for(DbKind::Redis);
+        assert!(!redis.table_sort && !redis.exact_count);
+        let cass = Capabilities::planned_for(DbKind::Cassandra);
+        assert!(cass.sql && cass.triggers && cass.explain_analyze && cass.leases);
+        assert!(!cass.table_sort && !cass.exact_count && !cass.schemas && !cass.transactions);
+        assert!(!cass.explain && !cass.foreign_keys && !cass.native_backup);
+        let scylla = Capabilities::planned_for(DbKind::ScyllaDb);
+        assert!(!scylla.triggers && !scylla.stored_routines && scylla.views);
+        let ch = Capabilities::planned_for(DbKind::ClickHouse);
+        assert!(ch.explain && !ch.explain_analyze && !ch.transactions && ch.native_backup);
+        assert!(ch.read_only_session && ch.table_sort && !ch.schemas);
+        let crdb = Capabilities::planned_for(DbKind::CockroachDb);
+        assert!(!crdb.triggers && crdb.native_backup && crdb.schemas);
+        let tidb = Capabilities::planned_for(DbKind::TiDb);
+        assert!(
+            tidb.sequences && !tidb.triggers && !tidb.stored_routines && !tidb.read_only_session
+        );
+    }
+
+    #[test]
     fn missing_new_flags_default_to_false() {
         let caps: Capabilities = serde_json::from_value(serde_json::json!({
             "sql": true, "transactions": false, "schemas": false, "multipleDatabases": false,
@@ -339,6 +428,8 @@ mod tests {
             "pagedTree",
             "readOnlySession",
             "sshTunnel",
+            "tableSort",
+            "exactCount",
         ] {
             assert_eq!(json[key], false, "{key}");
         }

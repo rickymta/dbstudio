@@ -2,10 +2,14 @@
 //! analysis (self cost/time, hot path, warnings).
 //!
 //! Supported sources: PostgreSQL JSON, MySQL JSON (v1 and v2) and tree text, MariaDB JSON,
-//! SQL Server showplan XML, Oracle plan rows (JSON) and MongoDB explain output.
+//! SQL Server showplan XML, Oracle plan rows (JSON) and MongoDB explain output. ClickHouse,
+//! CockroachDB, TiDB and CQL trace parsers are scaffolded (`PlanError::Unsupported`).
 
 mod analyze;
 mod build;
+mod clickhouse;
+mod cockroach;
+mod cql_trace;
 mod json;
 mod mariadb;
 mod mongo;
@@ -13,6 +17,7 @@ mod mssql;
 mod mysql;
 mod oracle;
 mod postgres;
+mod tidb;
 
 use std::collections::BTreeMap;
 
@@ -46,6 +51,10 @@ pub fn parse(raw: &RawPlan) -> Result<PlanTree, PlanError> {
         PlanFormat::MsSqlShowplanXml => mssql::parse(text),
         PlanFormat::OraclePlanRows => oracle::parse(text),
         PlanFormat::MongoExplain => mongo::parse(text),
+        PlanFormat::ClickHouseJson => clickhouse::parse(text),
+        PlanFormat::CockroachText => cockroach::parse(text),
+        PlanFormat::TiDbRows => tidb::parse(text),
+        PlanFormat::CqlTrace => cql_trace::parse(text),
     }
 }
 
@@ -409,6 +418,22 @@ mod tests {
                 parse_and_analyze(&empty, &PlanRules::default()),
                 Err(PlanError::Invalid(_))
             ));
+        }
+    }
+
+    #[test]
+    fn scaffolded_formats_are_unsupported_until_their_package_lands() {
+        for format in [
+            PlanFormat::ClickHouseJson,
+            PlanFormat::CockroachText,
+            PlanFormat::TiDbRows,
+            PlanFormat::CqlTrace,
+        ] {
+            assert_eq!(parse(&raw(format)), Err(PlanError::Unsupported(format)));
+            // Empty text is still reported as invalid before dispatch.
+            let mut empty = raw(format);
+            empty.text = " ".into();
+            assert!(matches!(parse(&empty), Err(PlanError::Invalid(_))));
         }
     }
 

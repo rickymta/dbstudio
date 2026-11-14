@@ -184,12 +184,29 @@ CREATE TABLE ssh_known_hosts (
     added_at    TEXT NOT NULL,
     PRIMARY KEY (host, port, key_type)
 );"##,
+    // v7: environment label, editor dirty flag, plan history (CONN-03, PLAN-07)
+    r##"ALTER TABLE connections ADD COLUMN environment_label TEXT;   -- custom label, NULL = standard name
+ALTER TABLE editor_tabs ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE plan_history (
+    id            TEXT PRIMARY KEY NOT NULL,
+    connection_id TEXT REFERENCES connections(id) ON DELETE CASCADE,
+    created_at    TEXT NOT NULL,
+    database_name TEXT,
+    statement     TEXT NOT NULL,          -- redacted with dbstudio_sql::redact
+    analyze       INTEGER NOT NULL,
+    format        TEXT NOT NULL,          -- PlanFormat
+    raw_plan      TEXT NOT NULL,          -- RawPlan JSON (<= 8 MiB, bigger plans are not stored)
+    total_cost    REAL,
+    total_ms      REAL,
+    warnings      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_plan_history_conn ON plan_history(connection_id, created_at DESC);"##,
 ];
 
 const PROFILE_COLUMNS: &str = "id, name, kind, host, port, database_name, username, tls_mode, \
     tls_ca_cert_path, tls_client_cert_path, tls_client_key_path, connect_timeout_ms, read_only, \
     environment, options, group_id, color, save_password, has_password, sort_order, created_at, \
-    updated_at, ssh";
+    updated_at, ssh, environment_label";
 
 pub(crate) fn db_err(e: impl Display) -> Error {
     Error::Storage(format!("database error: {e}"))
@@ -273,6 +290,7 @@ fn profile_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ConnectionProfile>
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
     let ssh: Option<String> = row.get("ssh")?;
+    let environment_label: Option<String> = row.get("environment_label")?;
     Ok((|| {
         Ok(ConnectionProfile {
             config: ConnectionConfig {
@@ -300,6 +318,7 @@ fn profile_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ConnectionProfile>
                     .map(serde_json::from_str::<SshConfig>)
                     .transpose()
                     .map_err(|e| invalid(format!("bad ssh json: {e}")))?,
+                environment_label,
             },
             group_id: opt_uuid(group_id)?,
             color,
@@ -663,8 +682,8 @@ fn check_no_cycle(conn: &Connection, group: Uuid, parent: Uuid) -> Result<()> {
     let mut cursor = Some(parent);
     while let Some(current) = cursor {
         if current == group {
-            return Err(invalid(
-                "a group cannot be moved into itself or its descendants",
+            return Err(Error::Invalid(
+                "a group cannot be moved into itself or its descendants".into(),
             ));
         }
         if !seen.insert(current) {
@@ -697,7 +716,7 @@ fn write_profile(tx: &Transaction<'_>, p: &ConnectionProfile) -> Result<()> {
         &format!(
             "INSERT INTO connections ({PROFILE_COLUMNS}) VALUES
              (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-              ?19, ?20, ?21, ?22, ?23)
+              ?19, ?20, ?21, ?22, ?23, ?24)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name, kind = excluded.kind, host = excluded.host,
                 port = excluded.port, database_name = excluded.database_name,
@@ -710,7 +729,8 @@ fn write_profile(tx: &Transaction<'_>, p: &ConnectionProfile) -> Result<()> {
                 options = excluded.options, group_id = excluded.group_id,
                 color = excluded.color, save_password = excluded.save_password,
                 has_password = excluded.has_password, sort_order = excluded.sort_order,
-                updated_at = excluded.updated_at, ssh = excluded.ssh"
+                updated_at = excluded.updated_at, ssh = excluded.ssh,
+                environment_label = excluded.environment_label"
         ),
         params![
             c.id.to_string(),
@@ -736,6 +756,7 @@ fn write_profile(tx: &Transaction<'_>, p: &ConnectionProfile) -> Result<()> {
             p.created_at,
             p.updated_at,
             ssh,
+            c.environment_label,
         ],
     )
     .map_err(db_err)?;
@@ -838,13 +859,13 @@ mod tests {
     fn validation_rules() {
         let s = Store::open_in_memory().unwrap();
         let mut p = profile("  ");
-        assert!(matches!(s.save_profile(&p), Err(Error::Storage(_))));
+        assert!(matches!(s.save_profile(&p), Err(Error::Invalid(_))));
         p.config.name = "ok".into();
         p.config.host = " ".into();
-        assert!(matches!(s.save_profile(&p), Err(Error::Storage(_))));
+        assert!(matches!(s.save_profile(&p), Err(Error::Invalid(_))));
         p.config.host = "h".into();
         p.config.port = 0;
-        assert!(matches!(s.save_profile(&p), Err(Error::Storage(_))));
+        assert!(matches!(s.save_profile(&p), Err(Error::Invalid(_))));
         p.config.port = 1;
         p.group_id = Some(Uuid::new_v4());
         assert!(matches!(s.save_profile(&p), Err(Error::NotFound(_))));
@@ -852,7 +873,7 @@ mod tests {
         s.save_profile(&p).unwrap();
         assert!(matches!(
             s.save_group(&group("", None)),
-            Err(Error::Storage(_))
+            Err(Error::Invalid(_))
         ));
         assert!(matches!(
             s.save_group(&group("x", Some(Uuid::new_v4()))),
@@ -959,9 +980,9 @@ mod tests {
         let c = s.save_group(&group("c", Some(b.id))).unwrap();
         let mut a2 = a.clone();
         a2.parent_id = Some(a.id);
-        assert!(matches!(s.save_group(&a2), Err(Error::Storage(_))));
+        assert!(matches!(s.save_group(&a2), Err(Error::Invalid(_))));
         a2.parent_id = Some(c.id);
-        assert!(matches!(s.save_group(&a2), Err(Error::Storage(_))));
+        assert!(matches!(s.save_group(&a2), Err(Error::Invalid(_))));
         // A legal move still works.
         let mut c2 = c.clone();
         c2.parent_id = Some(a.id);
@@ -1063,13 +1084,13 @@ mod tests {
             insert_legacy(&s.lock(), "legacy", None)
         };
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 6);
+        assert_eq!(s.schema_version().unwrap(), 7);
         assert_eq!(s.get_profile(pid).unwrap().config.name, "legacy");
         assert_eq!(s.get_settings().unwrap(), AppSettings::default());
     }
 
     #[test]
-    fn v2_database_with_data_upgrades_to_v6() {
+    fn v2_database_with_data_upgrades_to_v7() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("v2.sqlite");
         let (gid, pid, settings) = {
@@ -1088,8 +1109,8 @@ mod tests {
             (g.id, pid, settings)
         };
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 6);
-        assert_eq!(MIGRATIONS.len(), 6);
+        assert_eq!(s.schema_version().unwrap(), 7);
+        assert_eq!(MIGRATIONS.len(), 7);
         for t in [
             "query_history",
             "saved_query_folders",
@@ -1100,8 +1121,23 @@ mod tests {
             "backup_jobs",
             "backup_runs",
             "ssh_known_hosts",
+            "plan_history",
         ] {
             assert!(table_exists(&s, t), "missing table {t}");
+        }
+        for (table, column) in [
+            ("connections", "environment_label"),
+            ("editor_tabs", "dirty"),
+        ] {
+            let has: bool = s
+                .lock()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+                    params![table, column],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(has, "missing column {table}.{column}");
         }
         let has_ssh: bool = s
             .lock()
@@ -1125,8 +1161,30 @@ mod tests {
         drop(s);
         // Reopening is idempotent.
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 6);
+        assert_eq!(s.schema_version().unwrap(), 7);
         assert_eq!(s.get_profile(pid).unwrap().config.name, "old-conn");
+    }
+
+    #[test]
+    fn environment_label_and_new_kinds_roundtrip() {
+        let s = Store::open_in_memory().unwrap();
+        let mut p = profile("labelled");
+        p.config.kind = DbKind::CockroachDb;
+        p.config.environment_label = Some("QA-3".into());
+        let saved = s.save_profile(&p).unwrap();
+        let loaded = s.get_profile(saved.config.id).unwrap();
+        assert_eq!(loaded.config.environment_label.as_deref(), Some("QA-3"));
+        assert_eq!(loaded.config.kind, DbKind::CockroachDb);
+        let mut edit = loaded;
+        edit.config.environment_label = None;
+        s.save_profile(&edit).unwrap();
+        assert_eq!(
+            s.get_profile(saved.config.id)
+                .unwrap()
+                .config
+                .environment_label,
+            None
+        );
     }
 
     #[test]

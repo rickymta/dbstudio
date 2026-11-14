@@ -192,6 +192,7 @@ fn error_fixtures() {
         ("storage", Error::Storage("disk full".into())),
         ("io", Error::Io(std::io::Error::other("broken pipe"))),
         ("other", Error::Other("unexpected".into())),
+        ("invalid", Error::Invalid("name is empty".into())),
         (
             "readOnly",
             Error::ReadOnlyViolation {
@@ -245,10 +246,7 @@ fn error_fixtures() {
 
 #[test]
 fn script_fixtures() {
-    let dialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
+    let dialect = ScriptDialect::mysql(false, true);
     let analysis = ScriptAnalysis {
         dialect,
         statements: vec![
@@ -323,6 +321,21 @@ fn script_fixtures() {
     };
     let samples = group(vec![
         ("ScriptDialect", j(&dialect)),
+        ("ScriptDialect#cql", j(&ScriptDialect::Cql)),
+        ("ScriptDialect#clickHouse", j(&ScriptDialect::ClickHouse)),
+        (
+            "ScriptDialect#mySqlAnsi",
+            j(&ScriptDialect::MySql {
+                mariadb: true,
+                backslash_escapes: false,
+                ansi_quotes: true,
+            }),
+        ),
+        ("DestructiveReason#write", j(&DestructiveReason::Write)),
+        (
+            "DestructiveReason#keywordScan",
+            j(&DestructiveReason::KeywordScan),
+        ),
         ("TextRange", j(&TextRange { start: 3, end: 9 })),
         ("ScriptAnalysis", j(&analysis)),
         ("StatementInfo", j(&analysis.statements[2])),
@@ -360,7 +373,12 @@ fn script_fixtures() {
     ]);
     assert_eq!(
         samples["ScriptDialect"],
-        json!({"name": "mySql", "mariadb": false, "backslashEscapes": true})
+        json!({"name": "mySql", "mariadb": false, "backslashEscapes": true, "ansiQuotes": false})
+    );
+    assert_eq!(samples["ScriptDialect#cql"], json!({"name": "cql"}));
+    assert_eq!(
+        samples["ScriptDialect#clickHouse"],
+        json!({"name": "clickHouse"})
     );
     assert_eq!(
         samples["ScriptAnalysis"]["statements"][1]["class"],
@@ -458,14 +476,19 @@ fn edit_fixtures() {
                     value: text("Hue"),
                 }],
                 unset: vec![vec!["legacy".into()]],
+                expected: vec![],
             },
             DocumentChange::Replace {
                 id: Value::Int(1),
                 document: DocInput::Value {
                     value: Value::Document(vec![("a".into(), Value::Int(1))]),
                 },
+                expected: vec![],
             },
-            DocumentChange::Delete { id: Value::Int(3) },
+            DocumentChange::Delete {
+                id: Value::Int(3),
+                expected: vec![],
+            },
         ],
     });
     let keys = ChangeSet::Keys(KeyChangeSet {
@@ -504,7 +527,123 @@ fn edit_fixtures() {
                 read_only_columns: vec!["created_at".into()],
                 reason: None,
                 atomic: true,
+                notes: vec![],
             }),
+        ),
+        (
+            "Editability#notes",
+            j(&Editability {
+                editable: true,
+                key_columns: vec!["pk".into()],
+                read_only_columns: vec![],
+                reason: None,
+                atomic: false,
+                notes: vec![
+                    EditNote::UpsertSemantics,
+                    EditNote::ConditionalWrites,
+                    EditNote::AsyncMutation,
+                ],
+            }),
+        ),
+        ("EditNote", j(&EditNote::AsyncMutation)),
+        ("PutMode", j(&PutMode::IfAbsent)),
+        (
+            "FieldOriginal",
+            j(&FieldOriginal {
+                path: vec!["address".into(), "city".into()],
+                value: Some(text("Hue")),
+            }),
+        ),
+        (
+            "FieldOriginal#absent",
+            j(&FieldOriginal {
+                path: vec!["legacy".into()],
+                value: None,
+            }),
+        ),
+        (
+            "DocumentChange#updateExpected",
+            j(&DocumentChange::Update {
+                id: Value::Int(1),
+                set: vec![FieldEdit {
+                    path: vec!["a".into()],
+                    value: Value::Int(2),
+                }],
+                unset: vec![],
+                expected: vec![FieldOriginal {
+                    path: vec!["a".into()],
+                    value: Some(Value::Int(1)),
+                }],
+            }),
+        ),
+        (
+            "KeyChange#listSetExpected",
+            j(&KeyChange::ListSet {
+                key: "l".into(),
+                index: 0,
+                value: text("new"),
+                expected: Some(text("old")),
+            }),
+        ),
+        (
+            "KeyChange#put",
+            j(&KeyChange::Put {
+                key: "k".into(),
+                data: KeyData::Hash {
+                    fields: vec![(text("f"), text("v"))],
+                },
+                ttl_ms: Some(60_000),
+                mode: PutMode::IfAbsent,
+            }),
+        ),
+        (
+            "ChangeSet#keysPut",
+            j(&ChangeSet::Keys(KeyChangeSet {
+                database: path(&[(ObjectKind::Database, "0")]),
+                changes: vec![
+                    KeyChange::ListSet {
+                        key: "l".into(),
+                        index: 1,
+                        value: text("v"),
+                        expected: Some(text("old")),
+                    },
+                    KeyChange::ListRemoveAt {
+                        key: "l".into(),
+                        index: 0,
+                        expected: None,
+                    },
+                    KeyChange::Put {
+                        key: "s".into(),
+                        data: KeyData::String { value: text("x") },
+                        ttl_ms: None,
+                        mode: PutMode::Replace,
+                    },
+                ],
+            })),
+        ),
+        (
+            "ChangeSet#documentsExpected",
+            j(&ChangeSet::Documents(DocumentChangeSet {
+                collection: path(&[
+                    (ObjectKind::Database, "app"),
+                    (ObjectKind::Folder, "collections"),
+                    (ObjectKind::Collection, "users"),
+                ]),
+                changes: vec![
+                    DocumentChange::Replace {
+                        id: Value::Int(1),
+                        document: DocInput::Ejson { text: "{}".into() },
+                        expected: vec![FieldOriginal {
+                            path: vec!["a".into()],
+                            value: None,
+                        }],
+                    },
+                    DocumentChange::Delete {
+                        id: Value::Int(1),
+                        expected: vec![],
+                    },
+                ],
+            })),
         ),
         ("NotEditableReason", j(&NotEditableReason::NoUniqueKey)),
         ("ChangeSet", j(&rows)),
@@ -538,7 +677,10 @@ fn edit_fixtures() {
         ),
         (
             "DocumentChange",
-            j(&DocumentChange::Delete { id: Value::Int(3) }),
+            j(&DocumentChange::Delete {
+                id: Value::Int(3),
+                expected: vec![],
+            }),
         ),
         ("DocInput", j(&DocInput::Ejson { text: "{}".into() })),
         (
@@ -626,6 +768,49 @@ fn keyvalue_fixtures() {
             }),
         ),
         ("KeyValuePage", j(&page)),
+        (
+            "KeyScanRequest",
+            j(&KeyScanRequest {
+                database: path(&[(ObjectKind::Database, "0")]),
+                pattern: Some("user:*".into()),
+                cursor: None,
+                count: 1000,
+                type_filter: Some("hash".into()),
+            }),
+        ),
+        (
+            "KeyScanPage",
+            j(&KeyScanPage {
+                keys: vec!["user:1".into(), "\u{0}b64:AJ+Slv8=".into()],
+                next_cursor: Some("17".into()),
+            }),
+        ),
+        (
+            "KeyData",
+            j(&KeyData::ZSet {
+                members: vec![(text("ann"), "10.5".into())],
+            }),
+        ),
+        (
+            "KeyData#stream",
+            j(&KeyData::Stream {
+                entries: vec![StreamEntry {
+                    id: "1-0".into(),
+                    fields: vec![(text("f"), text("v"))],
+                }],
+            }),
+        ),
+        ("KeyData#json", j(&KeyData::Json { text: "{}".into() })),
+        (
+            "KeyRecord",
+            j(&KeyRecord {
+                key: "user:1".into(),
+                data: KeyData::List {
+                    items: vec![text("a"), Value::Bytes(vec![0, 255])],
+                },
+                expire_at_ms: Some(1_800_000_000_000),
+            }),
+        ),
         ("KeyEntries", j(&string_entries)),
         (
             "StreamEntry",
@@ -652,6 +837,20 @@ fn keyvalue_fixtures() {
             }),
         ),
         ("ObjectNode", j(&node)),
+        (
+            "ObjectNode#dictionary",
+            j(&ObjectNode {
+                path: path(&[
+                    (ObjectKind::Database, "app"),
+                    (ObjectKind::Folder, folder::DICTIONARIES),
+                    (ObjectKind::Dictionary, "countries"),
+                ]),
+                kind: ObjectKind::Dictionary,
+                name: "countries".into(),
+                has_children: false,
+                detail: None,
+            }),
+        ),
     ]);
     write_or_check("keyvalue", &samples);
 }
@@ -698,6 +897,10 @@ fn plan_fixtures() {
             }),
         ),
         ("PlanFormat", j(&PlanFormat::MySqlJsonV2)),
+        ("PlanFormat#clickHouseJson", j(&PlanFormat::ClickHouseJson)),
+        ("PlanFormat#cockroachText", j(&PlanFormat::CockroachText)),
+        ("PlanFormat#tiDbRows", j(&PlanFormat::TiDbRows)),
+        ("PlanFormat#cqlTrace", j(&PlanFormat::CqlTrace)),
     ]);
     write_or_check("plan", &samples);
 }
@@ -771,6 +974,7 @@ fn model_fixtures() {
         ("DdlOptions", j(&DdlOptions::default())),
         ("DdlSection", j(&DdlSection::PostData)),
         ("DdlLanguage", j(&DdlLanguage::MongoShell)),
+        ("DdlLanguage#cql", j(&DdlLanguage::Cql)),
         ("DdlItem", j(&ddl)),
         (
             "TableStreamRequest",
@@ -882,6 +1086,11 @@ fn capabilities_fixtures() {
         "Capabilities",
         j(&Capabilities::planned_for(DbKind::Postgres)),
     )]);
+    let mut samples = samples;
+    samples.as_object_mut().unwrap().insert(
+        "Capabilities#cassandra".into(),
+        j(&Capabilities::planned_for(DbKind::Cassandra)),
+    );
     write_or_check("capabilities", &samples);
 }
 
@@ -894,6 +1103,7 @@ fn driver_fixtures() {
     cfg.tls.mode = TlsMode::VerifyFull;
     cfg.tls.server_name = Some("db.internal".into());
     cfg.environment = Some(Environment::Production);
+    cfg.environment_label = Some("PROD-EU".into());
     cfg.ssh = Some(SshConfig {
         host: "bastion".into(),
         port: 22,
@@ -918,6 +1128,18 @@ fn driver_fixtures() {
             j(&UnavailableReason::NativeClientMissing),
         ),
         ("DriverDescriptor", j(&oracle)),
+        (
+            "DriverDescriptor#cockroachdb",
+            j(&DriverDescriptor::planned(DbKind::CockroachDb)),
+        ),
+        (
+            "DriverDescriptor#yugabytedb",
+            j(&DriverDescriptor::planned(DbKind::YugabyteDb)),
+        ),
+        (
+            "DriverDescriptor#tidb",
+            j(&DriverDescriptor::planned(DbKind::TiDb)),
+        ),
         ("ConnectionConfig", j(&cfg)),
         ("TlsConfig", j(&cfg.tls)),
         (

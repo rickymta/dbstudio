@@ -83,16 +83,134 @@
       ]
     }
   },
+  "ChangeSet#documentsExpected": {
+    "changes": [
+      {
+        "document": {
+          "kind": "ejson",
+          "text": "{}"
+        },
+        "expected": [
+          {
+            "path": ["a"],
+            "value": null
+          }
+        ],
+        "id": {
+          "t": "int",
+          "v": 1
+        },
+        "op": "replace"
+      },
+      {
+        "expected": [],
+        "id": {
+          "t": "int",
+          "v": 1
+        },
+        "op": "delete"
+      }
+    ],
+    "collection": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "folder",
+          "name": "collections"
+        },
+        {
+          "kind": "collection",
+          "name": "users"
+        }
+      ]
+    },
+    "model": "documents"
+  },
+  "ChangeSet#keysPut": {
+    "changes": [
+      {
+        "expected": {
+          "t": "text",
+          "v": "old"
+        },
+        "index": 1,
+        "key": "l",
+        "op": "listSet",
+        "value": {
+          "t": "text",
+          "v": "v"
+        }
+      },
+      {
+        "expected": null,
+        "index": 0,
+        "key": "l",
+        "op": "listRemoveAt"
+      },
+      {
+        "data": {
+          "type": "string",
+          "value": {
+            "t": "text",
+            "v": "x"
+          }
+        },
+        "key": "s",
+        "mode": "replace",
+        "op": "put",
+        "ttlMs": null
+      }
+    ],
+    "database": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "0"
+        }
+      ]
+    },
+    "model": "keys"
+  },
   "DocInput": {
     "kind": "ejson",
     "text": "{}"
   },
   "DocumentChange": {
+    "expected": [],
     "id": {
       "t": "int",
       "v": 3
     },
     "op": "delete"
+  },
+  "DocumentChange#updateExpected": {
+    "expected": [
+      {
+        "path": ["a"],
+        "value": {
+          "t": "int",
+          "v": 1
+        }
+      }
+    ],
+    "id": {
+      "t": "int",
+      "v": 1
+    },
+    "op": "update",
+    "set": [
+      {
+        "path": ["a"],
+        "value": {
+          "t": "int",
+          "v": 2
+        }
+      }
+    ],
+    "unset": []
   },
   "DocumentChangeSet": {
     "changes": [
@@ -104,6 +222,7 @@
         "op": "insert"
       },
       {
+        "expected": [],
         "id": {
           "t": "ext",
           "v": {
@@ -139,6 +258,7 @@
             ]
           }
         },
+        "expected": [],
         "id": {
           "t": "int",
           "v": 1
@@ -146,6 +266,7 @@
         "op": "replace"
       },
       {
+        "expected": [],
         "id": {
           "t": "int",
           "v": 3
@@ -170,6 +291,7 @@
       ]
     }
   },
+  "EditNote": "asyncMutation",
   "EditValue": {
     "kind": "text",
     "v": "typed"
@@ -178,7 +300,16 @@
     "atomic": true,
     "editable": true,
     "keyColumns": ["id"],
+    "notes": [],
     "readOnlyColumns": ["created_at"],
+    "reason": null
+  },
+  "Editability#notes": {
+    "atomic": false,
+    "editable": true,
+    "keyColumns": ["pk"],
+    "notes": ["upsertSemantics", "conditionalWrites", "asyncMutation"],
+    "readOnlyColumns": [],
     "reason": null
   },
   "FieldEdit": {
@@ -188,6 +319,17 @@
       "v": 1
     }
   },
+  "FieldOriginal": {
+    "path": ["address", "city"],
+    "value": {
+      "t": "text",
+      "v": "Hue"
+    }
+  },
+  "FieldOriginal#absent": {
+    "path": ["legacy"],
+    "value": null
+  },
   "KeyChange": {
     "key": "k",
     "op": "setString",
@@ -196,6 +338,40 @@
       "t": "text",
       "v": "v"
     }
+  },
+  "KeyChange#listSetExpected": {
+    "expected": {
+      "t": "text",
+      "v": "old"
+    },
+    "index": 0,
+    "key": "l",
+    "op": "listSet",
+    "value": {
+      "t": "text",
+      "v": "new"
+    }
+  },
+  "KeyChange#put": {
+    "data": {
+      "fields": [
+        [
+          {
+            "t": "text",
+            "v": "f"
+          },
+          {
+            "t": "text",
+            "v": "v"
+          }
+        ]
+      ],
+      "type": "hash"
+    },
+    "key": "k",
+    "mode": "ifAbsent",
+    "op": "put",
+    "ttlMs": 60000
   },
   "KeyChangeSet": {
     "changes": [
@@ -246,6 +422,7 @@
     }
   },
   "NotEditableReason": "noUniqueKey",
+  "PutMode": "ifAbsent",
   "RowChange": {
     "key": [
       {

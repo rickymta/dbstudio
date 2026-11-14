@@ -60,10 +60,7 @@ impl SqlWriter {
         // escapes (and the prologue turns `NO_BACKSLASH_ESCAPES` off), whatever the source or
         // the destination session is set to.
         let dialect = match cfg.dialect {
-            ScriptDialect::MySql { mariadb, .. } => ScriptDialect::MySql {
-                mariadb,
-                backslash_escapes: true,
-            },
+            ScriptDialect::MySql { mariadb, .. } => ScriptDialect::mysql(mariadb, true),
             other => other,
         };
         Ok(SqlWriter {

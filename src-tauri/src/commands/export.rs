@@ -194,10 +194,7 @@ async fn preview_dialect(state: &AppState, connection_id: Uuid) -> Option<Script
         .ok()?;
     Some(match profile.config.kind {
         DbKind::Postgres => ScriptDialect::Postgres,
-        DbKind::MySql => ScriptDialect::MySql {
-            mariadb: false,
-            backslash_escapes: true,
-        },
+        DbKind::MySql => ScriptDialect::mysql(false, true),
         DbKind::SqlServer => ScriptDialect::MsSql,
         DbKind::Oracle => ScriptDialect::Oracle,
         _ => return None,
@@ -509,6 +506,7 @@ mod tests {
                 quote: '"',
                 header: true,
                 encoding: TextEncoding::Utf8,
+                null_text: None,
             },
             rows: 10,
             dialect: None,
@@ -612,6 +610,7 @@ mod tests {
                 quote: '"',
                 header: true,
                 encoding: TextEncoding::Utf8,
+                null_text: None,
             },
         );
         table.target = ImportTarget::Existing {

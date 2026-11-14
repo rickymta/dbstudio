@@ -1,0 +1,63 @@
+{
+  "DiagnosticCheck": {
+    "detail": "pg_dump (PostgreSQL) 17.2",
+    "id": "nativeTool:pgDump",
+    "ok": true,
+    "value": "/usr/bin/pg_dump"
+  },
+  "DriverDiagnostics": {
+    "checks": [
+      {
+        "detail": null,
+        "id": "driverRegistered",
+        "ok": true,
+        "value": null
+      },
+      {
+        "detail": "pg_dump (PostgreSQL) 17.2",
+        "id": "nativeTool:pgDump",
+        "ok": true,
+        "value": "/usr/bin/pg_dump"
+      }
+    ],
+    "helpUrl": null,
+    "message": "The PostgreSQL driver is available.",
+    "status": {
+      "state": "available"
+    }
+  },
+  "LeaseReopened": {
+    "lease": {
+      "leaseId": "00000000-0000-0000-0000-000000000004",
+      "sessionId": "00000000-0000-0000-0000-000000000001",
+      "state": {
+        "autoCommit": true,
+        "broken": false,
+        "database": "app",
+        "pendingResult": null,
+        "running": null,
+        "schema": null,
+        "transaction": "idle"
+      }
+    },
+    "transactionLost": true
+  },
+  "ScriptGenerated": {
+    "dialect": {
+      "name": "postgres"
+    },
+    "text": "SELECT * FROM t LIMIT 100"
+  },
+  "SessionHealth": "gaveUp",
+  "SessionStateEvent": {
+    "attempt": 2,
+    "connectionId": "00000000-0000-0000-0000-000000000002",
+    "error": {
+      "kind": "connection",
+      "message": "connection refused"
+    },
+    "leasesBroken": ["00000000-0000-0000-0000-000000000003"],
+    "sessionId": "00000000-0000-0000-0000-000000000001",
+    "state": "reconnecting"
+  }
+}

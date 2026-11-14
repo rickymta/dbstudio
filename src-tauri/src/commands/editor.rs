@@ -7,9 +7,9 @@ use std::path::Path;
 
 use dbstudio_core::{
     Error, ExecuteRequest, ExecuteResult, LeaseCloseReport, LeaseContext, LeaseOptions, LeaseState,
-    QueryEvent, Result, ScriptAnalysis, TxOptions,
+    ObjectPath, QueryEvent, Result, ScriptAnalysis, ScriptDialect, TxOptions,
 };
-use dbstudio_sql::{OffsetMap, Vocabulary};
+use dbstudio_sql::{OffsetMap, ScriptTemplate, Vocabulary};
 use serde::Serialize;
 use tauri::State;
 use tauri::ipc::Channel;
@@ -21,7 +21,7 @@ use crate::grants::Purpose;
 use crate::guard::{self, GuardInput};
 use crate::history::{RowCounter, Tracker};
 use crate::host::FileFilter;
-use crate::lease::{LeaseInfo, MAX_LEASES_PER_SESSION};
+use crate::lease::{LeaseInfo, LeaseReopened, MAX_LEASES_PER_SESSION};
 use crate::sink::EventSink;
 use crate::state::AppState;
 
@@ -181,6 +181,34 @@ pub(crate) async fn lease_open_impl(
     }
     let lease = session.open_lease(options).await?;
     state.leases.register(session_id, lease)
+}
+
+/// Reopen a lease that broke with its session (package E); the lease keeps its id.
+pub(crate) async fn lease_reopen_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseReopened> {
+    let _ = (state, lease_id);
+    Err(Error::Unsupported("lease_reopen".into()))
+}
+
+/// Result of `script_generate`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptGenerated {
+    /// The generated script.
+    pub text: String,
+    /// Dialect the text is written in (tells the editor how to lex it).
+    pub dialect: ScriptDialect,
+}
+
+/// Generate a `SELECT` / `INSERT` / `UPDATE` / `DELETE` template for a table (package E, on top
+/// of `dbstudio_sql::template`).
+pub(crate) async fn script_generate_impl(
+    state: &AppState,
+    session_id: Uuid,
+    path: ObjectPath,
+    template: ScriptTemplate,
+) -> Result<ScriptGenerated> {
+    let _ = (state, session_id, path, template);
+    Err(Error::Unsupported("script_generate".into()))
 }
 
 pub(crate) async fn lease_close_impl(state: &AppState, lease_id: Uuid) -> Result<LeaseCloseReport> {
@@ -386,7 +414,7 @@ pub(crate) fn lease_state_impl(state: &AppState, lease_id: Uuid) -> Result<Lease
 /// Decode file bytes as UTF-8, dropping a BOM.
 fn decode_sql(bytes: Vec<u8>) -> Result<String> {
     let text = String::from_utf8(bytes)
-        .map_err(|_| Error::Other("the file is not valid UTF-8 text".into()))?;
+        .map_err(|_| Error::Invalid("the file is not valid UTF-8 text".into()))?;
     Ok(text
         .strip_prefix('\u{feff}')
         .map(str::to_string)
@@ -406,7 +434,7 @@ pub(crate) async fn sql_file_open_impl(state: &AppState) -> Result<Option<SqlFil
         grants.grant(&path, Purpose::Write)?;
         let len = std::fs::metadata(&path)?.len();
         if len > MAX_SQL_FILE_BYTES {
-            return Err(Error::Other(format!(
+            return Err(Error::Invalid(format!(
                 "the file is larger than {} MB",
                 MAX_SQL_FILE_BYTES >> 20
             )));
@@ -486,6 +514,25 @@ pub async fn lease_open(
 ) -> Result<LeaseInfo> {
     tracing::debug!(command = "lease_open", session = %session_id, "ipc call");
     lease_open_impl(&state, session_id, options).await
+}
+
+/// Reopen a broken lease on the reconnected session.
+#[tauri::command]
+pub async fn lease_reopen(state: State<'_, AppState>, lease_id: Uuid) -> Result<LeaseReopened> {
+    tracing::debug!(command = "lease_reopen", lease = %lease_id, "ipc call");
+    lease_reopen_impl(&state, lease_id).await
+}
+
+/// Generate a script template for a table.
+#[tauri::command]
+pub async fn script_generate(
+    state: State<'_, AppState>,
+    session_id: Uuid,
+    path: ObjectPath,
+    template: ScriptTemplate,
+) -> Result<ScriptGenerated> {
+    tracing::debug!(command = "script_generate", session = %session_id, "ipc call");
+    script_generate_impl(&state, session_id, path, template).await
 }
 
 #[tauri::command]
@@ -1375,6 +1422,7 @@ mod tests {
             file_path: None,
             cursor: 3,
             auto_commit: true,
+            dirty: false,
         };
         cmd::editor_tabs_set_impl(&state, vec![tab.clone()])
             .await

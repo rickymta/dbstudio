@@ -114,7 +114,9 @@ fn plan(change: &KeyChange) -> Result<Plan> {
             p.commands.push(c);
             p.affected_from = Some(0);
         }
-        KeyChange::ListSet { key, index, value } => {
+        KeyChange::ListSet {
+            key, index, value, ..
+        } => {
             let k = key_bytes(key)?;
             watch(&mut p, &k);
             p.expects.push(Expect {
@@ -143,7 +145,7 @@ fn plan(change: &KeyChange) -> Result<Plan> {
             }
             p.commands.push(c);
         }
-        KeyChange::ListRemoveAt { key, index } => {
+        KeyChange::ListRemoveAt { key, index, .. } => {
             let k = key_bytes(key)?;
             watch(&mut p, &k);
             p.expects.push(Expect {
@@ -288,6 +290,8 @@ fn plan(change: &KeyChange) -> Result<Plan> {
             p.commands.push(c);
             p.affected_from = Some(0);
         }
+        // Scaffold of the backlog contract v2: package K implements `Put` (temp key + RENAME).
+        KeyChange::Put { .. } => return Err(Error::Unsupported("key_put".into())),
         // `KeyChange` is exhaustive today; a new variant must get a plan before it compiles.
         #[allow(unreachable_patterns)]
         _ => return Err(Error::Unsupported("key_change".into())),
@@ -314,6 +318,7 @@ impl Shared {
                 .read_only
                 .then_some(NotEditableReason::ReadOnlyConnection),
             atomic: false,
+            notes: vec![],
         }
     }
 
@@ -497,6 +502,7 @@ mod tests {
         let remove = preview_of(KeyChange::ListRemoveAt {
             key: "l".into(),
             index: 2,
+            expected: None,
         });
         assert!(
             remove.starts_with("LSET l 2 __dbstudio_remove_") && remove.contains("; LREM l 1 ")

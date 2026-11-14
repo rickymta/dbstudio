@@ -22,6 +22,8 @@ dbstudio-driver-mysql = { path = "../drivers/mysql", optional = true }
 dbstudio-driver-mssql = { path = "../drivers/mssql", optional = true }
 dbstudio-driver-oracle = { path = "../drivers/oracle", optional = true }
 dbstudio-driver-mongodb = { path = "../drivers/mongodb", optional = true }
+dbstudio-driver-cassandra = { version = "0.1.0", path = "../drivers/cassandra", optional = true }
+dbstudio-driver-clickhouse = { version = "0.1.0", path = "../drivers/clickhouse", optional = true }
 dbstudio-driver-redis = { path = "../drivers/redis", optional = true }
 chrono.workspace = true
 clap.workspace = true
@@ -36,6 +38,9 @@ mssql = ["dep:dbstudio-driver-mssql"]
 oracle = ["dep:dbstudio-driver-oracle"]
 mongodb = ["dep:dbstudio-driver-mongodb"]
 redis = ["dep:dbstudio-driver-redis"]
+# Not in `default` yet: switched on when packages C / H make the drivers real.
+cassandra = ["dep:dbstudio-driver-cassandra"]
+clickhouse = ["dep:dbstudio-driver-clickhouse"]
 
 [dev-dependencies]
 tempfile.workspace = true

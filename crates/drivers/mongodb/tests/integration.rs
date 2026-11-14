@@ -239,6 +239,7 @@ async fn types_round_trip_through_shell_and_value() {
             changes: vec![DocumentChange::Replace {
                 id: id.clone(),
                 document: DocInput::Value { value: d.clone() },
+                expected: vec![],
             }],
         });
         s.apply_changes(changes).await.unwrap();
@@ -520,13 +521,18 @@ async fn editing_standalone_is_sequential_and_reports_applied() {
                 value: Value::Int(9),
             }],
             unset: vec![vec!["a".into()]],
+            expected: vec![],
         },
-        DocumentChange::Delete { id: Value::Int(3) },
+        DocumentChange::Delete {
+            id: Value::Int(3),
+            expected: vec![],
+        },
         DocumentChange::Replace {
             id: Value::Int(2),
             document: DocInput::Ejson {
                 text: r#"{"z": 1}"#.into(),
             },
+            expected: vec![],
         },
     ];
     let preview = s.preview_changes(&set(ok.clone())).await.unwrap();
@@ -551,6 +557,7 @@ async fn editing_standalone_is_sequential_and_reports_applied() {
                     value: Value::Int(1),
                 }],
                 unset: vec![],
+                expected: vec![],
             },
             DocumentChange::Update {
                 id: Value::Int(12345),
@@ -559,6 +566,7 @@ async fn editing_standalone_is_sequential_and_reports_applied() {
                     value: Value::Int(2),
                 }],
                 unset: vec![],
+                expected: vec![],
             },
         ]))
         .await
@@ -595,7 +603,10 @@ async fn editing_on_replica_set_is_atomic() {
     };
     let err = s
         .apply_changes(set(vec![
-            DocumentChange::Delete { id: Value::Int(1) },
+            DocumentChange::Delete {
+                id: Value::Int(1),
+                expected: vec![],
+            },
             DocumentChange::Insert {
                 document: DocInput::Ejson {
                     text: r#"{"_id": 2}"#.into(),
@@ -612,7 +623,10 @@ async fn editing_on_replica_set_is_atomic() {
     assert_eq!(rows.len(), 2, "the delete was rolled back");
     let res = s
         .apply_changes(set(vec![
-            DocumentChange::Delete { id: Value::Int(1) },
+            DocumentChange::Delete {
+                id: Value::Int(1),
+                expected: vec![],
+            },
             DocumentChange::Insert {
                 document: DocInput::Ejson {
                     text: r#"{"_id": 5}"#.into(),
@@ -647,7 +661,10 @@ async fn read_only_profile_blocks_edits() {
     let err = s
         .apply_changes(ChangeSet::Documents(DocumentChangeSet {
             collection: coll_path("x", "y"),
-            changes: vec![DocumentChange::Delete { id: Value::Int(1) }],
+            changes: vec![DocumentChange::Delete {
+                id: Value::Int(1),
+                expected: vec![],
+            }],
         }))
         .await
         .unwrap_err();
@@ -1082,6 +1099,7 @@ async fn review_guards_in_the_driver() {
                 value: Value::Int(1),
             }],
             unset: vec![],
+            expected: vec![],
         }],
     });
     assert_eq!(s.apply_changes(bad_path).await.unwrap_err().kind(), "query");

@@ -18,7 +18,7 @@ pub fn redact(d: ScriptDialect, text: &str) -> String {
     match d {
         ScriptDialect::RedisCli => redact_redis(text),
         ScriptDialect::MongoShell => redact_mongo(text),
-        ScriptDialect::Opaque => text.to_string(),
+        ScriptDialect::Opaque | ScriptDialect::Cql | ScriptDialect::ClickHouse => text.to_string(),
         _ => redact_sql(d, text),
     }
 }
@@ -508,10 +508,7 @@ mod tests {
     use super::*;
 
     const PG: ScriptDialect = ScriptDialect::Postgres;
-    const MY: ScriptDialect = ScriptDialect::MySql {
-        mariadb: false,
-        backslash_escapes: true,
-    };
+    const MY: ScriptDialect = ScriptDialect::mysql(false, true);
 
     #[test]
     fn identity_without_secrets() {

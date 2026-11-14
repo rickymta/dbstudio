@@ -40,11 +40,20 @@ pub enum DbKind {
     ScyllaDb,
     #[serde(rename = "clickhouse")]
     ClickHouse,
+    /// CockroachDB (PostgreSQL wire protocol).
+    #[serde(rename = "cockroachdb")]
+    CockroachDb,
+    /// YugabyteDB, YSQL API (PostgreSQL wire protocol).
+    #[serde(rename = "yugabytedb")]
+    YugabyteDb,
+    /// TiDB (MySQL wire protocol).
+    #[serde(rename = "tidb")]
+    TiDb,
 }
 
 impl DbKind {
     /// Every known kind, in a stable display order.
-    pub const ALL: [DbKind; 9] = [
+    pub const ALL: [DbKind; 12] = [
         DbKind::Postgres,
         DbKind::MySql,
         DbKind::SqlServer,
@@ -54,6 +63,9 @@ impl DbKind {
         DbKind::Cassandra,
         DbKind::ScyllaDb,
         DbKind::ClickHouse,
+        DbKind::CockroachDb,
+        DbKind::YugabyteDb,
+        DbKind::TiDb,
     ];
 
     /// Stable machine identifier (also the serialized form).
@@ -68,6 +80,9 @@ impl DbKind {
             DbKind::Cassandra => "cassandra",
             DbKind::ScyllaDb => "scylladb",
             DbKind::ClickHouse => "clickhouse",
+            DbKind::CockroachDb => "cockroachdb",
+            DbKind::YugabyteDb => "yugabytedb",
+            DbKind::TiDb => "tidb",
         }
     }
 
@@ -83,6 +98,9 @@ impl DbKind {
             DbKind::Cassandra => "Cassandra",
             DbKind::ScyllaDb => "ScyllaDB",
             DbKind::ClickHouse => "ClickHouse",
+            DbKind::CockroachDb => "CockroachDB",
+            DbKind::YugabyteDb => "YugabyteDB",
+            DbKind::TiDb => "TiDB",
         }
     }
 
@@ -97,15 +115,22 @@ impl DbKind {
             DbKind::Redis => 6379,
             DbKind::Cassandra | DbKind::ScyllaDb => 9042,
             DbKind::ClickHouse => 8123,
+            DbKind::CockroachDb => 26257,
+            DbKind::YugabyteDb => 5433,
+            DbKind::TiDb => 4000,
         }
     }
 
     /// Data-model family.
     pub fn family(self) -> DbFamily {
         match self {
-            DbKind::Postgres | DbKind::MySql | DbKind::SqlServer | DbKind::Oracle => {
-                DbFamily::Relational
-            }
+            DbKind::Postgres
+            | DbKind::MySql
+            | DbKind::SqlServer
+            | DbKind::Oracle
+            | DbKind::CockroachDb
+            | DbKind::YugabyteDb
+            | DbKind::TiDb => DbFamily::Relational,
             DbKind::MongoDb => DbFamily::Document,
             DbKind::Redis => DbFamily::KeyValue,
             DbKind::Cassandra | DbKind::ScyllaDb => DbFamily::WideColumn,
@@ -133,6 +158,16 @@ mod tests {
             );
         }
         assert_eq!(DbKind::from_id("nope"), None);
+        assert_eq!(DbKind::ALL.len(), 12);
+    }
+
+    #[test]
+    fn newsql_kinds() {
+        assert_eq!(DbKind::CockroachDb.default_port(), 26257);
+        assert_eq!(DbKind::YugabyteDb.default_port(), 5433);
+        assert_eq!(DbKind::TiDb.default_port(), 4000);
+        assert_eq!(DbKind::TiDb.family(), DbFamily::Relational);
+        assert_eq!(DbKind::YugabyteDb.display_name(), "YugabyteDB");
     }
 
     #[test]
