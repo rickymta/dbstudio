@@ -41,6 +41,7 @@ flowchart TB
         SSH["dbstudio-ssh"]
         STORE["dbstudio-store (SQLite + keychain)"]
         CLI["dbstudio-cli"]
+        DBG["dbstudio-debug (SQL debugger)"]
     end
 
     subgraph DRV["crates/drivers/*"]
@@ -60,7 +61,8 @@ flowchart TB
 
     IPC_TS <-->|"invoke / Channel / events"| CMD
     GUARD --> SQL
-    STATE --> C & PLAN & EXP & BK & STORE & SSH
+    STATE --> C & PLAN & EXP & BK & STORE & SSH & DBG
+    DBG --> C & SQL
     CLI --> C & BK & STORE
     EXP & BK --> C
     BK --> EXP
@@ -89,6 +91,7 @@ dbstudio/
 │   │   ├── plan/, erd/        # sơ đồ xyflow + elk (worker), xuất SVG/PNG(/PDF cho ERD)
 │   │   ├── export/, jobs/     # wizard export/import, preset, trung tâm job
 │   │   ├── backup/            # job (CronBuilder), restore, lịch sử chạy, tool native, chạy nền
+│   │   ├── debugger/          # SQL debugger: tool window, gutter/inline (cm/), dialog, keymap, debugStore
 │   │   └── settings/, tabs/, welcome/
 │   ├── lib/types/, lib/ipc/   # kiểu viết tay khớp Rust + wrapper invoke (types.ts, ipc.ts re-export)
 │   ├── lib/mock/              # IPC giả khi chạy ngoài Tauri (catalog theo từng DB)
@@ -96,16 +99,16 @@ dbstudio/
 ├── src-tauri/src/
 │   ├── lib.rs, state.rs, session.rs (SessionManager + tunnel), lease.rs (LeaseManager),
 │   ├── guard.rs, history.rs, jobs.rs (JobManager), grants.rs (PathGrants), events.rs, host.rs,
-│   ├── redact.rs, logging.rs, bridge.rs (dev), scheduler.rs, tray.rs, background.rs
+│   ├── redact.rs, logging.rs, bridge.rs (dev), scheduler.rs, tray.rs, background.rs, debug.rs (DebugManager)
 │   └── commands/{app,connections,sessions,browse,editor,history,changes,plan,erd,files,
-│                 export,jobs,backup,background,keyvalue,ssh,uri}.rs
+│                 export,jobs,backup,background,keyvalue,ssh,uri,debug}.rs
 ├── crates/
 │   ├── dbstudio-core, dbstudio-sql, dbstudio-plan, dbstudio-export, dbstudio-backup,
-│   ├── dbstudio-cli, dbstudio-ssh, dbstudio-store
+│   ├── dbstudio-cli, dbstudio-ssh, dbstudio-store, dbstudio-debug
 │   └── drivers/{postgres,mysql,mssql,oracle,mongodb,redis,cassandra,clickhouse}
 ├── vendor/tiberius-patch/     # bản vá tiberius 0.13.0 (DBSTUDIO-PATCH.md)
 ├── contract/fixtures/         # mẫu JSON dùng chung cho test hợp đồng Rust ↔ TS
-├── docker/                    # compose.test.yml, gen-certs.sh, gen-ssh-keys.sh, oracle-it/
+├── docker/                    # compose.test.yml, gen-certs.sh, gen-ssh-keys.sh, oracle-it/, pg16dbg/
 └── docs/
 ```
 
@@ -284,6 +287,16 @@ sequenceDiagram
 
 Export: `export_start` (kiểm `PathGrants`) → `JobManager` → `run_export` (lease snapshot → DDL PreData → stream bảng → PostData) → file tạm → đổi tên → `job://progress` `finished`.
 
+### 14.1 SQL debugger
+
+Thiết kế: [design/sql-debugger.md](design/sql-debugger.md); hướng dẫn dùng: [sql-debugger.md](sql-debugger.md).
+
+- **`crates/dbstudio-debug`** (Rust thuần + tokio, phụ thuộc `dbstudio-core` + `dbstudio-sql`): `DebugProgram` tách script thành bước bằng splitter của dialect lease (`Lease::script_dialect`), `wrap_single` bảo đảm driver thấy đúng một câu; `DialectKit` theo họ dialect (`dialect/*.rs`: khung chỉ đọc, điều kiện, probe Variables, biến script); `tsql_shim` giữ biến `DECLARE` qua từng câu; `eval` chạy watch/Evaluate/điều kiện trong khung rollback; `routine/pg.rs` là routine debugger `pldbgapi` (hành vi pldebugger đo thực tế ghi ở doc comment đầu file); `routine/oracle.rs` mới là stub (feature `oracle-debug-spike`).
+- **Actor**: `DebugEngine::start` sinh một tokio task mỗi phiên (`actor.rs`) sở hữu máy trạng thái (Starting → Running ⇄ Paused/Evaluating → Terminated), timer cảnh báo transaction và TTL dừng; client `DebugHandle` gửi lệnh qua `mpsc`; khi `Running` chỉ nhận Pause/Stop/snapshot (lệnh khác `Busy`). Routine debugger dùng lease đích (tab) + **lease proxy ẩn** mở qua `ProxyOpener`, mọi lời gọi chặn của proxy chạy đua với việc câu ở lease đích kết thúc.
+- **Host tiêm qua trait** (`src-tauri/src/debug.rs`): `HostGate` (`StepGate`) gọi `guard::run_guard` cho từng bước với dialect, `read_only`/`production`, database lúc chạy bước, token xác nhận một lần, và ghi lịch sử (redact); `check_read_only` ép read-only + đúng một câu đọc. `EventSink` (`DebugSink`) phát `debug://state` (ảnh chụp `DebugState`; khi `Running` hai event cách nhau ít nhất 50 ms) và `debug://output` (mục Console) cùng `seq` tăng đơn điệu; frontend thấy hụt `seq` → `debug_snapshot`. `HostProxy` (`ProxyOpener`) mở lease phụ của cùng session. `DebugManager`: tối đa 8 phiên/app, 1 phiên/lease, `LeaseManager::claim_debug` làm lệnh editor trên lease trả `Busy`; `stop_for_lease`/`stop_for_session` khi lease đóng/hỏng hoặc session đóng; stop idempotent.
+- **Command**: `debug_support`, `debug_start`, `debug_step` (+ bí danh `debug_resume`/`debug_pause`/`debug_run_to_cursor`), `debug_stop`, `debug_restart`, `debug_evaluate`, `debug_set_breakpoints`, `debug_set_muted`, `debug_set_variable`, `debug_variable_children`, `debug_watches_set`, `debug_select_frame`, `debug_routine_source`, `debug_snapshot`, `routine_breakpoints_get/set`. Kiểu hợp đồng ở `crates/dbstudio-core/src/debug.rs` ↔ `src/lib/types/debug.ts` (fixture `contract/fixtures/debug_*.json`).
+- **Khác thiết kế**: breakpoint routine chỉ gắn khi Step Into và chưa có điều kiện/hit count/log; Run to Cursor/Pause trong routine chưa có; `debug_support` của host chưa đòi superuser trong khi engine đòi (pldebugger bắt superuser cho global breakpoint) nên có thể báo `available` rồi phiên tắt Step Into; transaction do chính script mở cũng được kết thúc cùng phiên; Evaluate trên PG còn `SET LOCAL transaction_read_only` và denylist hàm có tác dụng phụ; image test là `docker/pg16dbg` (thiết kế ghi `pgdebug`).
+
 ## 15. Driver
 
 | DB | Crate | Ghi chú |
@@ -337,15 +350,16 @@ CockroachDB, YugabyteDB, TiDB có `DbKind` riêng (cổng, nhãn, capabilities, 
 | v5 | `backup_jobs`, `backup_runs` |
 | v6 | cột `connections.ssh`, `ssh_known_hosts` |
 | v7 | cột `connections.environment_label`, `editor_tabs.dirty`, bảng `plan_history` |
+| v8 | cột `editor_tabs.debug_json` (breakpoint/watch/mute của tab), bảng `routine_breakpoints` (khoá chính `(connection_id, id)`) |
 
 - Lịch sử: văn bản đã redact, giữ tối đa `historyMaxPerConnection` (mặc định 5.000) bản/kết nối, tìm bằng `LIKE`; tắt được qua `historyEnabled`.
-- `AppSettings` (không còn `Copy`) thêm `editorMaxRows` (1000), `queryTimeoutMs`, `historyEnabled`, `historyMaxPerConnection`, `maxLobBytes` (16 MiB), `planMisestimateFactor`, `closeToTray`; đợt tồn đọng thêm `editorFontFamily`, `editorFontSize` (8–32), `autoReconnect`, `keepaliveSecs` (0 hoặc 30–3600), `planHistoryEnabled`, `planHistoryMaxPerConnection` (10–5000), `language` (`system`/`vi`/`en`). `settings_set` **từ chối** giá trị ngoài khoảng bằng `Invalid` (trước đây kẹp); đọc JSON cũ/hỏng vẫn lùi về mặc định. Key riêng `native_tools`, `oracle_client`, `export.recentDirs`.
+- `AppSettings` (không còn `Copy`) thêm `editorMaxRows` (1000), `queryTimeoutMs`, `historyEnabled`, `historyMaxPerConnection`, `maxLobBytes` (16 MiB), `planMisestimateFactor`, `closeToTray`; đợt tồn đọng thêm `editorFontFamily`, `editorFontSize` (8–32), `autoReconnect`, `keepaliveSecs` (0 hoặc 30–3600), `planHistoryEnabled`, `planHistoryMaxPerConnection` (10–5000), `language` (`system`/`vi`/`en`). `settings_set` **từ chối** giá trị ngoài khoảng bằng `Invalid` (trước đây kẹp); đọc JSON cũ/hỏng vẫn lùi về mặc định. Key riêng `native_tools`, `oracle_client`, `export.recentDirs`. SQL debugger thêm `debugKeymap`, `debugTxWarnSecs` (60; 0 = tắt), `debugPausedTtlSecs` (900; 60–14 400), `debugWatchTimeoutMs` (5 000), `debugMaxRowsPerStep` (200), `debugInlineValues`.
 - Keychain: service `dev.dbstudio.desktop`; account = id kết nối, `<id>#ssh` (mật khẩu/passphrase SSH), `backup:<jobId>` (passphrase của job backup), `backup:manual:<connId>` (passphrase backup thủ công khi chọn lưu). Không có dự phòng plaintext.
 - Import profile (CONN-09) giữ quy tắc GĐ1 (allow-list `options`, giới hạn kích thước).
 
 ## 17. IPC, bảo mật, log, kiểm thử
 
-**IPC.** Command có kiểu, mỗi command có `*_impl` không phụ thuộc Tauri (test lớp lệnh không cần cửa sổ). Nhóm command theo file `commands/*.rs`: GĐ1 (`app`, `connections`, `sessions`, `browse`) + `editor` (script/lease/sql file), `history` (lịch sử, saved, tab), `changes`, `plan`, `erd` (schema model, layout, DDL), `files`, `export`, `jobs`, `backup`, `background`, `keyvalue`, `ssh`, `uri`, `app::driver_diagnostics`. Command stream (`table_fetch`, `query_execute`, `lease_execute`, `lease_fetch_more`) theo quy tắc GĐ1: frontend chỉ kết thúc khi có cả kết quả `invoke` và sự kiện `statementEnd` (chờ tối đa 5 s). Event toàn cục: `job://progress`, `lease://state`, `session://state`, `backup://changed`. Command mới của đợt tồn đọng: `session_reconnect`, `lease_reopen`, `script_generate`, `plan_history_{list,get,delete,clear}`; `driver_diagnostics` trả thêm `checks` (`driverRegistered`, `nativeTool:<tool>`…); `connection_parse_uri` nhận thêm `cockroachdb://`, `yugabytedb://`, `tidb://`, `clickhouse[s]://`, `cassandra://`, `scylladb://`. Dev bridge: `POST /ipc/<command>` (stream NDJSON cho command có Channel) và `GET /events`.
+**IPC.** Command có kiểu, mỗi command có `*_impl` không phụ thuộc Tauri (test lớp lệnh không cần cửa sổ). Nhóm command theo file `commands/*.rs`: GĐ1 (`app`, `connections`, `sessions`, `browse`) + `editor` (script/lease/sql file), `history` (lịch sử, saved, tab), `changes`, `plan`, `erd` (schema model, layout, DDL), `files`, `export`, `jobs`, `backup`, `background`, `keyvalue`, `ssh`, `uri`, `app::driver_diagnostics`. Command stream (`table_fetch`, `query_execute`, `lease_execute`, `lease_fetch_more`) theo quy tắc GĐ1: frontend chỉ kết thúc khi có cả kết quả `invoke` và sự kiện `statementEnd` (chờ tối đa 5 s). Event toàn cục: `job://progress`, `lease://state`, `session://state`, `backup://changed`, `debug://state`, `debug://output` (mục 14.1). Command mới của đợt tồn đọng: `session_reconnect`, `lease_reopen`, `script_generate`, `plan_history_{list,get,delete,clear}`; `driver_diagnostics` trả thêm `checks` (`driverRegistered`, `nativeTool:<tool>`…); `connection_parse_uri` nhận thêm `cockroachdb://`, `yugabytedb://`, `tidb://`, `clickhouse[s]://`, `cassandra://`, `scylladb://`. Dev bridge: `POST /ipc/<command>` (stream NDJSON cho command có Channel) và `GET /events`.
 
 **Bảo mật.**
 

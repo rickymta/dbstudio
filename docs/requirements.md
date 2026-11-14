@@ -195,6 +195,19 @@ Cách hiểu yêu cầu gốc "tạo schema - data - hoặc cả 2": xuất **ch
 | APP-08 | Command palette (tìm lệnh/đối tượng nhanh). | Could | Chưa. |
 | APP-09 | Trung tâm tác vụ nền (export, backup, restore): tiến độ, huỷ, xem lỗi. | Should | Đã làm (export, import, xoá khoá theo pattern, backup, restore, verify). |
 
+### 2.10 SQL debugger (DEBUG)
+
+Yêu cầu chủ dự án: debug kiểu JetBrains (breakpoint, step over/into, console). Thiết kế: [design/sql-debugger.md](design/sql-debugger.md); hướng dẫn: [sql-debugger.md](sql-debugger.md).
+
+| Mã | Yêu cầu | Ưu tiên | Trạng thái |
+|---|---|---|---|
+| DEBUG-01 | Script debugger: chạy script của tab editor từng câu trên lease của tab, mọi dialect; breakpoint dòng, Resume/Pause/Stop/Rerun, Step Over, Run to Cursor. | Must | Đã làm — Redis chỉ có engine (tab Redis là console, không có nút Debug). |
+| DEBUG-02 | Tool window kiểu JetBrains: Frames, Variables (sửa được biến script/tham số/setting), Watches, Console; inline values; Evaluate Expression; keymap JetBrains (tuỳ chọn VS Code). | Must | Đã làm. |
+| DEBUG-03 | Breakpoint có điều kiện, hit count, log message, tắt/mute; lưu theo tab (script) và theo kết nối (routine). | Should | Một phần — breakpoint routine chỉ gắn khi Step Into và bỏ qua điều kiện/hit count/log/suspend/mute. |
+| DEBUG-04 | An toàn: mỗi bước qua guard như editor; Evaluate/watch/điều kiện chỉ đọc (khung rollback); transaction debug `Wrap` hỏi Commit/Rollback khi kết thúc (Rollback mặc định), cảnh báo transaction mở lâu, TTL dừng. | Must | Đã làm. |
+| DEBUG-05 | Step Into stored routine PostgreSQL qua `pldbgapi`, phát hiện điều kiện server và hướng dẫn cài. | Must | Đã làm — YugabyteDB dùng cùng đường nhưng chưa kiểm. |
+| DEBUG-06 | Step Into routine Oracle (`DBMS_DEBUG`). | Could | Chưa — spike chưa có code. |
+
 ## 3. Yêu cầu phi chức năng (NFR)
 
 | Mã | Yêu cầu | Trạng thái |
@@ -251,6 +264,8 @@ Ký hiệu: ✓ áp dụng · ◐ áp dụng một phần / dạng riêng · —
 | Export schema | ✓ | ✓ | ✓ | ✓ | ◐ suy luận | — | ✓ | ✓ | ✓ |
 | Export data | ✓ | ✓ | ✓ | ✓ | ✓ | ◐ JSON | ✓ | ✓ | ✓ |
 | Backup tích hợp | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ◐ | ◐ | ✓ |
+| SQL debugger: script (DEBUG-01) | ✓ | ✓ | ✓ T-SQL shim | ✓ | ✓ | ◐ chỉ engine | ✓ | ✓ | ✓ |
+| SQL debugger: Step Into routine (DEBUG-05) | ✓ pldebugger | — | — | — (spike) | — | — | — | — | ◐ YugabyteDB chưa kiểm |
 | Backup native | pg_dump | mysqldump | BACKUP DATABASE | expdp | mongodump | RDB | — (nodetool snapshot ngoài phạm vi) | BACKUP | theo giao thức gốc* |
 
 \* Đã hiện thực (backend): CockroachDB `BACKUP … INTO nodelocal` (phía server), YugabyteDB `ysql_dump`, TiDB `mysqldump` (BR/Dumpling ngoài phạm vi). Cassandra/ScyllaDB chỉ backup tích hợp (`nodetool snapshot` ngoài phạm vi); ClickHouse `BACKUP … TO Disk` (phía server).
@@ -303,4 +318,5 @@ Những phần dưới đây có code (và thường có test tự động) như
 - **Oracle**: integration test với DB thật chưa chạy (container `oraclefree` cần ~3 GB RAM cho Docker, đang chờ); hiện chỉ có unit test và test vi sai splitter; vì vậy backup/restore Oracle cũng chưa test.
 - **Driver mới**: ClickHouse 23.8 (`clickhouse23`) chưa kiểm; Cassandra 4.1, ScyllaDB 6.2 (profile `extra`) chưa có báo cáo chạy; R6 ClickHouse/Cassandra chưa đi qua `sshd` thật (chỉ kiểm `tls.server_name` trực tiếp); bộ IT driver flavor (`it_flavor`) với YugabyteDB (profile `heavy`) chưa có báo cáo chạy xanh — gói N1 thiếu RAM, đợt 2 đã chạy IT export/backup trên YugabyteDB.
 - **CI GitHub**: workflow (matrix 3 OS + job `integration` theo nhóm `core`/`wide`/`analytics`/`newsql` + `integration-extra` hằng tuần) chưa chạy lần nào (repo chưa có remote).
+- **SQL debugger**: giao diện mới kiểm bằng test với mock IPC, chưa thao tác trong cửa sổ Tauri; IT chỉ có PostgreSQL 16 (+ pldebugger) và MySQL 8, các DB khác chỉ unit test với lease giả.
 - **Hiệu năng**: chưa benchmark lưới 1 triệu dòng trên 3 webview, chưa đo thời gian khởi động.
