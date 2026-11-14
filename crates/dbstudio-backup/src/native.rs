@@ -471,7 +471,7 @@ fn truthy(options: &BTreeMap<String, String>, key: &str) -> bool {
 /// Reject option keys and values outside the allow-list.
 pub fn validate_options(tool: NativeTool, options: &BTreeMap<String, String>) -> Result<()> {
     let (allowed, choices): (&[&str], &[(&str, &[&str])]) = match tool {
-        NativeTool::PgDump => (
+        NativeTool::PgDump | NativeTool::YsqlDump => (
             &[
                 "schemaOnly",
                 "dataOnly",
@@ -677,10 +677,43 @@ pub fn build_dump(
                 format: if plain { "plain" } else { "custom" },
             })
         }
-        (NativeTool::MySqlDump, DbKind::MySql) => {
+        (NativeTool::YsqlDump, DbKind::YugabyteDb) => {
+            // `ysql_dump` is `pg_dump` of the YugabyteDB PostgreSQL fork: plain scripts only
+            // (there is no `ysql_restore`; `ysqlsh` replays them).
+            let mut args = pg_conn_args(config, tunnel, database);
+            args.push("--format=plain".into());
+            for (key, flag) in [
+                ("schemaOnly", "--schema-only"),
+                ("dataOnly", "--data-only"),
+                ("noOwner", "--no-owner"),
+                ("noPrivileges", "--no-privileges"),
+            ] {
+                if truthy(options, key) {
+                    args.push(flag.into());
+                }
+            }
+            Ok(DumpCommand {
+                run: ToolRun {
+                    program,
+                    args,
+                    env: pg_env(config, secret),
+                    stdin: None,
+                    stdout: Some(out.to_path_buf()),
+                    timeout: tool_timeout(options),
+                },
+                guards: vec![],
+                extension: "sql",
+                format: "plain",
+            })
+        }
+        (NativeTool::MySqlDump, DbKind::MySql | DbKind::TiDb) => {
             let defaults = TempSecretFile::create(tmp, &mysql_defaults_content(secret))?;
             let mut args = mysql_conn_args(defaults.path(), config, tunnel);
-            if options.get("singleTransaction").is_none_or(|v| v == "true") {
+            if config.kind == DbKind::TiDb {
+                // TiDB has no savepoints (`--single-transaction` fails at the first table) and
+                // no table read locks: dump without either.
+                args.push("--skip-lock-tables".into());
+            } else if options.get("singleTransaction").is_none_or(|v| v == "true") {
                 args.push("--single-transaction".into());
             }
             for (key, flag) in [
@@ -867,7 +900,27 @@ pub fn build_restore(
                 format: "plain",
             })
         }
-        (NativeTool::MySqlClient, DbKind::MySql, "plain") => {
+        (NativeTool::Ysqlsh, DbKind::YugabyteDb, "plain") => {
+            let mut args = pg_conn_args(config, tunnel, database);
+            args.extend(["-X", "-q"].map(OsString::from));
+            if !continue_on_error {
+                args.extend(["-v", "ON_ERROR_STOP=1"].map(OsString::from));
+            }
+            Ok(DumpCommand {
+                run: ToolRun {
+                    program,
+                    args,
+                    env: pg_env(config, secret),
+                    stdin: Some(input.to_path_buf()),
+                    stdout: None,
+                    timeout: None,
+                },
+                guards: vec![],
+                extension: "",
+                format: "plain",
+            })
+        }
+        (NativeTool::MySqlClient, DbKind::MySql | DbKind::TiDb, "plain") => {
             let defaults = TempSecretFile::create(tmp, &mysql_defaults_content(secret))?;
             let mut args = mysql_conn_args(defaults.path(), config, tunnel);
             if continue_on_error {
@@ -966,7 +1019,7 @@ pub fn scan_restore_script(tool: NativeTool, path: &Path) -> Result<()> {
         let t = line.trim_start();
         let lower = t.to_ascii_lowercase();
         let bad = match tool {
-            NativeTool::Psql => psql_meta_is_dangerous(&lower),
+            NativeTool::Psql | NativeTool::Ysqlsh => psql_meta_is_dangerous(&lower),
             NativeTool::MySqlClient => {
                 lower.starts_with("system ")
                     || lower.starts_with("\\!")
@@ -1014,6 +1067,10 @@ pub fn native_unsupported(
     options: &BTreeMap<String, String>,
 ) -> Vec<&'static str> {
     match tool {
+        NativeTool::YsqlDump => vec![
+            "roles and tablespaces (cluster-wide objects)",
+            "other databases of the server",
+        ],
         NativeTool::PgDump => vec![
             "roles and tablespaces (cluster-wide objects)",
             "other databases of the server",
@@ -1040,6 +1097,7 @@ pub fn restore_tool_for(tool: NativeTool, format: &str) -> Result<NativeTool> {
         (NativeTool::PgDump, "custom") => Ok(NativeTool::PgRestore),
         (NativeTool::PgDump, "plain") => Ok(NativeTool::Psql),
         (NativeTool::MySqlDump, _) => Ok(NativeTool::MySqlClient),
+        (NativeTool::YsqlDump, _) => Ok(NativeTool::Ysqlsh),
         (NativeTool::MongoDump, _) => Ok(NativeTool::MongoRestore),
         (NativeTool::RedisCli, _) => Err(Error::Unsupported(
             "an RDB backup is restored by placing it in the Redis server's data directory".into(),

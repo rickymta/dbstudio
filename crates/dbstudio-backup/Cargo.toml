@@ -39,6 +39,8 @@ dbstudio-driver-mysql = { path = "../drivers/mysql" }
 dbstudio-driver-mssql = { path = "../drivers/mssql" }
 dbstudio-driver-mongodb = { path = "../drivers/mongodb" }
 dbstudio-driver-redis = { path = "../drivers/redis" }
+dbstudio-driver-cassandra = { path = "../drivers/cassandra" }
+dbstudio-driver-clickhouse = { path = "../drivers/clickhouse" }
 
 [lints]
 workspace = true

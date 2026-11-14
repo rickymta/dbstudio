@@ -556,6 +556,11 @@ fn has_transactions(d: ScriptDialect) -> bool {
 enum ColKind {
     Bytes,
     Bool,
+    /// Array / list column: a JSON array cell (what CSV, XLSX and JSON exports hold) becomes
+    /// an array value the driver writes in its own syntax (`{a,b}`, `[a, b]`).
+    Array,
+    /// MySQL `BIT(n)`: read as a number, but a quoted text would be taken as a byte string.
+    Bit,
     Plain,
 }
 
@@ -563,7 +568,9 @@ fn kind_of_detail(c: &ColumnDetail) -> ColKind {
     match c.value_kind {
         ValueKind::Bytes => ColKind::Bytes,
         ValueKind::Bool => ColKind::Bool,
+        ValueKind::Array => ColKind::Array,
         _ if c.type_name.to_lowercase().replace(' ', "") == "tinyint(1)" => ColKind::Bool,
+        ValueKind::UInt if c.type_name.to_lowercase().starts_with("bit") => ColKind::Bit,
         _ => ColKind::Plain,
     }
 }
@@ -615,7 +622,37 @@ fn coerce(cell: EditValue, kind: ColKind) -> std::result::Result<EditValue, Stri
             "false" | "f" => EditValue::Value(Value::Bool(false)),
             _ => EditValue::Text(s),
         }),
+        (ColKind::Array, EditValue::Text(s) | EditValue::Value(Value::Json(s))) => {
+            Ok(match serde_json::from_str::<serde_json::Value>(s.trim()) {
+                Ok(j @ serde_json::Value::Array(_)) => EditValue::Value(json_to_value(&j)),
+                _ => EditValue::Text(s),
+            })
+        }
+        (ColKind::Bit, EditValue::Text(s)) => Ok(match s.trim().parse::<u64>() {
+            Ok(n) => EditValue::Value(Value::UInt(n)),
+            Err(_) => EditValue::Text(s),
+        }),
         (_, other) => Ok(other),
+    }
+}
+
+/// Structured value of parsed JSON (integers stay integers, other numbers are doubles).
+fn json_to_value(j: &serde_json::Value) -> Value {
+    match j {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => match (n.as_i64(), n.as_u64()) {
+            (Some(i), _) => Value::Int(i),
+            (None, Some(u)) => Value::UInt(u),
+            _ => Value::Float(n.as_f64().unwrap_or(0.0)),
+        },
+        serde_json::Value::String(s) => Value::Text(s.clone()),
+        serde_json::Value::Array(a) => Value::Array(a.iter().map(json_to_value).collect()),
+        serde_json::Value::Object(o) => Value::Document(
+            o.iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -1083,6 +1120,28 @@ mod tests {
         assert_eq!(
             coerce(EditValue::Text("maybe".into()), ColKind::Bool).unwrap(),
             EditValue::Text("maybe".into())
+        );
+        // BIT(n) cells are numbers, not byte strings.
+        assert_eq!(
+            coerce(EditValue::Text("10".into()), ColKind::Bit).unwrap(),
+            EditValue::Value(Value::UInt(10))
+        );
+        assert_eq!(
+            coerce(EditValue::Text("x".into()), ColKind::Bit).unwrap(),
+            EditValue::Text("x".into())
+        );
+        // A JSON array cell becomes an array value; anything else stays text.
+        assert_eq!(
+            coerce(EditValue::Text("[\"a\", null, 2]".into()), ColKind::Array).unwrap(),
+            EditValue::Value(Value::Array(vec![
+                Value::Text("a".into()),
+                Value::Null,
+                Value::Int(2)
+            ]))
+        );
+        assert_eq!(
+            coerce(EditValue::Text("{a,b}".into()), ColKind::Array).unwrap(),
+            EditValue::Text("{a,b}".into())
         );
         assert_eq!(kind_of_type_name("bytea"), ColKind::Bytes);
         assert_eq!(kind_of_type_name("LONGBLOB"), ColKind::Bytes);

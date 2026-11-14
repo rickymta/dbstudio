@@ -50,13 +50,63 @@ pub(crate) async fn generate(
         if triggers {
             collect(show_all(client, "TRIGGERS").await?);
         }
-        Ok(build(&database, target, opts, parsed))
+        let mut items = build(&database, target, opts, parsed);
+        if opts.include_sequences {
+            // `SHOW CREATE ALL` has no current values: the next `nextval` after a restore would
+            // repeat numbers already used.
+            let values = sequence_values(client, &items).await?;
+            items.extend(values);
+        }
+        Ok(items)
     }
     .await;
     if result.is_ok() {
         conn.mark_reusable();
     }
     result
+}
+
+/// `setval` statements (PostData) for the sequences among `items` that have been used.
+async fn sequence_values(client: &Client, items: &[DdlItem]) -> Result<Vec<DdlItem>> {
+    let mut out = Vec::new();
+    for item in items.iter().filter(|i| {
+        i.kind == ObjectKind::Sequence
+            && i.sql
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CREATE SEQUENCE")
+    }) {
+        let mut names = item.path.segments.iter().rev();
+        let (Some(name), Some(schema)) = (
+            names.next().filter(|s| s.kind == ObjectKind::Sequence),
+            names.find(|s| s.kind == ObjectKind::Schema),
+        ) else {
+            continue;
+        };
+        let qualified = format!("{}.{}", quote_ident(&schema.name), quote_ident(&name.name));
+        let row = client
+            .query_opt(
+                &format!("SELECT last_value, is_called FROM {qualified}"),
+                &[],
+            )
+            .await
+            .map_err(map_error)?;
+        let Some(row) = row else { continue };
+        let (last, called): (i64, bool) = (row.get(0), row.get(1));
+        if !called {
+            continue;
+        }
+        let qualified_literal = qualified.replace('\'', "''");
+        out.push(DdlItem {
+            path: item.path.clone(),
+            kind: ObjectKind::Sequence,
+            section: DdlSection::PostData,
+            sql: format!("SELECT setval('{qualified_literal}', {last}, true);"),
+            language: DdlLanguage::Sql,
+            depends_on: vec![],
+        });
+    }
+    Ok(out)
 }
 
 async fn show_all(client: &Client, what: &str) -> Result<Vec<String>> {

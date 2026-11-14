@@ -531,6 +531,31 @@ impl Catalog {
             });
         }
 
+        // YugabyteDB answers NULL from `pg_sequence_last_value`: read the sequence itself.
+        for s in cat
+            .seqs
+            .iter_mut()
+            .filter(|s| s.readable && s.last_value.is_none())
+        {
+            let row = client
+                .query_opt(
+                    &format!(
+                        "SELECT last_value, is_called FROM {}.{}",
+                        quote_ident(&s.schema),
+                        quote_ident(&s.name)
+                    ),
+                    &[],
+                )
+                .await
+                .ok()
+                .flatten();
+            if let Some(row) = row {
+                if row.try_get::<_, bool>(1).unwrap_or(false) {
+                    s.last_value = row.try_get::<_, i64>(0).ok();
+                }
+            }
+        }
+
         let sql = format!(
             "SELECT n.nspname::text, t.typname::text, t.typtype::text, \
                     obj_description(t.oid, 'pg_type'), \

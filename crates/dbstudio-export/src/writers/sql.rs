@@ -772,4 +772,78 @@ mod tests {
         assert!(sql.contains("map('k', 1)"), "{sql}");
         assert!(sql.contains("(1, 'x')"), "{sql}");
     }
+
+    #[test]
+    fn sequence_statements_filed_under_their_table_get_the_table_marker() {
+        use dbstudio_core::{DdlItem, DdlLanguage, DdlSection, ObjectKind, ObjectPath};
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = WriterConfig {
+            format: crate::ExportFormat::Sql(SqlOptions::default()),
+            dialect: ScriptDialect::Postgres,
+            binary: crate::BinaryFormat::Hex,
+            content: crate::ExportContent::Both,
+            dest: dir.path().join("t.sql"),
+            overwrite: false,
+            zip: false,
+            tuning: crate::ExportTuning::default(),
+            flatten_fields: vec![],
+            ejson_cells: false,
+            kind: dbstudio_core::DbKind::Postgres,
+        };
+        let mut w = SqlWriter::create(&cfg, SqlOptions::default()).unwrap();
+        let table = ObjectPath::root()
+            .child(ObjectKind::Database, "app")
+            .child(ObjectKind::Folder, "schemas")
+            .child(ObjectKind::Schema, "public")
+            .child(ObjectKind::Folder, "tables")
+            .child(ObjectKind::Table, "t");
+        let free_seq = ObjectPath::root()
+            .child(ObjectKind::Database, "app")
+            .child(ObjectKind::Folder, "schemas")
+            .child(ObjectKind::Schema, "public")
+            .child(ObjectKind::Folder, "sequences")
+            .child(ObjectKind::Sequence, "s");
+        let item = |path: ObjectPath, sql: &str| DdlItem {
+            path,
+            kind: ObjectKind::Sequence,
+            section: DdlSection::PostData,
+            sql: sql.into(),
+            language: DdlLanguage::Sql,
+            depends_on: vec![],
+        };
+        w.write_ddl(
+            DdlSection::PostData,
+            &[
+                item(
+                    table,
+                    "ALTER SEQUENCE public.t_id_seq OWNED BY public.t.id;",
+                ),
+                item(free_seq, "SELECT pg_catalog.setval('public.s', 7, true);"),
+            ],
+        )
+        .unwrap();
+        let objects = w.objects();
+        let files = Box::new(w).finish().unwrap();
+        let sql = std::fs::read_to_string(&files[0]).unwrap();
+        // The statement that needs the table belongs to the table (a partial restore without
+        // the table leaves it out); a free sequence keeps its own block.
+        assert!(
+            sql.contains("kind=table schema=\"public\" name=\"t\" phase=post\nALTER SEQUENCE"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("kind=sequence schema=\"public\" name=\"s\" phase=post\nSELECT"),
+            "{sql}"
+        );
+        assert!(
+            objects
+                .iter()
+                .any(|o| o.kind == ObjectKind::Table && o.name == "t")
+        );
+        assert!(
+            objects
+                .iter()
+                .any(|o| o.kind == ObjectKind::Sequence && o.name == "s")
+        );
+    }
 }

@@ -699,20 +699,49 @@ fn join_literals(items: &[Value], t: &CqlType) -> Result<String> {
 }
 
 /// A user-typed CQL literal for a composite type (`[1, 2]`, `{'a': 1}`), accepted when balanced.
+/// JSON text (what CSV and XLSX exports hold for collections: `["a","b"]`, `{"k": 1}`) is read
+/// as a structured value and rendered by the column type.
 fn typed_text_literal(v: &Value, ty: &CqlType) -> Result<String> {
     match v {
         Value::Text(s) | Value::Json(s) => {
             let t = s.trim();
             if t.starts_with(['[', '{', '(']) && is_safe_literal(t) {
-                Ok(t.to_string())
-            } else {
-                Err(invalid(
-                    ty,
-                    "this text (expected a CQL literal such as [1, 2])",
-                ))
+                return Ok(t.to_string());
             }
+            if t.starts_with(['[', '{']) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(t) {
+                    let value = json_to_value(&json);
+                    if matches!(value, Value::Array(_) | Value::Document(_)) {
+                        return literal(&value, ty);
+                    }
+                }
+            }
+            Err(invalid(
+                ty,
+                "this text (expected a CQL literal such as [1, 2] or JSON)",
+            ))
         }
         _ => Err(invalid(ty, "this value")),
+    }
+}
+
+/// Structured value of parsed JSON (integers stay integers, other numbers are doubles).
+fn json_to_value(j: &serde_json::Value) -> Value {
+    match j {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => match (n.as_i64(), n.as_u64()) {
+            (Some(i), _) => Value::Int(i),
+            (None, Some(u)) => Value::UInt(u),
+            _ => Value::Float(n.as_f64().unwrap_or(0.0)),
+        },
+        serde_json::Value::String(s) => Value::Text(s.clone()),
+        serde_json::Value::Array(a) => Value::Array(a.iter().map(json_to_value).collect()),
+        serde_json::Value::Object(o) => Value::Document(
+            o.iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -1080,5 +1109,25 @@ mod tests {
             literal_from_text("2024-01-01", &CqlType::Timestamp).unwrap(),
             "'2024-01-01'"
         );
+    }
+
+    #[test]
+    fn json_text_of_collections_is_read_by_the_column_type() {
+        let list = CqlType::List(Box::new(CqlType::Text));
+        assert_eq!(
+            literal(&Value::Text("[\"a\",\"b c\",null]".into()), &list).unwrap(),
+            "['a', 'b c', null]"
+        );
+        let map = CqlType::Map(Box::new(CqlType::Text), Box::new(CqlType::Int));
+        assert_eq!(
+            literal(&Value::Text("{\"k\": 1}".into()), &map).unwrap(),
+            "{'k': 1}"
+        );
+        // A CQL literal is still taken as it is, and junk is refused.
+        assert_eq!(
+            literal(&Value::Text("{'k': 1}".into()), &map).unwrap(),
+            "{'k': 1}"
+        );
+        assert!(literal(&Value::Text("[1; DROP]".into()), &list).is_err());
     }
 }

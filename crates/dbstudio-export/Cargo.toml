@@ -30,6 +30,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 dbstudio-driver-postgres = { path = "../drivers/postgres" }
 dbstudio-driver-mysql = { path = "../drivers/mysql" }
 dbstudio-driver-redis = { path = "../drivers/redis" }
+dbstudio-driver-cassandra = { path = "../drivers/cassandra" }
+dbstudio-driver-clickhouse = { path = "../drivers/clickhouse" }
 dbstudio-driver-mongodb = { path = "../drivers/mongodb" }
 
 [lints]

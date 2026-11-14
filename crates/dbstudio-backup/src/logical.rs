@@ -70,6 +70,8 @@ fn dialect_name(d: ScriptDialect) -> Result<&'static str> {
         ScriptDialect::MySql { .. } => Ok("mysql"),
         ScriptDialect::MsSql => Ok("mssql"),
         ScriptDialect::Oracle => Ok("oracle"),
+        ScriptDialect::Cql => Ok("cql"),
+        ScriptDialect::ClickHouse => Ok("clickhouse"),
         _ => Err(Error::Unsupported(
             "integrated backup is only available for SQL databases; use a native tool".into(),
         )),
@@ -147,8 +149,12 @@ pub(crate) async fn dump(
     let dname = dialect_name(sd)?;
     let src = export_source(database, targets)?;
     let mut ddl = ddl.clone();
-    if matches!(sd, ScriptDialect::MySql { .. }) {
-        // MySQL names carry the database; a restore into another name must not.
+    if matches!(
+        sd,
+        ScriptDialect::MySql { .. } | ScriptDialect::Cql | ScriptDialect::ClickHouse
+    ) {
+        // MySQL, CQL and ClickHouse names carry the database / keyspace; a restore into
+        // another name must not.
         ddl.qualify_schema = false;
     }
     let file = spool.join("dump.sql");
@@ -296,6 +302,8 @@ fn same_family(a: &str, b: ScriptDialect) -> bool {
             | ("mysql", ScriptDialect::MySql { .. })
             | ("mssql", ScriptDialect::MsSql)
             | ("oracle", ScriptDialect::Oracle)
+            | ("cql", ScriptDialect::Cql)
+            | ("clickhouse", ScriptDialect::ClickHouse)
     )
 }
 
@@ -311,6 +319,18 @@ pub fn clean_statements(
     sd: ScriptDialect,
     database: &str,
     charset: Option<(String, String)>,
+) -> Vec<String> {
+    clean_statements_for(pre, sd, database, charset, false)
+}
+
+/// [`clean_statements`]; `keep_public` leaves the PostgreSQL `public` schema in place (the
+/// caller empties it object by object: CockroachDB cannot drop it).
+fn clean_statements_for(
+    pre: &Json,
+    sd: ScriptDialect,
+    database: &str,
+    charset: Option<(String, String)>,
+    keep_public: bool,
 ) -> Vec<String> {
     let q = dbstudio_sql::Dialect::new(sd);
     match sd {
@@ -335,6 +355,7 @@ pub fn clean_statements(
             // The script creates every schema itself except `public`, which always exists.
             schemas
                 .iter()
+                .filter(|s| !(keep_public && *s == "public"))
                 .flat_map(|s| {
                     let mut v = vec![format!(
                         "DROP SCHEMA IF EXISTS {} CASCADE",
@@ -360,6 +381,11 @@ pub fn clean_statements(
                 create,
             ]
         }
+        // ClickHouse: like MySQL, the database is dropped and created again (at once, no undo).
+        ScriptDialect::ClickHouse => vec![
+            format!("DROP DATABASE IF EXISTS {}", q.quote_ident(database)),
+            format!("CREATE DATABASE {}", q.quote_ident(database)),
+        ],
         _ => Vec::new(),
     }
 }
@@ -374,9 +400,62 @@ pub fn clean_preview(pre: &Json, dialect: &str, database: &str) -> Vec<String> {
     let sd = match dialect {
         "postgres" => ScriptDialect::Postgres,
         "mysql" => ScriptDialect::mysql(false, true),
+        "clickhouse" => ScriptDialect::ClickHouse,
         _ => return Vec::new(),
     };
     clean_statements(pre, sd, database, None)
+}
+
+/// CockroachDB cannot drop the `public` schema: empty it by dropping the views, tables,
+/// sequences and enum types in it (CASCADE takes dependent objects along). Runs on the target
+/// database, outside the restore transaction.
+async fn empty_public_schema(session: &Arc<dyn Session>, database: &str) -> Result<()> {
+    let lists = [
+        (
+            "VIEW",
+            "SELECT table_name FROM information_schema.views WHERE table_schema = 'public'",
+        ),
+        (
+            "TABLE",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' \
+             AND table_type = 'BASE TABLE'",
+        ),
+        (
+            "SEQUENCE",
+            "SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public'",
+        ),
+        (
+            "TYPE",
+            "SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace \
+             WHERE n.nspname = 'public' AND t.typtype = 'e'",
+        ),
+    ];
+    let q = dbstudio_sql::Dialect::new(ScriptDialect::Postgres);
+    for (what, list) in lists {
+        let mut req = QueryRequest::new(list);
+        req.database = Some(database.to_string());
+        let res = dbstudio_core::execute_collect(session.as_ref(), req).await?;
+        let names: Vec<String> = match res.first().map(|r| &r.outcome) {
+            Some(dbstudio_core::StatementOutcome::Rows(rs)) => rs
+                .rows
+                .iter()
+                .filter_map(|r| match r.first() {
+                    Some(Value::Text(t)) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        for name in names {
+            let mut req = QueryRequest::new(format!(
+                "DROP {what} IF EXISTS public.{} CASCADE",
+                q.quote_ident(&name)
+            ));
+            req.database = Some(database.to_string());
+            session.execute(req, &mut NullSink).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Character set and collation of a MySQL database, when it exists.
@@ -483,6 +562,17 @@ pub(crate) async fn restore(
     };
     reporter.progress(&progress);
 
+    // Server flavour of a PostgreSQL protocol server (`postgres`, `cockroachdb`, `yugabytedb`).
+    let flavor = if matches!(sd, ScriptDialect::Postgres) {
+        session
+            .server_info()
+            .await
+            .ok()
+            .and_then(|i| i.extra.get("flavor").cloned())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let q = dbstudio_sql::Dialect::new(sd);
     if spec.create_database {
         let (sql, over) = match sd {
@@ -497,6 +587,17 @@ pub(crate) async fn restore(
                     q.quote_ident(&target_db)
                 ),
                 Some("master".to_string()),
+            ),
+            // A keyspace needs a replication strategy: the backup does not carry the source's
+            // (it may name data centers the target does not have), so a single-replica
+            // `SimpleStrategy` keyspace is created; change it with `ALTER KEYSPACE` afterwards.
+            ScriptDialect::Cql => (
+                format!(
+                    "CREATE KEYSPACE IF NOT EXISTS {} WITH replication = \
+                     {{'class': 'SimpleStrategy', 'replication_factor': 1}}",
+                    q.quote_ident(&target_db)
+                ),
+                None,
             ),
             _ => (
                 format!(
@@ -520,6 +621,12 @@ pub(crate) async fn restore(
             "a clean restore is not available for SQL Server: restore into a new database".into(),
         ));
     }
+    if spec.clean && matches!(sd, ScriptDialect::Cql) {
+        return Err(Error::Unsupported(
+            "a clean restore is not available for Cassandra / ScyllaDB: restore into a new keyspace"
+                .into(),
+        ));
+    }
     // MySQL `clean` replaces the whole database: do it on the session, before the lease opens.
     let clean = if spec.clean {
         if spec.target_database.as_deref().is_none_or(str::is_empty) {
@@ -527,16 +634,20 @@ pub(crate) async fn restore(
                 "a clean restore needs the target database to be named explicitly".into(),
             ));
         }
+        let cockroach = flavor == "cockroachdb";
+        if cockroach {
+            empty_public_schema(session, &target_db).await?;
+        }
         let charset = if matches!(sd, ScriptDialect::MySql { .. }) {
             mysql_charset(session, &target_db).await
         } else {
             None
         };
-        clean_statements(pre, sd, &target_db, charset)
+        clean_statements_for(pre, sd, &target_db, charset, cockroach)
     } else {
         Vec::new()
     };
-    if matches!(sd, ScriptDialect::MySql { .. }) {
+    if matches!(sd, ScriptDialect::MySql { .. } | ScriptDialect::ClickHouse) {
         for sql in &clean {
             let mut req = QueryRequest::new(sql.clone());
             req.database = None;
@@ -545,8 +656,13 @@ pub(crate) async fn restore(
     }
 
     let target = Target::open(session, &target_db).await?;
-    let single_tx =
-        matches!(sd, ScriptDialect::Postgres) && !spec.continue_on_error && target.lease.is_some();
+    // One transaction (all or nothing) on PostgreSQL and CockroachDB. YugabyteDB aborts a
+    // transaction that mixes this much DDL with data at COMMIT, so its restore commits as it
+    // goes (like MySQL): a failed restore leaves what was created so far.
+    let single_tx = matches!(sd, ScriptDialect::Postgres)
+        && flavor != "yugabytedb"
+        && !spec.continue_on_error
+        && target.lease.is_some();
     let result = run_script(
         &target,
         &cancel,

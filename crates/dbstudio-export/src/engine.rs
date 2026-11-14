@@ -639,6 +639,15 @@ async fn generate_ddl(
             })
             .await?;
         for item in items {
+            // A script without schema qualification must replay into any namespace: the
+            // `CREATE KEYSPACE` / `CREATE DATABASE` (and its `DROP`) of the source would
+            // collide with, or create next to, the target.
+            if !options.qualify_schema
+                && item.kind == ObjectKind::Database
+                && matches!(ctx.dialect, ScriptDialect::Cql | ScriptDialect::ClickHouse)
+            {
+                continue;
+            }
             match item.section {
                 DdlSection::PreData => pre.push(item),
                 DdlSection::PostData => post.push(item),

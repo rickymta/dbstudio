@@ -419,8 +419,9 @@ impl LeaseBackend for PgBackend {
         &mut self,
         req: dbstudio_core::BulkInsertRequest,
     ) -> Result<dbstudio_core::BulkInsertResult> {
+        let use_copy = !self.shared.flavor().is_cockroach();
         let conn = self.conn()?;
-        crate::bulk::bulk_on_client(&conn.client, &req).await
+        crate::bulk::bulk_on_client(&conn.client, &req, use_copy).await
     }
 
     async fn explain(

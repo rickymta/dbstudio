@@ -256,8 +256,15 @@ pub async fn run_backup(
                     tool: NativeTool::MsSqlServerBackup,
                     ..
                 } => mssql_server_backup(&ctx, spec, path).await,
+                BackupEngine::Native {
+                    tool:
+                        tool @ (NativeTool::ClickHouseServerBackup | NativeTool::CockroachServerBackup),
+                    ..
+                } => server_side_backup(&ctx, spec, path, *tool).await,
                 _ => Err(Error::Unsupported(
-                    "a server directory destination needs the SQL Server native backup".into(),
+                    "a server directory destination needs a native backup that writes on the \
+                     server (SQL Server, ClickHouse or CockroachDB)"
+                        .into(),
                 )),
             };
         }
@@ -393,9 +400,16 @@ async fn native_dump(
     server_version: &str,
     source: Json,
 ) -> Result<(SpoolEntry, Json)> {
-    if tool == NativeTool::MsSqlServerBackup {
+    if matches!(
+        tool,
+        NativeTool::MsSqlServerBackup
+            | NativeTool::ClickHouseServerBackup
+            | NativeTool::CockroachServerBackup
+    ) {
         return Err(Error::Unsupported(
-            "the SQL Server backup writes on the server: choose a server directory".into(),
+            "this backup is written by the server itself: choose a server destination \
+             (SQL Server: directory, ClickHouse: backup disk, CockroachDB: nodelocal path)"
+                .into(),
         ));
     }
     if matches!(tool, NativeTool::Expdp | NativeTool::Impdp) {
@@ -473,6 +487,110 @@ async fn mssql_server_backup(
         dbstudio_core::execute_collect(ctx.session.as_ref(), req).await?;
         ctx.reporter.log(&format!("server wrote {target}"));
         files.push(target);
+    }
+    Ok(BackupOutcome {
+        objects: files.len() as u32,
+        files,
+        size_bytes: 0,
+        checksum: String::new(),
+        rows: 0,
+    })
+}
+
+/// `BACKUP` run by the server itself: ClickHouse writes a `.zip` to a backup disk named in the
+/// server configuration (`path` is the disk name), CockroachDB writes a backup collection to
+/// `nodelocal://<node>/<path>` of its own nodes. Nothing is copied to this machine, and the
+/// backups are restored with the server's `RESTORE` statement.
+async fn server_side_backup(
+    ctx: &BackupContext,
+    spec: &BackupSpec,
+    path: &str,
+    tool: NativeTool,
+) -> Result<BackupOutcome> {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
+            && !s.split('/').any(|seg| seg == "..")
+    };
+    let mut files = Vec::new();
+    for (database, _) in groups(ctx, spec)? {
+        if database.is_empty() {
+            return Err(Error::Other(
+                "a backup target must be inside a database".into(),
+            ));
+        }
+        let stamp = render_file_name(
+            "{database}-{date:%Y%m%d-%H%M%S}",
+            &ctx.config.name,
+            &database,
+            ctx.job_name.as_deref().unwrap_or("manual"),
+            Local::now(),
+        );
+        let stamp = stamp.trim_end_matches(".dbsbak").to_string();
+        let (sql, shown) = match tool {
+            NativeTool::ClickHouseServerBackup => {
+                let disk = path.trim();
+                if !disk.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || disk.is_empty() {
+                    return Err(Error::Invalid(
+                        "the destination of a ClickHouse backup is the name of a backup disk \
+                         configured on the server"
+                            .into(),
+                    ));
+                }
+                let file = format!("{stamp}.zip");
+                (
+                    format!(
+                        "BACKUP DATABASE `{}` TO Disk('{disk}', '{}')",
+                        database.replace('`', "``"),
+                        file.replace('\'', "\\'")
+                    ),
+                    format!("{disk}/{file}"),
+                )
+            }
+            _ => {
+                // `nodelocal://1/dir` or just `dir`: only the cluster's own nodes, never a cloud
+                // URL (which would carry credentials in its query string).
+                let rest = path
+                    .trim()
+                    .strip_prefix("nodelocal://")
+                    .map(|r| r.split_once('/').map_or("", |(_, p)| p))
+                    .unwrap_or(path.trim())
+                    .trim_matches('/');
+                if !plain(rest) {
+                    return Err(Error::Invalid(
+                        "the destination of a CockroachDB backup is a directory on the \
+                         cluster's nodes (`nodelocal://1/dir` or `dir`)"
+                            .into(),
+                    ));
+                }
+                let uri = format!("nodelocal://1/{rest}/{stamp}");
+                (
+                    format!(
+                        "BACKUP DATABASE \"{}\" INTO '{uri}'",
+                        database.replace('"', "\"\"")
+                    ),
+                    uri,
+                )
+            }
+        };
+        ctx.reporter.progress(&JobProgress {
+            phase: "data".into(),
+            object: Some(database.clone()),
+            message: Some("the server is writing the backup".into()),
+            ..Default::default()
+        });
+        let results =
+            dbstudio_core::execute_collect(ctx.session.as_ref(), QueryRequest::new(sql)).await?;
+        // ClickHouse answers `(id, status)`; a failed backup is an error, not a status.
+        if let Some(dbstudio_core::StatementOutcome::Rows(rs)) = results.first().map(|r| &r.outcome)
+        {
+            if let Some(row) = rs.rows.first() {
+                ctx.reporter.log(&format!("server answered {row:?}"));
+            }
+        }
+        ctx.reporter.log(&format!("server wrote {shown}"));
+        files.push(shown);
     }
     Ok(BackupOutcome {
         objects: files.len() as u32,
@@ -611,16 +729,19 @@ async fn native_restore(
         .files
         .get(pre["native"]["file"].as_str().unwrap_or_default())
     {
-        if matches!(restore_tool, NativeTool::Psql | NativeTool::MySqlClient) {
+        if matches!(
+            restore_tool,
+            NativeTool::Psql | NativeTool::Ysqlsh | NativeTool::MySqlClient
+        ) {
             native::scan_restore_script(restore_tool, input)?;
         }
     }
     if spec.create_database {
         let sql = match ctx.config.kind {
-            dbstudio_core::DbKind::Postgres => {
+            dbstudio_core::DbKind::Postgres | dbstudio_core::DbKind::YugabyteDb => {
                 format!("CREATE DATABASE \"{}\"", target_db.replace('"', "\"\""))
             }
-            dbstudio_core::DbKind::MySql => format!(
+            dbstudio_core::DbKind::MySql | dbstudio_core::DbKind::TiDb => format!(
                 "CREATE DATABASE IF NOT EXISTS `{}`",
                 target_db.replace('`', "``")
             ),
@@ -628,7 +749,10 @@ async fn native_restore(
         };
         if !sql.is_empty() {
             let mut req = QueryRequest::new(sql);
-            if ctx.config.kind == dbstudio_core::DbKind::Postgres {
+            if matches!(
+                ctx.config.kind,
+                dbstudio_core::DbKind::Postgres | dbstudio_core::DbKind::YugabyteDb
+            ) {
                 req.database = Some("postgres".into());
             }
             if let Err(e) = ctx.session.execute(req, &mut NullSink).await {

@@ -290,6 +290,38 @@ fn has_zone(s: &str) -> bool {
     s[t..].rfind(['+', '-']).is_some()
 }
 
+/// `[-]` followed by `<digits><unit>` groups (`y mo w d h m s ms us µs ns`), or ISO 8601
+/// (`P1Y2M3DT4H`, `P0001-02-03T04:05:06`): the forms CQL accepts without quotes.
+fn is_duration_literal(s: &str) -> bool {
+    let t = s.strip_prefix('-').unwrap_or(s);
+    if t.is_empty() {
+        return false;
+    }
+    if let Some(iso) = t.strip_prefix('P') {
+        return !iso.is_empty()
+            && iso.chars().all(|c| {
+                c.is_ascii_digit()
+                    || matches!(c, 'Y' | 'M' | 'W' | 'D' | 'T' | 'H' | 'S' | '-' | ':')
+            });
+    }
+    let mut rest = t;
+    while !rest.is_empty() {
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        if digits == 0 {
+            return false;
+        }
+        rest = &rest[digits..];
+        let unit = ["ms", "mo", "us", "µs", "ns", "y", "w", "d", "h", "m", "s"]
+            .iter()
+            .find(|u| rest.starts_with(**u));
+        match unit {
+            Some(u) => rest = &rest[u.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
 fn cql_literal(d: &Dialect, v: &Value, ty: Option<&str>) -> String {
     let parts = unwrap_type(ty, &["frozen"]);
     let (base, args) = parts.clone().unwrap_or_default();
@@ -313,6 +345,9 @@ fn cql_literal(d: &Dialect, v: &Value, ty: Option<&str>) -> String {
         {
             s.clone()
         }
+        // A duration is a bare literal (`1h30m`, `14mo3d5ns`, `P1Y2M`); quoted it is rejected.
+        Value::Text(s) if base == "duration" && is_duration_literal(s) => s.clone(),
+        Value::Ext(e) if e.ty == "duration" && is_duration_literal(&e.text) => e.text.clone(),
         Value::DateTime(s) => {
             let t = if has_zone(s) {
                 s.clone()
@@ -363,6 +398,22 @@ fn cql_literal(d: &Dialect, v: &Value, ty: Option<&str>) -> String {
     }
 }
 
+/// Double literal for ClickHouse. The `VALUES` parser reads a decimal literal with 16 or 17
+/// significant digits a unit in the last place off for some doubles (2.857142857142857 becomes
+/// 2.8571428571428568), so those are written as their exact bit pattern; short literals are
+/// read exactly.
+fn ch_float(f: f64) -> String {
+    let exp = format!("{f:e}");
+    let (mantissa, e10) = exp.split_once('e').unwrap_or((&exp, "0"));
+    let digits = mantissa.chars().filter(char::is_ascii_digit).count();
+    let e10: i32 = e10.parse().unwrap_or(0);
+    if digits <= 15 && (-22..=22).contains(&e10) {
+        format!("{f:?}")
+    } else {
+        format!("reinterpretAsFloat64(toUInt64({}))", f.to_bits())
+    }
+}
+
 fn ch_literal(d: &Dialect, v: &Value, ty: Option<&str>) -> String {
     let parts = unwrap_type(ty, &["nullable", "lowcardinality"]);
     let (base, args) = parts.unwrap_or_default();
@@ -371,6 +422,7 @@ fn ch_literal(d: &Dialect, v: &Value, ty: Option<&str>) -> String {
         Value::Null => "NULL".into(),
         Value::Float(f) if f.is_nan() => "nan".into(),
         Value::Float(f) if f.is_infinite() => if *f > 0.0 { "inf" } else { "-inf" }.into(),
+        Value::Float(f) => ch_float(*f),
         Value::Bytes(b) => {
             let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
             format!("unhex('{hex}')")
@@ -631,6 +683,45 @@ mod tests {
         assert_eq!(
             d("no_backslash_escapes", false),
             ScriptDialect::mysql(false, false)
+        );
+    }
+
+    #[test]
+    fn clickhouse_doubles_with_long_digits_are_written_exactly() {
+        let ch = Dialect::new(ScriptDialect::ClickHouse);
+        // Short literals are read exactly by the VALUES parser.
+        assert_eq!(ch.literal_for_type(&Value::Float(1.5), None), "1.5");
+        assert_eq!(ch.literal_for_type(&Value::Float(0.1), None), "0.1");
+        // 16-17 digit literals are not: they travel as their bit pattern.
+        let v = 20.0_f64 / 7.0;
+        assert_eq!(
+            ch.literal_for_type(&Value::Float(v), Some("Float64")),
+            format!("reinterpretAsFloat64(toUInt64({}))", v.to_bits())
+        );
+        assert_eq!(ch.literal_for_type(&Value::Float(f64::NAN), None), "nan");
+    }
+
+    #[test]
+    fn cql_durations_are_bare_literals() {
+        use dbstudio_core::ExtValue;
+        let cql = Dialect::new(ScriptDialect::Cql);
+        let ext = Value::Ext(ExtValue::new("duration", "14mo3d14400000000000ns"));
+        assert_eq!(
+            cql.literal_for_type(&ext, Some("duration")),
+            "14mo3d14400000000000ns"
+        );
+        assert_eq!(
+            cql.literal_for_type(&Value::Text("1h30m".into()), Some("duration")),
+            "1h30m"
+        );
+        assert_eq!(
+            cql.literal_for_type(&Value::Text("P1Y2M3DT4H".into()), Some("duration")),
+            "P1Y2M3DT4H"
+        );
+        // Anything that is not a duration stays a quoted string (no injection through a cell).
+        assert_eq!(
+            cql.literal_for_type(&Value::Text("1h'; DROP".into()), Some("duration")),
+            "'1h''; DROP'"
         );
     }
 }
