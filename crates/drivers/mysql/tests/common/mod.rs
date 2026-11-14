@@ -67,7 +67,7 @@ pub const MARIADB104: Target = Target {
     tidb: false,
 };
 /// TiDB (`newsql` profile, port `DBSTUDIO_IT_TIDB_PORT`, default 34000). Probe-then-skip: when
-/// the container is not running the target is left out, unless `DBSTUDIO_IT_STRICT=1`.
+/// the container is not running the target is left out, unless `DBSTUDIO_IT_STRICT` names `tidb`.
 pub const TIDB: Target = Target {
     name: "tidb",
     port: 34000,
@@ -97,21 +97,18 @@ fn reachable(t: Target) -> bool {
     TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)).is_ok()
 }
 
-/// Servers to test: the original four (all must be reachable), TiDB when its container runs
-/// (or `DBSTUDIO_IT_STRICT=1`), or the comma-separated names in `DBSTUDIO_IT_SERVERS`.
+/// Servers to test: those whose container runs (or that `DBSTUDIO_IT_STRICT` names, so a missing
+/// one fails instead of being left out), or the comma-separated names in `DBSTUDIO_IT_SERVERS`.
 pub fn targets() -> Vec<Target> {
     match std::env::var("DBSTUDIO_IT_SERVERS") {
         Ok(list) => TARGETS
             .into_iter()
             .filter(|t| list.split(',').any(|n| n.trim() == t.name))
             .collect(),
-        Err(_) => {
-            let strict = std::env::var("DBSTUDIO_IT_STRICT").is_ok_and(|v| v == "1");
-            TARGETS
-                .into_iter()
-                .filter(|t| !t.tidb || strict || reachable(*t))
-                .collect()
-        }
+        Err(_) => TARGETS
+            .into_iter()
+            .filter(|t| dbstudio_core::testing::it_strict_for(t.name) || reachable(*t))
+            .collect(),
     }
 }
 

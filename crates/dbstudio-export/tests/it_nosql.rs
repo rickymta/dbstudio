@@ -26,8 +26,8 @@ fn enabled() -> bool {
     std::env::var("DBSTUDIO_IT").is_ok_and(|v| v == "1")
 }
 
-fn strict() -> bool {
-    std::env::var("DBSTUDIO_IT_STRICT").is_ok_and(|v| v == "1")
+fn strict(service: &str) -> bool {
+    dbstudio_core::testing::it_strict_for(service)
 }
 
 fn port(var: &str, default: u16) -> u16 {
@@ -69,7 +69,7 @@ async fn redis_connect(r: Redis) -> Option<Arc<dyn Session>> {
         .await
     {
         Ok(s) => Some(Arc::from(s)),
-        Err(e) if strict() => panic!("{} is not reachable: {e}", r.name),
+        Err(e) if strict(r.name) => panic!("{} is not reachable: {e}", r.name),
         Err(e) => {
             eprintln!("skipping {}: {e}", r.name);
             None
@@ -372,7 +372,7 @@ async fn mongo_connect(replica: bool) -> Option<Arc<dyn Session>> {
         .await
     {
         Ok(s) => Some(Arc::from(s)),
-        Err(e) if strict() => panic!("{name} is not reachable: {e}"),
+        Err(e) if strict(name) => panic!("{name} is not reachable: {e}"),
         Err(e) => {
             eprintln!("skipping {name}: {e}");
             None

@@ -17,12 +17,11 @@ use dbstudio_core::{
 use dbstudio_driver_mysql::{MySqlDriver, TiDbDriver};
 use dbstudio_ssh::{MemoryKnownHosts, Tunnel};
 
-fn strict() -> bool {
-    std::env::var("DBSTUDIO_IT_STRICT").is_ok_and(|v| v == "1")
-}
-
-fn skip(why: &str) {
-    assert!(!strict(), "DBSTUDIO_IT_STRICT=1 but {why}");
+fn skip(service: &str, why: &str) {
+    assert!(
+        !dbstudio_core::testing::it_strict_for(service),
+        "DBSTUDIO_IT_STRICT covers {service} but {why}"
+    );
     println!("skip: {why}");
 }
 
@@ -59,7 +58,7 @@ async fn flavour_follows_the_server_not_the_profile_kind() {
             .unwrap();
         assert_eq!(s2.server_info().await.unwrap().product, "TiDB");
     } else {
-        skip("tidb is not running");
+        skip("tidb", "tidb is not running");
     }
     if selected(MYSQL8) {
         // The TiDB driver pointed at a MySQL server falls back to the MySQL flavour.
@@ -423,7 +422,7 @@ async fn open_tunnel(target: (&str, u16)) -> Option<Tunnel> {
     )
     .is_ok();
     if !reachable {
-        skip("sshd is not running");
+        skip("sshd", "sshd is not running");
         return None;
     }
     let cfg = SshConfig {
@@ -464,7 +463,7 @@ async fn r6_verify_full_checks_the_server_name_not_the_tunnel_address() {
         return;
     }
     if !selected(MYSQL8) {
-        skip("mysql8 is not selected");
+        skip("mysql8", "mysql8 is not selected");
         return;
     }
     let Some(tunnel) = open_tunnel(("mysql8", 3306)).await else {

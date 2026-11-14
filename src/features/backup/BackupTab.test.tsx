@@ -61,7 +61,8 @@ describe('BackupTab', () => {
     const row = await screen.findByTestId('job-row');
     expect(within(row).getByText('Nightly app')).toBeInTheDocument();
     expect(await within(row).findByText('PostgreSQL dev')).toBeInTheDocument();
-    expect(within(row).getByText(/02:00/)).toBeInTheDocument();
+    // The schedule description and the next run time can both read 02:00 (e.g. in UTC).
+    expect(within(row).getAllByText(/02:00/).length).toBeGreaterThan(0);
     expect(within(row).getByText(/UTC/)).toBeInTheDocument();
 
     await user.click(within(row).getByRole('button', { name: 'Run now' }));
