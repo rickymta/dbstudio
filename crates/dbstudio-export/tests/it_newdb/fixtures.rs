@@ -34,6 +34,14 @@ impl E {
         }
     }
 
+    /// Name of the service in `docker/compose.test.yml` (what `DBSTUDIO_IT_STRICT` lists).
+    pub fn service(self) -> &'static str {
+        match self {
+            E::ClickHouse => "clickhouse26",
+            other => other.name(),
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             E::ClickHouse => "clickhouse",
@@ -86,8 +94,8 @@ pub fn probe(e: E) -> bool {
         .is_some_and(|a| TcpStream::connect_timeout(&a, Duration::from_millis(500)).is_ok());
     if !up {
         assert!(
-            !std::env::var("DBSTUDIO_IT_STRICT").is_ok_and(|v| v == "1"),
-            "{} is not reachable (DBSTUDIO_IT_STRICT=1)",
+            !dbstudio_core::testing::it_strict_for(e.service()),
+            "{} is not reachable (DBSTUDIO_IT_STRICT)",
             e.name()
         );
         eprintln!("skip: {} is not reachable on port {}", e.name(), e.port());

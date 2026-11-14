@@ -25,8 +25,8 @@ fn enabled() -> bool {
     std::env::var("DBSTUDIO_IT").as_deref() == Ok("1")
 }
 
-fn strict() -> bool {
-    std::env::var("DBSTUDIO_IT_STRICT").as_deref() == Ok("1")
+fn strict(service: &str) -> bool {
+    dbstudio_core::testing::it_strict_for(service)
 }
 
 fn port(var: &str, default: u16) -> u16 {
@@ -156,7 +156,7 @@ async fn mongo_connect(replica: bool) -> Option<(ConnectionConfig, Arc<dyn Sessi
         .await
     {
         Ok(s) => Some((cfg, Arc::from(s))),
-        Err(e) if strict() => panic!("{name} is not reachable: {e}"),
+        Err(e) if strict(name) => panic!("{name} is not reachable: {e}"),
         Err(e) => {
             eprintln!("skipping {name}: {e}");
             None
@@ -505,7 +505,7 @@ async fn redis_connect(
         .await
     {
         Ok(s) => Some((cfg, Arc::from(s))),
-        Err(e) if strict() => panic!("{name} is not reachable: {e}"),
+        Err(e) if strict(name) => panic!("{name} is not reachable: {e}"),
         Err(e) => {
             eprintln!("skipping {name}: {e}");
             None

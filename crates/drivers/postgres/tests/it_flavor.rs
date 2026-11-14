@@ -3,7 +3,7 @@
 //! (`yugabyte`, profile `heavy`, `DBSTUDIO_IT_YUGABYTE_PORT`, default 54333).
 //!
 //! Only run with `DBSTUDIO_IT=1`. A server that is not running makes its tests skip (pass) unless
-//! `DBSTUDIO_IT_STRICT=1`, which turns that into a failure.
+//! `DBSTUDIO_IT_STRICT` naming the service (or `1`), which turns that into a failure.
 //!
 //! Features that a flavour does not have are skipped inside the tests with the reason printed
 //! (`SKIP <test>: <why>`).
@@ -80,7 +80,7 @@ fn run_on(server: Server, test: &str) -> bool {
         return false;
     }
     if !is_up(server) {
-        if std::env::var("DBSTUDIO_IT_STRICT").as_deref() == Ok("1") {
+        if dbstudio_core::testing::it_strict_for(server.name()) {
             panic!(
                 "{test}: {} is not running (DBSTUDIO_IT_STRICT=1)",
                 server.name()

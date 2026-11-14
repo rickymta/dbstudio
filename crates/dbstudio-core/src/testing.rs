@@ -93,6 +93,24 @@ pub fn write_or_check(group: &str, samples: &Value) {
     );
 }
 
+/// Whether a missing integration-test service must fail the test instead of skipping it.
+///
+/// `DBSTUDIO_IT_STRICT` is `1` / `all` (every service is strict) or a comma-separated list of
+/// service names as in `docker/compose.test.yml` (for example `scylla,cassandra5,sshd`); names are
+/// compared case-insensitively. Unset, empty or `0` means nothing is strict.
+pub fn it_strict_for(service: &str) -> bool {
+    let Ok(value) = std::env::var("DBSTUDIO_IT_STRICT") else {
+        return false;
+    };
+    let value = value.trim();
+    if value == "1" || value.eq_ignore_ascii_case("all") {
+        return true;
+    }
+    value
+        .split(',')
+        .any(|name| !name.trim().is_empty() && name.trim().eq_ignore_ascii_case(service))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

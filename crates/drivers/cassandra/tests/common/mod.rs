@@ -41,8 +41,8 @@ pub fn enabled() -> bool {
     std::env::var("DBSTUDIO_IT").is_ok_and(|v| v == "1")
 }
 
-fn strict() -> bool {
-    std::env::var("DBSTUDIO_IT_STRICT").is_ok_and(|v| v == "1")
+fn strict(s: Server) -> bool {
+    dbstudio_core::testing::it_strict_for(s.name)
 }
 
 pub fn port_of(s: Server) -> u16 {
@@ -69,7 +69,7 @@ pub fn probe(s: Server, port: u16) -> bool {
         return true;
     }
     assert!(
-        !strict(),
+        !strict(s),
         "{} is not reachable on 127.0.0.1:{port} (DBSTUDIO_IT_STRICT=1)",
         s.name
     );

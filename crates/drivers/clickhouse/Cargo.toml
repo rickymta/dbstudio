@@ -27,6 +27,7 @@ bytes = "1"
 base64.workspace = true
 
 [dev-dependencies]
+dbstudio-core = { workspace = true, features = ["testing"] }
 dbstudio-plan.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 

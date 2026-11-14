@@ -629,7 +629,7 @@ async fn tunnel_to_redis7() -> Option<dbstudio_ssh::Tunnel> {
     .await;
     if !matches!(probe, Ok(Ok(_))) {
         assert!(
-            std::env::var("DBSTUDIO_IT_STRICT").map_or(true, |v| v != "1"),
+            !dbstudio_core::testing::it_strict_for("sshd"),
             "sshd is not running"
         );
         eprintln!("skip: sshd is not running on 127.0.0.1:{port}");

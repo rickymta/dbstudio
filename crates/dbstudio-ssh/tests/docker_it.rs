@@ -148,7 +148,7 @@ async fn tunnel_reaches_mssql_when_it_runs() {
         return;
     }
     // MSSQL is not always up (2 GB): probe the published port first and skip when it is closed,
-    // unless `DBSTUDIO_IT_STRICT=1` (CI), where a missing container is a failure.
+    // unless `DBSTUDIO_IT_STRICT` names `mssql2022` (or is `1`, CI), where a missing container is a failure.
     let port: u16 = std::env::var("DBSTUDIO_IT_MSSQL_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
@@ -159,7 +159,7 @@ async fn tunnel_reaches_mssql_when_it_runs() {
     )
     .await;
     if !matches!(probe, Ok(Ok(_))) {
-        if std::env::var("DBSTUDIO_IT_STRICT").is_ok_and(|v| v == "1") {
+        if dbstudio_core::testing::it_strict_for("mssql2022") {
             panic!("mssql2022 is not reachable on 127.0.0.1:{port} (DBSTUDIO_IT_STRICT=1)");
         }
         eprintln!("skip: mssql2022 is not running on 127.0.0.1:{port}");

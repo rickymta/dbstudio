@@ -35,8 +35,6 @@ jobs:
             librsvg2-dev libxdo-dev libssl-dev build-essential curl wget file
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -57,19 +55,18 @@ jobs:
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # The Cassandra / ScyllaDB and ClickHouse drivers are behind features that are not default yet.
+      # Also lint with every optional feature switched on (dev-bridge and friends).
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
-      - run: cargo test -p dbstudio-driver-cassandra -p dbstudio-driver-clickhouse
-      - run: cargo check -p dbstudio -p dbstudio-cli --features cassandra,clickhouse
       # Keep the debug-only dev bridge feature compiling and tested.
       - run: cargo clippy -p dbstudio --features dev-bridge --all-targets -- -D warnings
       - run: cargo test -p dbstudio --features dev-bridge
 
   # Integration tests, one matrix entry per group of services so the CI machine never runs every
   # database at once (see docker/compose.test.yml: new services live in profiles and a profile is
-  # started by naming its services). DBSTUDIO_IT_STRICT=1 turns "container not reachable" into a
-  # failure instead of a skip. `heavy` and `extra` run weekly in `integration-extra`.
+  # started by naming its services). DBSTUDIO_IT_STRICT lists the services of the group (names as in
+  # the compose file): a missing container of a listed service fails instead of skipping, tests of
+  # other services still skip. `heavy` and `extra` run weekly in `integration-extra`.
   integration:
     name: Integration tests (${{ matrix.group }})
     runs-on: ubuntu-latest
@@ -83,26 +80,38 @@ jobs:
           - group: core
             services: ''
             profile: ''
-            test: cargo test --workspace
+            strict: pg16,pg12,mysql8,mariadb,mariadb104,mysql57,mssql2022,oraclefree,mongo44,mongo7,redis6,redis7,valkey8,sshd
+            test: cargo test --workspace -- --test-threads=2
             oracle: true
           # CQL: ScyllaDB (+TLS) and Cassandra 5.
           - group: wide
             services: scylla cassandra5 sshd
             profile: wide
-            test: cargo test -p dbstudio-driver-cassandra -p dbstudio-ssh
+            strict: scylla,cassandra5,sshd
+            test: |
+              cargo test -p dbstudio-driver-cassandra -- --test-threads=2
+              cargo test -p dbstudio-export --test it_newdb -- scylla cassandra5 --test-threads=2
+              cargo test -p dbstudio-backup --test it_newdb -- scylla cassandra5 --test-threads=2
           # ClickHouse 26.3 (HTTP + HTTPS).
           - group: analytics
             services: clickhouse26 sshd
             profile: analytics
-            test: cargo test -p dbstudio-driver-clickhouse -p dbstudio-ssh
-          # CockroachDB and TiDB: the flavour tests live in the PostgreSQL / MySQL driver crates and
-          # carry the flavour in their names.
+            strict: clickhouse26,sshd
+            test: |
+              cargo test -p dbstudio-driver-clickhouse -- --test-threads=2
+              cargo test -p dbstudio-export --test it_newdb -- clickhouse --test-threads=2
+              cargo test -p dbstudio-backup --test it_newdb -- clickhouse --test-threads=2
+          # CockroachDB and TiDB: the flavour tests live in the PostgreSQL / MySQL driver crates
+          # (test targets `it_flavor` / `it_tidb`).
           - group: newsql
             services: cockroach tidb sshd
             profile: newsql
+            strict: cockroach,tidb,sshd
             test: |
-              cargo test -p dbstudio-driver-postgres -- cockroach
-              cargo test -p dbstudio-driver-mysql -- tidb
+              cargo test -p dbstudio-driver-postgres --test it_flavor -- --test-threads=2
+              cargo test -p dbstudio-driver-mysql --test it_tidb -- --test-threads=2
+              cargo test -p dbstudio-export --test it_newdb -- cockroach tidb --test-threads=2
+              cargo test -p dbstudio-backup --test it_newdb -- cockroach tidb --test-threads=2
     steps:
       - uses: actions/checkout@v4
 
@@ -113,8 +122,6 @@ jobs:
             librsvg2-dev libxdo-dev libssl-dev build-essential curl wget file
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -147,7 +154,7 @@ jobs:
       - name: Run integration tests
         env:
           DBSTUDIO_IT: '1'
-          DBSTUDIO_IT_STRICT: '1'
+          DBSTUDIO_IT_STRICT: ${{ matrix.strict }}
           DBSTUDIO_IT_MSSQL_PORT: '14333'
           DBSTUDIO_IT_ORACLE_PORT: '15213'
           DBSTUDIO_IT_MONGO44_PORT: '27044'
@@ -193,12 +200,17 @@ jobs:
         include:
           - group: heavy
             services: yugabyte sshd
-            test: cargo test -p dbstudio-driver-postgres -- yugabyte
+            strict: yugabyte,sshd
+            test: |
+              cargo test -p dbstudio-driver-postgres --test it_flavor -- --test-threads=1
+              cargo test -p dbstudio-export --test it_newdb -- yugabyte --test-threads=2
+              cargo test -p dbstudio-backup --test it_newdb -- yugabyte --test-threads=2
           - group: extra
             services: cassandra41 scylla62 clickhouse23 sshd
+            strict: cassandra41,scylla62,clickhouse23,sshd
             test: |
-              cargo test -p dbstudio-driver-cassandra -- cassandra41 scylla62
-              cargo test -p dbstudio-driver-clickhouse -- clickhouse23
+              cargo test -p dbstudio-driver-cassandra -- --test-threads=2
+              cargo test -p dbstudio-driver-clickhouse -- --test-threads=2
     steps:
       - uses: actions/checkout@v4
 
@@ -209,8 +221,6 @@ jobs:
             librsvg2-dev libxdo-dev libssl-dev build-essential curl wget file
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -238,7 +248,7 @@ jobs:
       - name: Run integration tests
         env:
           DBSTUDIO_IT: '1'
-          DBSTUDIO_IT_STRICT: '1'
+          DBSTUDIO_IT_STRICT: ${{ matrix.strict }}
           DBSTUDIO_IT_SSH_PORT: '22022'
           DBSTUDIO_IT_YUGABYTE_PORT: '54333'
           DBSTUDIO_IT_CASSANDRA41_PORT: '19041'

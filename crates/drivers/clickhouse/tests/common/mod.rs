@@ -18,8 +18,15 @@ pub fn it_enabled() -> bool {
     std::env::var("DBSTUDIO_IT").is_ok_and(|v| v == "1")
 }
 
-fn strict() -> bool {
-    std::env::var("DBSTUDIO_IT_STRICT").is_ok_and(|v| v == "1")
+/// Strict mode for the service serving `port` (`clickhouse23` on the old-version port, else
+/// `clickhouse26`).
+fn strict(port: u16) -> bool {
+    let service = if port == old_port() {
+        "clickhouse23"
+    } else {
+        "clickhouse26"
+    };
+    dbstudio_core::testing::it_strict_for(service)
 }
 
 fn env_port(name: &str, default: u16) -> u16 {
@@ -81,7 +88,7 @@ pub async fn session_on(port: u16) -> Option<Arc<dyn Session>> {
     match connect_cfg(&config(port)).await {
         Ok(s) => Some(Arc::from(s)),
         Err(e) => {
-            if strict() {
+            if strict(port) {
                 panic!("ClickHouse on port {port} is required (DBSTUDIO_IT_STRICT=1): {e}");
             }
             eprintln!("skip: ClickHouse on port {port} is not reachable: {e}");

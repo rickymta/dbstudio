@@ -62,7 +62,7 @@ async fn connect(db: Option<&str>) -> Option<(ConnectionConfig, Arc<dyn Session>
         .await
     {
         Ok(s) => Some((cfg, Arc::from(s))),
-        Err(e) if std::env::var("DBSTUDIO_IT_STRICT").as_deref() == Ok("1") => {
+        Err(e) if dbstudio_core::testing::it_strict_for("mssql2022") => {
             panic!("mssql2022 is not reachable: {e}")
         }
         Err(e) => {
