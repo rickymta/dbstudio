@@ -123,11 +123,12 @@ jobs:
               cargo test -p dbstudio-backup --test it_newdb -- cockroach tidb --test-threads=2
           # SQL debugger: PostgreSQL 16 + pldebugger (image built from docker/pg16dbg). Tests of
           # the routine debugger carry `pgdbg` in their names.
+          # SQL debugger: routine debugging on pg16dbg (pldebugger) + script debugging on pg16 / mysql8.
           - group: debug
-            services: pg16dbg
+            services: pg16dbg pg16 mysql8
             profile: debug
-            strict: pg16dbg
-            test: cargo test -p dbstudio-debug -- pgdbg --test-threads=2
+            strict: pg16dbg,pg16,mysql8
+            test: cargo test -p dbstudio-debug -- --test-threads=2
     steps:
       - uses: actions/checkout@v5
 
