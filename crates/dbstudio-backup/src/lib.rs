@@ -20,6 +20,9 @@ pub mod container;
 pub mod crypto;
 pub mod logical;
 pub mod native;
+mod nosql;
+pub mod notify;
+mod partial;
 pub mod runner;
 pub mod scheduler;
 

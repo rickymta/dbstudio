@@ -502,6 +502,12 @@ pub async fn inspect(path: &Path, passphrase: Option<&Secret>) -> Result<BackupI
             Some(container::read_preamble(&path, pass.as_ref())?)
         };
         let native = header.native;
+        // Objects for the partial restore: only files with markers (format 3) list them.
+        let objects: Vec<crate::BackupObject> = preamble
+            .as_ref()
+            .filter(|p| p["formatVersion"].as_u64().unwrap_or(1) >= 3)
+            .and_then(|p| serde_json::from_value(p["objects"].clone()).ok())
+            .unwrap_or_default();
         let mut header_json =
             serde_json::to_value(&header).map_err(|e| Error::Other(e.to_string()))?;
         // The summary is returned as `preamble`; do not send it twice.
@@ -513,8 +519,7 @@ pub async fn inspect(path: &Path, passphrase: Option<&Secret>) -> Result<BackupI
             preamble,
             encrypted,
             native,
-            // Filled in by package B once logical backups carry `formatVersion: 3` markers.
-            objects: Vec::new(),
+            objects,
         })
     })
     .await
@@ -575,7 +580,7 @@ pub async fn run_restore(
     .await?;
     logical::check_supported(&scanned.preamble)?;
     match scanned.header.native {
-        None => logical::restore(&ctx.session, &scanned, spec, reporter.as_ref()).await,
+        None => logical::restore(&ctx.session, &scanned, spec, &reporter).await,
         Some(tool) => native_restore(&ctx, &scanned, tool, spec, work.path()).await,
     }
 }
