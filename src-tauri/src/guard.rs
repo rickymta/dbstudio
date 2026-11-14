@@ -251,6 +251,13 @@ fn scan_tokens(dialect: ScriptDialect, text: &str) -> Vec<Tok> {
     let clickhouse = matches!(dialect, ScriptDialect::ClickHouse);
     let cql = matches!(dialect, ScriptDialect::Cql);
     let hash_comment = mysql || clickhouse;
+    let ansi_quotes = matches!(
+        dialect,
+        ScriptDialect::MySql {
+            ansi_quotes: true,
+            ..
+        }
+    );
     let backslash = match dialect {
         ScriptDialect::MySql {
             backslash_escapes, ..
@@ -266,7 +273,11 @@ fn scan_tokens(dialect: ScriptDialect, text: &str) -> Vec<Tok> {
             '\'' | '"' | '`' => {
                 i += 1;
                 while i < n {
-                    if chars[i] == '\\' && backslash && (c != '`' || clickhouse) {
+                    if chars[i] == '\\'
+                        && backslash
+                        && (c != '`' || clickhouse)
+                        && !(c == '"' && ansi_quotes)
+                    {
                         i += 2;
                         continue;
                     }
@@ -308,9 +319,23 @@ fn scan_tokens(dialect: ScriptDialect, text: &str) -> Vec<Tok> {
             }
             '*' if mysql && i + 1 < n && chars[i + 1] == '/' => i += 2,
             '/' if i + 1 < n && chars[i + 1] == '*' => {
+                // ClickHouse (like PostgreSQL) nests block comments: `/* /* */ DROP */`.
+                let nests = clickhouse || matches!(dialect, ScriptDialect::Postgres);
+                let mut depth = 1usize;
                 i += 2;
-                while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
-                    i += 1;
+                while i + 1 < n {
+                    if nests && chars[i] == '/' && chars[i + 1] == '*' {
+                        depth += 1;
+                        i += 2;
+                    } else if chars[i] == '*' && chars[i + 1] == '/' {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
                 }
                 i += 2;
             }
@@ -482,9 +507,11 @@ fn split_ambiguity(dialect: ScriptDialect, text: &str) -> Option<String> {
                 .to_string(),
         );
     }
+    // `PREPARE ... FROM '...'` / `EXECUTE` can change the mode from inside a literal, so they
+    // count like an explicit `SET sql_mode`.
     let changes_mode = scan_tokens(dialect, text)
         .iter()
-        .any(|t| t.word == "SQL_MODE");
+        .any(|t| matches!(t.word.as_str(), "SQL_MODE" | "PREPARE" | "EXECUTE"));
     if changes_mode {
         for (b, a) in [(true, false), (true, true), (false, false), (false, true)] {
             if (b, a) != (backslash_escapes, ansi_quotes)
@@ -1369,6 +1396,57 @@ mod tests {
         assert!(run_guard(&t, &i).is_err());
         // The same mode switch with plain text is fine.
         i.text = "SET sql_mode='ANSI_QUOTES'; SELECT \"a\" FROM t";
+        run_guard(&t, &i).unwrap();
+    }
+
+    #[test]
+    fn clickhouse_nested_comments_do_not_hide_keywords() {
+        let words =
+            |d, t: &str| -> Vec<String> { scan_tokens(d, t).into_iter().map(|x| x.word).collect() };
+        let ch = ScriptDialect::ClickHouse;
+        assert_eq!(
+            words(ch, "/* /* */ SELECT ' */ DROP TABLE t -- '"),
+            ["DROP", "TABLE", "T"]
+        );
+        assert_eq!(words(ch, "/* /* */ DROP */ SELECT 1"), ["SELECT"]);
+        let text = "/* /* */ SELECT ' */ DROP TABLE t -- '";
+        let a = analysis(vec![stmt(
+            0,
+            0,
+            text.chars().count() as u32,
+            StatementClass::Unknown,
+            None,
+        )]);
+        assert!(!production_fallback(ch, &a, text).is_empty());
+    }
+
+    #[test]
+    fn ansi_quotes_scan_has_no_backslash_escape_in_identifiers() {
+        let words =
+            |d, t: &str| -> Vec<String> { scan_tokens(d, t).into_iter().map(|x| x.word).collect() };
+        let text = "select \"a\\\" drop table t; --\"";
+        let my = ScriptDialect::mysql(false, true);
+        let ansi = ScriptDialect::MySql {
+            mariadb: false,
+            backslash_escapes: true,
+            ansi_quotes: true,
+        };
+        assert_eq!(words(my, text), ["SELECT"]);
+        assert_eq!(words(ansi, text), ["SELECT", "DROP", "TABLE", "T", ";"]);
+    }
+
+    #[test]
+    fn prepare_from_a_literal_counts_as_a_mode_change() {
+        let (t, _) = tokens();
+        let mut i = input(
+            "PREPARE s FROM 'SET sql_mode=''ANSI_QUOTES'''; EXECUTE s; SELECT \"a\\\"; DROP TABLE t; -- \"",
+            false,
+            false,
+            None,
+        );
+        i.dialect = ScriptDialect::mysql(false, true);
+        assert!(run_guard(&t, &i).is_err());
+        i.text = "PREPARE s FROM 'SELECT 1'; EXECUTE s";
         run_guard(&t, &i).unwrap();
     }
 }

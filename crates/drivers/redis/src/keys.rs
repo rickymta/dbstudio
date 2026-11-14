@@ -1,12 +1,13 @@
 //! Reading one key: type, TTL, metadata and a page of its entries.
 
 use dbstudio_core::{
-    Error, KeyEntries, KeyReadRequest, KeyValuePage, ObjectKind, Result, StreamEntry, Value,
-    decode_key_name,
+    Error, KeyEntries, KeyReadRequest, KeyScanPage, KeyScanRequest, KeyValuePage, ObjectKind,
+    Result, StreamEntry, Value, decode_key_name, encode_key_name,
 };
 
 use crate::conn::Shared;
 use crate::convert::{bytes_value, reply_bytes, reply_text, trim_partial_utf8};
+use crate::put::is_temp_key;
 use crate::tree::db_of;
 
 const DEFAULT_MAX_STRING: u64 = 1024 * 1024;
@@ -260,6 +261,74 @@ impl Shared {
             encoding,
             entries,
             next_cursor,
+        })
+    }
+
+    /// One page of raw key names: `SCAN cursor [MATCH p] COUNT n [TYPE t]` (the cursor is the
+    /// server cursor, `None` at the end). A page may be empty while the scan goes on, and a key
+    /// can appear on more than one page (inherent to `SCAN`). Temporary keys of an unfinished
+    /// `KeyChange::Put` (name contains `.__dbstudio_tmp.`) are left out. `TYPE` needs Redis 6;
+    /// older servers reject it and the filter is applied here with one `TYPE` per key.
+    pub async fn scan_keys(&self, req: KeyScanRequest) -> Result<KeyScanPage> {
+        let db = db_of(&req.database, self.default_db)?;
+        let type_filter = req.type_filter.as_deref().filter(|t| !t.is_empty());
+        let build = |with_type: bool| {
+            let mut cmd = redis::cmd("SCAN");
+            cmd.arg(
+                req.cursor
+                    .as_deref()
+                    .filter(|c| !c.is_empty())
+                    .unwrap_or("0"),
+            );
+            if let Some(p) = req
+                .pattern
+                .as_deref()
+                .filter(|p| !p.is_empty() && *p != "*")
+            {
+                cmd.arg("MATCH").arg(p);
+            }
+            cmd.arg("COUNT").arg(req.count.clamp(1, 10_000));
+            if let (true, Some(t)) = (with_type, type_filter) {
+                cmd.arg("TYPE").arg(t);
+            }
+            cmd
+        };
+        let mut client_filter = false;
+        let first = self
+            .run::<(String, Vec<Vec<u8>>)>(db, &build(type_filter.is_some()))
+            .await;
+        let (next, mut keys) = match first {
+            Ok(page) => page,
+            Err(Error::Query { message, .. })
+                if type_filter.is_some() && message.to_ascii_lowercase().contains("syntax") =>
+            {
+                client_filter = true;
+                self.run(db, &build(false)).await?
+            }
+            Err(e) => return Err(e),
+        };
+        keys.retain(|k| !is_temp_key(k));
+        if client_filter {
+            let wanted = type_filter.unwrap_or_default();
+            let mut pipe = redis::pipe();
+            for k in &keys {
+                pipe.cmd("TYPE").arg(k.as_slice());
+            }
+            let types: Vec<String> = if keys.is_empty() {
+                Vec::new()
+            } else {
+                self.run_pipe(db, &pipe).await?
+            };
+            keys = keys
+                .into_iter()
+                .zip(types)
+                .filter(|(_, t)| t == wanted)
+                .map(|(k, _)| k)
+                .collect();
+        }
+        Ok(KeyScanPage {
+            keys: keys.iter().map(|k| encode_key_name(k)).collect(),
+            next_cursor: (next != "0").then_some(next),
         })
     }
 

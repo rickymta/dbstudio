@@ -151,7 +151,27 @@ fn tidb_batch_dml_and_admin_statements() {
     );
     assert_eq!(cls(MY, "SET CONFIG tikv `x` = 1"), (C::Admin, None));
     assert_eq!(cls(MY, "SET @a = 1"), (C::Session, None));
-    assert_eq!(cls(MY, "FLASHBACK TABLE t TO t2").0, C::Ddl,);
+    for sql in [
+        "FLASHBACK TABLE t TO t2",
+        "FLASHBACK DATABASE d TO d2",
+        "FLASHBACK CLUSTER TO TIMESTAMP '2024-01-01 00:00:00'",
+    ] {
+        assert_eq!(cls(MY, sql), (C::Admin, Some(D::Drop)), "{sql}");
+    }
+}
+
+#[test]
+fn mariadb_create_or_replace_table_drops() {
+    let maria = ScriptDialect::mysql(true, true);
+    assert_eq!(
+        cls(maria, "CREATE OR REPLACE TABLE t (a int)"),
+        (C::Ddl, Some(D::Drop))
+    );
+    assert_eq!(
+        cls(maria, "CREATE OR REPLACE VIEW v AS SELECT 1"),
+        (C::Ddl, None)
+    );
+    assert_eq!(cls(maria, "CREATE TABLE t (a int)"), (C::Ddl, None));
 }
 
 #[test]
@@ -183,6 +203,17 @@ fn cockroach_keywords() {
     );
     assert_eq!(cls(PG, "SET application_name = 'x'"), (C::Session, None));
     assert_eq!(cls(PG, "SHOW CLUSTER SETTING version"), (C::Read, None));
+    assert_eq!(cls(PG, "RESET CLUSTER SETTING x"), (C::Admin, None));
+    assert_eq!(cls(PG, "RESET application_name"), (C::Session, None));
+    assert_eq!(
+        cls(PG, "SELECT crdb_internal.unsafe_delete_range(1, 2)"),
+        (C::Admin, None)
+    );
+    assert_eq!(
+        cls(PG, "SELECT crdb_internal.unsafe_upsert_descriptor(1, 'x')").0,
+        C::Admin
+    );
+    assert_eq!(cls(PG, "SELECT * FROM crdb_internal.tables").0, C::Read);
     // `UPSERT ... ` inside ordinary text does not matter; destructive keywords still do
     assert_eq!(cls(PG, "DROP TABLE t"), (C::Ddl, Some(D::Drop)));
 }

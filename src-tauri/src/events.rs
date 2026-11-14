@@ -55,8 +55,13 @@ pub struct SessionStateEvent {
     pub attempt: u32,
     /// The error that caused the state (a serialized `dbstudio_core::Error`), if any.
     pub error: Option<Value>,
-    /// Leases that could not be reopened because a transaction was open.
+    /// Leases that could not be reopened because a transaction was open (or auto-commit was
+    /// off): they wait for `lease_reopen`.
     pub leases_broken: Vec<uuid::Uuid>,
+    /// Idle auto-commit leases that were reopened on the new connection under the same id.
+    /// Their session state (`SET`, temp tables, `search_path`) was lost.
+    #[serde(default)]
+    pub leases_reopened: Vec<uuid::Uuid>,
 }
 
 /// Capacity of the broadcast channel; slow subscribers lose the oldest events.
@@ -175,10 +180,12 @@ mod tests {
             attempt: 5,
             error: Some(json!({"kind": "connection", "message": "refused"})),
             leases_broken: vec![],
+            leases_reopened: vec![],
         };
         let v = serde_json::to_value(&event).unwrap();
         assert_eq!(v["state"], "gaveUp");
         assert_eq!(v["leasesBroken"], json!([]));
+        assert_eq!(v["leasesReopened"], json!([]));
         assert_eq!(v["error"]["kind"], "connection");
         assert_eq!(SESSION_STATE, "session://state");
     }

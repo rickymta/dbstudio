@@ -295,8 +295,10 @@ export interface SessionStateEvent {
   attempt: number;
   /** The error behind the state, if any. */
   error: IpcError | null;
-  /** Leases that could not be reopened because a transaction was open. */
+  /** Leases that could not be reopened (transaction in flight, auto-commit off): `lease_reopen`. */
   leasesBroken: Uuid[];
+  /** Idle auto-commit leases reopened under the same id; their SET / temp tables / search_path are gone. */
+  leasesReopened: Uuid[];
 }
 
 // ---------------------------------------------------------------------------------------------

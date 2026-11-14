@@ -6,7 +6,13 @@ pub(crate) async fn decode<R>(src: &mut R, len: usize) -> crate::Result<ColumnDa
 where
     R: SqlReadBytes + Unpin,
 {
-    let data = super::plp::decode(src, len).await?.map(Cow::from);
+    // DBStudio patch: honour the per-request PLP byte limit.
+    let limit = src.context().plp_limit();
+    let (data, truncated) = super::plp::decode_limited(src, len, limit).await?;
+    if let Some(total) = truncated {
+        src.context_mut().note_plp_truncated(total);
+    }
+    let data = data.map(Cow::from);
 
     Ok(ColumnData::Binary(data))
 }

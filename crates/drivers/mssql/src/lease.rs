@@ -607,7 +607,7 @@ impl Lease for MssqlLease {
         let mut inner = self.inner.try_lock().map_err(|_| Self::busy())?;
         let conn = self.idle(&mut inner).await?;
         let info = crate::data::load_table_info(conn, &obj).await;
-        let sql = crate::data::stream_sql(&obj, &req, &info, conn.lob_limit)?;
+        let sql = crate::data::stream_sql(&obj, &req, &info)?;
         let params = RunParams {
             max_rows: None,
             batch_size: req
@@ -616,6 +616,8 @@ impl Lease for MssqlLease {
                 .unwrap_or(DEFAULT_BATCH)
                 .clamp(1, 100_000),
             timeout: None,
+            // Export/backup read: large values must arrive whole.
+            full_lob: true,
         };
         self.start_run(&mut inner, req.query_id, sql, params, sink)
             .await
@@ -797,6 +799,7 @@ async fn bulk_on(
             max_rows: None,
             batch_size: 1000,
             timeout: None,
+            full_lob: false,
         };
         for (sql, reports) in &stmts {
             let mut sink = dbstudio_core::CollectingSink::new();

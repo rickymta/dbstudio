@@ -496,7 +496,7 @@ async fn large_values_are_limited_when_reading_tables() {
     assert_eq!(rs.rows[0][col("s")], Value::Text("short".into()));
     assert_eq!(rs.rows[1][col("t")], Value::Text("tiny".into()));
     assert_eq!(rs.rows[1][col("b")], Value::Bytes(vec![1, 2]));
-    // The same limit applies to export streaming.
+    // Export streaming reads large values whole (the limit is for interactive reads only).
     let l = s.open_lease(LeaseOptions::default()).await.unwrap();
     let mut sink = CollectingSink::new();
     l.stream_table(
@@ -515,7 +515,7 @@ async fn large_values_are_limited_when_reading_tables() {
     .unwrap();
     let res = sink.into_results();
     let rs = rows_of(&res[0]);
-    assert!(matches!(&rs.rows[0][1], Value::Ext(e) if e.ty == "truncatedText"));
+    assert!(matches!(&rs.rows[0][1], Value::Text(t) if *t == "é".repeat(20000)));
     assert_eq!(rs.rows[1][1], Value::Text("tiny".into()));
     l.close().await.unwrap();
 }

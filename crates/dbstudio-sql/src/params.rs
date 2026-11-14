@@ -318,10 +318,11 @@ fn find_params_chars(d: ScriptDialect, chars: &[char]) -> Vec<ParamRef> {
                     range(x.start, nx.end),
                 ));
             }
-            (
-                TokenKind::Punct,
-                ScriptDialect::MySql { .. } | ScriptDialect::Cql | ScriptDialect::ClickHouse,
-            ) if x.text == "?" => {
+            // ClickHouse has the ternary operator `a ? b : c`, so a bare `?` is never a
+            // parameter there: use `:name` (or the server's own `{name:Type}`, left as is).
+            (TokenKind::Punct, ScriptDialect::MySql { .. } | ScriptDialect::Cql)
+                if x.text == "?" =>
+            {
                 question += 1;
                 found.push((
                     format!("?{question}"),

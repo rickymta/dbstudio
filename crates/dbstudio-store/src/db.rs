@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::model::{ConnectionGroup, ConnectionProfile, ConnectionsSnapshot};
 use crate::settings::AppSettings;
-use crate::validate::{validate_group, validate_profile};
+use crate::validate::{normalize_profile, validate_group, validate_profile};
 
 /// Schema migrations. Entry `i` upgrades the database from version `i` to `i + 1`; the version
 /// is tracked in `PRAGMA user_version`. Never edit an existing entry: append a new one.
@@ -456,6 +456,7 @@ impl Store {
         let mut profile = profile.clone();
         // An empty color means "no color".
         profile.color = profile.color.filter(|c| !c.is_empty());
+        normalize_profile(&mut profile);
         validate_profile(&profile)?;
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(db_err)?;
@@ -1185,6 +1186,24 @@ mod tests {
                 .environment_label,
             None
         );
+    }
+
+    #[test]
+    fn environment_label_is_trimmed_and_limited() {
+        let s = Store::open_in_memory().unwrap();
+        let mut p = profile("lbl");
+        p.config.environment_label = Some("  QA-3  ".into());
+        let saved = s.save_profile(&p).unwrap();
+        assert_eq!(saved.config.environment_label.as_deref(), Some("QA-3"));
+        p.config.environment_label = Some("   ".into());
+        let saved = s.save_profile(&p).unwrap();
+        assert_eq!(saved.config.environment_label, None);
+        p.config.environment_label = Some("x".repeat(32));
+        s.save_profile(&p).unwrap();
+        p.config.environment_label = Some("x".repeat(33));
+        assert!(matches!(s.save_profile(&p), Err(Error::Invalid(_))));
+        p.config.environment_label = Some("a\nb".into());
+        assert!(matches!(s.save_profile(&p), Err(Error::Invalid(_))));
     }
 
     #[test]
