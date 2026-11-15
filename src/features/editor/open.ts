@@ -13,6 +13,8 @@ export interface OpenEditorOptions {
   /** Context to use instead of the one derived from `path`. */
   database?: string | null;
   schema?: string | null;
+  /** Tab title instead of "Query n". */
+  title?: string;
 }
 
 /** Editor language of a session's script dialect. */
@@ -70,6 +72,14 @@ export function nextEditorTitle(): string {
   return title;
 }
 
+/** `base`, or `base (2)`, `base (3)`... when an open editor already carries that title. */
+export function uniqueEditorTitle(base: string): string {
+  const used = openEditorTitles();
+  let title = base;
+  for (let n = 2; used.has(title); n++) title = `${base} (${n})`;
+  return title;
+}
+
 /** Register a new editor: its state, close guard and tab. Returns the id of the editor state. */
 export function addEditorTab(
   payload: EditorTabPayload,
@@ -107,7 +117,7 @@ export function openEditor(session: SessionInfo, options: OpenEditorOptions = {}
       mode: editorModeOf(session),
     },
     {
-      title: nextEditorTitle(),
+      title: options.title ?? nextEditorTitle(),
       text,
       cursor: text.length,
       selection: { from: text.length, to: text.length },
