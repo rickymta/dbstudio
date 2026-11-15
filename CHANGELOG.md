@@ -2,6 +2,23 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.1.3 - 2026-11-15
+
+Thay đổi từ v0.1.2.
+
+- test(contract): fixture ColumnOrigin.alias (09684216)
+- fix(editor): chạy lại đúng statement, khoá NULL/LOB bị cắt không sửa, huỷ cursor sau khi lưu, giữ edit khi huỷ đóng tab (0cb907c4)
+- fix(edit): self-join/derived không sửa được (alias + chỉ giữ origin cho SELECT một bảng), ghi lại database lúc chạy, resolve schema SQL Server, kiểm số dòng KHỚP trong lease, validate chung, rollback savepoint báo lỗi, auto-commit áp dụng trên lease (1cb0d934)
+- style(test): assert! thay assert_eq! với bool (clippy 1.100) (a3925fc7)
+- feat(connection): nhận chuỗi JDBC ở ô Connection URI (Oracle thin, PostgreSQL, MySQL/MariaDB, SQL Server, ClickHouse) (5f31e7b0)
+- test(editor): kiểm thử sửa dữ liệu trên lưới kết quả (Vitest) (7b257af6)
+- feat(editor): sửa dữ liệu ngay trên lưới kết quả query (Sửa, thêm/xoá/nhân bản dòng, hoàn tác, xem trước, lưu trong transaction của tab) (eadb678b)
+- refactor(edit): tách EditToolbar/EditTarget dùng chung cho màn bảng và kết quả query; thêm hoàn tác theo dòng (1c51e334)
+- feat(edit): command result_editability, changes_apply nhận lease_id (áp dụng trong transaction của tab) (d8b2814b)
+- feat(pg): điền nguồn gốc cột kết quả từ table_oid/column_id (một truy vấn catalog cho cả result) (da722cd1)
+- feat(sql): phân tích tĩnh SELECT đơn giản để suy ra nguồn gốc cột (SQL Server, Oracle, CQL, ClickHouse) (d543746f)
+- feat(core): thêm ColumnOrigin vào ColumnMeta (nguồn gốc cột kết quả) (f5d1dd0f)
+
 ## v0.1.2 - 2026-11-15
 
 Thay đổi từ v0.1.1. Bản v0.1.1 không được phát hành (dừng ở bước test), nên bản này gồm cả các
