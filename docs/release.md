@@ -1,11 +1,12 @@
 # Phát hành DBStudio
 
 Bản phát hành được CI (`.github/workflows/release.yml`) tự build và đăng lên GitHub Releases khi có tag
-`vX.Y.Z` (hoặc `vX.Y.Z-beta.1`) được push. Không có bước nào tự chạy khi merge vào `develop`.
+`vX.Y.Z` (hoặc `vX.Y.Z-beta.1`) nằm trên nhánh `master` được push. CI (`ci.yml`) chỉ chạy khi push lên
+`master` và với pull request; push lên `develop` không chạy gì.
 
 ## Quy trình
 
-1. Trên `develop` (đã cập nhật, working tree sạch), chạy:
+1. Đưa `develop` lên `master` (fast-forward) rồi, trên `master` (đã cập nhật, working tree sạch), chạy:
 
    ```bash
    pnpm release patch          # hoặc minor | major | 1.2.3 | 1.3.0-beta.1
@@ -16,21 +17,25 @@ Bản phát hành được CI (`.github/workflows/release.yml`) tự build và �
    `Cargo.toml` (`[workspace.package]`); chạy `cargo update -w --offline` cho `Cargo.lock` (cần `cargo`
    trên PATH, nếu không sẽ cảnh báo); thêm mục mới vào `CHANGELOG.md` từ các commit kể từ tag trước;
    tạo commit `chore(release): vX.Y.Z` và tag annotated `vX.Y.Z`. Script từ chối chạy khi working tree
-   có thay đổi chưa commit, hoặc khi không ở nhánh `develop`/`master`/`main` (dùng
-   `--allow-branch <tên>` nếu cố ý). Script **không push**.
+   có thay đổi chưa commit, hoặc khi không ở nhánh `master` (dùng
+   `--allow-branch <tên>` nếu cố ý; workflow vẫn từ chối tag không nằm trên `master`). Script **không push**.
 
 2. Xem lại commit và `CHANGELOG.md` (sửa tay được, rồi `git commit --amend` và tạo lại tag nếu cần),
    sau đó push:
 
    ```bash
-   git push origin develop
+   git push origin master
    git push origin vX.Y.Z
    ```
 
-3. Workflow `Release` chạy ba job:
-   - `prepare`: kiểm version trong tag khớp cả 3 file (lệch thì fail, ghi rõ file nào), tạo GitHub Release
-     ở trạng thái **draft**. Release notes lấy từ mục `## vX.Y.Z` của `CHANGELOG.md`, không có thì
-     GitHub tự sinh. Tag có dấu `-` được đánh dấu prerelease.
+3. Workflow `Release` chạy theo thứ tự, job sau chỉ chạy khi job trước thành công:
+   - `prepare`: kiểm version trong tag khớp cả 3 file (lệch thì fail, ghi rõ file nào) và tag phải nằm trên
+     `master`.
+   - `test`: chạy **toàn bộ CI** (`ci.yml` qua `workflow_call`) trên đúng commit của tag: version-sync, lint,
+     test frontend, clippy, `cargo test` trên 3 hệ điều hành và integration test trên mọi nhóm DB. Có lỗi
+     thì dừng: không build, không tạo release.
+   - `draft`: tạo GitHub Release ở trạng thái **draft**. Release notes lấy từ mục `## vX.Y.Z` của
+     `CHANGELOG.md`, không có thì GitHub tự sinh. Tag có dấu `-` được đánh dấu prerelease.
    - `build` (song song): macOS Apple Silicon (`.dmg`), macOS Intel (`.dmg`), Windows x64 (`.msi`,
      `-setup.exe`), Linux x64 (`.deb`, `.rpm`, `.AppImage`, build trên Ubuntu 22.04 để glibc tương thích
      rộng). Tên file dạng `DBStudio_<version>_<nền-tảng>.<đuôi>`. Hai bản macOS được tách thay vì

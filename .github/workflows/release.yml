@@ -1,8 +1,11 @@
 name: Release
 
-# Phát hành khi đẩy tag vX.Y.Z (hoặc vX.Y.Z-beta.1). Chạy lại cho tag đã có: Actions > Release > Run workflow.
-# Luồng: prepare (kiểm version, tạo release DRAFT) -> build (4 nền tảng, upload vào draft)
-#        -> publish (SHA256SUMS.txt, chuyển draft thành published). Build lỗi thì release giữ nguyên DRAFT.
+# Phát hành khi đẩy tag vX.Y.Z (hoặc vX.Y.Z-beta.1) nằm trên nhánh master. Chạy lại cho tag đã có:
+# Actions > Release > Run workflow.
+# Luồng: prepare (kiểm tag + version, tag phải nằm trên master) -> test (toàn bộ CI: lint, unit, clippy,
+#        integration trên mọi nhóm DB) -> draft (tạo release DRAFT) -> build (4 nền tảng, upload vào draft)
+#        -> publish (SHA256SUMS.txt, chuyển draft thành published). Test lỗi thì không build, không tạo
+#        release; build lỗi thì release giữ nguyên DRAFT.
 on:
   push:
     tags: ['v*.*.*']
@@ -55,6 +58,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ steps.meta.outputs.tag }}
+          # Full history: the "tag must be on master" check walks the ancestry.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v5
         with:
@@ -68,11 +73,42 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
         run: node scripts/release.mjs --check "$VERSION"
 
-      - name: Create (or reset) draft release
+      - name: Tag must be on master
         env:
           TAG: ${{ steps.meta.outputs.tag }}
-          VERSION: ${{ steps.meta.outputs.version }}
-          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+        run: |
+          git fetch --no-tags origin master
+          if ! git merge-base --is-ancestor "refs/tags/$TAG" FETCH_HEAD; then
+            echo "::error::Tag $TAG không nằm trên nhánh master: chỉ phát hành từ master."
+            exit 1
+          fi
+
+  # Toàn bộ CI (cùng workflow với push lên master) trên đúng commit của tag. Không qua thì không build.
+  test:
+    name: Test
+    needs: prepare
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+  draft:
+    name: Create draft release
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      - name: Create (or reset) draft release
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           # Release notes: mục của version trong CHANGELOG.md nếu có, không thì tự sinh.
           notes_args=(--generate-notes)
@@ -96,7 +132,7 @@ jobs:
 
   build:
     name: Build (${{ matrix.label }})
-    needs: prepare
+    needs: [prepare, draft]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -242,7 +278,7 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [prepare, build]
+    needs: [prepare, draft, build]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}

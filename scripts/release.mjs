@@ -19,7 +19,8 @@ const FILES = {
 };
 const CHANGELOG = join(ROOT, 'CHANGELOG.md');
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
-const DEFAULT_BRANCHES = ['develop', 'master', 'main'];
+// Releases are cut from master only (CI runs on master; the release workflow refuses other tags).
+const DEFAULT_BRANCHES = ['master'];
 
 const die = (msg) => {
   console.error(`Lỗi: ${msg}`);

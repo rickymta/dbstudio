@@ -1,16 +1,25 @@
 name: CI
 
 on:
+  # CI runs on master (the release branch) and on pull requests into it; develop is not built.
   push:
-    branches: [main, master, develop]
+    branches: [master]
   pull_request:
   # Weekly run of the heavy / old-version service groups (`integration-extra`).
   schedule:
     - cron: '0 3 * * 1'
   workflow_dispatch:
+  # The release workflow runs the whole test suite first and only builds when it passes.
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Commit / tag to test (default: the ref of the event)'
+        required: false
+        type: string
+        default: ''
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -23,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -44,6 +55,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install Linux dependencies for Tauri 2
         if: matrix.os == 'ubuntu-latest'
@@ -150,6 +163,8 @@ jobs:
             test: cargo test -p dbstudio-debug -- --test-threads=2
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install Linux dependencies for Tauri 2
         run: |
@@ -248,7 +263,8 @@ jobs:
   # their IT suites are young, so it never blocks a merge.
   integration-extra:
     name: Integration tests (${{ matrix.group }}, weekly)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Not when the release workflow calls CI (github.workflow is then "Release").
+    if: github.workflow == 'CI' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     continue-on-error: true
     strategy:
@@ -270,6 +286,8 @@ jobs:
               cargo test -p dbstudio-driver-clickhouse -- --test-threads=2
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install Linux dependencies for Tauri 2
         run: |
