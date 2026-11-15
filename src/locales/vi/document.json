@@ -84,7 +84,7 @@
   },
   "uri": {
     "label": "URI kết nối",
-    "placeholder": "mongodb://user@host:27017/db",
+    "placeholder": "mongodb://user@host:27017/db hoặc jdbc:oracle:thin:@//host:1521/service",
     "parse": "Điền từ URI",
     "applied": "Đã điền các trường từ URI.",
     "appliedPassword": "Đã điền các trường từ URI. Hãy nhập lại mật khẩu bên dưới."
