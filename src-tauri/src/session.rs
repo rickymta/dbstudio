@@ -117,7 +117,7 @@ pub(crate) fn no_auth_hint(config: &ConnectionConfig, error: Error) -> Error {
     match error {
         Error::Authentication(m) if config.is_no_auth() => Error::Authentication(format!(
             "{m} (this connection is set to \"no authentication\" but the server requires a \
-             login: edit the connection and set Authentication to \"Password\")"
+             login: edit the connection and set Authentication to \"Username and password\")"
         )),
         other => other,
     }
