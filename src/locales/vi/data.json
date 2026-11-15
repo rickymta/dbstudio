@@ -253,7 +253,8 @@
         "in": "Danh sách IN (...)",
         "insert": "SQL INSERT"
       }
-    }
+    },
+    "undoRow": "Hoàn tác dòng"
   },
   "header": {
     "path": "Đường dẫn đối tượng"

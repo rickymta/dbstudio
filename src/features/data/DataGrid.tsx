@@ -649,7 +649,9 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
         data-c={ci}
         data-pending={edit ? (ctx.insert ? 'inserted' : 'updated') : undefined}
         title={
-          editMode && readOnlyColumns?.includes(col.name) ? t('edit.generatedColumn') : undefined
+          editMode && readOnlyColumns?.includes(col.name)
+            ? (session.readOnlyHints[col.name] ?? t('edit.generatedColumn'))
+            : undefined
         }
         className={cn(
           'absolute top-0 truncate border-r border-b border-border/35 px-2 [unicode-bidi:isolate]',

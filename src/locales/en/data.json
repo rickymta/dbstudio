@@ -253,7 +253,8 @@
         "in": "IN (...) list",
         "insert": "SQL INSERT"
       }
-    }
+    },
+    "undoRow": "Undo row changes"
   },
   "header": {
     "path": "Object path"

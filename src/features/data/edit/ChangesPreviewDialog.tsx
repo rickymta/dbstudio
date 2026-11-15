@@ -4,30 +4,20 @@ import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent } from '@/components/ui/Dialog';
 import { Spinner } from '@/components/ui/Spinner';
 import { ipc } from '@/lib/ipc';
-import type { Editability, IpcError, ObjectPath, Uuid } from '@/lib/types';
-import type { GridModel } from '../gridModel';
-import { applyPending, toChangeSet } from './editActions';
+import type { IpcError } from '@/lib/types';
+import { applyTarget, type EditTarget } from './editActions';
 import { useEditSession } from './editSession';
 import { usePending, type PendingTab } from './pendingChanges';
 
 interface ChangesPreviewDialogProps {
   tabId: string;
-  sessionId: Uuid;
-  path: ObjectPath;
-  editability: Editability;
-  model: GridModel;
+  target: EditTarget;
   onClose: () => void;
 }
 
 /** The statements of the pending changes, in the order they run, with Apply. */
-export function ChangesPreviewDialog({
-  tabId,
-  sessionId,
-  path,
-  editability,
-  model,
-  onClose,
-}: ChangesPreviewDialogProps) {
+export function ChangesPreviewDialog({ tabId, target, onClose }: ChangesPreviewDialogProps) {
+  const { editability, sessionId } = target;
   const { t } = useTranslation('data');
   const pending = usePending(tabId);
   const session = useEditSession(tabId);
@@ -42,7 +32,7 @@ export function ChangesPreviewDialog({
   useEffect(() => {
     let live = true;
     ipc
-      .changesPreview(sessionId, toChangeSet(path, editability, pending))
+      .changesPreview(sessionId, target.changeSet(pending))
       .then((statements) => live && setResult({ forPending: pending, statements, error: null }))
       .catch(
         (error: IpcError) => live && setResult({ forPending: pending, statements: null, error }),
@@ -50,7 +40,7 @@ export function ChangesPreviewDialog({
     return () => {
       live = false;
     };
-  }, [sessionId, path, editability, pending]);
+  }, [sessionId, target, pending]);
 
   const current = result?.forPending === pending ? result : null;
   const statements = current?.statements ?? null;
@@ -63,7 +53,7 @@ export function ChangesPreviewDialog({
   const failure = session.failure;
   const apply = async () => {
     setApplying(true);
-    const ok = await applyPending({ tabId, sessionId, path, editability, model });
+    const ok = await applyTarget(tabId, target);
     setApplying(false);
     if (ok) onClose();
   };

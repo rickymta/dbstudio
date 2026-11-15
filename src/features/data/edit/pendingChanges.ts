@@ -98,6 +98,8 @@ interface PendingStore {
   addInsert: (tabId: string, cells: Record<string, EditValue>) => number;
   setInsertCell: (tabId: string, id: number, column: string, edit: EditValue | null) => void;
   removeInsert: (tabId: string, id: number) => void;
+  /** Undo the pending change of one existing row (its edited cells and its delete mark). */
+  revertRow: (tabId: string, key: Value[]) => void;
   /** Drop every pending change of the tab. */
   discard: (tabId: string) => void;
 }
@@ -174,6 +176,16 @@ export const usePendingChanges = create<PendingStore>((set) => ({
     set((s) => {
       const p = tabOf(s, tabId);
       return put(s, tabId, { ...p, inserts: p.inserts.filter((i) => i.id !== id) });
+    }),
+  revertRow: (tabId, key) =>
+    set((s) => {
+      const p = tabOf(s, tabId);
+      const k = rowKeyString(key);
+      const updates = { ...p.updates };
+      const deletes = { ...p.deletes };
+      delete updates[k];
+      delete deletes[k];
+      return put(s, tabId, { ...p, updates, deletes });
     }),
   discard: (tabId) =>
     set((s) => {

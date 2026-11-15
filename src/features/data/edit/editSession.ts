@@ -21,6 +21,8 @@ export interface EditSessionState {
   failure: { index: number; message: string } | null;
   /** An apply is in flight: the grid is locked so no edit can slip between send and clear. */
   applying: boolean;
+  /** Tooltip of a read-only column by name (default: "generated column"). */
+  readOnlyHints: Record<string, string>;
 }
 
 export const INITIAL_EDIT_SESSION: EditSessionState = {
@@ -30,6 +32,7 @@ export const INITIAL_EDIT_SESSION: EditSessionState = {
   editing: null,
   failure: null,
   applying: false,
+  readOnlyHints: {},
 };
 
 interface EditSessionStore {
