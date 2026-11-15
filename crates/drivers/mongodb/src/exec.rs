@@ -68,6 +68,7 @@ pub fn doc_column() -> ColumnMeta {
         type_name: "document".into(),
         value_kind: ValueKind::Document,
         nullable: Some(false),
+        origin: None,
     }
 }
 
@@ -825,6 +826,7 @@ pub fn names_result(sink: &mut dyn ResultSink, column: &str, names: Vec<String>)
         type_name: "string".into(),
         value_kind: ValueKind::Text,
         nullable: Some(false),
+        origin: None,
     }])?;
     let n = names.len() as u64;
     if !names.is_empty() {

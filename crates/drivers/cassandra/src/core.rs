@@ -585,6 +585,7 @@ impl Core {
                         type_name: t.to_string(),
                         value_kind: t.value_kind(),
                         nullable: None,
+                        origin: None,
                     })
                     .collect();
                 sink.on_columns(metas)?;

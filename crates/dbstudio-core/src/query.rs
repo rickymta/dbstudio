@@ -54,6 +54,26 @@ pub struct ColumnMeta {
     /// Whether the column may contain nulls, when known.
     #[serde(default)]
     pub nullable: Option<bool>,
+    /// The table column this result column is read from, when the driver knows for sure
+    /// (not for expressions, functions or constants). Lets the editor make a result editable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ColumnOrigin>,
+}
+
+/// The base table column a result column comes from (see [`ColumnMeta::origin`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnOrigin {
+    /// Database / keyspace, when the driver reports it (MySQL schema, PostgreSQL database).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    /// Schema, when the database has schemas and the driver knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    /// Base table name (never the alias used in the query).
+    pub table: String,
+    /// Column name in the base table (never the alias used in the query).
+    pub column: String,
 }
 
 /// Tabular data returned by a statement.
@@ -283,6 +303,7 @@ mod tests {
                 type_name: "int8".into(),
                 value_kind: ValueKind::Int,
                 nullable: Some(false),
+                origin: None,
             }],
             rows: vec![vec![Value::Int(1)]],
             truncated: false,

@@ -80,6 +80,7 @@ pub fn plan_column(info: &ColumnInfo) -> (ColPlan, ColumnMeta) {
             type_name: type_name(ty),
             value_kind: kind,
             nullable: Some(info.nullable()),
+            origin: None,
         },
     )
 }

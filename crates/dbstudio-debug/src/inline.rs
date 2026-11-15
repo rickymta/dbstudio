@@ -120,12 +120,14 @@ mod tests {
                 type_name: "int".into(),
                 value_kind: ValueKind::Int,
                 nullable: None,
+                origin: None,
             },
             ColumnMeta {
                 name: "name".into(),
                 type_name: "text".into(),
                 value_kind: ValueKind::Text,
                 nullable: None,
+                origin: None,
             },
         ];
         let row = vec![Value::Int(5), Value::Text("a".into())];

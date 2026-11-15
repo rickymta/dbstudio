@@ -827,6 +827,7 @@ mod tests {
             type_name: "int8".into(),
             value_kind: ValueKind::Int,
             nullable: Some(false),
+            origin: None,
         }
     }
 

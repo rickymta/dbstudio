@@ -552,6 +552,7 @@ impl Source {
                 type_name: type_display(t, &self.cols, name),
                 value_kind: t.value_kind(),
                 nullable: Some(t.is_nullable()),
+                origin: None,
             })
             .collect()
     }

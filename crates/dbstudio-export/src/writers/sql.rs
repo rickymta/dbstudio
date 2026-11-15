@@ -714,6 +714,7 @@ mod tests {
                 type_name: (*t).into(),
                 value_kind: ValueKind::Null,
                 nullable: Some(true),
+                origin: None,
             })
             .collect();
         let meta = ObjectMeta {

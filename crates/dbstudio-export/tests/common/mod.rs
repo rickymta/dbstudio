@@ -135,6 +135,7 @@ impl FakeSession {
                         type_name: c.type_name.clone(),
                         value_kind: c.value_kind,
                         nullable: Some(c.nullable),
+                        origin: None,
                     })
                     .collect()
             })
@@ -167,6 +168,7 @@ impl Session for FakeSession {
                         type_name: "x".into(),
                         value_kind: *k,
                         nullable: Some(true),
+                        origin: None,
                     })
                     .collect(),
             )?;
@@ -223,6 +225,7 @@ impl Session for FakeSession {
                 type_name: "int4".into(),
                 value_kind: ValueKind::Int,
                 nullable: Some(false),
+                origin: None,
             }])?;
             sink.on_rows(vec![vec![Value::Int(1)], vec![Value::Int(2)]])?;
             sink.on_statement_end(StatementEnd {

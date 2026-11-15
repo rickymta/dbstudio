@@ -73,6 +73,7 @@ fn shape_of(stmt: &tokio_postgres::Statement) -> Shape {
                 type_name: type_label(c.type_()),
                 value_kind: value_kind(c.type_()),
                 nullable: None,
+                origin: None,
             })
             .collect(),
         types: stmt.columns().iter().map(|c| c.type_().clone()).collect(),

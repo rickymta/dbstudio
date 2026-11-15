@@ -2,6 +2,11 @@
   "ColumnMeta": {
     "name": "$document",
     "nullable": false,
+    "origin": {
+      "column": "doc",
+      "database": "app",
+      "table": "docs"
+    },
     "typeName": "document",
     "valueKind": "document"
   },

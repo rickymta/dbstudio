@@ -362,6 +362,7 @@ impl Core {
                         type_name: t.to_string(),
                         value_kind: t.value_kind(),
                         nullable: None,
+                        origin: None,
                     }
                 })
                 .collect();
@@ -532,6 +533,7 @@ pub(crate) fn columns_of(t: &TableInfo) -> Vec<ColumnMeta> {
             type_name: c.ty.to_string(),
             value_kind: c.ty.value_kind(),
             nullable: Some(!c.is_key()),
+            origin: None,
         })
         .collect()
 }

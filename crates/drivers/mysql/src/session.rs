@@ -543,6 +543,7 @@ async fn stream_query(
                 type_name: i.type_name(),
                 value_kind: i.value_kind(),
                 nullable: Some(i.nullable),
+                origin: None,
             })
             .collect();
         if let Err(e) = sink.on_columns(metas) {

@@ -167,6 +167,7 @@ impl Session for FakeSession {
                 type_name: String::new(),
                 value_kind: k,
                 nullable: None,
+                origin: None,
             };
             sink.on_columns(vec![
                 col("id", ValueKind::Int),

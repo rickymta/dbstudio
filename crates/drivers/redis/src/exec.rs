@@ -186,6 +186,7 @@ fn column(name: &str, kind: ValueKind) -> ColumnMeta {
         type_name: "redis".into(),
         value_kind: kind,
         nullable: Some(true),
+        origin: None,
     }
 }
 

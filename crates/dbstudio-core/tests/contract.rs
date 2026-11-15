@@ -1196,6 +1196,12 @@ fn query_fixtures() {
                 type_name: "document".into(),
                 value_kind: ValueKind::Document,
                 nullable: Some(false),
+                origin: Some(ColumnOrigin {
+                    database: Some("app".into()),
+                    schema: None,
+                    table: "docs".into(),
+                    column: "doc".into(),
+                }),
             }),
         ),
         (

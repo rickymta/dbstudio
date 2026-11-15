@@ -105,6 +105,7 @@ fn rows_result() -> EvalResult {
                     type_name: "int8".into(),
                     value_kind: ValueKind::Int,
                     nullable: Some(false),
+                    origin: None,
                 }],
                 rows: vec![vec![Value::Int(1)], vec![Value::Int(2)]],
                 truncated: false,

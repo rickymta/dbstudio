@@ -579,6 +579,7 @@ fn column_meta(c: &ColumnDetail) -> ColumnMeta {
         type_name: c.type_name.clone(),
         value_kind: c.value_kind,
         nullable: Some(c.nullable),
+        origin: None,
     }
 }
 

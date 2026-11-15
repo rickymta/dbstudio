@@ -95,6 +95,7 @@ pub fn column_meta(c: &Column) -> ColumnMeta {
         type_name: type_name(c.column_type()).to_string(),
         value_kind: value_kind(c.column_type()),
         nullable: None,
+        origin: None,
     }
 }
 

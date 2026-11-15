@@ -155,6 +155,7 @@ impl Lease for FakeLease {
                             type_name: "int8".into(),
                             value_kind: ValueKind::Int,
                             nullable: None,
+                            origin: None,
                         })
                         .collect(),
                 )?;

@@ -18,6 +18,7 @@ fn meta(name: &str) -> ColumnMeta {
         type_name: "text".into(),
         value_kind: ValueKind::Text,
         nullable: None,
+        origin: None,
     }
 }
 

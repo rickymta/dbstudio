@@ -87,6 +87,7 @@ impl FlattenWriter {
                 type_name: "document field".into(),
                 value_kind: ValueKind::Text,
                 nullable: Some(true),
+                origin: None,
             })
             .collect();
         ObjectMeta {
@@ -473,6 +474,7 @@ mod tests {
                 type_name: "document".into(),
                 value_kind: ValueKind::Document,
                 nullable: Some(false),
+                origin: None,
             }],
             details: None,
             estimated_rows: None,

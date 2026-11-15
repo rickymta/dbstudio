@@ -1265,6 +1265,7 @@ pub(crate) mod testing {
                 type_name: "int8".into(),
                 value_kind: ValueKind::Int,
                 nullable: Some(false),
+                origin: None,
             }])?;
             sink.on_rows(vec![vec![Value::Int(1)]])?;
             sink.on_statement_end(StatementEnd {
@@ -1304,6 +1305,7 @@ pub(crate) mod testing {
                 type_name: "int8".into(),
                 value_kind: ValueKind::Int,
                 nullable: Some(false),
+                origin: None,
             }])?;
             for chunk in [[1i64, 2], [3, 4], [5, 6]] {
                 sink.on_rows(chunk.iter().map(|i| vec![Value::Int(*i)]).collect())?;

@@ -436,6 +436,16 @@ export interface ColumnMeta {
   typeName: string;
   valueKind: ValueKind;
   nullable?: boolean | null;
+  /** The base table column this column is read from (absent for expressions). */
+  origin?: ColumnOrigin | null;
+}
+
+/** The table column a result column comes from (see `ColumnMeta.origin`). */
+export interface ColumnOrigin {
+  database?: string | null;
+  schema?: string | null;
+  table: string;
+  column: string;
 }
 
 export type EndOutcome =

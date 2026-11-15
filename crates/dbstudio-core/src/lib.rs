@@ -91,8 +91,8 @@ pub use object::{
 };
 pub use plan::{ExplainOptions, ExplainRequest, PlanFormat, RawPlan};
 pub use query::{
-    CollectingSink, ColumnMeta, EndOutcome, ExecSummary, QueryEvent, QueryRequest, ResultSet,
-    ResultSink, StatementEnd, StatementOutcome, StatementResult, StatementStart,
+    CollectingSink, ColumnMeta, ColumnOrigin, EndOutcome, ExecSummary, QueryEvent, QueryRequest,
+    ResultSet, ResultSink, StatementEnd, StatementOutcome, StatementResult, StatementStart,
 };
 pub use script::{
     ConfirmationGrant, ConfirmationRequest, DestructiveReason, DestructiveStatement,

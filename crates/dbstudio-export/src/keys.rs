@@ -168,6 +168,7 @@ fn key_columns() -> Vec<ColumnMeta> {
         type_name: name.into(),
         value_kind: kind,
         nullable: Some(true),
+        origin: None,
     };
     vec![
         col("key", ValueKind::Text),
