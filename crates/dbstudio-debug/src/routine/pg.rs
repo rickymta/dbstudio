@@ -32,7 +32,13 @@
 //!   on an attached session) or the proxy connection closes (then the target runs freely).
 //!   Hence [`PgRoutineDebugger::disarm`] closes the proxy after every statement, and the entry
 //!   breakpoints are dropped as soon as the target attaches (Step Into only wants the first
-//!   entry).
+//!   entry). `pldbg_drop_breakpoint` on a session that never attached fails with `08006`
+//!   (rechecked), so the breakpoints cannot be dropped explicitly. Closing the client side is
+//!   not enough either: the backend exits asynchronously, and a target that calls the routine
+//!   in that window stops at the leftover breakpoint and waits for a proxy that is going away.
+//!   `disarm` (and the error paths) therefore wait, through the watcher connection, until the
+//!   proxy backend is gone from `pg_stat_activity` / `pg_locks` (bounded; then
+//!   `pg_terminate_backend`).
 //! * **Permissions.** `pldbg_create_listener` works for anyone (`EXECUTE` granted to `PUBLIC`),
 //!   but `pldbg_set_global_breakpoint` raises `42501 must be a superuser to create a
 //!   breakpoint`. [`PgRoutineDebugger::support`] therefore requires a superuser role
@@ -117,6 +123,14 @@ const WATCH_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How often the end of the target statement is polled when the host gave no future for it.
 const WATCH_INTERVAL: Duration = Duration::from_millis(200);
+/// How often the cancel of a `pldbg_*` call is repeated until the call returns.
+const CANCEL_RESEND: Duration = Duration::from_millis(100);
+/// How often the exit of a closed proxy backend is polled.
+const REAP_POLL: Duration = Duration::from_millis(10);
+/// How long a proxy backend gets to exit on its own after its connection closed.
+const REAP_GRACE: Duration = Duration::from_secs(3);
+/// How long to wait for it after `pg_terminate_backend`.
+const REAP_AFTER_TERMINATE: Duration = Duration::from_secs(5);
 
 // ------------------------------------------------------------------------------------------
 // Pure helpers (unit tested)
@@ -425,6 +439,60 @@ async fn wait_done(done: &mut Option<&mut (dyn Future<Output = ()> + Send + Unpi
         }
         None => std::future::pending().await,
     }
+}
+
+/// True while a backend with this pid is still in the server's process table. `pg_locks` is
+/// consulted besides `pg_stat_activity`: the stats entry disappears earlier than the shared
+/// memory cleanup of pldebugger (which drops the global breakpoints), the virtual xid lock is
+/// released after it.
+async fn backend_alive(k: &dyn Lease, pid: i32) -> Option<bool> {
+    let sql = format!(
+        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = {pid}) \
+         OR EXISTS (SELECT 1 FROM pg_locks WHERE pid = {pid})"
+    );
+    let mut sink = CollectingSink::new();
+    let ran = tokio::time::timeout(
+        WATCH_QUERY_TIMEOUT,
+        k.execute(QueryRequest::new(sql), &mut sink),
+    )
+    .await;
+    if !matches!(ran, Ok(Ok(_))) {
+        return None;
+    }
+    for r in sink.into_results() {
+        if let StatementOutcome::Rows(rs) = r.outcome {
+            return rs.rows.first().and_then(|r| r.first()).map(value_bool);
+        }
+    }
+    None
+}
+
+/// Wait (bounded) until the backend `pid` is gone. `Some(true)` = gone, `Some(false)` = still
+/// there at the deadline, `None` = the checking connection failed.
+async fn wait_backend_gone(k: &dyn Lease, pid: i32, limit: Duration) -> Option<bool> {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        match backend_alive(k, pid).await? {
+            false => return Some(true),
+            true if tokio::time::Instant::now() >= deadline => return Some(false),
+            true => tokio::time::sleep(REAP_POLL).await,
+        }
+    }
+}
+
+/// Make sure the proxy backend `pid` is gone before returning: its global breakpoints live in
+/// shared memory until the backend exits, and a target that runs the routine in that window
+/// stops at a breakpoint nobody serves. `terminate_now` skips the grace period (a proxy that
+/// is blocked in a `pldbg_*` call does not notice that its client left).
+async fn reap_backend(k: &dyn Lease, pid: i32, terminate_now: bool) {
+    if !terminate_now {
+        match wait_backend_gone(k, pid, REAP_GRACE).await {
+            Some(true) | None => return,
+            Some(false) => {}
+        }
+    }
+    let _ = PgRoutineDebugger::rows(k, &format!("SELECT pg_terminate_backend({pid})")).await;
+    let _ = wait_backend_gone(k, pid, REAP_AFTER_TERMINATE).await;
 }
 
 /// True when the target backend is no longer running a statement.
@@ -1157,14 +1225,31 @@ impl PgRoutineDebugger {
         }
     }
 
+    /// Close the hidden connections and return only once the proxy backend has exited, so no
+    /// global breakpoint of it is left behind (see the module notes).
     async fn close_proxy(&mut self) {
-        if let Some(w) = self.watcher.take() {
-            let _ = w.close().await;
-        }
-        if let Some(p) = self.proxy.take() {
+        let pid = self.proxy_pid.take();
+        let watcher = self.watcher.take();
+        let proxy = self.proxy.take();
+        if let Some(p) = &proxy {
             let _ = p.close().await;
         }
-        self.proxy_pid = None;
+        if let (Some(pid), Some(_)) = (pid, &proxy) {
+            // The watcher is already open on the normal (poll) path; open one otherwise.
+            let checker = match &watcher {
+                Some(w) => Some(w.clone()),
+                None => self.opener.open_proxy(self.proxy_database()).await.ok(),
+            };
+            if let Some(k) = checker {
+                reap_backend(&*k, pid, false).await;
+                if watcher.is_none() {
+                    let _ = k.close().await;
+                }
+            }
+        }
+        if let Some(w) = watcher {
+            let _ = w.close().await;
+        }
         self.session = None;
     }
 
@@ -1212,9 +1297,23 @@ impl PgRoutineDebugger {
             }
         };
         debug_assert!(finished_first);
+        // One cancel is not enough: a cancel that reaches the proxy backend before it entered
+        // the `select()` of pldbgapi (the statement of the target ended before the call even
+        // started) only sets a flag nobody checks, and the call then waits for a target that is
+        // gone. Repeat it until the call returns; a later one interrupts the `select()`.
         let _ = proxy.cancel(query_id).await;
+        let mut resend = tokio::time::interval(CANCEL_RESEND);
+        resend.tick().await;
+        let ended = loop {
+            tokio::select! {
+                r = &mut exec => break r,
+                _ = resend.tick() => {
+                    let _ = proxy.cancel(query_id).await;
+                }
+            }
+        };
         // The call may have completed in the meantime: then the target did stop.
-        match exec.await {
+        match ended {
             Ok(_) => Ok(true),
             // A lost connection is not the end of the statement.
             Err(e @ Error::Connection(_)) => Err(e),
@@ -1266,11 +1365,7 @@ impl Drop for PgRoutineDebugger {
                     None => opener.open_proxy(db).await.ok(),
                 };
                 if let Some(k) = killer {
-                    let _ = PgRoutineDebugger::rows(
-                        &*k,
-                        &format!("SELECT pg_terminate_backend({pid})"),
-                    )
-                    .await;
+                    reap_backend(&*k, pid, true).await;
                     if watcher.is_none() {
                         let _ = k.close().await;
                     }
