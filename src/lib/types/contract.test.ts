@@ -213,7 +213,13 @@ export const isLeaseState: Guard = shape(
   { running: str, pendingResult: str, database: str, schema: str },
 );
 
-const columnMeta = shape({ name: str, typeName: str, valueKind: str }, { nullable: bool });
+const columnMeta = shape(
+  { name: str, typeName: str, valueKind: str },
+  {
+    nullable: bool,
+    origin: shape({ table: str, column: str }, { database: str, schema: str }),
+  },
+);
 export const isQueryEvent: Guard = tagged('type', {
   columns: shape({ columns: arrayOf(columnMeta) }),
   rows: shape({ rows: arrayOf(arrayOf(isValue)) }),
@@ -410,6 +416,21 @@ const editability = shape(
     atomic: bool,
   },
   { reason: str, notes: arrayOf(oneOf('upsertSemantics', 'conditionalWrites', 'asyncMutation')) },
+);
+const resultEditability = shape(
+  {
+    editable: bool,
+    keyColumns: arrayOf(str),
+    columnMap: arrayOf((v) => (v === null ? null : str(v))),
+    readOnlyColumns: arrayOf(str),
+    atomic: bool,
+  },
+  {
+    table: objectPath,
+    reason: str,
+    missingKeyColumns: arrayOf(str),
+    notes: arrayOf(oneOf('upsertSemantics', 'conditionalWrites', 'asyncMutation')),
+  },
 );
 const appSettings = shape({
   logLevel: str,
@@ -787,6 +808,16 @@ const GUARDS: Record<string, Record<string, Guard>> = {
   edit: {
     ChangeSet: isChangeSet,
     Editability: editability,
+    ResultEditability: resultEditability,
+    ResultNotEditableReason: oneOf(
+      'noOrigin',
+      'multipleTables',
+      'noUniqueKey',
+      'notATable',
+      'readOnlyConnection',
+      'keyNotInResult',
+      'unsupported',
+    ),
     EditNote: oneOf('upsertSemantics', 'conditionalWrites', 'asyncMutation'),
     PutMode: oneOf('replace', 'ifAbsent'),
     FieldOriginal: fieldOriginal,

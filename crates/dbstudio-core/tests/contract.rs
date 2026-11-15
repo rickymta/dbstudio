@@ -520,6 +520,27 @@ fn edit_fixtures() {
     assert_eq!(j(&keys)["changes"][1]["newKey"], "b");
     let samples = group(vec![
         (
+            "ResultEditability",
+            j(&ResultEditability {
+                editable: false,
+                table: Some(path(&[
+                    (ObjectKind::Database, "app"),
+                    (ObjectKind::Table, "t"),
+                ])),
+                key_columns: vec!["id".into()],
+                column_map: vec![Some("id".into()), None],
+                read_only_columns: vec![],
+                reason: Some(ResultNotEditableReason::KeyNotInResult),
+                missing_key_columns: vec!["id".into()],
+                atomic: true,
+                notes: vec![],
+            }),
+        ),
+        (
+            "ResultNotEditableReason",
+            j(&ResultNotEditableReason::MultipleTables),
+        ),
+        (
             "Editability",
             j(&Editability {
                 editable: true,

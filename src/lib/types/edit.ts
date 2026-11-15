@@ -1,7 +1,7 @@
 // Data editing: editability and change sets (dbstudio-core `edit.rs`).
 
 import type { KeyData } from './keyvalue';
-import type { ObjectPath, Value } from './core';
+import type { ColumnMeta, ObjectPath, Value } from './core';
 
 /** Caveats the UI shows before changes are applied. */
 export type EditNote = 'upsertSemantics' | 'conditionalWrites' | 'asyncMutation';
@@ -19,6 +19,36 @@ export interface Editability {
   /** Caveats to show before applying (empty for classic SQL tables). */
   notes?: EditNote[];
 }
+
+export type ResultNotEditableReason =
+  | 'noOrigin'
+  | 'multipleTables'
+  | 'noUniqueKey'
+  | 'notATable'
+  | 'readOnlyConnection'
+  | 'keyNotInResult'
+  | 'unsupported';
+
+/**
+ * Whether the rows of a query result can be edited by key (`result_editability`).
+ * `keyColumns` / `readOnlyColumns` are TABLE column names; `columnMap[i]` is the table column
+ * of result column `i` (null: expression, duplicate or unknown column, never edited).
+ */
+export interface ResultEditability {
+  editable: boolean;
+  table: ObjectPath | null;
+  keyColumns: string[];
+  columnMap: (string | null)[];
+  readOnlyColumns: string[];
+  reason: ResultNotEditableReason | null;
+  /** Key columns missing from the result (with `keyNotInResult`). */
+  missingKeyColumns?: string[];
+  atomic: boolean;
+  notes?: EditNote[];
+}
+
+/** The columns `result_editability` looks at (kept as `ColumnMeta`). */
+export type ResultColumns = ColumnMeta[];
 
 export type EditValue =
   { kind: 'value'; v: Value } | { kind: 'text'; v: string } | { kind: 'default' };

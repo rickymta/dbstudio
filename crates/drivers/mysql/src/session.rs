@@ -26,9 +26,9 @@ use dbstudio_core::{
     Lease, LeaseOptions, RawPlan, SchemaModel, SchemaModelRequest, ScriptDialect,
 };
 use dbstudio_core::{
-    ColumnMeta, EndOutcome, Error, ExecSummary, ObjectNode, ObjectPath, ObjectSearchRequest,
-    QueryRequest, Result, ResultSink, ServerInfo, Session, StatementEnd, TableCountRequest,
-    TableDataRequest, TableDetails, Value,
+    ColumnMeta, ColumnOrigin, EndOutcome, Error, ExecSummary, ObjectNode, ObjectPath,
+    ObjectSearchRequest, QueryRequest, Result, ResultSink, ServerInfo, Session, StatementEnd,
+    TableCountRequest, TableDataRequest, TableDetails, Value,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, Pool, Row};
@@ -43,6 +43,24 @@ use crate::{browse, detect_mariadb, detect_tidb, normalize_version, read_tx_sql}
 const DEFAULT_BATCH: usize = 1000;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 const KILL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Table column a result column is read from, straight from the protocol's column definition
+/// (`org_table` / `org_name` / `schema` are the real names, whatever alias the query used).
+/// Expressions, constants and derived-table columns have an empty `org_table`: no origin.
+pub(crate) fn origin_of(c: &mysql_async::Column) -> Option<ColumnOrigin> {
+    let table = c.org_table_str();
+    let column = c.org_name_str();
+    if table.is_empty() || column.is_empty() {
+        return None;
+    }
+    let schema = c.schema_str();
+    Some(ColumnOrigin {
+        database: (!schema.is_empty()).then(|| schema.into_owned()),
+        schema: None,
+        table: table.into_owned(),
+        column: column.into_owned(),
+    })
+}
 
 /// Why a statement is being stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -543,7 +561,7 @@ async fn stream_query(
                 type_name: i.type_name(),
                 value_kind: i.value_kind(),
                 nullable: Some(i.nullable),
-                origin: None,
+                origin: crate::session::origin_of(c),
             })
             .collect();
         if let Err(e) = sink.on_columns(metas) {

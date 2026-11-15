@@ -30,8 +30,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use dbstudio_backup::{BackupJob, BackupSpec, NativeTool, RestoreSpec};
 use dbstudio_core::{
-    ChangeSet, ChildrenPageRequest, ConfirmationGrant, DbKind, DdlRequest, Error, ExecuteRequest,
-    ExplainRequest, JobId, KeyReadRequest, LeaseContext, LeaseOptions, ObjectPath,
+    ChangeSet, ChildrenPageRequest, ColumnMeta, ConfirmationGrant, DbKind, DdlRequest, Error,
+    ExecuteRequest, ExplainRequest, JobId, KeyReadRequest, LeaseContext, LeaseOptions, ObjectPath,
     ObjectSearchRequest, QueryEvent, RawPlan, Result, SchemaModelRequest, Secret,
     TableCountRequest, TableDataRequest, TxOptions,
 };
@@ -417,8 +417,14 @@ async fn dispatch(state: &AppState, command: &str, a: &Value) -> Option<Result<V
             call!(changes::preview_impl(state, id, changes))
         }
         "changes_apply" => {
-            args!(id: Uuid = "sessionId", changes: ChangeSet = "changes");
-            call!(changes::apply_impl(state, id, changes))
+            args!(id: Uuid = "sessionId", changes: ChangeSet = "changes", lease_id: Option<Uuid> = "leaseId");
+            call!(changes::apply_impl(state, id, changes, lease_id))
+        }
+        "result_editability" => {
+            args!(id: Uuid = "sessionId", lease_id: Option<Uuid> = "leaseId", columns: Vec<ColumnMeta> = "columns");
+            call!(changes::result_editability_impl(
+                state, id, lease_id, columns
+            ))
         }
         "plan_explain" => {
             args!(

@@ -7,6 +7,8 @@ import type {
   ApplyResult,
   CellEdit,
   ChangeSet,
+  ColumnMeta,
+  ResultEditability,
   EditValue,
   Editability,
   ObjectPath,
@@ -115,6 +117,58 @@ export const changesMock = {
         .map((c) => c.name),
       reason: null,
       atomic: true,
+    };
+  },
+
+  /**
+   * Like the backend: every column with an origin must come from one table, whose editability
+   * decides; the key must be in the result. Mock queries carry no origins, so they are never
+   * editable here ("noOrigin") unless a test or story adds them.
+   */
+  async resultEditability(sessionId: Uuid, columns: ColumnMeta[]): Promise<ResultEditability> {
+    const none = (reason: NonNullable<ResultEditability['reason']>): ResultEditability => ({
+      editable: false,
+      table: null,
+      keyColumns: [],
+      columnMap: columns.map(() => null),
+      readOnlyColumns: [],
+      reason,
+      atomic: true,
+    });
+    const origins = columns.map((c) => c.origin ?? null);
+    const first = origins.find((o) => o);
+    if (!first) return none('noOrigin');
+    const same = (a: NonNullable<ColumnMeta['origin']>) =>
+      a.table === first.table && a.schema === first.schema && a.database === first.database;
+    if (!origins.every((o) => !o || same(o))) return none('multipleTables');
+    const path: ObjectPath = {
+      segments: [
+        ...(first.database ? [{ kind: 'database' as const, name: first.database }] : []),
+        ...(first.schema ? [{ kind: 'schema' as const, name: first.schema }] : []),
+        { kind: 'table' as const, name: first.table },
+      ],
+    };
+    const ed = await changesMock.tableEditability(sessionId, path);
+    const taken = new Set<string>();
+    const columnMap = origins.map((o) => {
+      if (!o || taken.has(o.column)) return null;
+      taken.add(o.column);
+      return o.column;
+    });
+    const missing = ed.keyColumns.filter((k) => !taken.has(k));
+    return {
+      editable: ed.editable && missing.length === 0,
+      table: path,
+      keyColumns: ed.keyColumns,
+      columnMap,
+      readOnlyColumns: ed.readOnlyColumns,
+      reason: !ed.editable
+        ? (ed.reason ?? 'unsupported')
+        : missing.length > 0
+          ? 'keyNotInResult'
+          : null,
+      missingKeyColumns: !ed.editable ? [] : missing,
+      atomic: ed.atomic,
     };
   },
 

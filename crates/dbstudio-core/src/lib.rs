@@ -46,6 +46,7 @@ mod model;
 mod object;
 mod plan;
 mod query;
+mod result_edit;
 mod script;
 mod ssh;
 #[cfg(feature = "testing")]
@@ -93,6 +94,10 @@ pub use plan::{ExplainOptions, ExplainRequest, PlanFormat, RawPlan};
 pub use query::{
     CollectingSink, ColumnMeta, ColumnOrigin, EndOutcome, ExecSummary, QueryEvent, QueryRequest,
     ResultSet, ResultSink, StatementEnd, StatementOutcome, StatementResult, StatementStart,
+};
+pub use result_edit::{
+    PathContext, ResultEditability, ResultNotEditableReason, SourceTable,
+    resolve_result_editability, single_source, table_path,
 };
 pub use script::{
     ConfirmationGrant, ConfirmationRequest, DestructiveReason, DestructiveStatement,

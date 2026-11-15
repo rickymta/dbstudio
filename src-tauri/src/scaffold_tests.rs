@@ -258,7 +258,7 @@ async fn data_editing_checks_read_only_before_the_session() {
     }))
     .unwrap();
     let ro = open(&f, profile(true, None)).await;
-    let err = changes::apply_impl(&f.state, ro, change_set.clone())
+    let err = changes::apply_impl(&f.state, ro, change_set.clone(), None)
         .await
         .unwrap_err();
     assert_eq!(err.kind(), "readOnly");
@@ -271,7 +271,7 @@ async fn data_editing_checks_read_only_before_the_session() {
         "{err}"
     );
     let rw = open(&f, profile(false, None)).await;
-    let err = changes::apply_impl(&f.state, rw, change_set)
+    let err = changes::apply_impl(&f.state, rw, change_set, None)
         .await
         .unwrap_err();
     assert!(matches!(&err, Error::Unsupported(c) if c == "data_editing"));

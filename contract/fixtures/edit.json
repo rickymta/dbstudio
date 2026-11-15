@@ -423,6 +423,29 @@
   },
   "NotEditableReason": "noUniqueKey",
   "PutMode": "ifAbsent",
+  "ResultEditability": {
+    "atomic": true,
+    "columnMap": ["id", null],
+    "editable": false,
+    "keyColumns": ["id"],
+    "missingKeyColumns": ["id"],
+    "notes": [],
+    "readOnlyColumns": [],
+    "reason": "keyNotInResult",
+    "table": {
+      "segments": [
+        {
+          "kind": "database",
+          "name": "app"
+        },
+        {
+          "kind": "table",
+          "name": "t"
+        }
+      ]
+    }
+  },
+  "ResultNotEditableReason": "multipleTables",
   "RowChange": {
     "key": [
       {

@@ -204,6 +204,7 @@ pub fn run() {
             commands::changes::table_editability,
             commands::changes::changes_preview,
             commands::changes::changes_apply,
+            commands::changes::result_editability,
             commands::plan::plan_explain,
             commands::plan::plan_parse,
             commands::plan::plan_advise,
