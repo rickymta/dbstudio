@@ -1,5 +1,6 @@
 {
   "ConnectionConfig": {
+    "authMode": "password",
     "connectTimeoutMs": null,
     "database": "app",
     "environment": "production",

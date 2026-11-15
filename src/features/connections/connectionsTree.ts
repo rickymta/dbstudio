@@ -93,5 +93,9 @@ export function groupPathOptions(snapshot: ConnectionsSnapshot): { id: Uuid; lab
 export const allGroupIds = (snapshot: ConnectionsSnapshot): Uuid[] =>
   snapshot.groups.map((g) => g.id);
 
-/** A profile needs a password prompt when none is stored (CONN-08). */
-export const needsPassword = (p: ConnectionProfile): boolean => !p.savePassword || !p.hasPassword;
+/**
+ * A profile needs a password prompt when none is stored (CONN-08). A profile without
+ * authentication never does.
+ */
+export const needsPassword = (p: ConnectionProfile): boolean =>
+  p.authMode !== 'none' && (!p.savePassword || !p.hasPassword);

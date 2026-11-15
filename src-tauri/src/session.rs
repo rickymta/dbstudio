@@ -111,6 +111,18 @@ where
     }
 }
 
+/// Authentication failure on a profile set to "no authentication": the server wants a password,
+/// so say how to fix the profile instead of leaving the driver's bare message.
+pub(crate) fn no_auth_hint(config: &ConnectionConfig, error: Error) -> Error {
+    match error {
+        Error::Authentication(m) if config.is_no_auth() => Error::Authentication(format!(
+            "{m} (this connection is set to \"no authentication\" but the server requires a \
+             login: edit the connection and set Authentication to \"Password\")"
+        )),
+        other => other,
+    }
+}
+
 /// A boxed future (the health monitor needs a dyn-compatible async callback).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -428,8 +440,11 @@ impl SessionManager {
         };
         let config_for_driver = tunnelled.as_ref().unwrap_or(config);
         let attempt = async {
-            let session: Arc<dyn Session> =
-                Arc::from(driver.connect(config_for_driver, secret).await?);
+            let session: Arc<dyn Session> = Arc::from(
+                driver
+                    .connect(config_for_driver, config.effective_secret(secret))
+                    .await?,
+            );
             match session.server_info().await {
                 Ok(info) => Ok((session, info)),
                 Err(e) => {
@@ -440,7 +455,8 @@ impl SessionManager {
         };
         let (session, info) = tokio::time::timeout(limit, attempt)
             .await
-            .map_err(|_| Error::Timeout)??;
+            .map_err(|_| Error::Timeout)?
+            .map_err(|e| no_auth_hint(config, e))?;
         // The server may differ from the driver's static description (flavour, version gates).
         if let Some(capabilities) = session.capabilities() {
             descriptor.capabilities = capabilities;
@@ -1461,6 +1477,32 @@ mod tests {
         let mut registry = DriverRegistry::new();
         registry.register(driver);
         SessionManager::new(Arc::new(registry))
+    }
+
+    #[tokio::test]
+    async fn no_auth_profile_never_passes_a_secret_and_hints_on_auth_failure() {
+        let (driver, probe) = MockDriver::new(DbKind::Redis);
+        let mgr = manager(driver);
+        let mut cfg = config(DbKind::Redis);
+        cfg.auth_mode = dbstudio_core::AuthMode::NoAuth;
+        mgr.open(&cfg, Some(&Secret::new("stale"))).await.unwrap();
+        assert_eq!(*probe.last_secret.lock().unwrap(), Some(None));
+
+        let probe = Arc::new(Probe::default());
+        let strict = Arc::new(MockDriver {
+            kind: DbKind::Redis,
+            probe,
+            require_password: true,
+            connect_delay: None,
+        });
+        let mgr = manager(strict);
+        let err = mgr.open(&cfg, Some(&Secret::new("x"))).await.unwrap_err();
+        assert_eq!(err.kind(), "authentication");
+        assert!(err.to_string().contains("no authentication"), "{err}");
+        // The password mode keeps the driver's bare message.
+        cfg.auth_mode = dbstudio_core::AuthMode::Password;
+        let err = mgr.open(&cfg, None).await.unwrap_err();
+        assert!(!err.to_string().contains("no authentication"), "{err}");
     }
 
     #[tokio::test]

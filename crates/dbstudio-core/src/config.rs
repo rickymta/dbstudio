@@ -56,6 +56,18 @@ pub enum Environment {
     Production,
 }
 
+/// How a connection authenticates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuthMode {
+    /// Log in with a user name and password (the password may be stored or asked each time).
+    #[default]
+    #[serde(rename = "password")]
+    Password,
+    /// The server needs no authentication: no password is ever asked, stored or sent.
+    #[serde(rename = "none")]
+    NoAuth,
+}
+
 /// A saved connection definition. It never contains a password: pass a [`Secret`] at connect time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +86,9 @@ pub struct ConnectionConfig {
     pub database: Option<String>,
     /// Login user.
     pub username: Option<String>,
+    /// How the connection authenticates; older profiles without the field use `password`.
+    #[serde(default)]
+    pub auth_mode: AuthMode,
     /// TLS settings.
     pub tls: TlsConfig,
     /// Connect timeout in milliseconds; the driver picks a default when `None`.
@@ -107,6 +122,7 @@ impl ConnectionConfig {
             port: kind.default_port(),
             database: None,
             username: None,
+            auth_mode: AuthMode::Password,
             tls: TlsConfig::default(),
             connect_timeout_ms: None,
             read_only: false,
@@ -114,6 +130,33 @@ impl ConnectionConfig {
             options: BTreeMap::new(),
             ssh: None,
             environment_label: None,
+        }
+    }
+
+    /// Whether the profile is set to connect without authentication.
+    pub fn is_no_auth(&self) -> bool {
+        self.auth_mode == AuthMode::NoAuth
+    }
+
+    /// The secret to hand to a driver: always `None` when the profile needs no authentication,
+    /// even if the caller supplied one (for instance a stale keychain entry).
+    pub fn effective_secret<'a>(&self, secret: Option<&'a Secret>) -> Option<&'a Secret> {
+        if self.is_no_auth() { None } else { secret }
+    }
+
+    /// The user name, if any: empty or blank names count as none. Drivers fall back to their
+    /// own default user (PostgreSQL `postgres`, ClickHouse `default`, ...).
+    pub fn login_user(&self) -> Option<&str> {
+        self.username.as_deref().filter(|u| !u.trim().is_empty())
+    }
+
+    /// The user name for drivers whose servers cannot log in without a password (MongoDB,
+    /// Redis, Cassandra): none when the profile needs no authentication.
+    pub fn credential_user(&self) -> Option<&str> {
+        if self.is_no_auth() {
+            None
+        } else {
+            self.login_user()
         }
     }
 }
@@ -149,6 +192,35 @@ impl From<String> for Secret {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn auth_mode_defaults_to_password_for_old_profiles() {
+        let mut v =
+            serde_json::to_value(ConnectionConfig::new(DbKind::Redis, "r", "localhost")).unwrap();
+        assert_eq!(v["authMode"], "password");
+        v.as_object_mut().unwrap().remove("authMode");
+        let old: ConnectionConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(old.auth_mode, AuthMode::Password);
+        assert!(!old.is_no_auth());
+    }
+
+    #[test]
+    fn no_auth_drops_secret_and_credential_user() {
+        let mut c = ConnectionConfig::new(DbKind::MongoDb, "m", "localhost");
+        c.username = Some("admin".into());
+        let pw = Secret::new("pw");
+        assert!(c.effective_secret(Some(&pw)).is_some());
+        assert_eq!(c.credential_user(), Some("admin"));
+        c.auth_mode = AuthMode::NoAuth;
+        assert!(c.effective_secret(Some(&pw)).is_none());
+        assert_eq!(c.credential_user(), None);
+        // Drivers whose server may need only a user name still see it.
+        assert_eq!(c.login_user(), Some("admin"));
+        c.username = Some("  ".into());
+        assert_eq!(c.login_user(), None);
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["authMode"], "none");
+    }
+
     use super::*;
 
     #[test]

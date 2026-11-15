@@ -139,7 +139,11 @@
     "savePassword": "Save password",
     "savePasswordHint": "Stored in the system keychain. When off, you are asked each time you connect.",
     "timeout": "Connect timeout (seconds)",
-    "timeoutDefault": "Default"
+    "timeoutDefault": "Default",
+    "authMode": "Authentication",
+    "authModeNoneHint": "The server needs no login: no password is asked, stored or sent. A saved password is removed when you save.",
+    "optional": "optional",
+    "usernameDefault": "Default: {{name}}"
   },
   "color": {
     "default": "Default for environment",
@@ -185,5 +189,9 @@
   "slow": {
     "keychain": "Waiting for the system to grant access to the Keychain / password store - check the operating system dialog.",
     "generic": "Still waiting for the connection or for access to the system password store..."
+  },
+  "authMode": {
+    "password": "Username and password",
+    "none": "No authentication"
   }
 }

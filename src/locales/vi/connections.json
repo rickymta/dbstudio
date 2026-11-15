@@ -139,7 +139,11 @@
     "savePassword": "Lưu mật khẩu",
     "savePasswordHint": "Lưu trong keychain của hệ điều hành. Khi tắt, mỗi lần kết nối sẽ hỏi mật khẩu.",
     "timeout": "Thời gian chờ kết nối (giây)",
-    "timeoutDefault": "Mặc định"
+    "timeoutDefault": "Mặc định",
+    "authMode": "Xác thực",
+    "authModeNoneHint": "Máy chủ không đòi đăng nhập: không hỏi, không lưu, không gửi mật khẩu. Mật khẩu đã lưu sẽ bị xoá khi bạn lưu.",
+    "optional": "không bắt buộc",
+    "usernameDefault": "Mặc định: {{name}}"
   },
   "color": {
     "default": "Mặc định theo môi trường",
@@ -185,5 +189,9 @@
   "slow": {
     "keychain": "Đang chờ hệ thống cấp quyền truy cập Keychain / kho mật khẩu - hãy kiểm tra hộp thoại của hệ điều hành.",
     "generic": "Vẫn đang chờ kết nối hoặc quyền truy cập kho mật khẩu của hệ thống..."
+  },
+  "authMode": {
+    "password": "Tên đăng nhập và mật khẩu",
+    "none": "Không cần xác thực"
   }
 }

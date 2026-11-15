@@ -11,6 +11,7 @@ export function uriFormPatch(parsed: ParsedConnectionUri): Partial<ConnectionFor
     portTouched: true,
     database: f.database,
     username: f.username,
+    authMode: f.authMode,
     tlsMode: f.tlsMode,
     caCertPath: f.caCertPath,
     clientCertPath: f.clientCertPath,

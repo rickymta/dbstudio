@@ -93,7 +93,7 @@ impl Settings {
                 .ok_or_else(|| Error::Invalid(format!("invalid max_lob_bytes `{v}`")))?,
         };
         let strict = opt("encrypt").is_some_and(|v| v.eq_ignore_ascii_case("strict"));
-        let user = cfg.username.clone().filter(|u| !u.is_empty());
+        let user = cfg.login_user().map(str::to_string);
         if auth != AuthKind::Integrated && user.is_none() {
             return Err(Error::Authentication(
                 "a user name is required for this login method".into(),
@@ -103,7 +103,7 @@ impl Settings {
             host: cfg.host.clone(),
             port: cfg.port,
             user,
-            password: secret.map(|s| s.expose().to_string()),
+            password: cfg.effective_secret(secret).map(|s| s.expose().to_string()),
             tls: cfg.tls.clone(),
             strict,
             app_name: opt("application_name")

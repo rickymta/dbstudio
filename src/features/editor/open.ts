@@ -141,7 +141,8 @@ export function terminateStatements(body: string, mode: EditorMode): string {
       i = end + 2;
     } else if (c === "'" || c === '"' || c === '`') {
       let j = i + 1;
-      while (j < n && body.charAt(j) !== c) j += body.charAt(j) === '\\' && mode === 'mongo' ? 2 : 1;
+      while (j < n && body.charAt(j) !== c)
+        j += body.charAt(j) === '\\' && mode === 'mongo' ? 2 : 1;
       if (j >= n) return body;
       last = j;
       i = j + 1;

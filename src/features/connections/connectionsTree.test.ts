@@ -7,6 +7,7 @@ import {
   needsPassword,
 } from './connectionsTree';
 import {
+  defaultUsername,
   initialForm,
   profileFromForm,
   saveSecret,
@@ -83,6 +84,19 @@ describe('buildConnectionsTree', () => {
     expect(groupPathOptions(snapshot).map((o) => o.label)).toContain('A / B');
   });
 
+  it('never needs a password when the profile has no authentication', () => {
+    const none = { ...profile('1', 'n'), authMode: 'none' as const };
+    expect(needsPassword({ ...none, savePassword: false, hasPassword: false })).toBe(false);
+    expect(needsPassword({ ...none, savePassword: true, hasPassword: false })).toBe(false);
+    expect(needsPassword({ ...profile('1', 'n'), authMode: 'password', savePassword: false })).toBe(
+      true,
+    );
+    // Profiles saved before the field existed behave as before.
+    const old = { ...profile('1', 'n'), savePassword: false, hasPassword: false };
+    delete old.authMode;
+    expect(needsPassword(old)).toBe(true);
+  });
+
   it('needs a password unless one is stored', () => {
     expect(needsPassword({ ...profile('1', 'n'), savePassword: true, hasPassword: true })).toBe(
       false,
@@ -108,6 +122,26 @@ describe('connection form helpers', () => {
     });
     expect(Object.keys(bad).sort()).toEqual(['host', 'name', 'port', 'timeout']);
     expect(validateForm({ ...initialForm(undefined), name: 'x', port: '12a' }).port).toBeDefined();
+  });
+
+  it('carries the authentication mode and drops the secret when there is none', () => {
+    const base = { ...initialForm(undefined), name: 'n', host: 'h' };
+    expect(profileFromForm(base, undefined, () => 'i').authMode).toBe('password');
+    const none = { ...base, authMode: 'none' as const, savePassword: true, password: 'pw' };
+    const p = profileFromForm(none, undefined, () => 'i');
+    expect(p.authMode).toBe('none');
+    expect(p.savePassword).toBe(false);
+    expect(saveSecret(none)).toEqual({ action: 'clear' });
+    expect(testSecret(none)).toEqual({ action: 'clear' });
+    expect(initialForm({ ...p, authMode: undefined }).authMode).toBe('password');
+    expect(initialForm(p).authMode).toBe('none');
+  });
+
+  it('suggests the default login of servers that have one', () => {
+    expect(defaultUsername('postgres')).toBe('postgres');
+    expect(defaultUsername('clickhouse')).toBe('default');
+    expect(defaultUsername('redis')).toBeNull();
+    expect(defaultUsername('oracle')).toBeNull();
   });
 
   it('chooses the secret change', () => {

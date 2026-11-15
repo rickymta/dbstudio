@@ -5,7 +5,7 @@ use std::fmt::Display;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use dbstudio_core::{ConnectionConfig, DbKind, Error, Result, SshConfig, TlsConfig};
+use dbstudio_core::{AuthMode, ConnectionConfig, DbKind, Error, Result, SshConfig, TlsConfig};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -213,12 +213,14 @@ CREATE TABLE routine_breakpoints (
     PRIMARY KEY (connection_id, id)
 );
 CREATE INDEX routine_breakpoints_conn ON routine_breakpoints(connection_id);"##,
+    // v9: authentication mode of a connection (`password` | `none`).
+    r##"ALTER TABLE connections ADD COLUMN auth_mode TEXT NOT NULL DEFAULT 'password';"##,
 ];
 
 const PROFILE_COLUMNS: &str = "id, name, kind, host, port, database_name, username, tls_mode, \
     tls_ca_cert_path, tls_client_cert_path, tls_client_key_path, connect_timeout_ms, read_only, \
     environment, options, group_id, color, save_password, has_password, sort_order, created_at, \
-    updated_at, ssh, environment_label";
+    updated_at, ssh, environment_label, auth_mode";
 
 pub(crate) fn db_err(e: impl Display) -> Error {
     Error::Storage(format!("database error: {e}"))
@@ -303,6 +305,7 @@ fn profile_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ConnectionProfile>
     let updated_at: String = row.get("updated_at")?;
     let ssh: Option<String> = row.get("ssh")?;
     let environment_label: Option<String> = row.get("environment_label")?;
+    let auth_mode: String = row.get("auth_mode")?;
     Ok((|| {
         Ok(ConnectionProfile {
             config: ConnectionConfig {
@@ -313,6 +316,7 @@ fn profile_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ConnectionProfile>
                 port: u16::try_from(port).map_err(|_| invalid(format!("bad port {port}")))?,
                 database,
                 username,
+                auth_mode: from_text::<AuthMode>(&auth_mode)?,
                 tls: TlsConfig {
                     mode: from_text(&tls_mode)?,
                     ca_cert_path: ca,
@@ -729,7 +733,7 @@ fn write_profile(tx: &Transaction<'_>, p: &ConnectionProfile) -> Result<()> {
         &format!(
             "INSERT INTO connections ({PROFILE_COLUMNS}) VALUES
              (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-              ?19, ?20, ?21, ?22, ?23, ?24)
+              ?19, ?20, ?21, ?22, ?23, ?24, ?25)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name, kind = excluded.kind, host = excluded.host,
                 port = excluded.port, database_name = excluded.database_name,
@@ -743,7 +747,8 @@ fn write_profile(tx: &Transaction<'_>, p: &ConnectionProfile) -> Result<()> {
                 color = excluded.color, save_password = excluded.save_password,
                 has_password = excluded.has_password, sort_order = excluded.sort_order,
                 updated_at = excluded.updated_at, ssh = excluded.ssh,
-                environment_label = excluded.environment_label"
+                environment_label = excluded.environment_label,
+                auth_mode = excluded.auth_mode"
         ),
         params![
             c.id.to_string(),
@@ -770,6 +775,7 @@ fn write_profile(tx: &Transaction<'_>, p: &ConnectionProfile) -> Result<()> {
             p.updated_at,
             ssh,
             c.environment_label,
+            to_text(&c.auth_mode)?,
         ],
     )
     .map_err(db_err)?;
@@ -1097,7 +1103,7 @@ mod tests {
             insert_legacy(&s.lock(), "legacy", None)
         };
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 8);
+        assert_eq!(s.schema_version().unwrap(), 9);
         assert_eq!(s.get_profile(pid).unwrap().config.name, "legacy");
         assert_eq!(s.get_settings().unwrap(), AppSettings::default());
     }
@@ -1122,8 +1128,8 @@ mod tests {
             (g.id, pid, settings)
         };
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 8);
-        assert_eq!(MIGRATIONS.len(), 8);
+        assert_eq!(s.schema_version().unwrap(), 9);
+        assert_eq!(MIGRATIONS.len(), 9);
         for t in [
             "query_history",
             "saved_query_folders",
@@ -1174,7 +1180,7 @@ mod tests {
         drop(s);
         // Reopening is idempotent.
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 8);
+        assert_eq!(s.schema_version().unwrap(), 9);
         assert_eq!(s.get_profile(pid).unwrap().config.name, "old-conn");
     }
 
@@ -1381,7 +1387,7 @@ mod tests {
 
     #[test]
     fn migration_v8_upgrades_a_v7_database_with_tabs() {
-        assert_eq!(MIGRATIONS.len(), 8);
+        assert_eq!(MIGRATIONS.len(), 9);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("v7.sqlite");
         {
@@ -1396,7 +1402,7 @@ mod tests {
                 .unwrap();
         }
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 8);
+        assert_eq!(s.schema_version().unwrap(), 9);
         let tabs = s.tabs_get().unwrap();
         assert_eq!(tabs.len(), 1);
         assert_eq!(tabs[0].debug, None);

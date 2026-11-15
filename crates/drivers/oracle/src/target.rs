@@ -116,7 +116,10 @@ pub fn build(config: &ConnectionConfig, secret: Option<&Secret>) -> Result<Targe
         .unwrap_or(DEFAULT_MAX_LOB_BYTES);
     Ok(Target {
         user,
-        password: secret.map(|s| s.expose().to_string()).unwrap_or_default(),
+        password: config
+            .effective_secret(secret)
+            .map(|s| s.expose().to_string())
+            .unwrap_or_default(),
         connect_string,
         privilege,
         _wallet: wallet,

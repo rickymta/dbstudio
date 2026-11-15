@@ -103,6 +103,11 @@ impl ConnectionService {
         secret: SecretChange,
     ) -> Result<ConnectionProfile> {
         let id = profile.config.id;
+        // No authentication: nothing to save, and any stored password is dropped below.
+        let no_auth = profile.config.is_no_auth();
+        if no_auth {
+            profile.save_password = false;
+        }
         let had_password = self.store.find_profile(id)?.is_some_and(|p| p.has_password);
         // has_password is owned by the service, never trusted from the client.
         profile.has_password = had_password;
@@ -196,6 +201,9 @@ impl ConnectionService {
         profile: &ConnectionProfile,
         change: &SecretChange,
     ) -> Result<Option<Secret>> {
+        if profile.config.is_no_auth() {
+            return Ok(None);
+        }
         match change {
             SecretChange::Set { value } => Ok(Some(value.clone())),
             SecretChange::Clear => Ok(None),
@@ -218,7 +226,9 @@ impl ConnectionService {
         password: Option<Secret>,
     ) -> Result<(ConnectionProfile, Option<Secret>)> {
         let profile = self.store.get_profile(id)?;
-        let secret = if profile.save_password && profile.has_password {
+        let secret = if profile.config.is_no_auth() {
+            None
+        } else if profile.save_password && profile.has_password {
             match self.secrets.get(id) {
                 Ok(Some(s)) => Some(s),
                 Ok(None) => password,
@@ -546,6 +556,32 @@ mod tests {
         assert!(!cleared.has_password);
         assert!(secrets.is_empty());
         assert!(!svc.get_profile(p.config.id).unwrap().has_password);
+    }
+
+    #[test]
+    fn switching_to_no_auth_removes_secret_and_never_resolves_one() {
+        use dbstudio_core::AuthMode;
+        let (svc, secrets) = service();
+        let p = svc.save(profile("a", true), set("pw")).unwrap();
+        assert!(stored(&secrets, p.config.id).is_some());
+
+        let mut edit = p.clone();
+        edit.config.auth_mode = AuthMode::NoAuth;
+        let saved = svc.save(edit, SecretChange::Keep).unwrap();
+        assert!(!saved.has_password && !saved.save_password);
+        assert!(secrets.is_empty());
+        let back = svc.get_profile(p.config.id).unwrap();
+        assert_eq!(back.config.auth_mode, AuthMode::NoAuth);
+
+        // A secret supplied anyway is neither stored nor used.
+        let again = svc.save(back.clone(), set("other")).unwrap();
+        assert!(!again.has_password);
+        assert!(secrets.is_empty());
+        assert!(svc.resolve_secret(&back, &set("x")).unwrap().is_none());
+        let (_, secret) = svc
+            .session_credentials(p.config.id, Some(Secret::new("typed")))
+            .unwrap();
+        assert!(secret.is_none());
     }
 
     #[test]

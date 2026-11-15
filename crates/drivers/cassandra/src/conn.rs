@@ -451,8 +451,14 @@ impl Pool {
             };
             builder = builder.known_node(format!("{host}:{}", settings.port));
         }
-        if let Some(user) = config.username.as_deref().filter(|u| !u.is_empty()) {
-            builder = builder.user(user, secret.map(|s| s.expose()).unwrap_or(""));
+        if let Some(user) = config.credential_user() {
+            builder = builder.user(
+                user,
+                config
+                    .effective_secret(secret)
+                    .map(|s| s.expose())
+                    .unwrap_or(""),
+            );
         }
         if let Some(tls) = tls_config(config)? {
             builder = builder.tls_context(Some(TlsContext::Rustls023(tls)));

@@ -23,6 +23,7 @@ import type {
 } from '@/lib/types';
 import { groupPathOptions } from './connectionsTree';
 import {
+  defaultUsername,
   initialForm,
   profileFromForm,
   saveSecret,
@@ -183,6 +184,11 @@ function ConnectionDialogBody({
     ...ENVIRONMENTS.map((e) => ({ value: e, label: t(`environment.${e}`) })),
   ];
 
+  const authOptions: SelectOption[] = [
+    { value: 'password', label: t('authMode.password') },
+    { value: 'none', label: t('authMode.none') },
+  ];
+
   const tlsOptions: SelectOption[] = TLS_MODES.map((m) => ({
     value: m,
     label: t(`tlsMode.${m}`),
@@ -254,7 +260,9 @@ function ConnectionDialogBody({
 
   // A typed password is not read from the keychain, but a stored one (or saving one) is.
   const usesKeychain =
-    form.savePassword && (form.password !== '' || (profile?.hasPassword ?? false));
+    form.authMode === 'password' &&
+    form.savePassword &&
+    (form.password !== '' || (profile?.hasPassword ?? false));
   const fieldKey = databaseFieldFor(form.kind);
   const verifying = TLS_VERIFYING.has(form.tlsMode);
   const defaultColor = form.environment ? ENVIRONMENT_COLOR[form.environment] : undefined;
@@ -405,54 +413,81 @@ function ConnectionDialogBody({
         </Section>
 
         <Section title={t('section.auth')}>
-          <Field label={t('field.username')} htmlFor={`${formId}-user`}>
+          <Field label={t('field.authMode')} htmlFor={`${formId}-authmode`}>
+            <Select
+              id={`${formId}-authmode`}
+              value={form.authMode}
+              onValueChange={(v) => update({ authMode: v as ConnectionForm['authMode'] })}
+              options={authOptions}
+            />
+            {form.authMode === 'none' && (
+              <p className="text-xs text-muted-foreground">{t('field.authModeNoneHint')}</p>
+            )}
+          </Field>
+          <Field
+            label={
+              form.authMode === 'none'
+                ? `${t('field.username')} (${t('field.optional')})`
+                : t('field.username')
+            }
+            htmlFor={`${formId}-user`}
+          >
             <Input
               id={`${formId}-user`}
               autoComplete="off"
               value={form.username}
+              placeholder={
+                form.authMode === 'none' && defaultUsername(form.kind)
+                  ? t('field.usernameDefault', { name: defaultUsername(form.kind) })
+                  : ''
+              }
               onChange={(e) => update({ username: e.target.value })}
             />
           </Field>
-          <Field label={t('field.password')} htmlFor={`${formId}-pass`}>
-            <div className="flex items-center gap-1">
-              <Input
-                id={`${formId}-pass`}
-                type={showPassword ? 'text' : 'password'}
-                autoComplete="new-password"
-                value={form.password}
-                placeholder={passwordPlaceholder}
-                onChange={(e) => update({ password: e.target.value, passwordAction: 'keep' })}
+          {form.authMode === 'password' && (
+            <>
+              <Field label={t('field.password')} htmlFor={`${formId}-pass`}>
+                <div className="flex items-center gap-1">
+                  <Input
+                    id={`${formId}-pass`}
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    value={form.password}
+                    placeholder={passwordPlaceholder}
+                    onChange={(e) => update({ password: e.target.value, passwordAction: 'keep' })}
+                  />
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    aria-label={showPassword ? t('field.hidePassword') : t('field.showPassword')}
+                    aria-pressed={showPassword}
+                    onClick={() => setShowPassword((s) => !s)}
+                  >
+                    {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </Button>
+                </div>
+                {isEdit && profile.hasPassword && !form.password && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      update({ passwordAction: form.passwordAction === 'clear' ? 'keep' : 'clear' })
+                    }
+                    className="mt-1 self-start text-xs text-accent underline-offset-2 hover:underline"
+                  >
+                    {form.passwordAction === 'clear'
+                      ? t('field.undoClearPassword')
+                      : t('field.clearPassword')}
+                  </button>
+                )}
+              </Field>
+              <SwitchRow
+                label={t('field.savePassword')}
+                hint={t('field.savePasswordHint')}
+                checked={form.savePassword}
+                onChange={(savePassword) => update({ savePassword })}
               />
-              <Button
-                size="icon"
-                variant="ghost"
-                aria-label={showPassword ? t('field.hidePassword') : t('field.showPassword')}
-                aria-pressed={showPassword}
-                onClick={() => setShowPassword((s) => !s)}
-              >
-                {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-              </Button>
-            </div>
-            {isEdit && profile.hasPassword && !form.password && (
-              <button
-                type="button"
-                onClick={() =>
-                  update({ passwordAction: form.passwordAction === 'clear' ? 'keep' : 'clear' })
-                }
-                className="mt-1 self-start text-xs text-accent underline-offset-2 hover:underline"
-              >
-                {form.passwordAction === 'clear'
-                  ? t('field.undoClearPassword')
-                  : t('field.clearPassword')}
-              </button>
-            )}
-          </Field>
-          <SwitchRow
-            label={t('field.savePassword')}
-            hint={t('field.savePasswordHint')}
-            checked={form.savePassword}
-            onChange={(savePassword) => update({ savePassword })}
-          />
+            </>
+          )}
         </Section>
 
         <Section title={t('section.tls')}>

@@ -118,10 +118,14 @@ fn build_client(
     db: i64,
 ) -> Result<Client> {
     let mut settings = RedisConnectionInfo::default().set_db(db);
-    if let Some(user) = cfg.username.as_deref().filter(|u| !u.is_empty()) {
+    if let Some(user) = cfg.credential_user() {
         settings = settings.set_username(user);
     }
-    if let Some(pw) = secret.map(Secret::expose).filter(|p| !p.is_empty()) {
+    if let Some(pw) = cfg
+        .effective_secret(secret)
+        .map(Secret::expose)
+        .filter(|p| !p.is_empty())
+    {
         settings = settings.set_password(pw);
     }
     let invalid = |e: RedisError| Error::Connection(e.to_string());

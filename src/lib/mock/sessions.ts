@@ -44,7 +44,7 @@ export async function sessionOpen(
   await sleep();
   const profile = findMockProfile(connectionId);
   if (!profile) throw ipcError('notFound', `connection ${connectionId}`);
-  if (!profile.savePassword && !password) {
+  if (profile.authMode !== 'none' && !profile.savePassword && !password) {
     throw ipcError('authentication', 'password required');
   }
   assertReachable(profile);

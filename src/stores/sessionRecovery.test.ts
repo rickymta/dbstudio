@@ -39,6 +39,16 @@ describe('reconnectSession fallback', () => {
     expect(useSessionsStore.getState().sessionsByConnection.c1).toBe(stale);
   });
 
+  it('never asks for a password when the profile has no authentication', async () => {
+    vi.spyOn(ipc, 'connectionsList').mockResolvedValue({
+      groups: [],
+      profiles: [profile({ savePassword: false, hasPassword: false, authMode: 'none' })],
+    });
+    const open = vi.spyOn(ipc, 'sessionOpen').mockResolvedValue(fresh);
+    await expect(reconnectSession('old', 'c1')).resolves.toBe(fresh);
+    expect(open).toHaveBeenCalledWith('c1', null);
+  });
+
   it('asks for the password of a profile that stores none, without touching the entry', async () => {
     vi.spyOn(ipc, 'connectionsList').mockResolvedValue({
       groups: [],

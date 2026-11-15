@@ -481,8 +481,14 @@ pub async fn connect(env: &RunEnv, connection_id: Uuid) -> Result<Connected> {
         }
         None => (config.clone(), None),
     };
-    let session: Arc<dyn Session> =
-        Arc::from(driver.connect(&driver_config, secret.as_ref()).await?);
+    let session: Arc<dyn Session> = Arc::from(
+        driver
+            .connect(
+                &driver_config,
+                driver_config.effective_secret(secret.as_ref()),
+            )
+            .await?,
+    );
     Ok(Connected {
         tunnel_addr: tunnel.as_ref().map(dbstudio_ssh::Tunnel::local_addr),
         config,

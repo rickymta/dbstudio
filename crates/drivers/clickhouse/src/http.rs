@@ -339,14 +339,9 @@ pub(crate) fn build_client(
     };
     let mut client = Client::with_http_client(hyper)
         .with_url(&target.url)
-        .with_user(
-            cfg.username
-                .clone()
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| "default".to_string()),
-        )
+        .with_user(cfg.login_user().unwrap_or("default").to_string())
         .with_compression(compression);
-    if let Some(secret) = secret {
+    if let Some(secret) = cfg.effective_secret(secret) {
         client = client.with_password(secret.expose());
     }
     Ok(client)

@@ -248,10 +248,13 @@ async fn build_options(
     };
     let mechanism = match opt(config, "authMechanism") {
         Some(m) => Some(AuthMechanism::from_str(m).map_err(map_error)?),
-        None if config.username.is_none() && pem.is_some() => Some(AuthMechanism::MongoDbX509),
+        None if config.credential_user().is_none() && pem.is_some() => {
+            Some(AuthMechanism::MongoDbX509)
+        }
         None => None,
     };
-    if config.username.is_some() || mechanism.is_some() {
+    let user = config.credential_user().map(str::to_string);
+    if user.is_some() || mechanism.is_some() {
         let source = opt(config, "authSource")
             .map(str::to_string)
             .or_else(|| {
@@ -264,8 +267,12 @@ async fn build_options(
             .or_else(|| Some("admin".to_string()));
         o.credential = Some(
             Credential::builder()
-                .username(config.username.clone())
-                .password(secret.map(|s| s.expose().to_string()))
+                .username(user)
+                .password(
+                    config
+                        .effective_secret(secret)
+                        .map(|s| s.expose().to_string()),
+                )
                 .source(source)
                 .mechanism(mechanism)
                 .build(),

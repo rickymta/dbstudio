@@ -156,13 +156,8 @@ impl Shared {
         let mut base = tokio_postgres::Config::new();
         base.host(&config.host);
         base.port(config.port);
-        base.user(
-            config
-                .username
-                .as_deref()
-                .unwrap_or(default_user(config.kind)),
-        );
-        if let Some(secret) = secret {
+        base.user(config.login_user().unwrap_or(default_user(config.kind)));
+        if let Some(secret) = config.effective_secret(secret) {
             base.password(secret.expose());
         }
         base.ssl_mode(tls.ssl_mode);

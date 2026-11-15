@@ -6,7 +6,7 @@
 //! The password never goes to the frontend and is not kept in memory either: the command
 //! reports `hasPassword` and the UI asks the user to type the password again.
 
-use dbstudio_core::{ConnectionConfig, DbKind, Error, TlsMode};
+use dbstudio_core::{AuthMode, ConnectionConfig, DbKind, Error, TlsMode};
 use dbstudio_store::ConnectionProfile;
 use serde::Serialize;
 use tauri::State;
@@ -452,7 +452,7 @@ fn parse_cassandra(p: &Parts) -> Result<ConnectionConfig> {
 /// Parse a URI into a profile and whether it carried a password (which is discarded).
 pub fn parse_uri(uri: &str) -> Result<(ConnectionProfile, bool)> {
     let parts = split_uri(uri)?;
-    let cfg = match parts.scheme.as_str() {
+    let mut cfg = match parts.scheme.as_str() {
         "mongodb" | "mongodb+srv" => parse_mongo(&parts)?,
         "redis" | "rediss" => parse_redis(&parts)?,
         "postgres" | "postgresql" | "mysql" | "mariadb" | "sqlserver" | "mssql" | "oracle"
@@ -461,6 +461,25 @@ pub fn parse_uri(uri: &str) -> Result<(ConnectionProfile, bool)> {
         "cassandra" | "scylladb" | "scylla" => parse_cassandra(&parts)?,
         other => return Err(Error::Unsupported(format!("uri_scheme:{other}"))),
     };
+    // A URI without user and password points at a server that most likely needs no login
+    // (local Redis, MongoDB, Cassandra, ClickHouse, PostgreSQL trust). Servers that always need
+    // a user (MySQL family, SQL Server, Oracle) keep the password mode.
+    if parts.password.is_none()
+        && cfg.username.is_none()
+        && matches!(
+            cfg.kind,
+            DbKind::Redis
+                | DbKind::MongoDb
+                | DbKind::Cassandra
+                | DbKind::ScyllaDb
+                | DbKind::ClickHouse
+                | DbKind::Postgres
+                | DbKind::CockroachDb
+                | DbKind::YugabyteDb
+        )
+    {
+        cfg.auth_mode = AuthMode::NoAuth;
+    }
     Ok((profile_of(cfg), parts.password.is_some()))
 }
 
@@ -511,6 +530,20 @@ mod tests {
             !p.has_password && !p.save_password,
             "no password in the profile"
         );
+    }
+
+    #[test]
+    fn uri_without_user_and_password_means_no_authentication() {
+        let (p, _) = parse_uri("redis://cache:6379/0").unwrap();
+        assert_eq!(p.config.auth_mode, AuthMode::NoAuth);
+        let (p, _) = parse_uri("mongodb://h/").unwrap();
+        assert_eq!(p.config.auth_mode, AuthMode::NoAuth);
+        let (p, _) = parse_uri("redis://:secret@cache").unwrap();
+        assert_eq!(p.config.auth_mode, AuthMode::Password);
+        let (p, _) = parse_uri("postgres://me@db/app").unwrap();
+        assert_eq!(p.config.auth_mode, AuthMode::Password);
+        let (p, _) = parse_uri("mysql://db/app").unwrap();
+        assert_eq!(p.config.auth_mode, AuthMode::Password);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import { safeColor } from './color';
 import type {
+  AuthMode,
   ConnectionProfile,
   DbKind,
   Environment,
@@ -17,6 +18,8 @@ export interface ConnectionForm {
   portTouched: boolean;
   database: string;
   username: string;
+  /** `none`: the server needs no login, so no password is asked, stored or sent. */
+  authMode: AuthMode;
   password: string;
   /** Edit mode only, while `password` is empty: keep the stored secret or remove it. */
   passwordAction: 'keep' | 'clear';
@@ -56,6 +59,7 @@ export function initialForm(
       portTouched: false,
       database: '',
       username: '',
+      authMode: 'password',
       password: '',
       passwordAction: 'keep',
       savePassword: true,
@@ -79,6 +83,7 @@ export function initialForm(
     portTouched: true,
     database: profile.database ?? '',
     username: profile.username ?? '',
+    authMode: profile.authMode ?? 'password',
     password: '',
     passwordAction: 'keep',
     savePassword: profile.savePassword,
@@ -126,6 +131,7 @@ export function profileFromForm(
     port: Number(form.port),
     database: orNull(form.database),
     username: orNull(form.username),
+    authMode: form.authMode,
     tls: {
       mode: form.tlsMode,
       caCertPath: verifying ? orNull(form.caCertPath) : null,
@@ -138,7 +144,7 @@ export function profileFromForm(
     options: { ...form.options },
     groupId: form.groupId || null,
     color: safeColor(form.color),
-    savePassword: form.savePassword,
+    savePassword: form.authMode === 'none' ? false : form.savePassword,
     hasPassword: existing?.hasPassword ?? false,
     sortOrder: existing?.sortOrder ?? 0,
     createdAt: existing?.createdAt ?? now,
@@ -148,13 +154,33 @@ export function profileFromForm(
 
 /** Secret change to send when saving. */
 export function saveSecret(form: ConnectionForm): SecretChange {
-  if (!form.savePassword) return { action: 'clear' };
+  // No authentication also drops a password left in the keychain by the previous mode.
+  if (form.authMode === 'none' || !form.savePassword) return { action: 'clear' };
   if (form.password) return { action: 'set', value: form.password };
   return form.passwordAction === 'clear' ? { action: 'clear' } : { action: 'keep' };
 }
 
 /** Secret to use for a connection test: whatever was typed, else the stored one. */
 export function testSecret(form: ConnectionForm): SecretChange {
+  if (form.authMode === 'none') return { action: 'clear' };
   if (form.password) return { action: 'set', value: form.password };
   return form.passwordAction === 'clear' ? { action: 'clear' } : { action: 'keep' };
+}
+
+/** Typical default login of a server that needs no password (placeholder of the user field). */
+export function defaultUsername(kind: DbKind): string | null {
+  switch (kind) {
+    case 'postgres':
+      return 'postgres';
+    case 'yugabytedb':
+      return 'yugabyte';
+    case 'clickhouse':
+      return 'default';
+    case 'cockroachdb':
+    case 'mysql':
+    case 'tidb':
+      return 'root';
+    default:
+      return null;
+  }
 }

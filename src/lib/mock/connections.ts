@@ -19,6 +19,7 @@ function profile(
     port: p.kind === 'mysql' ? 3306 : 5432,
     database: null,
     username: null,
+    authMode: 'password',
     tls: { mode: 'prefer' },
     connectTimeoutMs: null,
     readOnly: false,
@@ -104,7 +105,7 @@ function applySecret(
   p: ConnectionProfile,
   s: SecretChange,
 ): boolean {
-  if (!p.savePassword) return false;
+  if (p.authMode === 'none' || !p.savePassword) return false;
   if (s.action === 'set') return true;
   if (s.action === 'clear') return false;
   return existing?.hasPassword ?? false;

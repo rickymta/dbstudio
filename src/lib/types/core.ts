@@ -221,6 +221,9 @@ export interface TlsConfig {
   serverName?: string | null;
 }
 
+/** How a connection authenticates: with a password (default) or not at all. */
+export type AuthMode = 'password' | 'none';
+
 export type Environment = 'development' | 'staging' | 'production';
 
 /** Rust `ConnectionConfig`; never contains a password. */
@@ -232,6 +235,8 @@ export interface ConnectionConfig {
   port: number;
   database?: string | null;
   username?: string | null;
+  /** Missing = `password` (profiles saved before the field existed). */
+  authMode?: AuthMode;
   tls: TlsConfig;
   connectTimeoutMs?: number | null;
   readOnly: boolean;
