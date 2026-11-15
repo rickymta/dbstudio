@@ -22,6 +22,7 @@ use crate::guard::{self, GuardInput};
 use crate::history::{RowCounter, Tracker};
 use crate::host::FileFilter;
 use crate::lease::{LeaseInfo, LeaseReopened, MAX_LEASES_PER_SESSION};
+use crate::origin::origin_emit;
 use crate::sink::EventSink;
 use crate::state::AppState;
 
@@ -165,15 +166,18 @@ where
         None
     };
     let map = guarded.bound.map;
-    query.text = guarded.bound.text;
+    let typed_text = std::mem::replace(&mut query.text, guarded.bound.text);
     apply_editor_limits(state, &mut query).await;
     let counter = RowCounter::default();
     let seen = counter.clone();
     let mut emit = emit;
-    let mut sink = EventSink::new(mapped_emit(map.clone(), move |event| {
-        seen.observe(&event);
-        emit(event)
-    }));
+    let mut sink = EventSink::new(mapped_emit(
+        map.clone(),
+        origin_emit(dialect, &typed_text, move |event| {
+            seen.observe(&event);
+            emit(event)
+        }),
+    ));
     let result = session
         .execute(query, &mut sink)
         .await
@@ -415,15 +419,18 @@ where
         None
     };
     let map = guarded.bound.map;
-    query.text = guarded.bound.text;
+    let typed_text = std::mem::replace(&mut query.text, guarded.bound.text);
     apply_editor_limits(state, &mut query).await;
     let counter = RowCounter::default();
     let seen = counter.clone();
     let mut emit = emit;
-    let mut sink = EventSink::new(mapped_emit(map.clone(), move |event| {
-        seen.observe(&event);
-        emit(event)
-    }));
+    let mut sink = EventSink::new(mapped_emit(
+        map.clone(),
+        origin_emit(dialect, &typed_text, move |event| {
+            seen.observe(&event);
+            emit(event)
+        }),
+    ));
     let result = lease
         .execute(query, &mut sink)
         .await
