@@ -10,3 +10,10 @@ client_encryption_options:
   certificate: /certs/scylla.crt
   keyfile: /certs/scylla.key
   require_client_auth: false
+# The CI machine is slow and the container has a single shard: the default 2 s write / CAS
+# timeouts make lightweight transactions (INSERT ... IF NOT EXISTS of a bulk import) time out
+# under load. Generous limits keep the integration tests about behaviour, not about speed.
+write_request_timeout_in_ms: 10000
+cas_contention_timeout_in_ms: 10000
+read_request_timeout_in_ms: 10000
+range_request_timeout_in_ms: 20000
