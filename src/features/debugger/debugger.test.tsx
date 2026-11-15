@@ -56,6 +56,15 @@ async function mountEditor() {
     </Providers>,
   );
   await screen.findByTestId('sql-editor', undefined, { timeout: 5000 });
+  // CodeMirror draws the breakpoint gutter after the editor mounts: on a slow machine it is not
+  // there yet when the test looks it up, so wait for its line cells too.
+  await waitFor(
+    () =>
+      expect(document.querySelectorAll('.cm-bp-gutter .cm-gutterElement').length).toBeGreaterThan(
+        1,
+      ),
+    { timeout: 5000 },
+  );
   return { id };
 }
 
