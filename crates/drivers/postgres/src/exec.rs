@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use dbstudio_core::{
-    ColumnMeta, EndOutcome, Error, Result, ResultSink, ScriptDialect, StatementEnd, StatementStart,
-    TextRange, Value,
+    ColumnMeta, ColumnOrigin, EndOutcome, Error, Result, ResultSink, ScriptDialect, StatementEnd,
+    StatementStart, TextRange, Value,
 };
 use tokio_postgres::types::Type;
 use tokio_postgres::{SimpleQueryMessage, SimpleQueryRow};
@@ -77,6 +77,72 @@ fn shape_of(stmt: &tokio_postgres::Statement) -> Shape {
             })
             .collect(),
         types: stmt.columns().iter().map(|c| c.type_().clone()).collect(),
+    }
+}
+
+/// Fill the `origin` of every column that comes straight from a table column.
+///
+/// The server tells which table (oid) and attribute number a column is read from; one catalog
+/// query turns those into names for the whole result. Best effort: a result without such
+/// columns costs nothing and a failed lookup leaves the origins empty.
+async fn fill_origins(conn: &Conn, stmt: &tokio_postgres::Statement, shape: &mut Shape) {
+    let refs: Vec<(usize, u32, i16)> = stmt
+        .columns()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| match (c.table_oid(), c.column_id()) {
+            (Some(oid), Some(attnum)) if oid != 0 && attnum > 0 => Some((i, oid, attnum)),
+            _ => None,
+        })
+        .collect();
+    if refs.is_empty() {
+        return;
+    }
+    let mut oids: Vec<u32> = refs.iter().map(|r| r.1).collect();
+    oids.sort_unstable();
+    oids.dedup();
+    let rows = match conn
+        .client
+        .query(
+            "SELECT c.oid, a.attnum, n.nspname, c.relname, a.attname, current_database() \
+             FROM pg_catalog.pg_class c \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 \
+             WHERE c.oid = ANY($1::oid[])",
+            &[&oids],
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    let mut names: std::collections::HashMap<(u32, i16), ColumnOrigin> =
+        std::collections::HashMap::with_capacity(rows.len());
+    for r in &rows {
+        let (Ok(oid), Ok(attnum), Ok(schema), Ok(table), Ok(column), Ok(db)) = (
+            r.try_get::<_, u32>(0),
+            r.try_get::<_, i16>(1),
+            r.try_get::<_, String>(2),
+            r.try_get::<_, String>(3),
+            r.try_get::<_, String>(4),
+            r.try_get::<_, String>(5),
+        ) else {
+            continue;
+        };
+        names.insert(
+            (oid, attnum),
+            ColumnOrigin {
+                database: Some(db),
+                schema: Some(schema),
+                table,
+                column,
+            },
+        );
+    }
+    for (i, oid, attnum) in refs {
+        if let Some(m) = shape.metas.get_mut(i) {
+            m.origin = names.get(&(oid, attnum)).cloned();
+        }
     }
 }
 
@@ -305,7 +371,8 @@ async fn run_statement(
     let started = Instant::now();
     let err = |e| map_statement_error(e, stmt.char_offset, running.is_cancelled());
     let prepared = conn.client.prepare(&stmt.text).await.map_err(err)?;
-    let shape = shape_of(&prepared);
+    let mut shape = shape_of(&prepared);
+    fill_origins(conn, &prepared, &mut shape).await;
     drop(prepared);
 
     if shape.metas.is_empty() {
