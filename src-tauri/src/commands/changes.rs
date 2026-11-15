@@ -448,7 +448,7 @@ mod tests {
         let r = reason(vec![column("qty", Some(("t", "qty")))]).await;
         assert_eq!(r.reason, Some(ResultNotEditableReason::KeyNotInResult));
         assert_eq!(r.missing_key_columns, vec!["id"]);
-        assert_eq!(r.table.is_some(), true);
+        assert!(r.table.is_some());
 
         // A read-only connection keeps the mapping but never edits.
         let (state, sid) = open_mock(DbKind::Postgres, true).await;
