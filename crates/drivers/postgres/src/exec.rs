@@ -136,6 +136,7 @@ async fn fill_origins(conn: &Conn, stmt: &tokio_postgres::Statement, shape: &mut
                 schema: Some(schema),
                 table,
                 column,
+                alias: None,
             },
         );
     }
@@ -373,6 +374,16 @@ async fn run_statement(
     let prepared = conn.client.prepare(&stmt.text).await.map_err(err)?;
     let mut shape = shape_of(&prepared);
     fill_origins(conn, &prepared, &mut shape).await;
+    // The server names the table of a column, not which instance of it (a self join, a
+    // LATERAL or a sub select over the same table look alike): only a plain one-table SELECT
+    // keeps its origins.
+    if shape.metas.iter().any(|m| m.origin.is_some())
+        && dbstudio_sql::parse_simple_select(ScriptDialect::Postgres, &stmt.text).is_none()
+    {
+        for m in &mut shape.metas {
+            m.origin = None;
+        }
+    }
     drop(prepared);
 
     if shape.metas.is_empty() {

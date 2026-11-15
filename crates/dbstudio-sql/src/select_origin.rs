@@ -555,6 +555,7 @@ pub fn infer_origins(
         schema: schema.clone(),
         table: table.clone(),
         column,
+        alias: None,
     };
     match sel.list {
         SelectList::Star => Some(

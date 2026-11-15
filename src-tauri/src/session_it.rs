@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dbstudio_core::{
-    ConnectionConfig, DbKind, LeaseOptions, QueryRequest, Secret, TxOptions, TxStatus,
+    ConnectionConfig, DbKind, LeaseOptions, ObjectPath, QueryRequest, Secret, TxOptions, TxStatus,
     execute_collect,
 };
 use dbstudio_store::{ConnectionProfile, SecretChange};
@@ -409,5 +409,139 @@ async fn mysql_keepalive_detects_a_killed_lease() {
 async fn mysql_session_reconnects_after_an_outage() {
     if enabled() {
         reconnect_scenario(mysql()).await;
+    }
+}
+
+// -- editing a result inside the tab's transaction -------------------------------------------
+
+async fn lease_scalar(state: &AppState, lease: Uuid, sql: &str) -> String {
+    let lease = state.leases.get(lease).unwrap();
+    let mut sink = dbstudio_core::CollectingSink::new();
+    lease
+        .execute(QueryRequest::new(sql), &mut sink)
+        .await
+        .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    format!("{:?}", first_value(&sink.into_results()))
+}
+
+fn update(id: i64, text: &str) -> dbstudio_core::ChangeSet {
+    use dbstudio_core::{CellEdit, ChangeSet, EditValue, RowChange, RowChangeSet, Value};
+    ChangeSet::Rows(RowChangeSet {
+        table: ObjectPath::root(), // replaced by the caller
+        key_columns: vec!["id".into()],
+        changes: vec![RowChange::Update {
+            key: vec![Value::Int(id)],
+            set: vec![CellEdit {
+                column: "a".into(),
+                value: EditValue::Text(text.into()),
+            }],
+        }],
+    })
+}
+
+fn with_table(mut cs: dbstudio_core::ChangeSet, table: ObjectPath) -> dbstudio_core::ChangeSet {
+    if let dbstudio_core::ChangeSet::Rows(r) = &mut cs {
+        r.table = table;
+    }
+    cs
+}
+
+async fn lease_edit_scenario(server: Server, table: ObjectPath, name: &str) {
+    use crate::commands::changes::apply_impl;
+    let (state, _) = test_state(build_registry());
+    let sid = open(&state, &server, "result-edit").await;
+    let session = state.sessions.get(sid).unwrap();
+    execute_collect(
+        &*session,
+        QueryRequest::new(format!(
+            "DROP TABLE IF EXISTS {name}; \
+             CREATE TABLE {name} (id int PRIMARY KEY, a varchar(20)); \
+             INSERT INTO {name} VALUES (1, 'one'), (2, 'two')"
+        )),
+    )
+    .await
+    .unwrap();
+    // A manual-commit tab: the edit runs in the lease's own transaction.
+    let lease = editor::lease_open_impl(
+        &state,
+        sid,
+        LeaseOptions {
+            auto_commit: false,
+            ..LeaseOptions::default()
+        },
+    )
+    .await
+    .unwrap()
+    .lease_id;
+    let apply = |cs| apply_impl(&state, sid, with_table(cs, table.clone()), Some(lease));
+
+    let r = apply(update(1, "edited")).await.unwrap();
+    assert_eq!(r.applied, 1);
+    assert_eq!(
+        lease_scalar(&state, lease, &format!("SELECT a FROM {name} WHERE id = 1")).await,
+        "Text(\"edited\")"
+    );
+    // Not committed: another connection still sees the old value.
+    assert_eq!(
+        scalar(&state, sid, &format!("SELECT a FROM {name} WHERE id = 1")).await,
+        "Text(\"one\")"
+    );
+    assert_eq!(
+        state.leases.state_of(lease).unwrap().transaction,
+        TxStatus::Active
+    );
+
+    // A key that matches nothing is an error (MySQL reports 0 CHANGED rows for a no-op update
+    // too, so this needs the matched count), the earlier work in the transaction survives, and
+    // the transaction stays usable.
+    let err = apply(update(99, "x")).await.unwrap_err();
+    assert!(
+        matches!(err, dbstudio_core::Error::ChangeFailed { index: 0, .. }),
+        "{err:?}"
+    );
+    assert_eq!(
+        lease_scalar(&state, lease, &format!("SELECT a FROM {name} WHERE id = 1")).await,
+        "Text(\"edited\")"
+    );
+    // An update to the value the row already has is not "no row matched".
+    apply(update(2, "two")).await.unwrap();
+
+    editor::lease_rollback_impl(&state, lease).await.unwrap();
+    assert_eq!(
+        scalar(&state, sid, &format!("SELECT a FROM {name} WHERE id = 1")).await,
+        "Text(\"one\")"
+    );
+    execute_collect(&*session, QueryRequest::new(format!("DROP TABLE {name}")))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_result_edit_runs_in_the_tabs_transaction() {
+    use dbstudio_core::ObjectKind as K;
+    if enabled() {
+        let table = ObjectPath::root()
+            .child(K::Database, "dbstudio")
+            .child(K::Schema, "public")
+            .child(K::Table, "dbs_result_edit_lease");
+        lease_edit_scenario(
+            pg("dbstudio-it-result-edit"),
+            table,
+            "dbs_result_edit_lease",
+        )
+        .await;
+    }
+}
+
+#[cfg(feature = "mysql")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mysql_result_edit_runs_in_the_tabs_transaction() {
+    use dbstudio_core::ObjectKind as K;
+    if enabled() {
+        let table = ObjectPath::root()
+            .child(K::Database, "dbstudio")
+            .child(K::Table, "dbs_result_edit_lease");
+        lease_edit_scenario(mysql(), table, "dbs_result_edit_lease").await;
     }
 }

@@ -626,7 +626,16 @@ async fn stream_statement(
             let touched = affected > 0
                 || result.last_insert_id().unwrap_or(0) > 0
                 || !result.info().is_empty();
+            // "Rows matched: 1  Changed: 0  Warnings: 0" (UPDATE): the editor checks the matched
+            // count, which `affected_rows` (changed rows) cannot tell from "no such row".
+            let info = result.info().into_owned();
             let next = result.next().await;
+            if info.starts_with("Rows matched") {
+                if let Err(e) = sink.on_message(info) {
+                    failure = Some(e);
+                    break;
+                }
+            }
             if warnings > 0 {
                 if let Err(e) = sink.on_message(format!("{warnings} warning(s)")) {
                     failure = Some(e);

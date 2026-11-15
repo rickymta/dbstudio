@@ -1222,6 +1222,7 @@ fn query_fixtures() {
                     schema: None,
                     table: "docs".into(),
                     column: "doc".into(),
+                    alias: Some("d".into()),
                 }),
             }),
         ),

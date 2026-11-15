@@ -53,12 +53,20 @@ pub(crate) fn origin_of(c: &mysql_async::Column) -> Option<ColumnOrigin> {
     if table.is_empty() || column.is_empty() {
         return None;
     }
+    // Without a schema the table could be a temporary one hiding a real table: unknown.
     let schema = c.schema_str();
+    if schema.is_empty() {
+        return None;
+    }
+    // `table_str` is the name the query gave this table instance (its alias): two instances of
+    // one table (a self join) must not be taken for one.
+    let alias = c.table_str();
     Some(ColumnOrigin {
-        database: (!schema.is_empty()).then(|| schema.into_owned()),
+        database: Some(schema.into_owned()),
         schema: None,
         table: table.into_owned(),
         column: column.into_owned(),
+        alias: Some(alias.into_owned()),
     })
 }
 
@@ -520,7 +528,16 @@ async fn stream_query(
             let touched = affected > 0
                 || result.last_insert_id().unwrap_or(0) > 0
                 || !result.info().is_empty();
+            // "Rows matched: 1  Changed: 0  Warnings: 0" (UPDATE): the editor checks the matched
+            // count, which `affected_rows` (changed rows) cannot tell from "no such row".
+            let info = result.info().into_owned();
             let next = result.next().await;
+            if info.starts_with("Rows matched") {
+                if let Err(e) = sink.on_message(info) {
+                    failure = Some(e);
+                    break;
+                }
+            }
             // The OK packet was already received, so the statement itself succeeded even when
             // jumping to the next result set reports an error.
             if warnings > 0 {

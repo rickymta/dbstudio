@@ -74,6 +74,10 @@ pub struct ColumnOrigin {
     pub table: String,
     /// Column name in the base table (never the alias used in the query).
     pub column: String,
+    /// Name the query gave this instance of the table (its alias), when the driver reports it.
+    /// Columns of one table with different aliases come from different instances (self join).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 /// Tabular data returned by a statement.

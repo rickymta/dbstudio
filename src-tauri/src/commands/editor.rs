@@ -22,7 +22,7 @@ use crate::guard::{self, GuardInput};
 use crate::history::{RowCounter, Tracker};
 use crate::host::FileFilter;
 use crate::lease::{LeaseInfo, LeaseReopened, MAX_LEASES_PER_SESSION};
-use crate::origin::origin_emit;
+use crate::origin::{ContextFn, origin_emit};
 use crate::sink::EventSink;
 use crate::state::AppState;
 
@@ -171,9 +171,11 @@ where
     let counter = RowCounter::default();
     let seen = counter.clone();
     let mut emit = emit;
+    let session_db = query.database.clone().or_else(|| config.database.clone());
+    let origin_ctx: ContextFn = Box::new(move || (session_db.clone(), None));
     let mut sink = EventSink::new(mapped_emit(
         map.clone(),
-        origin_emit(dialect, &typed_text, move |event| {
+        origin_emit(dialect, &typed_text, origin_ctx, move |event| {
             seen.observe(&event);
             emit(event)
         }),
@@ -424,9 +426,14 @@ where
     let counter = RowCounter::default();
     let seen = counter.clone();
     let mut emit = emit;
+    let ctx_lease = lease.clone();
+    let origin_ctx: ContextFn = Box::new(move || {
+        let st = ctx_lease.state();
+        (st.database, st.schema)
+    });
     let mut sink = EventSink::new(mapped_emit(
         map.clone(),
-        origin_emit(dialect, &typed_text, move |event| {
+        origin_emit(dialect, &typed_text, origin_ctx, move |event| {
             seen.observe(&event);
             emit(event)
         }),

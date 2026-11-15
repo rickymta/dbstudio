@@ -71,5 +71,26 @@ async fn origins_of_aliases_expressions_and_joins() {
         &format!("SELECT x.id FROM (SELECT id FROM `{db}`.pa) x"),
     )
     .await;
-    assert!(rs.columns[0].origin.is_none() || pair(&rs.columns[0]) == want("pa", "id"));
+    // MySQL materializes the derived table but still names the base table: the alias is
+    // the derived table's, and the editor (which keeps origins only for a plain one-table
+    // SELECT) never edits through it.
+    let o = rs.columns[0]
+        .origin
+        .as_ref()
+        .expect("origin of a derived column");
+    assert_eq!((o.table.as_str(), o.alias.as_deref()), ("pa", Some("x")));
+
+    // A self join: the instances carry different aliases, so they are not one source.
+    let rs = query(
+        &*s,
+        &format!("SELECT p.id, c.name FROM `{db}`.pa p JOIN `{db}`.pa c ON c.id = p.id"),
+    )
+    .await;
+    let alias = |i: usize| rs.columns[i].origin.as_ref().unwrap().alias.clone();
+    assert_eq!(alias(0).as_deref(), Some("p"));
+    assert_eq!(alias(1).as_deref(), Some("c"));
+    assert_eq!(
+        dbstudio_core::single_source(&rs.columns),
+        Err(dbstudio_core::ResultNotEditableReason::MultipleTables)
+    );
 }

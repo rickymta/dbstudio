@@ -88,22 +88,26 @@ pub struct SourceTable {
     pub table: String,
 }
 
-/// The one table all columns with an origin come from.
+/// The one table all columns with an origin come from. Two instances of one table (a self
+/// join: same table, different aliases) are different sources.
 pub fn single_source(columns: &[ColumnMeta]) -> Result<SourceTable, ResultNotEditableReason> {
-    let mut source: Option<SourceTable> = None;
+    let mut source: Option<(SourceTable, Option<&str>)> = None;
     for o in columns.iter().filter_map(|c| c.origin.as_ref()) {
         let this = SourceTable {
             database: o.database.clone(),
             schema: o.schema.clone(),
             table: o.table.clone(),
         };
+        let alias = o.alias.as_deref();
         match &source {
-            None => source = Some(this),
-            Some(first) if *first == this => {}
+            None => source = Some((this, alias)),
+            Some((first, a)) if *first == this && *a == alias => {}
             Some(_) => return Err(ResultNotEditableReason::MultipleTables),
         }
     }
-    source.ok_or(ResultNotEditableReason::NoOrigin)
+    source
+        .map(|(s, _)| s)
+        .ok_or(ResultNotEditableReason::NoOrigin)
 }
 
 /// Where a connection is when the result was produced: fills what an origin leaves out.
@@ -182,19 +186,25 @@ fn reason_of(r: NotEditableReason) -> ResultNotEditableReason {
 /// Combine the table's [`Editability`] with the columns of the result.
 ///
 /// Result columns are matched to table columns by the origin's column name; the spelling of key
-/// and read-only columns (known from `ed`) wins over a differently cased origin (static analysis
-/// folds names the way the dialect does). A column that maps to a table column already taken by
+/// and read-only columns (known from `ed`) wins over a differently cased origin, but only with
+/// `fold_case` (origins from static analysis of case-insensitive dialects); origins reported by
+/// the server (PostgreSQL, MySQL) are matched exactly. A column that maps to a table column already taken by
 /// an earlier result column (`SELECT id, id AS id2`) stays read-only.
 pub fn resolve_result_editability(
     columns: &[ColumnMeta],
     table: ObjectPath,
     ed: Editability,
+    fold_case: bool,
 ) -> ResultEditability {
     let canonical = |name: &str| -> String {
-        ed.key_columns
-            .iter()
-            .chain(&ed.read_only_columns)
-            .find(|k| k.eq_ignore_ascii_case(name))
+        let known = || ed.key_columns.iter().chain(&ed.read_only_columns);
+        known()
+            .find(|k| k.as_str() == name)
+            .or_else(|| {
+                fold_case
+                    .then(|| known().find(|k| k.eq_ignore_ascii_case(name)))
+                    .flatten()
+            })
             .cloned()
             .unwrap_or_else(|| name.to_string())
     };
@@ -274,6 +284,7 @@ mod tests {
                 schema: Some("s".into()),
                 table: t.into(),
                 column: c.into(),
+                alias: None,
             }),
         }
     }
@@ -322,6 +333,21 @@ mod tests {
     }
 
     #[test]
+    fn two_instances_of_one_table_are_two_sources() {
+        let mut p = col("pid", Some(("tree", "id")));
+        let mut c = col("name", Some(("tree", "name")));
+        p.origin.as_mut().unwrap().alias = Some("p".into());
+        c.origin.as_mut().unwrap().alias = Some("c".into());
+        assert_eq!(
+            single_source(&[p.clone(), c]),
+            Err(ResultNotEditableReason::MultipleTables)
+        );
+        let mut p2 = col("pname", Some(("tree", "name")));
+        p2.origin.as_mut().unwrap().alias = Some("p".into());
+        assert!(single_source(&[p, p2]).is_ok());
+    }
+
+    #[test]
     fn editable_with_alias_expression_and_readonly() {
         let cols = [
             col("ident", Some(("t", "id"))),
@@ -329,7 +355,7 @@ mod tests {
             col("twice", None),
             col("gen", Some(("t", "gen"))),
         ];
-        let r = resolve_result_editability(&cols, path(), ed(true, &["id"], &["gen"], None));
+        let r = resolve_result_editability(&cols, path(), ed(true, &["id"], &["gen"], None), false);
         assert!(r.editable && r.reason.is_none());
         assert_eq!(
             r.column_map,
@@ -348,7 +374,7 @@ mod tests {
     #[test]
     fn key_not_in_result_names_what_is_missing() {
         let cols = [col("a", Some(("t", "a")))];
-        let r = resolve_result_editability(&cols, path(), ed(true, &["id", "b"], &[], None));
+        let r = resolve_result_editability(&cols, path(), ed(true, &["id", "b"], &[], None), false);
         assert!(!r.editable);
         assert_eq!(r.reason, Some(ResultNotEditableReason::KeyNotInResult));
         assert_eq!(r.missing_key_columns, vec!["id", "b"]);
@@ -357,7 +383,8 @@ mod tests {
         // A composite key is complete only with every part.
         let cols = [col("id", Some(("t", "id"))), col("b", Some(("t", "b")))];
         assert!(
-            resolve_result_editability(&cols, path(), ed(true, &["id", "b"], &[], None)).editable
+            resolve_result_editability(&cols, path(), ed(true, &["id", "b"], &[], None), false)
+                .editable
         );
     }
 
@@ -382,7 +409,8 @@ mod tests {
                 ResultNotEditableReason::Unsupported,
             ),
         ] {
-            let r = resolve_result_editability(&cols, path(), ed(false, &[], &[], Some(from)));
+            let r =
+                resolve_result_editability(&cols, path(), ed(false, &[], &[], Some(from)), false);
             assert!(!r.editable);
             assert_eq!(r.reason, Some(to));
         }
@@ -395,12 +423,19 @@ mod tests {
             col("again", Some(("t", "Id"))),
             col("Name", Some(("t", "Name"))),
         ];
-        let r = resolve_result_editability(&cols, path(), ed(true, &["id"], &[], None));
+        let r = resolve_result_editability(&cols, path(), ed(true, &["id"], &[], None), true);
         assert!(r.editable);
         assert_eq!(
             r.column_map,
             vec![Some("id".into()), None, Some("Name".into())]
         );
+        // Names reported by the server are exact: "ID" is not the key `id`.
+        let cols = [col("ID", Some(("t", "ID"))), col("id2", Some(("t", "id")))];
+        let r = resolve_result_editability(&cols, path(), ed(true, &["id"], &[], None), false);
+        assert_eq!(r.column_map, vec![Some("ID".into()), Some("id".into())]);
+        assert!(r.editable);
+        let r = resolve_result_editability(&cols[..1], path(), ed(true, &["id"], &[], None), false);
+        assert_eq!(r.reason, Some(ResultNotEditableReason::KeyNotInResult));
     }
 
     #[test]

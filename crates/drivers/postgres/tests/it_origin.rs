@@ -59,14 +59,24 @@ async fn origins(port: u16) {
     assert_eq!(pair(&cols[0]), want("pa", "id"));
     assert!(cols[1].origin.is_none() && cols[2].origin.is_none() && cols[3].origin.is_none());
 
-    // A JOIN: each column keeps its own table (the editor refuses the mix, not the driver).
-    let cols = columns_of(
-        &*s,
+    // Joins, self joins, LATERAL and sub selects: no origins (the server cannot say which
+    // instance of a table a column is, so editing by key could hit the wrong row).
+    for sql in [
         "SELECT a.id, a.name, b.note FROM dbs_origin.pa a JOIN dbs_origin.pb b ON b.a_id = a.id",
-    )
-    .await;
-    assert_eq!(pair(&cols[1]), want("pa", "name"));
-    assert_eq!(pair(&cols[2]), want("pb", "note"));
+        "SELECT p.id, c.name FROM dbs_origin.pa p JOIN dbs_origin.pa c ON c.id = p.id",
+        "SELECT p.id, c.name FROM dbs_origin.pa p, LATERAL (SELECT * FROM dbs_origin.pa x WHERE x.id = p.id) c",
+        "SELECT id, name FROM dbs_origin.pa WHERE id IN (SELECT id FROM dbs_origin.pb)",
+        "SELECT id FROM dbs_origin.pa UNION ALL SELECT id FROM dbs_origin.pb",
+    ] {
+        let cols = columns_of(&*s, sql).await;
+        let expect_none = !sql.contains("IN (SELECT");
+        if expect_none {
+            assert!(cols.iter().all(|c| c.origin.is_none()), "{sql}");
+        } else {
+            // A sub select in WHERE does not change which row is shown.
+            assert_eq!(pair(&cols[0]), want("pa", "id"), "{sql}");
+        }
+    }
 
     // A view column is reported against the view, not the table behind it.
     exec(
