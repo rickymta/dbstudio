@@ -11,13 +11,17 @@ import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
 import { CellViewer } from '@/features/data/CellViewer';
 import { DataGrid } from '@/features/data/DataGrid';
+import { useEditSession } from '@/features/data/edit/editSession';
 import { useTabUi } from '@/features/data/store';
 import { useGridVersion } from '@/features/data/useGridVersion';
 import { useAppSettings } from '@/features/settings/queries';
 import { describeError } from '@/features/connections/errors';
 import type { EditorMode } from '@/stores/tabs';
 import { getConsolePlugin } from './consolePlugins';
-import { getTabData, patchTabData, type RunSnapshot } from './editorStore';
+import { runText } from './editorRunner';
+import { getTabData, patchTabData, useTabData, type RunSnapshot } from './editorStore';
+import { ResultEditBar } from './ResultEditBar';
+import { hasOrigins, loadResultEditability, useResultEdit } from './resultEdit';
 import { resultKind, type StatementResult } from './results';
 
 const LAYOUT_KEY = 'dbstudio.editor.resultLayout';
@@ -264,6 +268,9 @@ function ResultBody({
     const grid = (
       <ResultGrid
         gridId={`${tabStateId}:${run.id}:${result.key}`}
+        tabStateId={tabStateId}
+        run={run}
+        mode={mode}
         result={result}
         canFetchMore={run.canFetchMore && result === run.results[run.results.length - 1]}
         fetching={run.fetchingMore}
@@ -317,12 +324,18 @@ function ResultBody({
 
 function ResultGrid({
   gridId,
+  tabStateId,
+  run,
+  mode,
   result,
   canFetchMore,
   fetching,
   onLoadMore,
 }: {
   gridId: string;
+  tabStateId: string;
+  run: RunSnapshot;
+  mode?: EditorMode;
   result: StatementResult;
   canFetchMore: boolean;
   fetching: boolean;
@@ -334,6 +347,40 @@ function ResultGrid({
   const settings = useAppSettings();
   const [ui, patchUi] = useTabUi(gridId);
   useGridVersion(model);
+  const tab = useTabData(tabStateId);
+  const edit = useResultEdit(gridId);
+  const editSession = useEditSession(gridId);
+
+  // Editing: once the result is complete, ask the backend whether (and by which table and key)
+  // its rows can be edited. A result without a column that names its table is never asked.
+  const sessionId = tab?.leaseSessionId ?? null;
+  const ready = model.status === 'ready' && mode === 'sql';
+  const known = ready && hasOrigins(model.columns);
+  useEffect(() => {
+    if (!known || !sessionId) return;
+    void loadResultEditability({
+      gridId,
+      sessionId,
+      leaseId: tab?.leaseId ?? null,
+      columns: model.columns,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [known, sessionId, gridId]);
+  const leaseId =
+    tab?.leaseId && tab.leaseSessionId === sessionId && !tab.leaseState?.broken
+      ? tab.leaseId
+      : null;
+  const value = edit?.status === 'ready' ? edit.value : null;
+  const editable = !!value && edit?.reason === null && editSession.editability?.editable === true;
+  const rerun = () => {
+    if (sessionId) void runText(tabStateId, sessionId, run);
+  };
+  const readOnlyReason =
+    ready && edit?.status === 'ready' && edit.reason
+      ? t(`results.edit.reason.${edit.reason}`, {
+          columns: (value?.missingKeyColumns ?? []).join(', '),
+        })
+      : null;
 
   // A result owns its view state across tab switches, and releases it on disposal.
   useEffect(() => {
@@ -354,6 +401,19 @@ function ResultGrid({
         )}
       >
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {editable && value && editSession.editability && sessionId && (
+            <ResultEditBar
+              gridId={gridId}
+              model={model}
+              sessionId={sessionId}
+              leaseId={leaseId}
+              manualCommit={tab?.leaseState ? !tab.leaseState.autoCommit : !tab?.autoCommit}
+              value={value}
+              editability={editSession.editability}
+              needsRerun={edit?.needsRerun ?? false}
+              onRerun={rerun}
+            />
+          )}
           <DataGrid
             tabId={gridId}
             model={model}
@@ -379,6 +439,22 @@ function ResultGrid({
         )}
         {truncated && !canFetchMore && (
           <span>{t('results.truncatedFinal', { formatted: nf.format(loaded) })}</span>
+        )}
+        {readOnlyReason && (
+          <span
+            role="status"
+            data-testid="result-readonly-reason"
+            data-reason={edit?.reason ?? undefined}
+            className="min-w-0 truncate"
+            title={t('results.edit.readOnly', { reason: readOnlyReason })}
+          >
+            {t('results.edit.readOnly', { reason: readOnlyReason })}
+          </span>
+        )}
+        {edit?.status === 'error' && edit.error && (
+          <span role="alert" className="min-w-0 truncate text-danger">
+            {t('results.edit.error', { message: edit.error.message })}
+          </span>
         )}
         <span className="ml-auto" />
         <IconButton

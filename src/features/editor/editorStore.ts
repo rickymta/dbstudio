@@ -3,7 +3,7 @@
 // Entries are dropped, and their lease closed, when the tab leaves the tabs store.
 
 import { create } from 'zustand';
-import type { IpcError, LeaseState, StatementInfo, Uuid } from '@/lib/types';
+import type { IpcError, LeaseState, ParamValue, StatementInfo, Uuid } from '@/lib/types';
 import { useTabsStore } from '@/stores/tabs';
 import type { ErrorMark } from './errorMarks';
 import type { ParamDraft } from './params';
@@ -19,6 +19,8 @@ export interface RunSnapshot {
   /** The text that was sent and where it starts in the document (scalar offset). */
   text: string;
   baseChar: number;
+  /** Parameter values the run was started with (a re-run uses them again). */
+  params?: ParamValue[];
   results: StatementResult[];
   /** Messages outside any statement. */
   messages: string[];

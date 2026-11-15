@@ -62,7 +62,30 @@
     "cellViewer": "Cell viewer",
     "viewTable": "Table",
     "viewDocuments": "Documents",
-    "goToError": "Go to error"
+    "goToError": "Go to error",
+    "edit": {
+      "table": "Edit table {{table}}",
+      "expressionColumn": "An expression or computed value, it cannot be edited",
+      "duplicateColumn": "This column repeats another column of the result, it cannot be edited",
+      "rerun": "Run query again",
+      "needsRerun": "Some saved changes cannot be shown in the grid (new rows, default values). Run the query again to see the full data.",
+      "inTransaction": "Changes are applied inside the open transaction; Commit to make them permanent.",
+      "discardConfirm": "Discard all unsaved changes of this result?",
+      "runConfirm": "The result has unsaved changes. Running again discards them. Continue?",
+      "closeConfirm": "This tab has unsaved changes in a result. Close it and lose them?",
+      "readOnly": "Read-only: {{reason}}",
+      "error": "Could not check whether the result is editable: {{message}}",
+      "reason": {
+        "noOrigin": "the source table is unknown",
+        "multipleTables": "Result from several tables",
+        "noUniqueKey": "the source table has no primary key or unique NOT NULL index",
+        "notATable": "the source is a view or another object that is not a table",
+        "readOnlyConnection": "the connection is read-only",
+        "keyNotInResult": "Key column {{columns}} is missing from the SELECT",
+        "unsupported": "this result cannot be edited",
+        "duplicateColumns": "the result has two columns with the same name"
+      }
+    }
   },
   "tx": {
     "autoCommit": "Auto-commit",

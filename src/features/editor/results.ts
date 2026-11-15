@@ -89,6 +89,11 @@ export class ResultGridModel extends GridModel {
     this.bump(true);
   }
 
+  /** Rows were changed in place (saved edits): redraw now. */
+  touch(): void {
+    this.bump(true);
+  }
+
   override ensureLoaded(): void {}
   override reload(): void {}
   override retry(): void {}

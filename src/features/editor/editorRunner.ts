@@ -29,6 +29,12 @@ import {
   type RunSnapshot,
 } from './editorStore';
 import { locateError, problemMarks } from './errorMarks';
+import {
+  confirmDiscardResultEdits,
+  dropResultEdits,
+  hasResultEdits,
+  onResultEditsChanged,
+} from './resultEdit';
 import { ResultCollector, type ResultGridModel } from './results';
 import type { RunText } from './runScope';
 
@@ -130,7 +136,7 @@ export function applyLeaseState(leaseId: Uuid, state: LeaseState): void {
 function snapshotOf(
   runId: number,
   queryId: Uuid,
-  input: RunText,
+  input: RunOptions,
   status: RunSnapshot['status'],
 ): RunSnapshot {
   return {
@@ -139,6 +145,7 @@ function snapshotOf(
     queryId,
     text: input.text,
     baseChar: input.baseChar,
+    params: input.params,
     results: [],
     messages: [],
     error: null,
@@ -201,6 +208,11 @@ export async function runText(
 ): Promise<RunSnapshot | null> {
   const data = getTabData(tabId);
   if (!data || data.run?.status === 'running' || data.run?.fetchingMore) return null;
+  // Running replaces the results, and with them the edits made in their grids.
+  if (hasResultEdits(tabId)) {
+    if (!confirmDiscardResultEdits(i18n.t('editor:results.edit.runConfirm'))) return null;
+    dropResultEdits(tabId);
+  }
   const docAtStart = data.text;
   const runId = ++runCounter;
   const queryId = crypto.randomUUID();
@@ -448,6 +460,10 @@ export function setCloseTransactionAsker(ask: (tabId: string) => Promise<CloseAn
  * rollback and keeping the tab. Resolves to whether the tab may close.
  */
 export async function confirmClose(tabStateId: string): Promise<boolean> {
+  if (hasResultEdits(tabStateId)) {
+    if (!confirmDiscardResultEdits(i18n.t('editor:results.edit.closeConfirm'))) return false;
+    dropResultEdits(tabStateId);
+  }
   const data = getTabData(tabStateId);
   if (!hasOpenTransaction(data)) return true;
   const answer = await askClose(tabStateId);
@@ -466,7 +482,7 @@ const guards = new Map<string, () => void>();
  * close synchronously (the tab bar and `requestClose` treat any guard as asynchronous).
  */
 function syncGuard(tabStateId: string, data: EditorTabData | undefined): void {
-  const needed = hasOpenTransaction(data);
+  const needed = hasOpenTransaction(data) || hasResultEdits(tabStateId);
   const registered = guards.get(tabStateId);
   if (needed && !registered) {
     guards.set(
@@ -490,7 +506,11 @@ useEditorStore.subscribe((state, previous) => {
   }
 });
 
+// Unsaved edits in a result grid also keep the close guard in place.
+onResultEditsChanged((tabStateId) => syncGuard(tabStateId, getTabData(tabStateId)));
+
 onEditorTabRemoved((tabStateId) => {
+  dropResultEdits(tabStateId);
   guards.get(tabStateId)?.();
   guards.delete(tabStateId);
   void closeLease(tabStateId);

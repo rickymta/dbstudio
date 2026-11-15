@@ -62,7 +62,30 @@
     "cellViewer": "Trình xem ô",
     "viewTable": "Bảng",
     "viewDocuments": "Tài liệu",
-    "goToError": "Đến vị trí lỗi"
+    "goToError": "Đến vị trí lỗi",
+    "edit": {
+      "table": "Sửa bảng {{table}}",
+      "expressionColumn": "Biểu thức hoặc giá trị tính toán, không sửa được",
+      "duplicateColumn": "Cột này trùng với một cột khác của kết quả, không sửa được",
+      "rerun": "Chạy lại query",
+      "needsRerun": "Có thay đổi mà lưới chưa hiển thị được (dòng mới, giá trị mặc định). Hãy chạy lại query để thấy dữ liệu đầy đủ.",
+      "inTransaction": "Thay đổi được áp dụng trong transaction đang mở; Commit để lưu hẳn.",
+      "discardConfirm": "Bỏ toàn bộ thay đổi chưa lưu của kết quả này?",
+      "runConfirm": "Kết quả có thay đổi chưa lưu. Chạy lại sẽ bỏ các thay đổi đó. Tiếp tục?",
+      "closeConfirm": "Tab này có thay đổi chưa lưu trong kết quả. Đóng và mất các thay đổi đó?",
+      "readOnly": "Chỉ đọc: {{reason}}",
+      "error": "Không kiểm tra được kết quả có sửa được không: {{message}}",
+      "reason": {
+        "noOrigin": "không xác định được bảng nguồn",
+        "multipleTables": "Kết quả từ nhiều bảng",
+        "noUniqueKey": "bảng nguồn không có khoá chính hoặc index unique NOT NULL",
+        "notATable": "nguồn là view hoặc đối tượng không phải bảng",
+        "readOnlyConnection": "kết nối ở chế độ chỉ đọc",
+        "keyNotInResult": "Thiếu cột khoá {{columns}} trong SELECT",
+        "unsupported": "không hỗ trợ sửa kết quả này",
+        "duplicateColumns": "kết quả có hai cột trùng tên"
+      }
+    }
   },
   "tx": {
     "autoCommit": "Tự động commit",
