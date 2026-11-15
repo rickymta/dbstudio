@@ -67,5 +67,13 @@
     "clear": "Xóa bộ lọc",
     "active": "Bộ lọc: {{pattern}}"
   },
-  "loadMoreCount": "Tải thêm ({{count}})"
+  "loadMoreCount": "Tải thêm ({{count}})",
+  "script": {
+    "scriptAs": "Tạo script",
+    "copyAs": "Sao chép script",
+    "select": "SELECT",
+    "insert": "INSERT",
+    "update": "UPDATE",
+    "delete": "DELETE"
+  }
 }

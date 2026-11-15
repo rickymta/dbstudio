@@ -17,6 +17,10 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/ContextMenu';
 import { Badge } from '@/components/ui/Badge';
@@ -31,12 +35,14 @@ import type {
   DriverDescriptor,
   ObjectNode,
   ObjectPath,
+  ScriptTemplate,
   SessionInfo,
   Uuid,
 } from '@/lib/types';
 import { useSession } from '@/stores/sessions';
 import { ddlTabId, tableTabId, useTabsStore } from '@/stores/tabs';
-import { explorerActions, type ExplorerAction } from './actions';
+import { explorerActions, scriptTemplates, type ExplorerAction } from './actions';
+import { copyScript, openScriptInEditor } from './scriptAs';
 import { KindIcon } from './kindIcons';
 import { PatternFilterDialog } from './PatternFilterDialog';
 import { openObjectTab } from './openObject';
@@ -299,6 +305,11 @@ function SessionTree({
     [qc, sessionId, load],
   );
 
+  const runScript = useCallback(
+    (node: ObjectNode, template: ScriptTemplate, copy: boolean) =>
+      void (copy ? copyScript : openScriptInEditor)(session, node, template),
+    [session],
+  );
   const runExplorerAction = useCallback((action: ExplorerAction) => action.run(session), [session]);
   const loadMore = useCallback(
     (path: ObjectPath) => void loadMoreChildren(qc, sessionId, path),
@@ -390,6 +401,7 @@ function SessionTree({
                   onActivate={activate}
                   onAction={runAction}
                   onExplorerAction={runExplorerAction}
+                  onScript={runScript}
                 />
               ) : isPagingRow(row) ? (
                 <PagingRowView row={row} onLoadMore={loadMore} onClearPattern={clearPattern} />
@@ -467,6 +479,7 @@ interface NodeRowProps {
   onActivate: (row: NodeRow) => void;
   onAction: (action: NodeAction, row: NodeRow) => void;
   onExplorerAction: (action: ExplorerAction) => void;
+  onScript: (node: ObjectNode, template: ScriptTemplate, copy: boolean) => void;
 }
 
 const TreeNodeRow = memo(function TreeNodeRow({
@@ -481,11 +494,13 @@ const TreeNodeRow = memo(function TreeNodeRow({
   onActivate,
   onAction,
   onExplorerAction,
+  onScript,
 }: NodeRowProps) {
   const { t } = useTranslation('explorer');
   const { node } = row;
   const actions = nodeActions(node, capabilities);
   const extraActions = explorerActions(node, descriptor);
+  const templates = scriptTemplates(node, descriptor);
   const keyDetail = node.kind === 'key' ? parseKeyDetail(node.detail) : null;
   const content: ReactNode = (
     <div
@@ -546,7 +561,7 @@ const TreeNodeRow = memo(function TreeNodeRow({
       )}
     </div>
   );
-  if (actions.length === 0 && extraActions.length === 0) return content;
+  if (actions.length === 0 && extraActions.length === 0 && templates.length === 0) return content;
   return (
     <ContextMenu onOpenChange={(open) => open && onSelect(row.key)}>
       <ContextMenuTrigger asChild>{content}</ContextMenuTrigger>
@@ -562,6 +577,25 @@ const TreeNodeRow = memo(function TreeNodeRow({
             {t(a.labelKey)}
           </ContextMenuItem>
         ))}
+        {templates.length > 0 && (
+          <>
+            <ContextMenuSeparator />
+            {([false, true] as const).map((copy) => (
+              <ContextMenuSub key={String(copy)}>
+                <ContextMenuSubTrigger>
+                  {t(copy ? 'script.copyAs' : 'script.scriptAs')}
+                </ContextMenuSubTrigger>
+                <ContextMenuSubContent>
+                  {templates.map((tpl) => (
+                    <ContextMenuItem key={tpl} onSelect={() => onScript(node, tpl, copy)}>
+                      {t(`script.${tpl}`)}
+                    </ContextMenuItem>
+                  ))}
+                </ContextMenuSubContent>
+              </ContextMenuSub>
+            ))}
+          </>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );

@@ -725,18 +725,42 @@ export const leasesMock = {
   ): Promise<ScriptGenerated> {
     const dialect = mockSessionDialect(sessionId);
     await sleep(5, 20);
-    const table = path.segments.at(-1)?.name ?? 'table';
-    const quote = dialect.name === 'mySql' ? '`' : '"';
-    const name = `${quote}${table}${quote}`;
-    const named = dialect.name !== 'msSql';
+    const names = path.segments.filter((s) => s.kind !== 'folder').map((s) => s.name);
+    const table = names.at(-1) ?? 'table';
+    if (dialect.name === 'redisCli') throw ipcError('unsupported', 'script_generate');
+    if (dialect.name === 'mongoShell') {
+      const target = `db.getCollection(${JSON.stringify(table)})`;
+      const text = {
+        select: `${target}.find({}).limit(100)`,
+        insert: `${target}.insertOne({\n  name: ""\n})`,
+        update: `${target}.updateOne(\n  { _id: ObjectId() },\n  { $set: {\n    name: ""\n  } }\n)`,
+        delete: `${target}.deleteOne({ _id: ObjectId() })`,
+      }[template];
+      return { text, dialect };
+    }
+    const [open, close] =
+      dialect.name === 'mySql' || dialect.name === 'clickHouse'
+        ? ['`', '`']
+        : dialect.name === 'msSql'
+          ? ['[', ']']
+          : ['"', '"'];
+    const q = (n: string) => `${open}${n}${close}`;
+    const full = names
+      .slice(-2)
+      .map((n) => q(n))
+      .join('.');
+    const p = (n: string) => `${dialect.name === 'msSql' ? '@' : ':'}${n}`;
+    const select =
+      dialect.name === 'msSql'
+        ? `SELECT TOP 100\n  ${q('id')},\n  ${q('name')}\nFROM ${full};`
+        : `SELECT\n  ${q('id')},\n  ${q('name')}\nFROM ${full}\n${
+            dialect.name === 'oracle' ? 'FETCH FIRST 100 ROWS ONLY' : 'LIMIT 100'
+          };`;
     const text = {
-      select:
-        dialect.name === 'msSql'
-          ? `SELECT TOP 100 * FROM ${name}`
-          : `SELECT * FROM ${name} LIMIT 100`,
-      insert: `INSERT INTO ${name} (id) VALUES (${named ? ':id' : '@id'})`,
-      update: `UPDATE ${name} SET id = ${named ? ':id' : '@id'} WHERE id = ${named ? ':id' : '@id'}`,
-      delete: `DELETE FROM ${name} WHERE id = ${named ? ':id' : '@id'}`,
+      select,
+      insert: `INSERT INTO ${full} (${q('id')}, ${q('name')})\nVALUES (${p('id')}, ${p('name')});`,
+      update: `UPDATE ${full}\nSET ${q('name')} = ${p('name')}\nWHERE ${q('id')} = ${p('id')};`,
+      delete: `DELETE FROM ${full}\nWHERE ${q('id')} = ${p('id')};`,
     }[template];
     return { text, dialect };
   },

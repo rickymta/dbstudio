@@ -152,7 +152,11 @@ fn sql(
     };
     let ident = |c: &ColumnDetail| q.quote_ident(&c.name);
     let key = key_columns(details);
-    let where_clause = if key.is_empty() {
+    let where_clause = if key.is_empty() && matches!(d, ScriptDialect::Cql) {
+        // CQL has no constant predicate: an unknown column fails instead of touching rows.
+        "WHERE \"partition_key\" = :partition_key /* replace with the key columns of the row */"
+            .to_string()
+    } else if key.is_empty() {
         "WHERE 1 = 0 /* replace with the condition that picks the row */".to_string()
     } else {
         format!(
@@ -165,7 +169,12 @@ fn sql(
     };
     let clickhouse = matches!(d, ScriptDialect::ClickHouse);
     // Warnings written into the generated text (comments only, the statement is unchanged).
-    let warning = if clickhouse && !key.is_empty() {
+    let warning = if key.is_empty()
+        && !matches!(template, ScriptTemplate::Select | ScriptTemplate::Insert)
+    {
+        // Never a statement without a WHERE: the placeholder condition has to be replaced.
+        "-- No primary or unique key found: write the WHERE condition that picks the row before running.\n"
+    } else if clickhouse && !key.is_empty() {
         // The primary key of a MergeTree table does not identify one row.
         "-- ClickHouse primary keys are not unique: every row with this key is affected.\n"
     } else if matches!(d, ScriptDialect::Cql)
@@ -307,6 +316,7 @@ fn mongo(details: &TableDetails, path: &ObjectPath, template: ScriptTemplate) ->
         format!("db.getCollection({})", js_string(coll))
     };
     let id = details.columns.iter().find(|c| c.name == "_id");
+    let no_key = id.is_none() && key_columns(details).is_empty();
     let filter = match id {
         Some(c) => format!("{{ _id: {} }}", mongo_sample(c)),
         None => {
@@ -330,7 +340,12 @@ fn mongo(details: &TableDetails, path: &ObjectPath, template: ScriptTemplate) ->
             .collect::<Vec<_>>()
             .join(",\n")
     };
-    match template {
+    let warn = if no_key && matches!(template, ScriptTemplate::Update | ScriptTemplate::Delete) {
+        "// No _id or key found: replace the filter with the one that picks the document.\n"
+    } else {
+        ""
+    };
+    let text = match template {
         ScriptTemplate::Select => format!("{target}.find({{}}).limit({LIMIT})"),
         ScriptTemplate::Insert if fields.is_empty() => format!("{target}.insertOne({{}})"),
         ScriptTemplate::Insert => format!("{target}.insertOne({{\n{}\n}})", body("  ")),
@@ -342,7 +357,8 @@ fn mongo(details: &TableDetails, path: &ObjectPath, template: ScriptTemplate) ->
             body("    ")
         ),
         ScriptTemplate::Delete => format!("{target}.deleteOne({filter})"),
-    }
+    };
+    format!("{warn}{text}")
 }
 
 #[cfg(test)]
@@ -609,6 +625,16 @@ mod tests {
         // no key at all: the WHERE can never match by accident
         let del = generate(d, &det, &p, ScriptTemplate::Delete);
         assert!(del.contains("WHERE 1 = 0 /*"), "{del}");
+        assert!(
+            del.starts_with("-- No primary or unique key found"),
+            "{del}"
+        );
+        let upd = generate(d, &det, &p, ScriptTemplate::Update);
+        assert!(
+            upd.starts_with("-- No primary or unique key found"),
+            "{upd}"
+        );
+        assert!(upd.contains("\nWHERE 1 = 0 /*"), "{upd}");
         // unique index
         det.indexes.push(dbstudio_core::IndexDetail {
             name: "u".into(),
@@ -758,5 +784,44 @@ mod tests {
         let a = crate::analyze(d, &upd);
         assert_eq!(a.statements.len(), 1);
         assert_eq!(a.statements[0].destructive, None);
+    }
+
+    #[test]
+    fn keyless_tables_never_get_a_statement_without_where() {
+        for (name, _) in SNAPSHOTS {
+            let (d, p) = case(name);
+            let mut det = details(&p, false);
+            for c in &mut det.columns {
+                c.primary_key = false;
+            }
+            for t in [ScriptTemplate::Update, ScriptTemplate::Delete] {
+                let text = generate(d, &det, &p, t);
+                assert!(
+                    text.starts_with("-- No ") || text.starts_with("// No "),
+                    "{name}: {text}"
+                );
+                if *name != "mongo" {
+                    assert!(text.contains("WHERE"), "{name}: {text}");
+                    let a = crate::analyze(d, &text);
+                    assert_eq!(a.statements.len(), 1, "{name}: {text}");
+                    assert_eq!(a.statements[0].destructive, None, "{name}: {text}");
+                }
+            }
+        }
+        let (d, p) = case("cql");
+        let mut det = details(&p, false);
+        det.columns[0].primary_key = false;
+        let del = generate(d, &det, &p, ScriptTemplate::Delete);
+        assert!(
+            del.contains("WHERE \"partition_key\" = :partition_key"),
+            "{del}"
+        );
+        let (d, p) = case("mongo");
+        let mut det = details(&p, false);
+        det.columns[0].primary_key = false;
+        det.columns[0].name = "k".into();
+        let del = generate(d, &det, &p, ScriptTemplate::Delete);
+        assert!(del.ends_with("deleteOne({ _id: ObjectId() })"), "{del}");
+        assert!(del.starts_with("// No _id or key found"), "{del}");
     }
 }

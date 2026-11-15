@@ -2,7 +2,13 @@ import { openBackup } from '@/features/backup/open';
 import { openEditor } from '@/features/editor/open';
 import { openErd } from '@/features/erd/open';
 import { openExport } from '@/features/export/open';
-import type { DriverDescriptor, ObjectKind, ObjectNode, SessionInfo } from '@/lib/types';
+import type {
+  DriverDescriptor,
+  ObjectKind,
+  ObjectNode,
+  ScriptTemplate,
+  SessionInfo,
+} from '@/lib/types';
 
 export type ExplorerActionId = 'openEditor' | 'showErd' | 'exportData' | 'backup';
 
@@ -62,4 +68,17 @@ export function explorerActions(node: ObjectNode, descriptor: DriverDescriptor):
     });
   }
   return actions;
+}
+
+export const SCRIPT_TEMPLATES: readonly ScriptTemplate[] = ['select', 'insert', 'update', 'delete'];
+
+/**
+ * Templates of the "Script as" menu for `node`: all four on a table or collection, SELECT only on
+ * a view, none for key-value stores or drivers that cannot run statements.
+ */
+export function scriptTemplates(node: ObjectNode, descriptor: DriverDescriptor): ScriptTemplate[] {
+  if (!descriptor.capabilities.leases || descriptor.kind === 'redis') return [];
+  if (node.kind === 'table' || node.kind === 'collection') return [...SCRIPT_TEMPLATES];
+  if (node.kind === 'view' || node.kind === 'materializedView') return ['select'];
+  return [];
 }
