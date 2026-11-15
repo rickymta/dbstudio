@@ -3,6 +3,7 @@
     "name": "$document",
     "nullable": false,
     "origin": {
+      "alias": "d",
       "column": "doc",
       "database": "app",
       "table": "docs"
