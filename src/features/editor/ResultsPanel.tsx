@@ -18,10 +18,10 @@ import { useAppSettings } from '@/features/settings/queries';
 import { describeError } from '@/features/connections/errors';
 import type { EditorMode } from '@/stores/tabs';
 import { getConsolePlugin } from './consolePlugins';
-import { runText } from './editorRunner';
+import { dropPending, runText } from './editorRunner';
 import { getTabData, patchTabData, useTabData, type RunSnapshot } from './editorStore';
 import { ResultEditBar } from './ResultEditBar';
-import { hasOrigins, loadResultEditability, useResultEdit } from './resultEdit';
+import { hasOrigins, loadResultEditability, patchResultEdit, useResultEdit } from './resultEdit';
 import { resultKind, type StatementResult } from './results';
 
 const LAYOUT_KEY = 'dbstudio.editor.resultLayout';
@@ -372,9 +372,19 @@ function ResultGrid({
       : null;
   const value = edit?.status === 'ready' ? edit.value : null;
   const editable = !!value && edit?.reason === null && editSession.editability?.editable === true;
-  const rerun = () => {
-    if (sessionId) void runText(tabStateId, sessionId, run);
-  };
+  // Only the statement that produced this result runs again, never the rest of the script
+  // (an INSERT or DELETE next to the SELECT must not run twice).
+  const rerunInput = (() => {
+    if (!result.range) return run.results.length === 1 ? run : null;
+    const chars = Array.from(run.text);
+    return {
+      text: chars.slice(result.range.start, result.range.end).join(''),
+      baseChar: run.baseChar + result.range.start,
+      params: run.params,
+    };
+  })();
+  const rerun =
+    sessionId && rerunInput ? () => void runText(tabStateId, sessionId, rerunInput) : null;
   const readOnlyReason =
     ready && edit?.status === 'ready' && edit.reason
       ? t(`results.edit.reason.${edit.reason}`, {
@@ -412,6 +422,11 @@ function ResultGrid({
               editability={editSession.editability}
               needsRerun={edit?.needsRerun ?? false}
               onRerun={rerun}
+              onApplied={() => {
+                // Saving on the tab's connection discarded the cursor "load more" continues.
+                if (run.canFetchMore) patchResultEdit(gridId, { needsRerun: true });
+                dropPending(tabStateId);
+              }}
             />
           )}
           <DataGrid

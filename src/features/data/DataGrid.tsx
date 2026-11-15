@@ -16,7 +16,12 @@ import { useTranslation } from 'react-i18next';
 import type { Value } from '@/lib/types';
 import { CellEditorDialog } from './edit/CellEditorDialog';
 import { EditableCell } from './edit/EditableCell';
-import { editDisplayValue, editEqualsOriginal, needsDialogEditor } from './edit/cellEdit';
+import {
+  editDisplayValue,
+  editEqualsOriginal,
+  isTruncatedValue,
+  needsDialogEditor,
+} from './edit/cellEdit';
 import { patchEditSession, useEditSession } from './edit/editSession';
 import {
   changeTargets,
@@ -334,6 +339,8 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
     if (pos.row >= insertCount) {
       const row = loadedAt(pos.row);
       if (!row || !extractKey(row, columns, keyColumns ?? [])) return false;
+      const cell = row[pos.col];
+      if (cell && isTruncatedValue(cell)) return false;
     }
     patchEditSession(tabId, { editing: pos });
     return true;

@@ -42,7 +42,8 @@ export function extractKey(
   for (const name of keyColumns) {
     const i = columns.findIndex((c) => c.name === name);
     const v = i >= 0 ? row[i] : undefined;
-    if (!v) return null;
+    // A NULL key part (the outer side of a join) addresses no row.
+    if (!v || v.t === 'null') return null;
     key.push(v);
   }
   return key;

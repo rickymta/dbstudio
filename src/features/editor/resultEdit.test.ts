@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { EMPTY_PENDING, type PendingTab } from '@/features/data/edit/pendingChanges';
+import { isTruncatedValue } from '@/features/data/edit/cellEdit';
+import { EMPTY_PENDING, extractKey, type PendingTab } from '@/features/data/edit/pendingChanges';
+import { hasTruncatedCell } from '@/features/data/edit/rowOps';
 import type { ColumnMeta, ResultEditability, Value } from '@/lib/types';
 import { applySavedToModel, gridEditability, toResultChangeSet } from './resultEdit';
 import { ResultGridModel } from './results';
@@ -115,5 +117,21 @@ describe('applySavedToModel', () => {
       true,
     );
     expect(m.rows).toHaveLength(3);
+  });
+});
+
+describe('rows that must not be written back', () => {
+  it('a NULL key part (outer side of a join) addresses no row', () => {
+    const cols = [col('id', 'int'), col('name')];
+    expect(extractKey([int(1), text('a')], cols, ['id'])).toEqual([int(1)]);
+    expect(extractKey([{ t: 'null' }, text('a')], cols, ['id'])).toBeNull();
+  });
+
+  it('a LOB the server cut short cannot be duplicated or edited', () => {
+    const cut: Value = { t: 'ext', v: { type: 'truncatedText', text: 'abc' } };
+    expect(isTruncatedValue(cut)).toBe(true);
+    expect(isTruncatedValue(text('abc'))).toBe(false);
+    expect(hasTruncatedCell([int(1), cut])).toBe(true);
+    expect(hasTruncatedCell([int(1), text('a')])).toBe(false);
   });
 });

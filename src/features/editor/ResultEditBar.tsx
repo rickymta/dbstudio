@@ -23,8 +23,10 @@ interface ResultEditBarProps {
   value: ResultEditability;
   editability: Editability;
   needsRerun: boolean;
-  /** Run the query again (asks before dropping unsaved edits). */
-  onRerun: () => void;
+  /** Run the statement again (asks before dropping unsaved edits); `null`: not possible. */
+  onRerun: (() => void) | null;
+  /** Changes were saved. */
+  onApplied: () => void;
 }
 
 export function ResultEditBar({
@@ -37,14 +39,15 @@ export function ResultEditBar({
   editability,
   needsRerun,
   onRerun,
+  onApplied,
 }: ResultEditBarProps) {
   const { t } = useTranslation('editor');
   const { t: td } = useTranslation('data');
   const session = useEditSession(gridId);
   const editMode = session.editMode && editability.editable;
   const target = useMemo(
-    () => resultTarget({ gridId, sessionId, leaseId, value, editability, model }),
-    [gridId, sessionId, leaseId, value, editability, model],
+    () => resultTarget({ gridId, sessionId, leaseId, value, editability, model, onApplied }),
+    [gridId, sessionId, leaseId, value, editability, model, onApplied],
   );
   const table = value.table ? (lastSegment(value.table)?.name ?? '') : '';
 
@@ -69,7 +72,7 @@ export function ResultEditBar({
           target={target}
           discardConfirm={t('results.edit.discardConfirm')}
         >
-          <Button size="sm" onClick={onRerun} disabled={session.applying}>
+          <Button size="sm" onClick={() => onRerun?.()} disabled={session.applying || !onRerun}>
             <RefreshCw size={12} /> {t('results.edit.rerun')}
           </Button>
         </EditToolbar>

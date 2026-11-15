@@ -254,7 +254,8 @@
         "insert": "SQL INSERT"
       }
     },
-    "undoRow": "Undo row changes"
+    "undoRow": "Undo row changes",
+    "truncatedCell": "The value was cut short: it cannot be duplicated or edited"
   },
   "header": {
     "path": "Object path"

@@ -335,7 +335,7 @@ export async function fetchMore(tabId: string): Promise<void> {
 }
 
 /** The pending result is gone (commit, rollback, next statement): stop offering "more". */
-function dropPending(tabId: string): void {
+export function dropPending(tabId: string): void {
   const run = getTabData(tabId)?.run;
   if (!run?.canFetchMore) return;
   const collector = collectors.get(tabId);
@@ -460,14 +460,20 @@ export function setCloseTransactionAsker(ask: (tabId: string) => Promise<CloseAn
  * rollback and keeping the tab. Resolves to whether the tab may close.
  */
 export async function confirmClose(tabStateId: string): Promise<boolean> {
-  if (hasResultEdits(tabStateId)) {
-    if (!confirmDiscardResultEdits(i18n.t('editor:results.edit.closeConfirm'))) return false;
-    dropResultEdits(tabStateId);
+  if (
+    hasResultEdits(tabStateId) &&
+    !confirmDiscardResultEdits(i18n.t('editor:results.edit.closeConfirm'))
+  ) {
+    return false;
   }
   const data = getTabData(tabStateId);
-  if (!hasOpenTransaction(data)) return true;
+  if (!hasOpenTransaction(data)) {
+    dropResultEdits(tabStateId);
+    return true;
+  }
   const answer = await askClose(tabStateId);
-  if (answer === 'cancel') return false;
+  if (answer === 'cancel') return false; // the edits stay too
+  dropResultEdits(tabStateId);
   const sessionId = data?.leaseSessionId;
   if (answer === 'commit' && sessionId) {
     return endTransaction(tabStateId, sessionId, 'commit');

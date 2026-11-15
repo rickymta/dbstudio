@@ -16,7 +16,7 @@ import {
   usePending,
   usePendingChanges,
 } from './pendingChanges';
-import { duplicateCells } from './rowOps';
+import { duplicateCells, hasTruncatedCell } from './rowOps';
 
 interface EditToolbarProps {
   tabId: string;
@@ -116,7 +116,12 @@ export function EditToolbar({ tabId, model, target, discardConfirm, children }: 
           <Button
             size="sm"
             onClick={duplicateRow}
-            disabled={session.applying || (!selLoaded && !selInsert)}
+            disabled={
+              session.applying ||
+              (!selLoaded && !selInsert) ||
+              (!!selLoaded && hasTruncatedCell(selLoaded))
+            }
+            title={selLoaded && hasTruncatedCell(selLoaded) ? t('edit.truncatedCell') : undefined}
           >
             <Copy size={12} /> {t('edit.duplicateRow')}
           </Button>

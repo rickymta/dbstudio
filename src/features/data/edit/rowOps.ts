@@ -1,6 +1,10 @@
 // Row operations of the edit mode: new and duplicated rows.
 
 import type { ColumnMeta, EditValue, Value } from '@/lib/types';
+import { isTruncatedValue } from './cellEdit';
+
+/** A row with a cell cut short by the server cannot be duplicated faithfully. */
+export const hasTruncatedCell = (row: readonly Value[]): boolean => row.some(isTruncatedValue);
 
 /**
  * Cells of a duplicate of `row`. Read-only columns are left out (the server fills them) and key

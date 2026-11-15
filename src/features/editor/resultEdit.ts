@@ -74,7 +74,7 @@ export function useResultEdit(gridId: string): ResultEditState | undefined {
   return useResultEditStore((s) => s.byGrid[gridId]);
 }
 
-const patchResultEdit = (gridId: string, patch: Partial<ResultEditState>) =>
+export const patchResultEdit = (gridId: string, patch: Partial<ResultEditState>) =>
   useResultEditStore.getState().patch(gridId, patch);
 
 // -- editability --------------------------------------------------------------------------------

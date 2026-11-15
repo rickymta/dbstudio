@@ -8,6 +8,11 @@ export type EditorKind = 'bool' | 'number' | 'json' | 'temporal' | 'text' | 'bin
 
 export const NULL_EDIT: EditValue = { kind: 'value', v: { t: 'null' } };
 
+/** A LOB the server cut short: writing it back (edit, duplicate) would save the cut text. */
+export function isTruncatedValue(v: Value): boolean {
+  return v.t === 'ext' && (v.v.type === 'truncatedText' || v.v.type === 'truncatedBytes');
+}
+
 export function isNullEdit(e: EditValue): boolean {
   return e.kind === 'value' && e.v.t === 'null';
 }

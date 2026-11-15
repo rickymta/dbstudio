@@ -254,7 +254,8 @@
         "insert": "SQL INSERT"
       }
     },
-    "undoRow": "Hoàn tác dòng"
+    "undoRow": "Hoàn tác dòng",
+    "truncatedCell": "Giá trị bị cắt bớt, không nhân bản hoặc sửa được"
   },
   "header": {
     "path": "Đường dẫn đối tượng"

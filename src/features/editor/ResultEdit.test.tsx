@@ -213,6 +213,24 @@ describe('editable result', () => {
   });
 });
 
+describe('run again', () => {
+  it('runs only the statement that produced the result, not the rest of the script', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(ipc, 'resultEditability').mockResolvedValue(editable());
+    const exec = vi
+      .spyOn(ipc, 'leaseExecute')
+      .mockRejectedValue({ kind: 'connection', message: 'no server' });
+    const run = runWith();
+    const select = run.text;
+    run.text = `DELETE FROM items; ${select}`;
+    run.results[0]!.range = { start: 19, end: 19 + select.length };
+    renderPanel(run);
+    await user.click(await screen.findByRole('button', { name: /Run query again/ }));
+    await waitFor(() => expect(exec).toHaveBeenCalled());
+    expect(exec.mock.calls[0]![1].text).toBe(select);
+  });
+});
+
 describe('result that cannot be edited', () => {
   it.each([
     [
