@@ -2,6 +2,18 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.1.4 - 2026-11-15
+
+Thay đổi từ v0.1.3. Bản v0.1.3 không được phát hành (dừng ở bước test), nên bản này gồm cả các
+thay đổi của v0.1.3:
+
+- feat(editor): sửa dữ liệu trực tiếp trên lưới kết quả query (giống DBeaver): sửa ô, thêm/xoá/nhân bản dòng, hoàn tác, xem trước SQL, lưu trong transaction của tab; chỉ cho sửa khi kết quả đến từ một bảng có khoá
+- feat(connection): nhận chuỗi JDBC ở ô Connection URI (Oracle thin, PostgreSQL, MySQL/MariaDB, SQL Server, ClickHouse)
+
+Thay đổi riêng của v0.1.4:
+
+- test(debugger): chờ lề breakpoint vẽ xong trong mountEditor (CI chậm thì .cm-bp-gutter chưa có) (8c713ec0)
+
 ## v0.1.3 - 2026-11-15
 
 Thay đổi từ v0.1.2.

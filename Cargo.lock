@@ -1677,7 +1677,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dbstudio"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-backup"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-cli"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1784,7 +1784,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1798,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-debug"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "dbstudio-core",
@@ -1814,7 +1814,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-driver-cassandra"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1835,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-driver-clickhouse"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1858,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-driver-mongodb"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1877,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-driver-mssql"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1898,7 +1898,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-driver-mysql"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "dbstudio-core",
@@ -1916,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-driver-oracle"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-driver-postgres"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1949,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-driver-redis"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "dbstudio-core",
@@ -1963,7 +1963,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-export"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-plan"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dbstudio-core",
  "dbstudio-sql",
@@ -2003,7 +2003,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-sql"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dbstudio-core",
  "proptest",
@@ -2013,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-ssh"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dbstudio-core",
  "rand 0.10.3",
@@ -2025,7 +2025,7 @@ dependencies = [
 
 [[package]]
 name = "dbstudio-store"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dbstudio-core",
  "keyring",
