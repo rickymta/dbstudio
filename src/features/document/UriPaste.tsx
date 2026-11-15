@@ -32,7 +32,10 @@ export function UriPaste({
       setUri('');
       setMessage({
         ok: true,
-        text: parsed.hasPassword ? t('uri.appliedPassword') : t('uri.applied'),
+        text: [
+          parsed.hasPassword ? t('uri.appliedPassword') : t('uri.applied'),
+          ...(parsed.notes ?? []),
+        ].join(' '),
       });
     } catch (e) {
       setMessage({ ok: false, text: toIpcError(e).message });

@@ -3,6 +3,8 @@
 //! `connection_parse_uri` turns `mongodb://`, `mongodb+srv://`, `redis://`, `rediss://`,
 //! `postgres(ql)://`, `mysql://`, `sqlserver://`, `oracle://`, `cockroachdb://`, `yugabytedb://`,
 //! `tidb://`, `clickhouse[s]://`, `cassandra://` and `scylladb://` URIs into a connection profile.
+//! JDBC strings (`jdbc:oracle:thin:`, `jdbc:postgresql:`, `jdbc:mysql:`, `jdbc:mariadb:`,
+//! `jdbc:sqlserver:`, `jdbc:clickhouse:`, `jdbc:ch:`) give the same profile.
 //! The password never goes to the frontend and is not kept in memory either: the command
 //! reports `hasPassword` and the UI asks the user to type the password again.
 
@@ -22,6 +24,9 @@ type Result<T> = std::result::Result<T, Error>;
 pub struct ParsedConnectionUri {
     pub profile: ConnectionProfile,
     pub has_password: bool,
+    /// Things the parser simplified (extra hosts, SQL Server instance...); shown to the user.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 fn invalid(msg: &str) -> Error {
@@ -165,7 +170,7 @@ fn truthy(v: Option<&str>) -> Option<bool> {
     v.map(|v| {
         matches!(
             v.to_ascii_lowercase().as_str(),
-            "true" | "1" | "yes" | "required"
+            "true" | "1" | "yes" | "required" | "strict"
         )
     })
 }
@@ -318,11 +323,16 @@ fn parse_sql(p: &Parts) -> Result<ConnectionConfig> {
         } else {
             TlsMode::VerifyFull
         };
-    } else if let Some(t) = truthy(q(p, "ssl")).or_else(|| truthy(q(p, "tls"))) {
-        cfg.tls.mode = if t {
-            TlsMode::Require
-        } else {
+    } else if let Some(t) = truthy(q(p, "ssl"))
+        .or_else(|| truthy(q(p, "tls")))
+        .or_else(|| truthy(q(p, "usessl")))
+    {
+        cfg.tls.mode = if !t {
             TlsMode::Disable
+        } else if truthy(q(p, "verifyservercertificate")).unwrap_or(false) {
+            TlsMode::VerifyFull
+        } else {
+            TlsMode::Require
         };
     }
     cfg.tls.ca_cert_path = q(p, "sslrootcert")
@@ -450,21 +460,51 @@ fn parse_cassandra(p: &Parts) -> Result<ConnectionConfig> {
 }
 
 /// Parse a URI into a profile and whether it carried a password (which is discarded).
-pub fn parse_uri(uri: &str) -> Result<(ConnectionProfile, bool)> {
-    let parts = split_uri(uri)?;
+#[cfg(test)]
+fn parse_uri(uri: &str) -> Result<(ConnectionProfile, bool)> {
+    parse_uri_full(uri).map(|(p, has, _)| (p, has))
+}
+
+/// Same as [`parse_uri`] plus notes about what was simplified.
+fn parse_uri_full(uri: &str) -> Result<(ConnectionProfile, bool, Vec<String>)> {
+    let trimmed = uri.trim();
+    if trimmed
+        .get(..5)
+        .is_some_and(|p| p.eq_ignore_ascii_case("jdbc:"))
+    {
+        return parse_jdbc(&trimmed[5..]);
+    }
+    let parts = split_uri(trimmed)?;
+    let (profile, has_password) = finish(&parts, None)?;
+    Ok((profile, has_password, Vec::new()))
+}
+
+/// Build the profile of `parts`; `forced_pw` marks a password found outside the user info.
+fn finish(parts: &Parts, forced_pw: Option<bool>) -> Result<(ConnectionProfile, bool)> {
     let mut cfg = match parts.scheme.as_str() {
-        "mongodb" | "mongodb+srv" => parse_mongo(&parts)?,
-        "redis" | "rediss" => parse_redis(&parts)?,
+        "mongodb" | "mongodb+srv" => parse_mongo(parts)?,
+        "redis" | "rediss" => parse_redis(parts)?,
         "postgres" | "postgresql" | "mysql" | "mariadb" | "sqlserver" | "mssql" | "oracle"
-        | "cockroachdb" | "cockroach" | "yugabytedb" | "yugabyte" | "tidb" => parse_sql(&parts)?,
-        "clickhouse" | "clickhouses" => parse_clickhouse(&parts)?,
-        "cassandra" | "scylladb" | "scylla" => parse_cassandra(&parts)?,
+        | "cockroachdb" | "cockroach" | "yugabytedb" | "yugabyte" | "tidb" => parse_sql(parts)?,
+        "clickhouse" | "clickhouses" => parse_clickhouse(parts)?,
+        "cassandra" | "scylladb" | "scylla" => parse_cassandra(parts)?,
         other => return Err(Error::Unsupported(format!("uri_scheme:{other}"))),
     };
-    // A URI without user and password points at a server that most likely needs no login
-    // (local Redis, MongoDB, Cassandra, ClickHouse, PostgreSQL trust). Servers that always need
-    // a user (MySQL family, SQL Server, Oracle) keep the password mode.
-    if parts.password.is_none()
+    apply_auth_default(
+        &mut cfg,
+        parts.password.is_some() || forced_pw == Some(true),
+    );
+    Ok((
+        profile_of(cfg),
+        parts.password.is_some() || forced_pw == Some(true),
+    ))
+}
+
+/// A URI without user and password points at a server that most likely needs no login
+/// (local Redis, MongoDB, Cassandra, ClickHouse, PostgreSQL trust). Servers that always need
+/// a user (MySQL family, SQL Server, Oracle) keep the password mode.
+fn apply_auth_default(cfg: &mut ConnectionConfig, has_password: bool) {
+    if !has_password
         && cfg.username.is_none()
         && matches!(
             cfg.kind,
@@ -480,15 +520,219 @@ pub fn parse_uri(uri: &str) -> Result<(ConnectionProfile, bool)> {
     {
         cfg.auth_mode = AuthMode::NoAuth;
     }
-    Ok((profile_of(cfg), parts.password.is_some()))
+}
+
+const JDBC_HINT: &str = "supported JDBC forms: jdbc:oracle:thin:@//host:1521/service, \
+jdbc:oracle:thin:@host:1521:SID, jdbc:postgresql://host/db, jdbc:mysql://host/db, \
+jdbc:mariadb://host/db, jdbc:sqlserver://host;databaseName=db, jdbc:clickhouse://host:8123/db";
+
+fn jdbc_invalid(msg: &str) -> Error {
+    Error::Invalid(format!("invalid JDBC URL: {msg}; {JDBC_HINT}"))
+}
+
+/// `rest` is the text after `jdbc:`.
+fn parse_jdbc(rest: &str) -> Result<(ConnectionProfile, bool, Vec<String>)> {
+    let (sub, tail) = rest
+        .split_once(':')
+        .ok_or_else(|| jdbc_invalid("missing subprotocol"))?;
+    let sub = sub.to_ascii_lowercase();
+    if sub == "oracle" {
+        let thin = tail
+            .get(..5)
+            .filter(|t| t.eq_ignore_ascii_case("thin:"))
+            .map(|_| &tail[5..])
+            .ok_or_else(|| jdbc_invalid("only the Oracle thin driver is supported"))?;
+        return parse_jdbc_oracle(thin);
+    }
+    let scheme = match sub.as_str() {
+        "postgresql" | "mysql" | "mariadb" | "sqlserver" => sub.clone(),
+        "clickhouse" | "ch" => "clickhouse".to_string(),
+        other => return Err(jdbc_invalid(&format!("unsupported subprotocol `{other}`"))),
+    };
+    let mut body = tail;
+    let mut scheme = scheme;
+    if scheme == "clickhouse" {
+        // `jdbc:ch:http://...` / `jdbc:clickhouse:https://...` name the protocol first.
+        for (prefix, s) in [("https://", "clickhouses"), ("http://", "clickhouse")] {
+            if let Some(b) = body
+                .get(..prefix.len())
+                .filter(|h| h.eq_ignore_ascii_case(prefix))
+                .map(|_| &body[prefix.len()..])
+            {
+                body = b;
+                scheme = s.to_string();
+                break;
+            }
+        }
+        if body.starts_with("//") {
+            body = &body[2..];
+        }
+    } else {
+        body = body
+            .strip_prefix("//")
+            .ok_or_else(|| jdbc_invalid("expected `//host` after the subprotocol"))?;
+    }
+    let mut parts = split_uri(&format!("{scheme}://{body}"))
+        .map_err(|e| jdbc_invalid(&e.to_string().replace("invalid connection URI: ", "")))?;
+    let mut notes = Vec::new();
+    if parts.hosts.len() > 1 {
+        notes.push(format!(
+            "The URL lists {} hosts; only the first one ({}) was used.",
+            parts.hosts.len(),
+            parts.hosts[0].0
+        ));
+    }
+    let mut instance = None;
+    if scheme == "sqlserver" {
+        let host = parts.hosts[0].0.clone();
+        if let Some((h, inst)) = host.split_once('\\') {
+            instance = Some(inst.to_string());
+            parts.hosts[0].0 = h.to_string();
+        }
+    }
+    let url_pw = q(&parts, "password")
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    if parts.password.is_none() {
+        parts.password.clone_from(&url_pw);
+    }
+    let (mut profile, has_password) = finish(&parts, None)?;
+    if let Some(inst) = instance.filter(|i| !i.is_empty()) {
+        profile
+            .config
+            .options
+            .insert("instance".into(), inst.clone());
+        notes.push(format!(
+            "SQL Server instance `{inst}` kept as an option; set the port if the instance listens on a fixed one."
+        ));
+    }
+    Ok((profile, has_password, notes))
+}
+
+fn split_hp(h: &str) -> Result<(String, Option<u16>)> {
+    if h.is_empty() {
+        return Err(jdbc_invalid("missing host"));
+    }
+    split_host_port(h).map_err(|_| jdbc_invalid("bad host or port"))
+}
+
+/// Value of `(KEY=value)` in a TNS descriptor (key matched without case, spaces ignored).
+fn tns_value(desc: &str, key: &str) -> Option<String> {
+    let upper = desc.to_ascii_uppercase();
+    let needle = format!("({}=", key.to_ascii_uppercase());
+    let start = upper.find(&needle)? + needle.len();
+    let end = desc[start..].find(')')? + start;
+    Some(desc[start..end].trim().to_string()).filter(|v| !v.is_empty())
+}
+
+fn parse_jdbc_oracle(thin: &str) -> Result<(ConnectionProfile, bool, Vec<String>)> {
+    let (cred, addr) = thin
+        .rsplit_once('@')
+        .ok_or_else(|| jdbc_invalid("expected `@` before the Oracle address"))?;
+    let (user, password) = match cred.split_once('/') {
+        Some((u, p)) => (u, Some(p)),
+        None => (cred, None),
+    };
+    let user = Some(user.trim().to_string()).filter(|u| !u.is_empty());
+    let password = password.map(str::to_string).filter(|p| !p.is_empty());
+    let addr = addr.trim();
+    if addr.is_empty() {
+        return Err(jdbc_invalid("the Oracle address is empty"));
+    }
+    let mut tls = false;
+    let (host, port, service, sid);
+    if addr.starts_with('(') {
+        let flat: String = addr.chars().filter(|c| !c.is_whitespace()).collect();
+        let upper = flat.to_ascii_uppercase();
+        if upper.matches("(ADDRESS=").count() != 1
+            || [
+                "ADDRESS_LIST",
+                "FAILOVER",
+                "LOAD_BALANCE",
+                "(DESCRIPTION_LIST",
+            ]
+            .iter()
+            .any(|k| upper.contains(k))
+        {
+            return Err(jdbc_invalid(
+                "this TNS descriptor has several addresses or failover; use a single (ADDRESS=...) or fill the fields by hand",
+            ));
+        }
+        let h =
+            tns_value(&flat, "HOST").ok_or_else(|| jdbc_invalid("TNS descriptor has no HOST"))?;
+        host = h;
+        port = match tns_value(&flat, "PORT") {
+            Some(p) => Some(p.parse::<u16>().map_err(|_| jdbc_invalid("bad PORT"))?),
+            None => None,
+        };
+        service = tns_value(&flat, "SERVICE_NAME");
+        sid = tns_value(&flat, "SID");
+        tls = tns_value(&flat, "PROTOCOL").is_some_and(|p| p.eq_ignore_ascii_case("TCPS"));
+        if service.is_none() && sid.is_none() {
+            return Err(jdbc_invalid("TNS descriptor has no SERVICE_NAME or SID"));
+        }
+    } else {
+        let mut a = addr;
+        for (pre, t) in [("tcps://", true), ("tcp://", false), ("//", false)] {
+            if let Some(r) = a.strip_prefix(pre) {
+                a = r;
+                tls = t;
+                break;
+            }
+        }
+        let a = a.split('?').next().unwrap_or(a);
+        if let Some((hp, svc)) = a.split_once('/') {
+            let (h, p) = split_hp(hp)?;
+            host = h;
+            port = p;
+            service = Some(svc.trim().to_string()).filter(|s| !s.is_empty());
+            sid = None;
+            if service.is_none() {
+                return Err(jdbc_invalid("missing service name"));
+            }
+        } else if !a.starts_with('[') && a.matches(':').count() == 2 {
+            // Legacy `host:port:SID`.
+            let mut it = a.splitn(3, ':');
+            let (h, p, s) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next());
+            if h.is_empty() || s.is_none_or(str::is_empty) {
+                return Err(jdbc_invalid("expected host:port:SID"));
+            }
+            host = h.to_string();
+            port = Some(p.parse::<u16>().map_err(|_| jdbc_invalid("bad port"))?);
+            service = None;
+            sid = s.map(str::to_string);
+        } else {
+            return Err(jdbc_invalid("missing service name or SID"));
+        }
+    }
+    let port = port.unwrap_or(1521);
+    let db = service.clone();
+    let label = db.clone().or_else(|| sid.clone()).unwrap_or_default();
+    let mut cfg = ConnectionConfig::new(DbKind::Oracle, format!("{host}/{label}"), host);
+    cfg.port = port;
+    cfg.database = db;
+    cfg.username = user;
+    let mut notes = Vec::new();
+    if let Some(s) = sid.filter(|_| service.is_none()) {
+        cfg.options.insert("sid".into(), s.clone());
+        notes.push(format!(
+            "Oracle SID `{s}` was stored in the `sid` option (the service name field is empty)."
+        ));
+    }
+    if tls {
+        cfg.tls.mode = TlsMode::VerifyFull;
+    }
+    let has_password = password.is_some();
+    Ok((profile_of(cfg), has_password, notes))
 }
 
 pub(crate) fn parse_uri_impl(state: &AppState, uri: &str) -> Result<ParsedConnectionUri> {
     let _ = state;
-    let (profile, has_password) = parse_uri(uri)?;
+    let (profile, has_password, notes) = parse_uri_full(uri)?;
     Ok(ParsedConnectionUri {
         profile,
         has_password,
+        notes,
     })
 }
 
@@ -617,6 +861,7 @@ mod tests {
         let json = serde_json::to_string(&ParsedConnectionUri {
             profile,
             has_password,
+            notes: Vec::new(),
         })
         .unwrap();
         assert!(!json.contains("\"pw\"") && json.contains("\"hasPassword\":true"));
@@ -730,5 +975,155 @@ mod tests {
                 .find("topsecret")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn jdbc_oracle_user_string() {
+        let (p, s, n) = parse_uri_full("jdbc:oracle:thin:@//localhost:1521/FREEPDB1").unwrap();
+        let c = p.config;
+        assert_eq!(
+            (c.kind, c.host.as_str(), c.port),
+            (DbKind::Oracle, "localhost", 1521)
+        );
+        assert_eq!(c.database.as_deref(), Some("FREEPDB1"));
+        assert!(!s && n.is_empty() && !c.options.contains_key("sid"));
+        assert_eq!(c.auth_mode, AuthMode::Password);
+    }
+
+    #[test]
+    fn jdbc_oracle_variants() {
+        // default port, case-insensitive prefix
+        let (p, ..) = parse_uri_full("JDBC:Oracle:THIN:@//db.example/svc").unwrap();
+        assert_eq!(
+            (p.config.port, p.config.database.as_deref()),
+            (1521, Some("svc"))
+        );
+        // host:port/service
+        let (p, ..) = parse_uri_full("jdbc:oracle:thin:@h:1522/svc").unwrap();
+        assert_eq!(
+            (p.config.port, p.config.database.as_deref()),
+            (1522, Some("svc"))
+        );
+        // SID
+        let (p, _, n) = parse_uri_full("jdbc:oracle:thin:@h:1521:ORCL").unwrap();
+        assert_eq!(p.config.options["sid"], "ORCL");
+        assert!(p.config.database.is_none());
+        assert_eq!(n.len(), 1);
+        // user/password
+        let (p, s, _) = parse_uri_full("jdbc:oracle:thin:scott/ti%ger@//h:1521/svc").unwrap();
+        assert_eq!(p.config.username.as_deref(), Some("scott"));
+        assert!(s);
+        assert!(!p.has_password);
+        // tcps
+        let (p, ..) = parse_uri_full("jdbc:oracle:thin:@tcps://h:2484/svc").unwrap();
+        assert_eq!(
+            (p.config.port, p.config.tls.mode),
+            (2484, TlsMode::VerifyFull)
+        );
+        // TNS
+        let (p, ..) = parse_uri_full(
+            "jdbc:oracle:thin:@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=h)(PORT=1530))(CONNECT_DATA=(SERVICE_NAME=s)))",
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                p.config.host.as_str(),
+                p.config.port,
+                p.config.database.as_deref()
+            ),
+            ("h", 1530, Some("s"))
+        );
+        let (p, ..) = parse_uri_full(
+            "jdbc:oracle:thin:@(DESCRIPTION = (ADDRESS = (PROTOCOL = TCPS)(HOST = h)(PORT = 2484))(CONNECT_DATA = (SID = X)))",
+        )
+        .unwrap();
+        assert_eq!(p.config.options["sid"], "X");
+        assert_eq!(p.config.tls.mode, TlsMode::VerifyFull);
+    }
+
+    #[test]
+    fn jdbc_oracle_errors() {
+        for bad in [
+            "jdbc:oracle:thin:@",
+            "jdbc:oracle:thin://h/svc",
+            "jdbc:oracle:oci:@h:1521:X",
+            "jdbc:oracle:thin:@//h:1521",
+            "jdbc:oracle:thin:@//h:notaport/svc",
+            "jdbc:oracle:thin:@(DESCRIPTION=(ADDRESS=(HOST=a)(PORT=1))(ADDRESS=(HOST=b)(PORT=1))(CONNECT_DATA=(SERVICE_NAME=s)))",
+            "jdbc:oracle:thin:@(DESCRIPTION=(ADDRESS=(HOST=a)(PORT=1)))",
+        ] {
+            let e = parse_uri(bad).unwrap_err();
+            assert!(matches!(e, Error::Invalid(_)), "{bad}");
+            assert!(e.to_string().contains("jdbc:oracle:thin"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn jdbc_other_databases() {
+        let (p, s, n) = parse_uri_full(
+            "jdbc:postgresql://h1:6432,h2/app?user=me&password=p%40&ssl=true&sslmode=verify-full",
+        )
+        .unwrap();
+        let c = p.config;
+        assert_eq!(
+            (c.kind, c.host.as_str(), c.port),
+            (DbKind::Postgres, "h1", 6432)
+        );
+        assert_eq!(c.database.as_deref(), Some("app"));
+        assert_eq!(c.username.as_deref(), Some("me"));
+        assert_eq!(c.tls.mode, TlsMode::VerifyFull);
+        assert!(s && n.len() == 1);
+        let (p, s, _) = parse_uri_full("jdbc:mysql://db:3307/shop?user=u&useSSL=true").unwrap();
+        assert_eq!((p.config.kind, p.config.port), (DbKind::MySql, 3307));
+        assert_eq!(p.config.tls.mode, TlsMode::Require);
+        assert!(!s);
+        let (p, ..) = parse_uri_full("jdbc:mariadb://db/shop?useSSL=false").unwrap();
+        assert_eq!((p.config.kind, p.config.port), (DbKind::MySql, 3306));
+        assert_eq!(p.config.tls.mode, TlsMode::Disable);
+        let (p, s, n) = parse_uri_full(
+            "jdbc:sqlserver://srv\\SQLEXPRESS:1444;databaseName=sales;user=sa;password=x;encrypt=true;trustServerCertificate=true",
+        )
+        .unwrap();
+        let c = p.config;
+        assert_eq!(
+            (c.kind, c.host.as_str(), c.port),
+            (DbKind::SqlServer, "srv", 1444)
+        );
+        assert_eq!(c.database.as_deref(), Some("sales"));
+        assert_eq!(c.username.as_deref(), Some("sa"));
+        assert_eq!(c.tls.mode, TlsMode::Require);
+        assert_eq!(c.options["instance"], "SQLEXPRESS");
+        assert!(s && n.len() == 1);
+        let (p, ..) = parse_uri_full("jdbc:sqlserver://h;database=d").unwrap();
+        assert_eq!(
+            (p.config.port, p.config.database.as_deref()),
+            (1433, Some("d"))
+        );
+        let (p, ..) = parse_uri_full("jdbc:clickhouse://ch:8123/db").unwrap();
+        assert_eq!((p.config.kind, p.config.port), (DbKind::ClickHouse, 8123));
+        assert_eq!(p.config.database.as_deref(), Some("db"));
+        let (p, ..) = parse_uri_full("jdbc:ch:https://ch/db").unwrap();
+        assert_eq!(
+            (p.config.port, p.config.tls.mode),
+            (8443, TlsMode::VerifyFull)
+        );
+        let (p, ..) = parse_uri_full("jdbc:ch://ch").unwrap();
+        assert_eq!(p.config.host, "ch");
+    }
+
+    #[test]
+    fn jdbc_errors_are_clear() {
+        for bad in [
+            "jdbc:",
+            "jdbc:foo",
+            "jdbc:db2://h/x",
+            "jdbc:postgresql:h/db",
+            "jdbc:postgresql://",
+            "jdbc:mysql://h:xx/db",
+        ] {
+            let e = parse_uri(bad).unwrap_err();
+            assert!(matches!(e, Error::Invalid(_)), "{bad}");
+            assert!(e.to_string().contains("supported JDBC forms"), "{bad}");
+        }
     }
 }

@@ -153,6 +153,8 @@ export interface DriverDiagnostics {
 export interface ParsedConnectionUri {
   profile: ConnectionProfile;
   hasPassword: boolean;
+  /** What the parser simplified (extra hosts, SQL Server instance, Oracle SID...). */
+  notes?: string[];
 }
 
 export interface AppInfo {
