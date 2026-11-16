@@ -97,7 +97,7 @@ describe('ConnectionsSidebar', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
-  it('validates name, host and port in place', async () => {
+  it('validates host and port in place (the name is optional)', async () => {
     const user = setup();
     await profileRow('PostgreSQL dev');
     const dialog = await newConnection(user);
@@ -105,10 +105,10 @@ describe('ConnectionsSidebar', () => {
     await user.clear(within(dialog).getByLabelText('Port'));
     await user.type(within(dialog).getByLabelText('Port'), '99999');
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
-    expect(await within(dialog).findByText('Name is required')).toBeInTheDocument();
-    expect(within(dialog).getByText('Host is required')).toBeInTheDocument();
+    expect(await within(dialog).findByText('Host is required')).toBeInTheDocument();
     expect(within(dialog).getByText(/Port must be a number/)).toBeInTheDocument();
-    expect(within(dialog).getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true');
+    expect(within(dialog).queryByText('Name is required')).not.toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Host')).toHaveAttribute('aria-invalid', 'true');
   });
 
   it('fills the default port when the type changes, unless typed by hand', async () => {

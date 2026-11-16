@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { initialForm, profileFromForm } from '@/features/connections/connectionForm';
 import { mockParseMongoUri } from '@/lib/mock/catalogMongo';
-import { defaultUriName, uriFormPatch } from './uriForm';
+import { uriFormPatch } from './uriForm';
 
 describe('uriFormPatch', () => {
   it('carries every parsed option into the form and the saved profile', async () => {
@@ -28,13 +28,5 @@ describe('uriFormPatch', () => {
     expect(profileFromForm(form, parsed.profile, () => 'id').options).toEqual({
       directConnection: 'true',
     });
-  });
-});
-
-describe('defaultUriName', () => {
-  it('names the connection after the database, else the server address', () => {
-    const base = { kind: 'postgres' as const, host: 'db.local', port: '5433' };
-    expect(defaultUriName({ ...base, database: 'shop' })).toBe('postgres · shop');
-    expect(defaultUriName({ ...base, database: ' ' })).toBe('postgres db.local:5433');
   });
 });

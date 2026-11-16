@@ -23,6 +23,7 @@ import type {
 } from '@/lib/types';
 import { groupPathOptions } from './connectionsTree';
 import {
+  autoName,
   defaultUsername,
   initialForm,
   profileFromForm,
@@ -44,7 +45,6 @@ import {
 import { needsTlsWarning } from './tlsWarning';
 import { OptionsEditor } from '@/features/document/OptionsEditor';
 import { UriPaste } from '@/features/document/UriPaste';
-import { defaultUriName } from '@/features/document/uriForm';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
 import { useHostKeyPrompt } from './useHostKeyPrompt';
 import { SshSection } from './SshSection';
@@ -116,8 +116,18 @@ function ConnectionDialogBody({
 
   const drivers = useQuery({ queryKey: ['drivers'], queryFn: ipc.listDrivers });
   const { data: snapshot } = useConnectionsSnapshot();
-  const driver = drivers.data?.find((d) => d.kind === form.kind);
   const errors = useMemo(() => validateForm(form), [form]);
+  // A blank name is saved as `<kind> N` (the first number free among the other connections).
+  const suggestedName = useMemo(
+    () =>
+      autoName(
+        form.kind,
+        (snapshot?.profiles ?? []).filter((p) => p.id !== profile?.id).map((p) => p.name),
+      ),
+    [form.kind, snapshot, profile?.id],
+  );
+  const named = (f: ConnectionForm): ConnectionForm =>
+    f.name.trim() ? f : { ...f, name: suggestedName };
   const showErrors = submitted;
 
   useEffect(() => {
@@ -142,10 +152,8 @@ function ConnectionDialogBody({
     setSaveError(null);
   };
 
-  const onUriParsed = (patch: Partial<ConnectionForm>) => {
-    // A blank name gets a readable default, so Save does not fail on a field the user never saw.
-    update(form.name.trim() ? patch : { ...patch, name: defaultUriName({ ...form, ...patch }) });
-  };
+  // A blank name stays blank: it is saved under the suggested `<kind> N` name.
+  const onUriParsed = (patch: Partial<ConnectionForm>) => update(patch);
 
   const onKindChange = (kind: string) => {
     const next = drivers.data?.find((d) => d.kind === kind);
@@ -204,7 +212,7 @@ function ConnectionDialogBody({
     setTest({ status: 'running' });
     try {
       const testProfile = withSsh(
-        profileFromForm(form, profile, () => crypto.randomUUID()),
+        profileFromForm(named(form), profile, () => crypto.randomUUID()),
         ssh,
       );
       // The SSH password typed in the dialog is used for this test even before it is saved.
@@ -230,7 +238,7 @@ function ConnectionDialogBody({
     setSaving(true);
     setSaveError(null);
     const built = withSsh(
-      profileFromForm(form, profile, () => crypto.randomUUID()),
+      profileFromForm(named(form), profile, () => crypto.randomUUID()),
       ssh,
     );
     const sshSecret = sshSecretChange(ssh, profile);
@@ -331,17 +339,13 @@ function ConnectionDialogBody({
               options={driverOptions}
             />
           </Field>
-          <Field
-            label={t('field.name')}
-            htmlFor={`${formId}-name`}
-            error={showErrors ? errors.name : undefined}
-          >
+          <Field label={t('field.name')} htmlFor={`${formId}-name`}>
             <Input
               id={`${formId}-name`}
               autoFocus
               value={form.name}
-              placeholder={driver?.displayName ?? ''}
-              aria-invalid={showErrors && !!errors.name}
+              placeholder={suggestedName}
+              title={form.name.trim() ? undefined : t('field.nameAuto', { name: suggestedName })}
               onChange={(e) => update({ name: e.target.value })}
             />
           </Field>

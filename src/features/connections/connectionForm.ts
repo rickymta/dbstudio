@@ -41,7 +41,7 @@ export interface ConnectionForm {
   options: Record<string, string>;
 }
 
-export type FormErrors = Partial<Record<'name' | 'host' | 'port' | 'timeout', string>>;
+export type FormErrors = Partial<Record<'host' | 'port' | 'timeout', string>>;
 
 export const DEFAULT_KIND: DbKind = 'postgres';
 export const DEFAULT_PORT = 5432;
@@ -100,10 +100,28 @@ export function initialForm(
   };
 }
 
-/** Validation messages are i18n keys under `connections:validation`. */
+/**
+ * Name given to a connection saved without one (like DBeaver): `<kind> N`, where N is the
+ * smallest number from 1 that no name in `taken` uses yet (`postgres 1`, `postgres 2`, ...).
+ * Names are compared without case and surrounding spaces.
+ */
+export function autoName(kind: DbKind, taken: Iterable<string>): string {
+  const prefix = `${kind} `.toLowerCase();
+  const used = new Set<number>();
+  for (const name of taken) {
+    const n = name.trim().toLowerCase();
+    if (!n.startsWith(prefix)) continue;
+    const rest = n.slice(prefix.length);
+    if (/^[1-9]\d*$/.test(rest)) used.add(Number(rest));
+  }
+  let i = 1;
+  while (used.has(i)) i++;
+  return `${kind} ${i}`;
+}
+
+/** Validation messages are i18n keys under `connections:validation`. The name is optional. */
 export function validateForm(form: ConnectionForm): FormErrors {
   const errors: FormErrors = {};
-  if (!form.name.trim()) errors.name = 'nameRequired';
   if (!form.host.trim()) errors.host = 'hostRequired';
   const port = Number(form.port);
   if (!/^\d+$/.test(form.port.trim()) || port < 1 || port > 65535) errors.port = 'portRange';

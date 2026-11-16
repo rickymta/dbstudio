@@ -115,6 +115,7 @@
   "field": {
     "kind": "Loại cơ sở dữ liệu",
     "name": "Tên",
+    "nameAuto": "Để trống: lưu với tên “{{name}}”",
     "host": "Máy chủ",
     "port": "Cổng",
     "database": "Cơ sở dữ liệu",
