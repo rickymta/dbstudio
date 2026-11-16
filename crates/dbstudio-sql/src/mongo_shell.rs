@@ -835,8 +835,10 @@ fn construct(name: &str, args: Vec<ShellValue>, at: usize) -> Result<ShellValue>
             _ => Err(bad("expects one argument")),
         },
         "UUID" => match args.as_slice() {
+            // `UUID()` in mongosh makes a random (version 4) UUID, like `ObjectId()` makes an id.
+            [] => Ok(ShellValue::Uuid(uuid::Uuid::new_v4().to_string())),
             [ShellValue::String(s)] => Ok(ShellValue::Uuid(s.clone())),
-            _ => Err(bad("expects a string")),
+            _ => Err(bad("expects no argument or a string")),
         },
         "BinData" => match args.as_slice() {
             [ShellValue::Int(t), ShellValue::String(b)] => Ok(ShellValue::BinData {
@@ -1323,6 +1325,27 @@ mod tests {
         assert_ne!(v[0], v[1]);
         // the explicit form is still validated
         assert!(parse("db.a.find({_id: ObjectId(\"zz\")})").is_err());
+        // `UUID()` makes a fresh version 4 UUID per call; `UUID("...")` keeps its text
+        let s = one(
+            "db.a.insertMany([{_id: UUID()}, {_id: UUID()}, {_id: UUID(\"c0000000-0000-4000-8000-000000000001\")}])",
+        );
+        let ShellValue::Array(v) = &s.args[0] else {
+            panic!()
+        };
+        let ids: Vec<&String> = v
+            .iter()
+            .map(|d| match d.get("_id") {
+                Some(ShellValue::Uuid(u)) => u,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_ne!(ids[0], ids[1]);
+        for id in &ids[..2] {
+            let u = uuid::Uuid::parse_str(id).expect("valid uuid");
+            assert_eq!(u.get_version_num(), 4);
+        }
+        assert_eq!(ids[2], "c0000000-0000-4000-8000-000000000001");
+        assert!(parse("db.a.find({_id: UUID(1)})").is_err());
     }
 
     #[test]
