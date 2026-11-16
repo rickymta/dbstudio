@@ -115,6 +115,7 @@
   "field": {
     "kind": "Database type",
     "name": "Name",
+    "nameAuto": "Left blank: saved as “{{name}}”",
     "host": "Host",
     "port": "Port",
     "database": "Database",

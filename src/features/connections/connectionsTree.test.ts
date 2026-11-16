@@ -111,7 +111,7 @@ describe('buildConnectionsTree', () => {
 });
 
 describe('connection form helpers', () => {
-  it('validates name, host, port and timeout', () => {
+  it('validates host, port and timeout (a blank name is allowed)', () => {
     expect(validateForm({ ...initialForm(undefined), name: 'x' })).toEqual({});
     const bad = validateForm({
       ...initialForm(undefined),
@@ -120,7 +120,7 @@ describe('connection form helpers', () => {
       port: '70000',
       timeoutSec: '0',
     });
-    expect(Object.keys(bad).sort()).toEqual(['host', 'name', 'port', 'timeout']);
+    expect(Object.keys(bad).sort()).toEqual(['host', 'port', 'timeout']);
     expect(validateForm({ ...initialForm(undefined), name: 'x', port: '12a' }).port).toBeDefined();
   });
 

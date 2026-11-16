@@ -21,11 +21,3 @@ export function uriFormPatch(parsed: ParsedConnectionUri): Partial<ConnectionFor
     options: f.options,
   };
 }
-
-/** Default connection name after "Fill from URI": `<kind> · <db>` or `<kind> <host>:<port>`. */
-export function defaultUriName(
-  f: Pick<ConnectionForm, 'kind' | 'host' | 'port' | 'database'>,
-): string {
-  const db = f.database.trim();
-  return db ? `${f.kind} · ${db}` : `${f.kind} ${f.host.trim()}:${f.port.trim()}`;
-}
