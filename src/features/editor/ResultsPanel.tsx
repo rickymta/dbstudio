@@ -278,8 +278,11 @@ function ResultBody({
       />
     );
     // A document result (MongoDB) can be read as Extended JSON through the mode's plug-in.
-    const documents = mode === 'mongo' ? getConsolePlugin(mode)?.renderResult?.(result) : null;
+    const plugin = mode === 'mongo' ? getConsolePlugin(mode) : undefined;
+    const documents = plugin?.renderResult?.(result);
     if (!documents) return grid;
+    // Its table view lists the documents' keys as columns; other results keep the grid.
+    const table = plugin?.renderTable?.(result) ?? grid;
     return (
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border px-2">
@@ -290,7 +293,7 @@ function ResultBody({
             {t('results.viewDocuments')}
           </Button>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto">{asDocuments ? documents : grid}</div>
+        <div className="min-h-0 flex-1 overflow-auto">{asDocuments ? documents : table}</div>
       </div>
     );
   }

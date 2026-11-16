@@ -12,7 +12,7 @@
 // Both are registered below; a feature package can still replace one with `registerConsolePlugin`.
 
 import type { ReactNode } from 'react';
-import { renderMongoResult } from '@/features/document/renderResult';
+import { renderMongoResult, renderMongoTable } from '@/features/document/renderResult';
 import { renderRedisReply } from '@/features/keyvalue/renderReply';
 import type { EditorMode } from '@/stores/tabs';
 import type { StatementResult } from './results';
@@ -21,6 +21,11 @@ export interface ConsolePlugin {
   mode: EditorMode;
   /** Render one result of a command; return `null` to use the default text rendering. */
   renderResult?: (result: StatementResult) => ReactNode | null;
+  /**
+   * The "Table" view of a result in `ResultsPanel` when the mode has a better one than the
+   * generic grid (MongoDB: one column per document key). `null` keeps the generic grid.
+   */
+  renderTable?: (result: StatementResult) => ReactNode | null;
 }
 
 const plugins = new Map<EditorMode, ConsolePlugin>();
@@ -35,4 +40,8 @@ export function registerConsolePlugin(plugin: ConsolePlugin): () => void {
 export const getConsolePlugin = (mode: EditorMode): ConsolePlugin | undefined => plugins.get(mode);
 
 registerConsolePlugin({ mode: 'redis', renderResult: renderRedisReply });
-registerConsolePlugin({ mode: 'mongo', renderResult: renderMongoResult });
+registerConsolePlugin({
+  mode: 'mongo',
+  renderResult: renderMongoResult,
+  renderTable: renderMongoTable,
+});

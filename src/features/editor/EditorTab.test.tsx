@@ -361,6 +361,13 @@ describe('connection loss and console mode', () => {
     );
     await screen.findByTestId('sql-editor', undefined, { timeout: 5000 });
     await user.click(screen.getByRole('button', { name: /^Run (statement|selection)$/ }));
+    // Table view: one column per first-level key, not a single `$document` column.
+    const table = await screen.findByTestId('mongo-table', undefined, { timeout: 5000 });
+    const headers = within(table)
+      .getAllByRole('columnheader')
+      .map((h) => h.textContent);
+    expect(headers).toEqual(['#', '_id', 'name']);
+    expect(within(table).getAllByRole('gridcell')[1]).toHaveTextContent('doc 1');
     await user.click(await screen.findByRole('button', { name: 'Documents' }, { timeout: 5000 }));
     expect(await screen.findByTestId('mongo-documents')).toHaveTextContent('"name": "doc 1"');
   });
