@@ -1,4 +1,3 @@
-import { ConnectionContext } from '@/features/connections/ConnectionContext';
 import { DebugBottomHost, DebugButton, debuggerExtensions } from '@/features/debugger';
 import { useSavedLayout } from '@/features/workspace/layout';
 import { utf16ToCharOffset, charToUtf16Offset } from '@/lib/text';
@@ -23,11 +22,11 @@ import { IconButton } from '@/components/ui/IconButton';
 import { Spinner } from '@/components/ui/Spinner';
 import { useToastStore } from '@/components/ui/toastStore';
 import { useConnectionProfile } from '@/features/connections/queries';
-import { useHostKeyPrompt } from '@/features/connections/useHostKeyPrompt';
+import { useSessionOpen } from '@/features/connections/useSessionOpen';
 import { useSessionReconnect } from '@/features/connections/useSessionReconnect';
 import { ipc, toIpcError } from '@/lib/ipc';
 import type { ParamRef, ParamValue, ScriptAnalysis } from '@/lib/types';
-import { useIsOpening, useSession, useSessionsStore } from '@/stores/sessions';
+import { useIsOpening, useSession } from '@/stores/sessions';
 import { isSessionLost } from '@/stores/sessionRecovery';
 import type { EditorTabPayload } from '@/stores/tabs';
 import { analyzeTab, cancelRun, fetchMore, registerEditorTab, runText } from './editorRunner';
@@ -40,6 +39,8 @@ import {
 } from './editorStore';
 import { openPlan } from '@/features/plan/open';
 import { invalidateCatalog } from './catalogLoader';
+import { ConnectionPicker } from './ConnectionPicker';
+import { DatabasePicker } from './DatabasePicker';
 import { ConsoleView } from './ConsoleView';
 import { isSqlDialect } from './dialects';
 import { formatSql } from './format';
@@ -85,8 +86,8 @@ function EditorBody({
   const session = useSession(connectionId ?? '');
   const opening = useIsOpening(connectionId ?? '');
   const profile = useConnectionProfile(connectionId ?? '');
-  // An SSH tunnel to an unknown host stops with `sshHostKey`: ask, trust, then connect again.
-  const { run: runWithHostKey, dialog: hostKeyDialog } = useHostKeyPrompt();
+  // Password and SSH host key prompts of the Connect button.
+  const { open: openSession, dialog: openDialog } = useSessionOpen();
   const { reconnect: reconnectWithPrompts, dialog: reconnectDialog } = useSessionReconnect();
   const toast = useToastStore.getState().push;
   const editor = useRef<SqlEditorHandle>(null);
@@ -102,6 +103,7 @@ function EditorBody({
     run: (p: ParamValue[]) => void;
   } | null>(null);
 
+  const [dbPickerAvailable, setDbPickerAvailable] = useState(false);
   const sessionId = session?.sessionId ?? null;
   const dialect = session?.dialect ?? {
     name: mode === 'mongo' ? 'mongoShell' : mode === 'redis' ? 'redisCli' : 'opaque',
@@ -338,8 +340,9 @@ function EditorBody({
     ],
   );
 
+  const databasePickerShown = mode === 'sql' && !!sessionId && dbPickerAvailable;
   const context = [
-    data.leaseState?.database ?? data.database,
+    databasePickerShown ? null : (data.leaseState?.database ?? data.database),
     data.leaseState?.schema ?? data.schema,
   ]
     .filter(Boolean)
@@ -373,10 +376,18 @@ function EditorBody({
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="editor-tab">
-      {hostKeyDialog}
+      {openDialog}
       {reconnectDialog}
       <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-3 border-b border-border px-3 py-1">
-        {connectionId && <ConnectionContext connectionId={connectionId} />}
+        <ConnectionPicker tabStateId={id} connectionId={connectionId} mode={mode} />
+        {mode === 'sql' && sessionId && (
+          <DatabasePicker
+            onAvailable={setDbPickerAvailable}
+            tabStateId={id}
+            sessionId={sessionId}
+            defaultDatabase={profile?.database ?? null}
+          />
+        )}
         {context && (
           <span className="min-w-0 truncate text-[13px] text-muted-foreground" title={context}>
             {context}
@@ -508,9 +519,9 @@ function EditorBody({
               size="sm"
               disabled={opening}
               onClick={() =>
-                void runWithHostKey(() => useSessionsStore.getState().open(connectionId)).catch(
-                  (e: unknown) => toast('error', toIpcError(e).message),
-                )
+                void openSession(connectionId).catch((e: unknown) => {
+                  if (toIpcError(e).kind !== 'cancelled') toast('error', toIpcError(e).message);
+                })
               }
             >
               {opening ? <Spinner size={12} /> : null}

@@ -206,5 +206,22 @@
       "toggleSidebar": "Ẩn/hiện sidebar",
       "focusResults": "Chuyển editor / kết quả"
     }
+  },
+  "picker": {
+    "connection": "Kết nối đang dùng",
+    "choose": "Chọn kết nối",
+    "filter": "Lọc kết nối",
+    "open": "Đang mở",
+    "other": "Kết nối khác",
+    "none": "Không có kết nối phù hợp",
+    "busy": "Hãy đợi câu lệnh đang chạy kết thúc trước khi đổi kết nối hoặc cơ sở dữ liệu.",
+    "transaction": "Hãy commit hoặc rollback giao dịch đang mở trước khi đổi kết nối hoặc cơ sở dữ liệu.",
+    "connectFailed": "Không thể kết nối: {{message}}",
+    "database": "Cơ sở dữ liệu đang dùng",
+    "databaseDefault": "mặc định",
+    "databaseFilter": "Lọc cơ sở dữ liệu",
+    "databaseNone": "Không có cơ sở dữ liệu phù hợp",
+    "databaseFailed": "Không thể đổi cơ sở dữ liệu: {{message}}",
+    "debugging": "Hãy dừng phiên gỡ lỗi trước khi đổi kết nối hoặc cơ sở dữ liệu."
   }
 }

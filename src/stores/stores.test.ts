@@ -82,3 +82,29 @@ describe('sessions store (mock IPC)', () => {
     ).rejects.toMatchObject({ kind: 'notFound' });
   });
 });
+
+describe('rebindEditor', () => {
+  it('changes the connection and session of an editor tab and nothing else', () => {
+    useTabsStore.setState({ tabs: [WELCOME_TAB], activeId: 'welcome' });
+    const editor: TabItem = {
+      id: 'editor:e1',
+      kind: 'editor',
+      title: 'Query 1',
+      closable: true,
+      payload: { tabStateId: 'e1', connectionId: 'c1', sessionId: 's1', mode: 'sql' },
+    };
+    useTabsStore.getState().openTab(editor);
+    useTabsStore.getState().rebindEditor('editor:e1', { connectionId: 'c2', sessionId: null });
+    const rebound = useTabsStore.getState().tabs.find((t) => t.id === 'editor:e1')!;
+    expect(rebound.payload).toEqual({
+      tabStateId: 'e1',
+      connectionId: 'c2',
+      sessionId: null,
+      mode: 'sql',
+    });
+    expect(rebound.title).toBe('Query 1');
+    // Unknown and non-editor tabs are left alone.
+    useTabsStore.getState().rebindEditor('welcome', { connectionId: 'c3', sessionId: null });
+    expect(useTabsStore.getState().tabs[0]).toEqual(WELCOME_TAB);
+  });
+});

@@ -1,4 +1,4 @@
-import { ChevronRight } from 'lucide-react';
+import { Check, ChevronRight } from 'lucide-react';
 import { DropdownMenu as Primitive } from 'radix-ui';
 import type { ComponentProps } from 'react';
 import { cn } from '@/lib/cn';
@@ -7,6 +7,32 @@ import { menuContentClass, menuItemClass, menuSeparatorClass } from './menuStyle
 export const DropdownMenu = Primitive.Root;
 export const DropdownMenuTrigger = Primitive.Trigger;
 export const DropdownMenuSub = Primitive.Sub;
+export const DropdownMenuRadioGroup = Primitive.RadioGroup;
+
+export function DropdownMenuLabel({ className, ...rest }: ComponentProps<typeof Primitive.Label>) {
+  return (
+    <Primitive.Label
+      className={cn('px-2 py-1 text-xs font-medium text-muted-foreground', className)}
+      {...rest}
+    />
+  );
+}
+
+/** Item of a radio group: `role="menuitemradio"`, with a check mark when selected. */
+export function DropdownMenuRadioItem({
+  className,
+  children,
+  ...rest
+}: ComponentProps<typeof Primitive.RadioItem>) {
+  return (
+    <Primitive.RadioItem className={cn(menuItemClass, 'min-w-0', className)} {...rest}>
+      {children}
+      <Primitive.ItemIndicator className="ml-auto shrink-0">
+        <Check size={13} aria-hidden />
+      </Primitive.ItemIndicator>
+    </Primitive.RadioItem>
+  );
+}
 
 export function DropdownMenuContent({
   className,

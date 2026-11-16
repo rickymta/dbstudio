@@ -206,5 +206,22 @@
       "toggleSidebar": "Toggle sidebar",
       "focusResults": "Switch editor / results"
     }
+  },
+  "picker": {
+    "connection": "Active connection",
+    "choose": "Choose connection",
+    "filter": "Filter connections",
+    "open": "Open",
+    "other": "Other connections",
+    "none": "No matching connections",
+    "busy": "Wait for the running statement to finish before switching connection or database.",
+    "transaction": "Commit or roll back the open transaction before switching connection or database.",
+    "connectFailed": "Could not connect: {{message}}",
+    "database": "Active database",
+    "databaseDefault": "default",
+    "databaseFilter": "Filter databases",
+    "databaseNone": "No matching databases",
+    "databaseFailed": "Could not switch database: {{message}}",
+    "debugging": "Stop the debug session before switching connection or database."
   }
 }

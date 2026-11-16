@@ -116,6 +116,11 @@ interface TabsState {
    * must survive) and only lose their `sessionId`.
    */
   closeSessionTabs: (sessionId: Uuid) => void;
+  /** Point an editor tab at another connection (and its session, `null` while not connected). */
+  rebindEditor: (
+    tabId: string,
+    target: { connectionId: Uuid | null; sessionId: Uuid | null },
+  ) => void;
 }
 
 function afterClose(tabs: TabItem[], activeId: string, removedIndexes: number[]): string {
@@ -154,6 +159,21 @@ export const useTabsStore = create<TabsState>((set, get) => ({
   togglePin: (id) =>
     set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)) })),
   activate: (id) => set((s) => (s.tabs.some((t) => t.id === id) ? { activeId: id } : s)),
+  rebindEditor: (tabId, target) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tabId && t.kind === 'editor'
+          ? {
+              ...t,
+              payload: {
+                ...t.payload,
+                connectionId: target.connectionId,
+                sessionId: target.sessionId,
+              },
+            }
+          : t,
+      ),
+    })),
   closeSessionTabs: (sessionId) =>
     set((s) => {
       const owned = (t: TabItem) => t.payload?.sessionId === sessionId;
