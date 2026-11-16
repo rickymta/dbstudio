@@ -13,7 +13,7 @@ import { useToastStore } from '@/components/ui/toastStore';
 import { ipc, toIpcError } from '@/lib/ipc';
 import type { Uuid } from '@/lib/types';
 import { filterKeyDown, listDatabases, switchBlock, useSwitchBlock } from './pickerLogic';
-import { patchTabData, useTabData } from './editorStore';
+import { getTabData, patchTabData, useTabData } from './editorStore';
 
 /**
  * "Active catalog" of a SQL editor: the database its statements run in. Shown only when the
@@ -56,10 +56,14 @@ export function DatabasePicker({
   const disabledHint = blocked ? t(`picker.${blocked}`) : null;
 
   const choose = async (database: string) => {
-    if (database === current) return;
+    // Read the tab now, not from the render that built the menu: a lease that opened since then
+    // must get the new context too, or the editor would show one database and run in another.
+    const live = getTabData(tabStateId);
+    if (!live) return;
+    if (database === (live.leaseState?.database ?? live.database ?? defaultDatabase)) return;
     const block = switchBlock(tabStateId);
     if (block) return void toast('info', t(`picker.${block}`));
-    const leaseId = data.leaseId;
+    const leaseId = live.leaseId;
     try {
       if (leaseId) {
         const leaseState = await ipc.leaseSetContext(leaseId, { database, schema: null });

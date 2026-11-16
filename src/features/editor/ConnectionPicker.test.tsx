@@ -185,7 +185,12 @@ describe('database picker', () => {
   it('sets the context of the lease when it has one', async () => {
     const { id, session } = await mount();
     await runText(id, session.sessionId, { text: 'SELECT 1', baseChar: 0 });
+    // Wait until the lease and the finished run are rendered (the picker is enabled again).
+    await waitFor(() => expect(getTabData(id)!.leaseId).toBeTruthy());
     const leaseId = getTabData(id)!.leaseId!;
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Active database' })).toBeEnabled(),
+    );
     const set = vi.spyOn(ipc, 'leaseSetContext');
     const menu = await openByKeyboard('Active database');
     const target = within(menu)
