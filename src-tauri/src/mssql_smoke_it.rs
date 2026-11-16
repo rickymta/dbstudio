@@ -385,15 +385,25 @@ async fn run(session: &dyn Session, db: &str) -> Result<(), String> {
             return Err(format!("DDL of {label} is empty"));
         }
         if major.is_some_and(|m| m < 13) {
-            let lower = text.to_ascii_lowercase();
-            for bad in ["create or alter", "if exists"] {
-                if lower.contains(bad) {
-                    return Err(format!(
-                        "DDL of {label} contains `{bad}`, which SQL Server {} does not support \
-                         (expected until the version-aware DDL work is merged)",
-                        info.version
-                    ));
-                }
+            // `IF EXISTS (SELECT ...)` is plain T-SQL; `DROP ... IF EXISTS <name>` and
+            // `CREATE OR ALTER` are 2016+ syntax.
+            let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let lower = flat.to_ascii_lowercase();
+            let drop_if_exists = lower
+                .match_indices("if exists ")
+                .any(|(i, m)| !lower[i + m.len()..].starts_with('('));
+            let bad = if lower.contains("create or alter") {
+                Some("CREATE OR ALTER")
+            } else if drop_if_exists {
+                Some("DROP ... IF EXISTS")
+            } else {
+                None
+            };
+            if let Some(bad) = bad {
+                return Err(format!(
+                    "DDL of {label} contains `{bad}`, which SQL Server {} does not support",
+                    info.version
+                ));
             }
         }
     }
