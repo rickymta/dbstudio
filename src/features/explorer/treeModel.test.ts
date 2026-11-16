@@ -152,6 +152,7 @@ describe('activation and menu', () => {
     expect(activationTab('table')).toBe('table');
     expect(activationTab('view')).toBe('table');
     expect(activationTab('materializedView')).toBe('table');
+    expect(activationTab('collection')).toBe('table');
     for (const k of ['function', 'procedure', 'trigger', 'sequence', 'index'] as const) {
       expect(activationTab(k)).toBe('ddl');
     }
@@ -171,6 +172,14 @@ describe('activation and menu', () => {
       'viewDdl',
       'copyName',
       'copyFullName',
+    ]);
+    // A MongoDB collection has an Indexes folder below it but still opens its documents.
+    expect(nodeActions({ kind: 'collection', hasChildren: true })).toEqual([
+      'openData',
+      'viewDdl',
+      'copyName',
+      'copyFullName',
+      'refresh',
     ]);
     expect(nodeActions({ kind: 'folder', hasChildren: true })).toEqual(['refresh']);
     expect(nodeActions({ kind: 'role', hasChildren: false })).toEqual(['copyName']);

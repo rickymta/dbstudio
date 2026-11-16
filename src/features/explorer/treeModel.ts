@@ -211,7 +211,14 @@ export function navigate(rows: TreeRow[], focusKey: string | null, key: NavKey):
 // ---------------------------------------------------------------------------------------------
 
 const KEY_KINDS: ReadonlySet<ObjectKind> = new Set(['key']);
-const TABLE_KINDS: ReadonlySet<ObjectKind> = new Set(['table', 'view', 'materializedView']);
+// `collection`: document stores (MongoDB) open it in `DocumentView` via `ObjectDataTab`. Real
+// collections have children (their Indexes folder), so without this activation only toggled them.
+const TABLE_KINDS: ReadonlySet<ObjectKind> = new Set([
+  'table',
+  'view',
+  'materializedView',
+  'collection',
+]);
 const DDL_KINDS: ReadonlySet<ObjectKind> = new Set([
   'function',
   'procedure',
