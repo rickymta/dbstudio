@@ -364,6 +364,40 @@ describe('connection loss and console mode', () => {
     await user.click(await screen.findByRole('button', { name: 'Documents' }, { timeout: 5000 }));
     expect(await screen.findByTestId('mongo-documents')).toHaveTextContent('"name": "doc 1"');
   });
+
+  it('shows the matched/modified counts of a MongoDB update next to the affected rows', async () => {
+    const user = userEvent.setup();
+    const base = (await ipc.connectionsList()).profiles[0]!;
+    const mongo = await ipc.connectionSave(
+      {
+        ...base,
+        id: '00000000-0000-4000-8000-0000000000d4',
+        name: 'Mongo',
+        kind: 'mongodb',
+        port: 27017,
+      },
+      { action: 'keep' },
+    );
+    const session = await openSession(mongo.id);
+    const id = openEditor(session, {
+      text: "db.trips.updateOne({ code: 1, status: 'searching' }, { $set: { status: 'accepted' } })",
+    });
+    const tab = useTabsStore.getState().tabs.find((t) => t.id === editorTabId(id))!;
+    if (tab.kind !== 'editor') throw new Error('not an editor tab');
+    render(
+      <Providers>
+        <EditorTab {...tab.payload} />
+        <ConfirmDestructiveHost />
+      </Providers>,
+    );
+    await screen.findByTestId('sql-editor', undefined, { timeout: 5000 });
+    await user.click(screen.getByRole('button', { name: /^Run (statement|selection)$/ }));
+    const summary = await screen.findByTestId('result-summary', undefined, { timeout: 5000 });
+    expect(summary).toHaveTextContent('0 row(s) affected');
+    expect(within(summary).getByTestId('result-summary-messages')).toHaveTextContent(
+      'matched: 0, modified: 0',
+    );
+  });
 });
 
 describe('transaction cell of the status bar', () => {

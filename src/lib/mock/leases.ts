@@ -580,6 +580,17 @@ async function run(
             type: 'statementEnd',
             end: { outcome: { kind: 'affected', rows }, elapsedMs: Date.now() - t0 },
           });
+        } else if (
+          kind === 'write' &&
+          dialect.name === 'mongoShell' &&
+          /\.update(One|Many)\(/.test(text)
+        ) {
+          // Like the driver: the counts come as a message next to the affected rows.
+          onEvent({ type: 'message', message: 'matched: 0, modified: 0' });
+          onEvent({
+            type: 'statementEnd',
+            end: { outcome: { kind: 'affected', rows: 0 }, elapsedMs: Date.now() - t0 },
+          });
         } else {
           const notice = /(?:RAISE\s+NOTICE|PRINT)\s+'([^']*)'/i.exec(text);
           if (notice) {

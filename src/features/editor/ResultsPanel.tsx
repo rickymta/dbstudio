@@ -318,6 +318,20 @@ function ResultBody({
         }
         description={elapsed}
       />
+      {/* The statement's own server messages (MongoDB `matched: 1, modified: 0`, `insertedIds`)
+          belong next to the count: "0 rows affected" alone does not say whether nothing matched. */}
+      {result.messages.length > 0 && (
+        <ul
+          className="-mt-4 flex max-w-full flex-col items-center gap-0.5 px-4 font-mono text-xs text-muted-foreground"
+          data-testid="result-summary-messages"
+        >
+          {result.messages.map((m, i) => (
+            <li key={i} className="break-all whitespace-pre-wrap select-text">
+              {m}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
