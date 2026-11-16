@@ -366,11 +366,27 @@ async fn run(session: &dyn Session, db: &str) -> Result<(), String> {
                 let path = db_path
                     .child(ObjectKind::Schema, to_text(&r[0]))
                     .child(kind, to_text(&r[1]));
-                let text = step!(
-                    6,
-                    format!("object_ddl of the {label}"),
-                    session.object_ddl(&path)
-                );
+                // A read-only login without VIEW DEFINITION (or an encrypted module) cannot
+                // see the definition: the driver says so with a permission error, which is fine.
+                let title = format!("object_ddl of the {label}");
+                let started = Instant::now();
+                println!("[step 6] {title} ...");
+                let text = match session.object_ddl(&path).await {
+                    Ok(v) => {
+                        println!("[step 6] ok in {} ms", started.elapsed().as_millis());
+                        v
+                    }
+                    Err(dbstudio_core::Error::Permission(m)) => {
+                        println!("[step 6] skipped: no VIEW DEFINITION ({m})");
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "step 6 ({title}) failed after {} ms:\n{e}\n{e:?}",
+                            started.elapsed().as_millis()
+                        ));
+                    }
+                };
                 texts.push((
                     format!("{label} {}.{}", to_text(&r[0]), to_text(&r[1])),
                     text,
