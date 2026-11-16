@@ -22,6 +22,12 @@ tokio-util = { workspace = true, features = ["compat"] }
 tracing.workspace = true
 uuid.workspace = true
 
+# The operating system's TLS library (SChannel, Security.framework) as a second backend for SQL
+# Server 2008 / 2008 R2 and other servers that offer only TLS 1.0/1.1 or legacy cipher suites.
+# Not on Linux: that would need OpenSSL in the bundles.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tiberius = { workspace = true, features = ["native-tls"] }
+
 [dev-dependencies]
 dbstudio-core = { workspace = true, features = ["testing"] }
 quick-xml.workspace = true

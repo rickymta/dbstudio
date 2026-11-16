@@ -28,6 +28,12 @@ const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 /// One result set of a catalog query.
 pub type Rows = Vec<Vec<Value>>;
 
+/// A failed connect attempt; `handshake_cause` is set when a TLS handshake was refused.
+struct ConnectFailure {
+    error: Error,
+    handshake_cause: Option<String>,
+}
+
 /// A live connection.
 pub struct Conn {
     pub client: TdsClient,
@@ -90,24 +96,7 @@ impl Conn {
     pub async fn open(settings: &Settings, db: &str) -> Result<Conn> {
         // ring and aws-lc-rs are both linked; rustls needs an explicit process default.
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = settings.tiberius_config(db)?;
-        let addr = config.get_addr();
-        let attempt = async {
-            let tcp = TcpStream::connect(addr).await.map_err(|e| {
-                Error::Connection(format!(
-                    "cannot connect to {}:{}: {e}",
-                    settings.host, settings.port
-                ))
-            })?;
-            let _ = tcp.set_nodelay(true);
-            Client::connect(config, tcp.compat_write())
-                .await
-                .map_err(map_connect)
-        };
-        let client = match tokio::time::timeout(settings.connect_timeout, attempt).await {
-            Err(_) => return Err(Error::Timeout),
-            Ok(r) => r?,
-        };
+        let client = Self::connect_client(settings, db).await?;
         let cancel = client.cancel_handle();
         let mut conn = Conn {
             client,
@@ -142,6 +131,90 @@ impl Conn {
                 ServerVersion::parse_or_latest(&str_at(r, 0))
             }),
             Err(_) => ServerVersion::LATEST,
+        }
+    }
+
+    /// TCP connect plus TDS login. With `tls_backend=auto` on Windows/macOS a TLS handshake that
+    /// rustls cannot complete (SQL Server 2008 / 2008 R2, Windows Server 2012 R2 and older) is
+    /// retried once on a fresh TCP connection with the operating system's TLS library, which is
+    /// then used for the later connections too. Never falls back to plaintext or from strict.
+    async fn connect_client(settings: &Settings, db: &str) -> Result<TdsClient> {
+        let native_first = settings.use_native_now();
+        let first = match Self::connect_attempt(settings, db, native_first).await {
+            Ok(c) => return Ok(c),
+            Err(f) => f,
+        };
+        let Some(cause) = first.handshake_cause else {
+            return Err(first.error);
+        };
+        if native_first || !settings.can_fall_back_to_native() {
+            return Err(error::handshake_error(
+                &cause,
+                crate::settings::native_tls_available() && !native_first,
+                None,
+            ));
+        }
+        tracing::warn!(
+            "TLS handshake with {}:{} failed with rustls ({cause}); retrying with the operating system TLS stack",
+            settings.host,
+            settings.port
+        );
+        match Self::connect_attempt(settings, db, true).await {
+            Ok(c) => {
+                tracing::warn!(
+                    "{}:{} needed the legacy operating system TLS stack (server only offers old TLS versions or cipher suites)",
+                    settings.host,
+                    settings.port
+                );
+                settings.remember_native();
+                Ok(c)
+            }
+            Err(f) => match f.handshake_cause {
+                Some(native_cause) => {
+                    Err(error::handshake_error(&cause, false, Some(&native_cause)))
+                }
+                None => {
+                    // TLS itself worked (the login or something later failed): keep using it.
+                    if f.error.kind() == "authentication" {
+                        settings.remember_native();
+                    }
+                    Err(f.error)
+                }
+            },
+        }
+    }
+
+    /// One TCP connect and login attempt with the chosen TLS backend.
+    async fn connect_attempt(
+        settings: &Settings,
+        db: &str,
+        native: bool,
+    ) -> std::result::Result<TdsClient, ConnectFailure> {
+        let plain = |error| ConnectFailure {
+            error,
+            handshake_cause: None,
+        };
+        let config = settings.tiberius_config_for(db, native).map_err(plain)?;
+        let addr = config.get_addr();
+        let attempt = async {
+            let tcp = TcpStream::connect(addr).await.map_err(|e| {
+                plain(Error::Connection(format!(
+                    "cannot connect to {}:{}: {e}",
+                    settings.host, settings.port
+                )))
+            })?;
+            let _ = tcp.set_nodelay(true);
+            Client::connect(config, tcp.compat_write())
+                .await
+                .map_err(|e| ConnectFailure {
+                    handshake_cause: error::is_handshake_failure(&e)
+                        .then(|| error::handshake_cause(&e)),
+                    error: map_connect(e),
+                })
+        };
+        match tokio::time::timeout(settings.connect_timeout, attempt).await {
+            Err(_) => Err(plain(Error::Timeout)),
+            Ok(r) => r,
         }
     }
 

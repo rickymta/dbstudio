@@ -181,6 +181,50 @@ impl<S> TlsPreloginWrapper<S> {
     }
 }
 
+impl<S: AsyncRead + AsyncWrite + Unpin + Send> TlsPreloginWrapper<S> {
+    /// DBStudio patch: send the buffered handshake bytes as one prelogin packet.
+    pub(crate) fn flush_pending(&mut self, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+        let inner = self;
+
+        // If on handshake mode, wraps the data to a TDS packet before sending.
+        if inner.pending_handshake && inner.wr_buf.len() > HEADER_BYTES {
+            if !inner.header_written {
+                let mut header = PacketHeader::new(inner.wr_buf.len(), 0);
+
+                header.set_type(PacketType::PreLogin);
+                header.set_status(PacketStatus::EndOfMessage);
+
+                header
+                    .encode(&mut &mut inner.wr_buf[0..HEADER_BYTES])
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "Could not encode header.")
+                    })?;
+
+                inner.header_written = true;
+            }
+
+            while !inner.wr_buf.is_empty() {
+                event!(
+                    Level::TRACE,
+                    "Writing a packet of {} bytes",
+                    inner.wr_buf.len(),
+                );
+
+                let written = ready!(
+                    Pin::new(&mut inner.stream.as_mut().unwrap()).poll_write(cx, &inner.wr_buf)
+                )?;
+
+                inner.wr_buf.drain(..written);
+            }
+
+            inner.wr_buf.resize(HEADER_BYTES, 0);
+            inner.header_written = false;
+        }
+
+        Pin::new(&mut inner.stream.as_mut().unwrap()).poll_flush(cx)
+    }
+}
+
 #[cfg(any(
     feature = "rustls",
     feature = "native-tls",
@@ -199,6 +243,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AsyncRead for TlsPreloginWrapper<
         }
 
         let inner = self.get_mut();
+        // DBStudio patch: a read means the flight is complete, send it (see `poll_flush`).
+        ready!(inner.flush_pending(cx))?;
 
         // Read the headers separately and do not send them to the Tls
         // connection handling.
@@ -287,43 +333,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AsyncWrite for TlsPreloginWrapper
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
         let inner = self.get_mut();
-
-        // If on handshake mode, wraps the data to a TDS packet before sending.
-        if inner.pending_handshake && inner.wr_buf.len() > HEADER_BYTES {
-            if !inner.header_written {
-                let mut header = PacketHeader::new(inner.wr_buf.len(), 0);
-
-                header.set_type(PacketType::PreLogin);
-                header.set_status(PacketStatus::EndOfMessage);
-
-                header
-                    .encode(&mut &mut inner.wr_buf[0..HEADER_BYTES])
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidInput, "Could not encode header.")
-                    })?;
-
-                inner.header_written = true;
-            }
-
-            while !inner.wr_buf.is_empty() {
-                event!(
-                    Level::TRACE,
-                    "Writing a packet of {} bytes",
-                    inner.wr_buf.len(),
-                );
-
-                let written = ready!(
-                    Pin::new(&mut inner.stream.as_mut().unwrap()).poll_write(cx, &inner.wr_buf)
-                )?;
-
-                inner.wr_buf.drain(..written);
-            }
-
-            inner.wr_buf.resize(HEADER_BYTES, 0);
-            inner.header_written = false;
+        // DBStudio patch: during the handshake the buffered bytes are sent as ONE prelogin packet
+        // per flight, by `poll_read` (the peer must answer) or `flush_pending`. TLS libraries that
+        // flush after every record (Security.framework: ClientKeyExchange, ChangeCipherSpec and
+        // Finished) otherwise produce one TDS packet per record, which SQL Server answers by
+        // closing the connection.
+        if inner.pending_handshake {
+            return Poll::Ready(Ok(()));
         }
-
-        Pin::new(&mut inner.stream.as_mut().unwrap()).poll_flush(cx)
+        inner.flush_pending(cx)
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
@@ -423,6 +441,36 @@ mod tests {
     // payload, followed by the verbatim payload. This locks the wrapper's
     // outbound framing (previously only the read side was tested).
     #[test]
+    fn handshake_records_flushed_separately_share_one_packet() {
+        let mut wrapper = TlsPreloginWrapper::new(CapturingStream {
+            written: Vec::new(),
+        });
+        let mut cx = Context::from_waker(Waker::noop());
+        for record in [&[1u8; 10][..], &[2u8; 5][..], &[3u8; 7][..]] {
+            assert!(matches!(
+                Pin::new(&mut wrapper).poll_write(&mut cx, record),
+                Poll::Ready(Ok(_))
+            ));
+            assert!(matches!(
+                Pin::new(&mut wrapper).poll_flush(&mut cx),
+                Poll::Ready(Ok(()))
+            ));
+        }
+        assert!(matches!(
+            wrapper.flush_pending(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        let written = &wrapper.stream.as_ref().unwrap().written;
+        assert_eq!(
+            written.len(),
+            HEADER_BYTES + 22,
+            "one packet for the whole flight"
+        );
+        let header = PacketHeader::decode(&mut BytesMut::from(&written[..HEADER_BYTES])).unwrap();
+        assert_eq!(header.length() as usize, HEADER_BYTES + 22);
+    }
+
+    #[test]
     fn poll_write_then_flush_frames_a_prelogin_packet() {
         let stream = CapturingStream {
             written: Vec::new(),
@@ -441,7 +489,14 @@ mod tests {
             other => panic!("expected the payload to be accepted, got {other:?}"),
         }
 
+        // DBStudio patch: a `flush` during the handshake sends nothing yet; the flight goes out
+        // as one packet when `flush_pending` runs (or on the next read).
         match Pin::new(&mut wrapper).poll_flush(&mut cx) {
+            Poll::Ready(Ok(())) => {}
+            other => panic!("expected a clean flush, got {other:?}"),
+        }
+        assert!(wrapper.stream.as_ref().unwrap().written.is_empty());
+        match wrapper.flush_pending(&mut cx) {
             Poll::Ready(Ok(())) => {}
             other => panic!("expected a clean flush, got {other:?}"),
         }

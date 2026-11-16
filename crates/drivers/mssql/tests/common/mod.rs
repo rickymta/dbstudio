@@ -45,6 +45,14 @@ pub fn config(db: Option<&str>, tls: TlsMode) -> ConnectionConfig {
         ..Default::default()
     };
     c.connect_timeout_ms = Some(60_000);
+    // `DBSTUDIO_IT_MSSQL_OPTS="tls_backend=native,encrypt=none"`: extra connection options.
+    if let Ok(opts) = std::env::var("DBSTUDIO_IT_MSSQL_OPTS") {
+        for kv in opts.split(',').filter(|kv| !kv.is_empty()) {
+            if let Some((k, v)) = kv.split_once('=') {
+                c.options.insert(k.trim().into(), v.trim().into());
+            }
+        }
+    }
     c
 }
 

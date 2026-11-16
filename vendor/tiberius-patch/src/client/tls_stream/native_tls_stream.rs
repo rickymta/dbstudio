@@ -75,7 +75,11 @@ pub(crate) async fn create_tls_stream<S: AsyncRead + AsyncWrite + Unpin + Send>(
     config: &Config,
     stream: S,
 ) -> crate::Result<TlsStream<S>> {
-    let mut builder = TlsConnector::new();
+    // DBStudio patch: accept TLS 1.0 and newer. SQL Server 2008 / 2008 R2 (and servers on
+    // Windows Server 2012 R2 or older without the TLS 1.2 update) offer nothing better; the
+    // OS library still prefers the highest version both sides support.
+    let mut builder =
+        TlsConnector::new().min_protocol_version(Some(async_native_tls::Protocol::Tlsv10));
 
     if matches!(config.encryption, crate::EncryptionLevel::Strict) {
         builder = builder.request_alpns(&[super::TDS_ALPN_PROTOCOL_NAME]);
