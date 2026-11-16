@@ -234,6 +234,9 @@ mod bulk_options;
 
 pub use bulk_options::{ColumnOrderHint, SortOrder, SqlBulkCopyOption, SqlBulkCopyOptions};
 pub use client::{AuthMethod, Client, Config, ConfigBuilder};
+// DBStudio patch: runtime TLS backend choice.
+#[cfg(all(feature = "rustls", feature = "native-tls"))]
+pub use client::TlsBackend;
 pub use command::{Command, SqlTableData, SqlTableDataRow, TableValue, TableValueRow};
 pub(crate) use error::Error;
 pub use from_sql::{FromSql, FromSqlOwned};
@@ -250,8 +253,7 @@ pub use tds::{
     collation::Collation,
     numeric,
     stream::{CommandReturnValue, CommandStream, QueryStream},
-    CancelHandle,
-    time, xml, EncryptionLevel,
+    time, xml, CancelHandle, EncryptionLevel,
 };
 pub use to_sql::{IntoSql, ToSql};
 pub use uuid::Uuid;

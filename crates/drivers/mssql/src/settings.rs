@@ -1,8 +1,17 @@
 //! Connection settings: the TLS policy mapping and the free-form `options` of a configuration.
 //!
 //! Recognised option keys: `auth` (`sql`, `windows`, `integrated`), `application_name`,
-//! `pool_max` (1-32, default 4), `max_lob_bytes`, `encrypt` (`strict` = TDS 8.0).
+//! `pool_max` (1-32, default 4), `max_lob_bytes`, `encrypt` (`strict` = TDS 8.0; `none`, aliases
+//! `off`, `plaintext` = no TLS at all, the login is sent unencrypted; incompatible with the
+//! `verify-ca` / `verify-full` TLS modes), `tls_backend` (`auto` = default, `rustls`, `native`
+//! with alias `os`). SQL Server 2008 / 2008 R2 and servers on Windows Server 2012 R2 or older
+//! offer only TLS 1.0/1.1 or legacy cipher suites, which rustls cannot negotiate: the `native`
+//! backend uses the operating system's TLS library (SChannel on Windows, Security.framework on
+//! macOS; not available on Linux). `auto` starts with rustls and, when the handshake fails, retries
+//! once with the native backend and remembers that for the later connections.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use dbstudio_core::{ConnectionConfig, Error, Result, Secret, TlsConfig, TlsMode};
@@ -28,6 +37,22 @@ pub enum AuthKind {
     Integrated,
 }
 
+/// Which TLS library performs the handshake (option `tls_backend`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsBackendPref {
+    /// rustls first, the operating system's library when rustls cannot handshake.
+    Auto,
+    /// rustls only.
+    Rustls,
+    /// The operating system's TLS library only.
+    Native,
+}
+
+/// True when the operating system's TLS library is compiled in (Windows, macOS).
+pub const fn native_tls_available() -> bool {
+    cfg!(any(windows, target_os = "macos"))
+}
+
 /// Everything needed to open connections, minus the database.
 #[derive(Clone)]
 pub struct Settings {
@@ -43,6 +68,12 @@ pub struct Settings {
     pub pool_max: usize,
     pub max_lob_bytes: usize,
     pub login_db: String,
+    /// Option `tls_backend`.
+    pub tls_backend: TlsBackendPref,
+    /// Option `encrypt=none`: no TLS at all.
+    pub encrypt_none: bool,
+    /// Set once a connection needed the native backend; shared by every clone (all pools).
+    native_learned: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for Settings {
@@ -92,7 +123,36 @@ impl Settings {
                 .filter(|n| *n >= 1)
                 .ok_or_else(|| Error::Invalid(format!("invalid max_lob_bytes `{v}`")))?,
         };
-        let strict = opt("encrypt").is_some_and(|v| v.eq_ignore_ascii_case("strict"));
+        let encrypt = opt("encrypt").map(str::to_ascii_lowercase);
+        let strict = encrypt.as_deref() == Some("strict");
+        let encrypt_none = matches!(encrypt.as_deref(), Some("none" | "off" | "plaintext"));
+        if encrypt_none && matches!(cfg.tls.mode, TlsMode::VerifyCa | TlsMode::VerifyFull) {
+            return Err(Error::Invalid(
+                "encrypt=none turns TLS off, which contradicts the verify-ca / verify-full TLS mode; \
+                 choose another TLS mode or remove encrypt=none"
+                    .into(),
+            ));
+        }
+        let tls_backend = match opt("tls_backend").map(str::to_ascii_lowercase).as_deref() {
+            None | Some("auto") => TlsBackendPref::Auto,
+            Some("rustls") => TlsBackendPref::Rustls,
+            Some("native" | "os") => {
+                if !native_tls_available() {
+                    return Err(Error::Invalid(
+                        "tls_backend=native needs the operating system's TLS library, which is only \
+                         used on Windows and macOS; on this platform use tls_backend=rustls or \
+                         encrypt=none"
+                            .into(),
+                    ));
+                }
+                TlsBackendPref::Native
+            }
+            Some(other) => {
+                return Err(Error::Invalid(format!(
+                    "invalid tls_backend `{other}` (expected auto, rustls or native)"
+                )));
+            }
+        };
         let user = cfg.login_user().map(str::to_string);
         if auth != AuthKind::Integrated && user.is_none() {
             return Err(Error::Authentication(
@@ -122,7 +182,33 @@ impl Settings {
                 .clone()
                 .filter(|d| !d.is_empty())
                 .unwrap_or_else(|| "master".to_string()),
+            tls_backend,
+            encrypt_none,
+            native_learned: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// True when new connections go straight to the native TLS backend.
+    pub fn use_native_now(&self) -> bool {
+        native_tls_available()
+            && (self.tls_backend == TlsBackendPref::Native
+                || (self.tls_backend == TlsBackendPref::Auto
+                    && self.native_learned.load(Ordering::Relaxed)))
+    }
+
+    /// True when a failed rustls handshake may be retried with the native backend: automatic
+    /// mode on Windows/macOS, a TLS connection (never plaintext, never TDS 8.0 strict).
+    pub fn can_fall_back_to_native(&self) -> bool {
+        native_tls_available()
+            && self.tls_backend == TlsBackendPref::Auto
+            && !self.strict
+            && !self.encrypt_none
+            && !self.native_learned.load(Ordering::Relaxed)
+    }
+
+    /// Remember that this server needs the native backend (automatic mode).
+    pub fn remember_native(&self) {
+        self.native_learned.store(true, Ordering::Relaxed);
     }
 
     /// Warning for the UI when NTLM credentials go over TLS whose certificate is not verified.
@@ -144,8 +230,24 @@ impl Settings {
     /// text once the server asks for encryption); `VerifyCa` and `VerifyFull` both verify chain
     /// and host name (the TLS library cannot skip the name check). Without a CA file the
     /// operating system's roots are used; a CA file is trusted in addition to them.
+    #[cfg(test)]
     pub fn tiberius_config(&self, database: &str) -> Result<Config> {
+        self.tiberius_config_for(database, self.use_native_now())
+    }
+
+    /// Like [`Settings::tiberius_config`] with the TLS backend chosen by the caller.
+    pub fn tiberius_config_for(&self, database: &str, native: bool) -> Result<Config> {
         let mut c = Config::new();
+        #[cfg(any(windows, target_os = "macos"))]
+        if native {
+            c.tls_backend(tiberius::TlsBackend::Native);
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        if native {
+            return Err(Error::Invalid(
+                "the operating system TLS backend is not available on this platform".into(),
+            ));
+        }
         c.host(&self.host);
         c.port(self.port);
         c.application_name(&self.app_name);
@@ -173,6 +275,11 @@ impl Settings {
 
     fn apply_tls(&self, c: &mut Config) -> Result<()> {
         let tls = &self.tls;
+        if self.encrypt_none {
+            // No TLS at all: the login travels in the clear (explicit user choice).
+            c.encryption(EncryptionLevel::NotSupported);
+            return Ok(());
+        }
         if self.strict {
             c.encryption(EncryptionLevel::Strict);
         } else {
@@ -285,6 +392,72 @@ mod tests {
             let dbg = format!("{t:?}");
             assert!(dbg.contains(level), "{mode:?}: {dbg}");
         }
+    }
+
+    #[test]
+    fn encrypt_none_disables_tls() {
+        let mut c = cfg();
+        for v in ["none", "OFF", "plaintext"] {
+            c.options.insert("encrypt".into(), v.into());
+            for mode in [TlsMode::Disable, TlsMode::Prefer, TlsMode::Require] {
+                c.tls.mode = mode;
+                let s = Settings::from_config(&c, None).unwrap();
+                assert!(s.encrypt_none && !s.strict);
+                let dbg = format!("{:?}", s.tiberius_config("db").unwrap());
+                assert!(dbg.contains("NotSupported"), "{v} {mode:?}: {dbg}");
+                assert!(!s.can_fall_back_to_native());
+            }
+            for mode in [TlsMode::VerifyCa, TlsMode::VerifyFull] {
+                c.tls.mode = mode;
+                let e = Settings::from_config(&c, None).unwrap_err();
+                assert_eq!(e.kind(), "invalid", "{v} {mode:?}");
+            }
+        }
+        c.tls.mode = TlsMode::Require;
+        c.options.insert("encrypt".into(), "strict".into());
+        let s = Settings::from_config(&c, None).unwrap();
+        assert!(s.strict && !s.encrypt_none && !s.can_fall_back_to_native());
+        assert!(format!("{:?}", s.tiberius_config("db").unwrap()).contains("Strict"));
+    }
+
+    #[test]
+    fn tls_backend_option() {
+        let mut c = cfg();
+        let s = Settings::from_config(&c, None).unwrap();
+        assert_eq!(s.tls_backend, TlsBackendPref::Auto);
+        assert!(!s.use_native_now());
+        assert_eq!(s.can_fall_back_to_native(), native_tls_available());
+        c.options.insert("tls_backend".into(), "RustLS".into());
+        let s = Settings::from_config(&c, None).unwrap();
+        assert_eq!(s.tls_backend, TlsBackendPref::Rustls);
+        assert!(!s.use_native_now() && !s.can_fall_back_to_native());
+        for v in ["native", "os"] {
+            c.options.insert("tls_backend".into(), v.into());
+            let r = Settings::from_config(&c, None);
+            if native_tls_available() {
+                let s = r.unwrap();
+                assert_eq!(s.tls_backend, TlsBackendPref::Native);
+                assert!(s.use_native_now());
+                assert!(s.tiberius_config("db").is_ok());
+            } else {
+                assert_eq!(r.unwrap_err().kind(), "invalid");
+            }
+        }
+        c.options.insert("tls_backend".into(), "openssl".into());
+        assert_eq!(
+            Settings::from_config(&c, None).unwrap_err().kind(),
+            "invalid"
+        );
+    }
+
+    #[test]
+    fn learned_native_is_shared_between_clones() {
+        let c = cfg();
+        let s = Settings::from_config(&c, None).unwrap();
+        let clone = s.clone();
+        s.remember_native();
+        assert_eq!(clone.use_native_now(), native_tls_available());
+        assert!(!clone.can_fall_back_to_native());
     }
 
     #[test]

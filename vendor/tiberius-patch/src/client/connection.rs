@@ -908,6 +908,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                     _ => unreachable!(),
                 };
 
+                // DBStudio patch: send what the handshake still has buffered (see
+                // `TlsPreloginWrapper::poll_flush`), e.g. the last flight of a TLS 1.3 handshake.
+                futures_util::future::poll_fn(|cx| stream.get_mut().flush_pending(cx)).await?;
                 stream.get_mut().handshake_complete();
                 event!(Level::DEBUG, "TLS handshake successful");
 

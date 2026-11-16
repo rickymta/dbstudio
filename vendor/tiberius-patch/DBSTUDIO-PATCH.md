@@ -30,7 +30,24 @@ changed spot is marked `DBStudio patch`:
    the `Truncated` notes and their row in a `pending` list; `columns()` (peek-ahead) stops while
    that list is non-empty instead of reading past the queued row, and the limit also applies to
    output parameters and other PLP values read while it is set (callers reset it to `None`).
+6. **Runtime TLS backend** (`src/client/tls_stream.rs`, `src/client/tls_stream/native_tls_stream.rs`,
+   `src/client/config.rs`, `src/lib.rs`): the `rustls` and `native-tls` features can be enabled
+   together. `TlsStream` is then an enum over both and `Config::tls_backend(TlsBackend::Native)`
+   picks the OS library (SChannel, Security.framework, OpenSSL); the default is
+   `TlsBackend::Rustls`. `TlsBackend` and the setter exist only with both features; single
+   backend builds are unchanged. The native backend now sets
+   `min_protocol_version(Some(Protocol::Tlsv10))`: SQL Server 2008 / 2008 R2 and servers on
+   Windows Server 2012 R2 or older only offer TLS 1.0/1.1 or CBC / static-RSA / DHE suites,
+   which rustls (TLS 1.2/1.3, AEAD + ECDHE only) cannot negotiate. Trust (`trust_cert`,
+   `trust_cert_ca`, `hostname_in_certificate`) is honoured by both backends as before.
+7. **One prelogin packet per handshake flight** (`src/client/tls.rs`, `src/client/connection.rs`):
+   `TlsPreloginWrapper` no longer turns every `flush` into a TDS packet during the TLS handshake;
+   it sends the buffered bytes when the TLS library next reads (the flight is complete) and once
+   more right after the handshake (`flush_pending`). Security.framework (the `native-tls` backend
+   on macOS) flushes after each record, so ClientKeyExchange, ChangeCipherSpec and Finished went
+   out as three packets and SQL Server 2022 closed the connection (`connection closed via error`).
+   rustls flushes once per flight, so its bytes on the wire do not change.
 
 Updating: copy the new upstream `src`, re-apply the marked spots (`grep -rn "DBStudio patch"`),
 run `cargo test -p dbstudio-driver-mssql` with `DBSTUDIO_IT=1` against `mssql2022`. Candidates for
-an upstream pull request: 1, 2 and 5.
+an upstream pull request: 1, 2, 5, 6 and 7.

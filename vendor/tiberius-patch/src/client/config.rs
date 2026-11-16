@@ -69,6 +69,22 @@ pub struct Config {
         feature = "vendored-openssl"
     ))]
     pub(crate) client_cert: Option<ClientCertificate>,
+    // DBStudio patch: runtime choice of the TLS backend when both are compiled in.
+    #[cfg(all(feature = "rustls", feature = "native-tls"))]
+    pub(crate) tls_backend: TlsBackend,
+}
+
+/// DBStudio patch: which TLS implementation performs the handshake. Only exists when both the
+/// `rustls` and the `native-tls` features are enabled.
+#[cfg(all(feature = "rustls", feature = "native-tls"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TlsBackend {
+    /// rustls: TLS 1.2 / 1.3 with AEAD cipher suites only (default).
+    #[default]
+    Rustls,
+    /// The operating system's TLS library (SChannel, Security.framework, OpenSSL). Accepts
+    /// TLS 1.0 and 1.1 and legacy cipher suites, as offered by SQL Server 2008 / 2008 R2.
+    Native,
 }
 
 /// How the server certificate is trusted.
@@ -262,6 +278,8 @@ impl Default for Config {
                 feature = "vendored-openssl"
             ))]
             client_cert: None,
+            #[cfg(all(feature = "rustls", feature = "native-tls"))]
+            tls_backend: TlsBackend::default(),
         }
     }
 }
@@ -353,6 +371,13 @@ impl Config {
     /// Gets the configured packet size, if set.
     pub fn get_packet_size(&self) -> Option<u32> {
         self.packet_size
+    }
+
+    /// DBStudio patch: choose the TLS backend (only with both `rustls` and `native-tls`).
+    /// Defaults to [`TlsBackend::Rustls`].
+    #[cfg(all(feature = "rustls", feature = "native-tls"))]
+    pub fn tls_backend(&mut self, backend: TlsBackend) {
+        self.tls_backend = backend;
     }
 
     /// Set the preferred encryption level.
