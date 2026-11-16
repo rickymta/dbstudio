@@ -110,6 +110,13 @@ pub fn setup(app: &AppHandle, state: &AppState) {
             tracing::warn!(error = %e, "cannot create the tray icon; closing the window quits")
         }
     }
+    // Windows / Linux taskbar: the window icon (macOS uses the bundle icon in the Dock).
+    #[cfg(not(target_os = "macos"))]
+    if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
+        if let Err(e) = w.set_icon(crate::tray::TASKBAR_ICON) {
+            tracing::warn!(error = %e, "cannot set the taskbar icon");
+        }
+    }
     let started_in_background = std::env::args().any(|a| a == BACKGROUND_ARG);
     if started_in_background && tray_ready() {
         if let Some(w) = app.get_webview_window(MAIN_WINDOW) {

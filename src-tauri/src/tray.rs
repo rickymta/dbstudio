@@ -4,6 +4,7 @@
 //! the main window is closed. Left click opens the window; the menu has Open and Quit.
 
 use tauri::AppHandle;
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
@@ -19,7 +20,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, MENU_OPEN, "Open DBStudio", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, MENU_QUIT, "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
-    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+    let builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .tooltip("DBStudio")
@@ -37,10 +38,16 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             {
                 show_main_window(tray.app_handle());
             }
-        });
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
-    }
+        })
+        .icon(TRAY_ICON);
     builder.build(app)?;
     Ok(())
 }
+
+/// Monochrome database glyph for the menu bar / notification area (the app icon is the coloured
+/// one in `icon.icns` / `icon.ico`).
+const TRAY_ICON: Image<'static> = tauri::include_image!("icons/tray.png");
+
+/// Same glyph, larger, for the window icon the Windows and Linux taskbars show.
+#[cfg(not(target_os = "macos"))]
+pub const TASKBAR_ICON: Image<'static> = tauri::include_image!("icons/taskbar.png");
