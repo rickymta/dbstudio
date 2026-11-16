@@ -5,6 +5,8 @@
 //! `tidb://`, `clickhouse[s]://`, `cassandra://` and `scylladb://` URIs into a connection profile.
 //! JDBC strings (`jdbc:oracle:thin:`, `jdbc:postgresql:`, `jdbc:mysql:`, `jdbc:mariadb:`,
 //! `jdbc:sqlserver:`, `jdbc:clickhouse:`, `jdbc:ch:`) give the same profile.
+//! ADO.NET connection strings for SQL Server (`Server=host,1433;Database=db;User Id=u;...`) are
+//! recognised too (no `scheme://`, `key=value;` pairs with a server key).
 //! The password never goes to the frontend and is not kept in memory either: the command
 //! reports `hasPassword` and the UI asks the user to type the password again.
 
@@ -474,6 +476,11 @@ fn parse_uri_full(uri: &str) -> Result<(ConnectionProfile, bool, Vec<String>)> {
     {
         return parse_jdbc(&trimmed[5..]);
     }
+    if looks_like_ado(trimmed) {
+        let ado = parse_ado_net(trimmed)?;
+        let has_password = ado.password.is_some();
+        return Ok((ado.profile, has_password, ado.notes));
+    }
     let parts = split_uri(trimmed)?;
     let (profile, has_password) = finish(&parts, None)?;
     Ok((profile, has_password, Vec::new()))
@@ -607,6 +614,302 @@ fn parse_jdbc(rest: &str) -> Result<(ConnectionProfile, bool, Vec<String>)> {
         ));
     }
     Ok((profile, has_password, notes))
+}
+
+/// A parsed ADO.NET connection string. The password is kept only for callers that connect
+/// right away (tests); `connection_parse_uri` reports just `has_password`. No `Debug` on
+/// purpose: the secret must not end up in a log.
+pub(crate) struct AdoParsed {
+    pub profile: ConnectionProfile,
+    pub password: Option<String>,
+    pub notes: Vec<String>,
+}
+
+/// Normalised key: lower case without spaces, underscores or dashes.
+fn ado_key(k: &str) -> String {
+    k.chars()
+        .filter(|c| !c.is_whitespace() && *c != '_' && *c != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+const ADO_SERVER_KEYS: [&str; 5] = ["server", "datasource", "address", "addr", "networkaddress"];
+
+/// Split `key=value;key=value` following the ADO.NET rules: values may be quoted with `"` or
+/// `'` (a doubled quote is a literal one) or wrapped in `{}` (`}}` is a literal `}`), and `;`
+/// is allowed inside quotes. Returns `None` for text that is not a list of pairs.
+fn ado_pairs(s: &str) -> Option<Vec<(String, String)>> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    let mut out = Vec::new();
+    while i < chars.len() {
+        while i < chars.len() && (chars[i].is_whitespace() || chars[i] == ';') {
+            i += 1;
+        }
+        if i >= chars.len() {
+            break;
+        }
+        let start = i;
+        while i < chars.len() && chars[i] != '=' && chars[i] != ';' {
+            i += 1;
+        }
+        if i >= chars.len() || chars[i] != '=' {
+            return None;
+        }
+        let key: String = chars[start..i].iter().collect();
+        let key = key.trim().to_string();
+        if key.is_empty() {
+            return None;
+        }
+        i += 1;
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        let mut value = String::new();
+        match chars.get(i).copied() {
+            Some(q @ ('"' | '\'')) => {
+                i += 1;
+                loop {
+                    match chars.get(i).copied() {
+                        None => return None,
+                        Some(c) if c == q => {
+                            if chars.get(i + 1) == Some(&q) {
+                                value.push(q);
+                                i += 2;
+                            } else {
+                                i += 1;
+                                break;
+                            }
+                        }
+                        Some(c) => {
+                            value.push(c);
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            Some('{') => {
+                i += 1;
+                loop {
+                    match chars.get(i).copied() {
+                        None => return None,
+                        Some('}') => {
+                            if chars.get(i + 1) == Some(&'}') {
+                                value.push('}');
+                                i += 2;
+                            } else {
+                                i += 1;
+                                break;
+                            }
+                        }
+                        Some(c) => {
+                            value.push(c);
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            _ => {
+                while i < chars.len() && chars[i] != ';' {
+                    value.push(chars[i]);
+                    i += 1;
+                }
+                value = value.trim().to_string();
+            }
+        }
+        // Only blanks may follow a quoted value before the `;`.
+        while i < chars.len() && chars[i] != ';' {
+            if !chars[i].is_whitespace() {
+                return None;
+            }
+            i += 1;
+        }
+        out.push((key, value));
+    }
+    Some(out)
+}
+
+/// True for an ADO.NET string: no `scheme://`, no `jdbc:`, and `key=value;` pairs naming a server.
+fn looks_like_ado(s: &str) -> bool {
+    if s.contains("://") || s.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("jdbc:")) {
+        return false;
+    }
+    ado_pairs(s).is_some_and(|pairs| {
+        pairs
+            .iter()
+            .any(|(k, _)| ADO_SERVER_KEYS.contains(&ado_key(k).as_str()))
+    })
+}
+
+fn ado_bool(v: &str) -> Option<bool> {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "1" | "sspi" | "mandatory" | "strict" => Some(true),
+        "false" | "no" | "0" | "optional" => Some(false),
+        _ => None,
+    }
+}
+
+/// `host`, `host,port`, `tcp:host,port`, `host\INSTANCE[,port]`, `[::1],1433`.
+fn ado_server(
+    value: &str,
+    notes: &mut Vec<String>,
+) -> Result<(String, Option<u16>, Option<String>)> {
+    let mut v = value.trim();
+    for prefix in ["tcp:", "lpc:"] {
+        if v.get(..prefix.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+        {
+            v = &v[prefix.len()..];
+        }
+    }
+    if v.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("np:")) || v.starts_with("\\\\") {
+        return Err(invalid("named pipes are not supported; use a TCP host"));
+    }
+    let (addr, port) = match v.rsplit_once(',') {
+        Some((a, p)) if !a.ends_with(']') || a.contains(']') => {
+            let port = p
+                .trim()
+                .parse::<u16>()
+                .ok()
+                .filter(|p| *p != 0)
+                .ok_or_else(|| invalid("invalid port in the server address"))?;
+            (a.trim(), Some(port))
+        }
+        _ => (v, None),
+    };
+    let (host, instance) = match addr.split_once('\\') {
+        Some((h, i)) => (
+            h.trim(),
+            Some(i.trim().to_string()).filter(|i| !i.is_empty()),
+        ),
+        None => (addr, None),
+    };
+    let host = match host.to_ascii_lowercase().as_str() {
+        "" | "." | "(local)" | "localhost" => "localhost".to_string(),
+        _ => host.to_string(),
+    };
+    if let Some(inst) = &instance {
+        if port.is_none() {
+            notes.push(format!(
+                "SQL Server instance `{inst}` kept as an option, but named instances need an explicit port (the SQL Browser lookup is not used): add `,port` to the server."
+            ));
+        }
+    }
+    Ok((host, port, instance))
+}
+
+/// Parse an ADO.NET connection string for SQL Server. Error messages never echo the input.
+pub(crate) fn parse_ado_net(s: &str) -> Result<AdoParsed> {
+    let pairs = ado_pairs(s).ok_or_else(|| invalid("malformed ADO.NET connection string"))?;
+    let mut notes = Vec::new();
+    let mut server = None;
+    let mut database = None;
+    let mut user = None;
+    let mut password = None;
+    let mut encrypt: Option<String> = None;
+    let mut trust = None;
+    let mut integrated = false;
+    let mut app = None;
+    let mut timeout = None;
+    let mut cert_host = None;
+    let mut pool_max = None;
+    for (k, v) in pairs {
+        let key = ado_key(&k);
+        match key.as_str() {
+            "server" | "datasource" | "address" | "addr" | "networkaddress" => server = Some(v),
+            "database" | "initialcatalog" => database = Some(v),
+            "userid" | "uid" | "user" | "username" => user = Some(v),
+            "password" | "pwd" => password = Some(v),
+            "encrypt" => encrypt = Some(v.trim().to_ascii_lowercase()),
+            "trustservercertificate" => match ado_bool(&v) {
+                Some(b) => trust = Some(b),
+                None => notes.push("TrustServerCertificate has an unknown value; ignored.".into()),
+            },
+            "integratedsecurity" | "trustedconnection" => match ado_bool(&v) {
+                Some(b) => integrated = b,
+                None => notes.push(format!("{k} has an unknown value; ignored.")),
+            },
+            "applicationname" | "app" => app = Some(v),
+            "connecttimeout" | "connectiontimeout" | "timeout" => match v.trim().parse::<u64>() {
+                Ok(secs) => timeout = Some(secs.saturating_mul(1000)),
+                Err(_) => notes.push(format!("{k} is not a number of seconds; ignored.")),
+            },
+            "hostnameincertificate" => cert_host = Some(v),
+            "maxpoolsize" => match v.trim().parse::<usize>() {
+                Ok(n) => pool_max = Some(n.clamp(1, 32)),
+                Err(_) => notes.push(format!("{k} is not a number; ignored.")),
+            },
+            // Harmless for DBStudio: accepted without a note.
+            "multipleactiveresultsets" | "persistsecurityinfo" | "pooling" => {}
+            _ => notes.push(format!("`{k}` is not supported and was ignored.")),
+        }
+    }
+    let server = server
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| invalid("the ADO.NET string has no Server / Data Source"))?;
+    let (host, port, instance) = ado_server(&server, &mut notes)?;
+    let database = database.filter(|d| !d.is_empty());
+    let label = match &database {
+        Some(d) => format!("{host}/{d}"),
+        None => host.clone(),
+    };
+    let mut cfg = ConnectionConfig::new(DbKind::SqlServer, label, host);
+    cfg.port = port.unwrap_or(1433);
+    cfg.database = database;
+    cfg.username = user.filter(|u| !u.is_empty());
+    cfg.connect_timeout_ms = timeout;
+    if let Some(i) = instance {
+        cfg.options.insert("instance".into(), i);
+    }
+    if integrated {
+        cfg.options.insert("auth".into(), "integrated".into());
+    }
+    if let Some(a) = app.filter(|a| !a.is_empty()) {
+        cfg.options.insert("application_name".into(), a);
+    }
+    if let Some(n) = pool_max {
+        cfg.options.insert("pool_max".into(), n.to_string());
+    }
+    if let Some(h) = cert_host.filter(|h| !h.is_empty()) {
+        cfg.tls.server_name = Some(h);
+    }
+    // Same mapping as `parse_sql` for `jdbc:sqlserver` (see `apply_tls` of the mssql driver):
+    // Encrypt=false -> Disable (the login stays encrypted), true -> Require with
+    // TrustServerCertificate else VerifyFull. Without `Encrypt` the profile keeps the default
+    // (Prefer), exactly like the JDBC parser; a trusted certificate alone means Require.
+    let trusted = trust.unwrap_or(false);
+    match encrypt.as_deref() {
+        Some("strict") => {
+            cfg.options.insert("encrypt".into(), "strict".into());
+            cfg.tls.mode = if trusted {
+                TlsMode::Require
+            } else {
+                TlsMode::VerifyFull
+            };
+        }
+        Some(e) => match ado_bool(e) {
+            Some(false) => cfg.tls.mode = TlsMode::Disable,
+            Some(true) => {
+                cfg.tls.mode = if trusted {
+                    TlsMode::Require
+                } else {
+                    TlsMode::VerifyFull
+                };
+            }
+            None => notes.push("Encrypt has an unknown value; ignored.".into()),
+        },
+        None => {
+            if trusted {
+                cfg.tls.mode = TlsMode::Require;
+            }
+        }
+    }
+    let password = password.filter(|p| !p.is_empty());
+    Ok(AdoParsed {
+        profile: profile_of(cfg),
+        password,
+        notes,
+    })
 }
 
 fn split_hp(h: &str) -> Result<(String, Option<u16>)> {
@@ -1125,5 +1428,170 @@ mod tests {
             assert!(matches!(e, Error::Invalid(_)), "{bad}");
             assert!(e.to_string().contains("supported JDBC forms"), "{bad}");
         }
+    }
+
+    #[test]
+    fn ado_net_exact_example() {
+        let s = "Server=113.20.107.228;Database=Db;User Id=u;Password=p;TrustServerCertificate=yes;Encrypt=false;";
+        let (p, has_pw, notes) = parse_uri_full(s).unwrap();
+        let c = p.config;
+        assert_eq!(
+            (c.kind, c.host.as_str(), c.port),
+            (DbKind::SqlServer, "113.20.107.228", 1433)
+        );
+        assert_eq!(c.database.as_deref(), Some("Db"));
+        assert_eq!(c.username.as_deref(), Some("u"));
+        assert_eq!(c.tls.mode, TlsMode::Disable);
+        assert!(has_pw && notes.is_empty());
+        assert_eq!(c.name, "113.20.107.228/Db");
+        let ado = parse_ado_net(s).unwrap();
+        assert_eq!(ado.password.as_deref(), Some("p"));
+        assert!(!format!("{:?}", ado.profile).contains("\"p\""));
+    }
+
+    #[test]
+    fn ado_net_server_forms() {
+        let host = |s: &str| {
+            let (p, _, n) = parse_uri_full(s).unwrap();
+            (p.config.host, p.config.port, p.config.options, n)
+        };
+        let (h, port, ..) = host("Server=db.local,1444");
+        assert_eq!((h.as_str(), port), ("db.local", 1444));
+        let (h, port, ..) = host("Data Source=tcp:db.local,1555;");
+        assert_eq!((h.as_str(), port), ("db.local", 1555));
+        for alias in ["Address", "Addr", "Network Address"] {
+            let (h, ..) = host(&format!("{alias}=x1"));
+            assert_eq!(h, "x1");
+        }
+        for local in [".", "(local)", "localhost", "(LOCAL)"] {
+            let (h, port, ..) = host(&format!("Server={local}"));
+            assert_eq!((h.as_str(), port), ("localhost", 1433));
+        }
+        let (h, port, opts, n) = host("Server=srv\\SQLEXPRESS");
+        assert_eq!((h.as_str(), port), ("srv", 1433));
+        assert_eq!(opts["instance"], "SQLEXPRESS");
+        assert!(n.iter().any(|m| m.contains("explicit port")));
+        let (h, port, opts, n) = host("Server=(local)\\SQL1,1450");
+        assert_eq!(
+            (h.as_str(), port, opts["instance"].as_str()),
+            ("localhost", 1450, "SQL1")
+        );
+        assert!(n.is_empty());
+        let (h, port, ..) = host("Server=[::1],1433");
+        assert_eq!((h.as_str(), port), ("[::1]", 1433));
+        assert!(parse_uri_full("Server=h,notaport").is_err());
+        assert!(parse_uri_full("Server=np:\\\\.\\pipe\\sql\\query").is_err());
+        assert!(parse_uri_full("Server=;Database=d").is_err());
+    }
+
+    #[test]
+    fn ado_net_keys_and_case() {
+        let (p, has_pw, n) = parse_uri_full(
+            " SERVER = h ; initial catalog = shop ; UID = sa ; PWD = x ; Application Name=dbs ; \
+             Connect Timeout=15 ; Host Name In Certificate=cert.example.com ; Max Pool Size=99 ; \
+             Integrated Security=SSPI ; MultipleActiveResultSets=true ; Persist Security Info=false ; Pooling=true ",
+        )
+        .unwrap();
+        let c = p.config;
+        assert_eq!(c.database.as_deref(), Some("shop"));
+        assert_eq!(c.username.as_deref(), Some("sa"));
+        assert_eq!(c.connect_timeout_ms, Some(15_000));
+        assert_eq!(c.tls.server_name.as_deref(), Some("cert.example.com"));
+        assert_eq!(c.options["pool_max"], "32");
+        assert_eq!(c.options["auth"], "integrated");
+        assert_eq!(c.options["application_name"], "dbs");
+        assert!(has_pw && n.is_empty(), "{n:?}");
+        for (k, v) in [("Connection Timeout", "7"), ("Timeout", "7")] {
+            let (p, ..) = parse_uri_full(&format!("Server=h;{k}={v}")).unwrap();
+            assert_eq!(p.config.connect_timeout_ms, Some(7000));
+        }
+        let (p, ..) = parse_uri_full("Server=h;Max Pool Size=0;User=u1").unwrap();
+        assert_eq!(p.config.options["pool_max"], "1");
+        assert_eq!(p.config.username.as_deref(), Some("u1"));
+        let (p, ..) = parse_uri_full("Server=h;User Name=u2;Trusted_Connection=yes").unwrap();
+        assert_eq!(p.config.username.as_deref(), Some("u2"));
+        assert_eq!(p.config.options["auth"], "integrated");
+        let (p, ..) = parse_uri_full("Server=h;Integrated Security=false").unwrap();
+        assert!(!p.config.options.contains_key("auth"));
+    }
+
+    #[test]
+    fn ado_net_tls_mapping() {
+        let mode = |s: &str| parse_uri_full(s).unwrap().0.config.tls.mode;
+        assert_eq!(mode("Server=h;Encrypt=false"), TlsMode::Disable);
+        assert_eq!(
+            mode("Server=h;Encrypt=no;TrustServerCertificate=true"),
+            TlsMode::Disable
+        );
+        assert_eq!(mode("Server=h;Encrypt=Optional"), TlsMode::Disable);
+        assert_eq!(
+            mode("Server=h;Encrypt=true;TrustServerCertificate=yes"),
+            TlsMode::Require
+        );
+        assert_eq!(
+            mode("Server=h;Encrypt=Mandatory;TrustServerCertificate=true"),
+            TlsMode::Require
+        );
+        assert_eq!(mode("Server=h;Encrypt=true"), TlsMode::VerifyFull);
+        assert_eq!(
+            mode("Server=h;Encrypt=yes;TrustServerCertificate=false"),
+            TlsMode::VerifyFull
+        );
+        // Without Encrypt: like the JDBC parser, keep the default unless the certificate is trusted.
+        assert_eq!(mode("Server=h"), TlsMode::Prefer);
+        assert_eq!(
+            mode("Server=h;TrustServerCertificate=true"),
+            TlsMode::Require
+        );
+        let (p, ..) = parse_uri_full("Server=h;Encrypt=strict").unwrap();
+        assert_eq!(p.config.tls.mode, TlsMode::VerifyFull);
+        assert_eq!(p.config.options["encrypt"], "strict");
+        let (p, ..) =
+            parse_uri_full("Server=h;Encrypt=Strict;TrustServerCertificate=true").unwrap();
+        assert_eq!(p.config.tls.mode, TlsMode::Require);
+        let (_, _, n) = parse_uri_full("Server=h;Encrypt=maybe").unwrap();
+        assert!(n.iter().any(|m| m.contains("Encrypt")));
+    }
+
+    #[test]
+    fn ado_net_quoting_and_secrets() {
+        let ado = parse_ado_net(
+            r#"Server=h;Password="a;b=c""d";User Id='o''neil';Database={we;ird}}db}"#,
+        )
+        .unwrap();
+        assert_eq!(ado.password.as_deref(), Some("a;b=c\"d"));
+        assert_eq!(ado.profile.config.username.as_deref(), Some("o'neil"));
+        assert_eq!(ado.profile.config.database.as_deref(), Some("we;ird}db"));
+        let ado = parse_ado_net("Server=h;Password={p}}w;d};").unwrap();
+        assert_eq!(ado.password.as_deref(), Some("p}w;d"));
+        // Value with `=` inside, unquoted, and an empty password.
+        let ado = parse_ado_net("Server=h;Password=ab=cd;").unwrap();
+        assert_eq!(ado.password.as_deref(), Some("ab=cd"));
+        let (_, has_pw, _) = parse_uri_full("Server=h;Password=;User Id=u").unwrap();
+        assert!(!has_pw);
+        let (_, has_pw, _) = parse_uri_full("Server=h;User Id=u").unwrap();
+        assert!(!has_pw);
+    }
+
+    #[test]
+    fn ado_net_unknown_keys_warn_and_errors_do_not_leak() {
+        let (_, _, n) =
+            parse_uri_full("Server=h;Failover Partner=x;Workstation ID=w;Password=hunter2")
+                .unwrap();
+        assert_eq!(n.len(), 2);
+        assert!(n.iter().all(|m| m.contains("ignored")));
+        assert!(!n.join(" ").contains("hunter2"));
+        for bad in [
+            "Server=h;Password=\"unterminated",
+            "Database=d;Password=hunter2",
+            "Server=h;Password=hunter2;junk",
+        ] {
+            let msg = parse_uri_full(bad).map(|_| ()).unwrap_err().to_string();
+            assert!(!msg.contains("hunter2"), "{bad}");
+        }
+        // Not ADO.NET: other formats are untouched.
+        assert!(!looks_like_ado("postgres://u:p@h/db?x=1"));
+        assert!(!looks_like_ado("jdbc:sqlserver://h;databaseName=d"));
+        assert!(!looks_like_ado("Database=d;User Id=u"));
     }
 }

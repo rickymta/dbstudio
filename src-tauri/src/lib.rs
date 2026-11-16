@@ -299,6 +299,8 @@ mod contract_tests;
 mod it;
 #[cfg(test)]
 mod leak_test;
+#[cfg(all(test, feature = "mssql"))]
+mod mssql_smoke_it;
 #[cfg(all(test, any(feature = "postgres", feature = "mysql")))]
 mod plan_advice_it;
 #[cfg(test)]
