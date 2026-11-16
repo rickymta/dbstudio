@@ -1,4 +1,5 @@
-//! Microsoft SQL Server driver for DBStudio (SQL Server 2016 and newer, Azure SQL Database).
+//! Microsoft SQL Server driver for DBStudio (SQL Server 2008 R2 and newer, Azure SQL Database;
+//! version-dependent T-SQL is chosen from `ServerVersion`, see the `version` module).
 //!
 //! * Talks TDS through a minimal fork of `tiberius` 0.13 (`vendor/tiberius-patch`): `INFO`
 //!   (`PRINT`) and `DONE` (row count) items, cooperative attention (query cancel) and exact

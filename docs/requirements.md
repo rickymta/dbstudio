@@ -238,7 +238,7 @@ Yêu cầu chủ dự án: debug kiểu JetBrains (breakpoint, step over/into, c
 |---|---|
 | PostgreSQL | 12+ |
 | MySQL / MariaDB | MySQL 5.7+, MariaDB 10.4+ |
-| SQL Server | 2016+ (kể cả Azure SQL) |
+| SQL Server | 2008 R2+ (kể cả Azure SQL; 2008 R2 chưa vá TLS 1.2: TLS của hệ điều hành trên macOS/Windows, hoặc `encrypt=none`) |
 | Oracle | 12c+ |
 | MongoDB | 4.4+ |
 | Redis / Valkey | Redis 6+, Valkey 7.2+ |
