@@ -2,6 +2,7 @@
 
 use crate::catalog::{Check, Col, Fk, Idx};
 use crate::sql::{lit, quote};
+use crate::version::ServerVersion;
 
 /// Whether names carry their schema.
 #[derive(Debug, Clone, Copy)]
@@ -341,6 +342,55 @@ pub fn create_or_alter(definition: &str) -> String {
     )
 }
 
+/// `DROP <word> IF EXISTS <obj>;`, or the guarded form for servers before 2016 (`obj` is the
+/// already quoted name; `code` the `sys.objects.type` for `OBJECT_ID`, `None` = any type).
+pub fn drop_if_exists(v: &ServerVersion, word: &str, code: Option<&str>, obj: &str) -> String {
+    if v.has_drop_if_exists() {
+        return format!("DROP {word} IF EXISTS {obj};");
+    }
+    let id = match (word, code) {
+        ("TYPE", _) => format!("TYPE_ID({})", lit(obj)),
+        (_, Some(c)) => format!("OBJECT_ID({}, N'{c}')", lit(obj)),
+        (_, None) => format!("OBJECT_ID({})", lit(obj)),
+    };
+    format!("IF {id} IS NOT NULL DROP {word} {obj};")
+}
+
+/// `ALTER TABLE <table> DROP CONSTRAINT IF EXISTS <name>;` for a constraint of `code` type
+/// (`F` foreign key, ...); guarded with `OBJECT_ID` before 2016.
+pub fn drop_constraint_if_exists(
+    v: &ServerVersion,
+    table: &str,
+    schema: &str,
+    constraint: &str,
+    code: &str,
+) -> String {
+    if v.has_drop_if_exists() {
+        return format!(
+            "ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {};",
+            quote(constraint)
+        );
+    }
+    format!(
+        "IF OBJECT_ID({}, N'{code}') IS NOT NULL ALTER TABLE {table} DROP CONSTRAINT {};",
+        lit(&format!("{}.{}", quote(schema), quote(constraint))),
+        quote(constraint)
+    )
+}
+
+/// Re-runnable module definition: `CREATE OR ALTER` (2016 SP1+), otherwise "create when
+/// missing" (`qualified` is the quoted `[schema].[name]`).
+pub fn create_module_idempotent(v: &ServerVersion, qualified: &str, definition: &str) -> String {
+    if v.has_create_or_alter() {
+        return create_or_alter(definition);
+    }
+    format!(
+        "IF OBJECT_ID({}) IS NULL EXEC({});",
+        lit(qualified),
+        lit(definition)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,6 +546,52 @@ mod tests {
         assert!(
             s.contains("sp_updateextendedproperty")
                 && s.contains("ELSE\nEXEC sys.sp_addextendedproperty")
+        );
+    }
+
+    #[test]
+    fn version_dependent_drops_and_modules() {
+        let old = ServerVersion::new(10, 50, 6000);
+        let new = ServerVersion::new(16, 0, 1000);
+        assert_eq!(
+            drop_if_exists(&new, "TABLE", Some("U"), "[s].[t]"),
+            "DROP TABLE IF EXISTS [s].[t];"
+        );
+        assert_eq!(
+            drop_if_exists(&old, "TABLE", Some("U"), "[s].[t]"),
+            "IF OBJECT_ID(N'[s].[t]', N'U') IS NOT NULL DROP TABLE [s].[t];"
+        );
+        assert_eq!(
+            drop_if_exists(&old, "FUNCTION", None, "[s].[f]"),
+            "IF OBJECT_ID(N'[s].[f]') IS NOT NULL DROP FUNCTION [s].[f];"
+        );
+        assert_eq!(
+            drop_if_exists(&old, "TYPE", None, "[s].[ty]"),
+            "IF TYPE_ID(N'[s].[ty]') IS NOT NULL DROP TYPE [s].[ty];"
+        );
+        assert_eq!(
+            drop_constraint_if_exists(&new, "[s].[t]", "s", "fk", "F"),
+            "ALTER TABLE [s].[t] DROP CONSTRAINT IF EXISTS [fk];"
+        );
+        assert_eq!(
+            drop_constraint_if_exists(&old, "[s].[t]", "s", "fk'x", "F"),
+            "IF OBJECT_ID(N'[s].[fk''x]', N'F') IS NOT NULL ALTER TABLE [s].[t] DROP CONSTRAINT [fk'x];"
+        );
+        assert_eq!(
+            create_module_idempotent(&new, "[s].[v]", "CREATE VIEW [s].[v] AS SELECT 1"),
+            "CREATE OR ALTER VIEW [s].[v] AS SELECT 1"
+        );
+        assert_eq!(
+            create_module_idempotent(&old, "[s].[v]", "CREATE VIEW [s].[v] AS SELECT 'a'"),
+            "IF OBJECT_ID(N'[s].[v]') IS NULL EXEC(N'CREATE VIEW [s].[v] AS SELECT ''a''');"
+        );
+        assert!(
+            !create_module_idempotent(
+                &ServerVersion::new(13, 0, 1601),
+                "[s].[v]",
+                "CREATE VIEW v AS SELECT 1"
+            )
+            .contains("OR ALTER")
         );
     }
 }

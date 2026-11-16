@@ -63,18 +63,19 @@ async fn tree_levels() {
 
     let folders = s.list_children(&schema("sales")).await.unwrap();
     let keys: Vec<&str> = folders.iter().map(|n| n.name.as_str()).collect();
-    assert_eq!(
-        keys,
-        vec![
-            "tables",
-            "views",
-            "functions",
-            "procedures",
-            "sequences",
-            "synonyms",
-            "types"
-        ]
-    );
+    let mut want = vec![
+        "tables",
+        "views",
+        "functions",
+        "procedures",
+        "sequences",
+        "synonyms",
+        "types",
+    ];
+    if common::legacy_forced() {
+        want.retain(|k| *k != "sequences");
+    }
+    assert_eq!(keys, want);
     let count = |k: &str| {
         folders
             .iter()
@@ -86,7 +87,9 @@ async fn tree_levels() {
     assert_eq!(count("views"), "1");
     assert_eq!(count("functions"), "2");
     assert_eq!(count("procedures"), "1");
-    assert_eq!(count("sequences"), "1");
+    if !common::legacy_forced() {
+        assert_eq!(count("sequences"), "1");
+    }
     assert_eq!(count("types"), "1");
 
     let tables = s.list_children(&folders[0].path).await.unwrap();
@@ -100,15 +103,20 @@ async fn tree_levels() {
     let fns = s.list_children(&folders[2].path).await.unwrap();
     assert_eq!(fns[0].detail.as_deref(), Some("scalar"));
     assert_eq!(fns[1].detail.as_deref(), Some("inline table"));
-    let seq = s.list_children(&folders[4].path).await.unwrap();
-    assert_eq!(seq[0].detail.as_deref(), Some("bigint"));
+    if !common::legacy_forced() {
+        let seq = s.list_children(&folders[4].path).await.unwrap();
+        assert_eq!(seq[0].detail.as_deref(), Some("bigint"));
+    }
     let syn = s
         .list_children(&schema("dbo").child(ObjectKind::Folder, folder::SYNONYMS))
         .await
         .unwrap();
     assert_eq!(syn[0].name, "cust");
     assert!(syn[0].detail.as_deref().unwrap().contains("customers"));
-    let types = s.list_children(&folders[6].path).await.unwrap();
+    let types = s
+        .list_children(&folders.last().unwrap().path)
+        .await
+        .unwrap();
     assert_eq!(
         (types[0].name.as_str(), types[0].detail.as_deref()),
         ("LineList", Some("table type"))
@@ -288,10 +296,12 @@ async fn object_ddl_per_kind() {
     let seq = sc
         .child(ObjectKind::Folder, folder::SEQUENCES)
         .child(ObjectKind::Sequence, "order_seq");
-    assert_eq!(
-        s.object_ddl(&seq).await.unwrap(),
-        "CREATE SEQUENCE [sales].[order_seq] AS bigint START WITH 1000 INCREMENT BY 5 MINVALUE -9223372036854775808 MAXVALUE 9223372036854775807 NO CYCLE CACHE;"
-    );
+    if !common::legacy_forced() {
+        assert_eq!(
+            s.object_ddl(&seq).await.unwrap(),
+            "CREATE SEQUENCE [sales].[order_seq] AS bigint START WITH 1000 INCREMENT BY 5 MINVALUE -9223372036854775808 MAXVALUE 9223372036854775807 NO CYCLE CACHE;"
+        );
+    }
     let syn = schema("dbo")
         .child(ObjectKind::Folder, folder::SYNONYMS)
         .child(ObjectKind::Synonym, "cust");

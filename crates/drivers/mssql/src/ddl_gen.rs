@@ -21,7 +21,7 @@ use dbstudio_core::{
 use crate::browse::database_collation;
 use crate::catalog;
 use crate::conn::Conn;
-use crate::ddl::{self, Names, create_or_alter};
+use crate::ddl::{self, Names};
 use crate::session::MssqlSession;
 use crate::sql::{lit, object_path, parse_object, quote, schema_path};
 use crate::value::{bool_at, int_at, opt_str_at, str_at};
@@ -148,6 +148,7 @@ async fn build(
     let names = Names {
         qualify: o.qualify_schema,
     };
+    let ver = conn.version;
     let collation = database_collation(conn).await?;
     let scope_filter = schema_filter("o.schema_id", sel.schema.as_deref());
 
@@ -217,7 +218,7 @@ async fn build(
             schema: schema.clone(),
             name: name.clone(),
             sql,
-            drop: format!("DROP TABLE IF EXISTS {};", names.obj(&schema, &name)),
+            drop: ddl::drop_if_exists(&ver, "TABLE", Some("U"), &names.obj(&schema, &name)),
         });
         let tpath = object_path(db, &schema, ObjectKind::Table, &name);
         if o.include_indexes {
@@ -291,10 +292,12 @@ async fn build(
                         tpath.clone(),
                         ObjectKind::Table,
                         DdlSection::PreData,
-                        format!(
-                            "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-                            names.obj(&schema, &name),
-                            quote(&f.name)
+                        ddl::drop_constraint_if_exists(
+                            &ver,
+                            &names.obj(&schema, &name),
+                            &schema,
+                            &f.name,
+                            "F",
                         ),
                         vec![],
                     ));
@@ -350,7 +353,11 @@ async fn build(
                     ObjectKind::Trigger,
                     DdlSection::PostData,
                     if o.if_not_exists {
-                        create_or_alter(&def)
+                        ddl::create_module_idempotent(
+                            &ver,
+                            &format!("{}.{}", quote(&tschema), quote(&tname)),
+                            &def,
+                        )
                     } else {
                         def
                     },
@@ -410,11 +417,24 @@ async fn build(
                 schema: schema.clone(),
                 name: name.clone(),
                 sql: if o.if_not_exists {
-                    create_or_alter(&def)
+                    ddl::create_module_idempotent(
+                        &ver,
+                        &format!("{}.{}", quote(&schema), quote(&name)),
+                        &def,
+                    )
                 } else {
                     def
                 },
-                drop: format!("DROP {word} IF EXISTS {};", names.obj(&schema, &name)),
+                drop: ddl::drop_if_exists(
+                    &ver,
+                    word,
+                    match kind {
+                        ObjectKind::View => Some("V"),
+                        ObjectKind::Procedure => Some("P"),
+                        _ => None,
+                    },
+                    &names.obj(&schema, &name),
+                ),
             });
             // Indexes of indexed views.
             if kind == ObjectKind::View && o.include_indexes {
@@ -445,7 +465,7 @@ async fn build(
     }
 
     // ---- sequences -----------------------------------------------------------------------
-    if o.include_sequences {
+    if o.include_sequences && ver.has_sequences() {
         let rows = conn
             .rows(&format!(
                 "SELECT o.object_id, SCHEMA_NAME(o.schema_id), o.name, TYPE_NAME(s.user_type_id), \
@@ -494,7 +514,7 @@ async fn build(
                 schema: schema.clone(),
                 name: name.clone(),
                 sql,
-                drop: format!("DROP SEQUENCE IF EXISTS {};", names.obj(&schema, &name)),
+                drop: ddl::drop_if_exists(&ver, "SEQUENCE", Some("SO"), &names.obj(&schema, &name)),
             });
         }
     }
@@ -531,7 +551,7 @@ async fn build(
                 schema: schema.clone(),
                 name: name.clone(),
                 sql,
-                drop: format!("DROP SYNONYM IF EXISTS {};", names.obj(&schema, &name)),
+                drop: ddl::drop_if_exists(&ver, "SYNONYM", Some("SN"), &names.obj(&schema, &name)),
             });
         }
     }
@@ -600,7 +620,7 @@ async fn build(
                 object_path(db, &schema, ObjectKind::Type, &name),
                 ObjectKind::Type,
                 DdlSection::PreData,
-                format!("DROP TYPE IF EXISTS {};", names.obj(&schema, &name)),
+                ddl::drop_if_exists(&ver, "TYPE", None, &names.obj(&schema, &name)),
                 vec![],
             ));
         }

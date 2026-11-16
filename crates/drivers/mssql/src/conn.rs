@@ -15,6 +15,7 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use crate::error::{self, map_connect, map_query};
 use crate::settings::{CATALOG_POOL_MAX, Settings};
 use crate::value::{self, column_meta, int_at, str_at};
+use crate::version::ServerVersion;
 
 /// The `tiberius` client over a tokio TCP stream.
 pub type TdsClient = Client<Compat<TcpStream>>;
@@ -40,6 +41,39 @@ pub struct Conn {
     pub lob_limit: usize,
     /// Session fingerprint right after login (see [`Conn::fingerprint`]).
     pub baseline: String,
+    /// Server product version, read once after login.
+    pub version: ServerVersion,
+}
+
+/// Fingerprint query. Built without `CONCAT` (2012+) so it also runs on 2008 R2: every part is
+/// cast to text and joined with `+`.
+fn fingerprint_sql() -> String {
+    let parts = [
+        "DB_NAME()",
+        "@@OPTIONS",
+        "s.language",
+        "s.date_format",
+        "s.date_first",
+        "s.quoted_identifier",
+        "s.arithabort",
+        "s.ansi_null_dflt_on",
+        "s.ansi_defaults",
+        "s.ansi_warnings",
+        "s.ansi_padding",
+        "s.ansi_nulls",
+        "s.concat_null_yields_null",
+        "s.transaction_isolation_level",
+        "s.lock_timeout",
+        "s.deadlock_priority",
+        "s.text_size",
+        "s.row_count",
+    ];
+    let expr = parts
+        .iter()
+        .map(|p| format!("ISNULL(CAST({p} AS NVARCHAR(128)), N'')"))
+        .collect::<Vec<_>>()
+        .join(" + N'|' + ");
+    format!("SELECT {expr}, @@TRANCOUNT FROM sys.dm_exec_sessions s WHERE s.session_id = @@SPID")
 }
 
 impl std::fmt::Debug for Conn {
@@ -83,9 +117,32 @@ impl Conn {
             idle_since: Instant::now(),
             lob_limit: settings.max_lob_bytes,
             baseline: String::new(),
+            version: ServerVersion::LATEST,
         };
+        conn.version = conn.detect_version().await;
         conn.baseline = conn.fingerprint().await.map(|f| f.0).unwrap_or_default();
         Ok(conn)
+    }
+
+    /// `ProductVersion` of the server (newest assumed when unreadable). Under debug builds and
+    /// tests `DBSTUDIO_MSSQL_FORCE_VERSION` overrides it so legacy SQL can run on a modern server.
+    async fn detect_version(&mut self) -> ServerVersion {
+        #[cfg(any(debug_assertions, test))]
+        if let Some(v) = std::env::var("DBSTUDIO_MSSQL_FORCE_VERSION")
+            .ok()
+            .and_then(|s| ServerVersion::parse(&s))
+        {
+            return v;
+        }
+        match self
+            .rows("SELECT CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128))")
+            .await
+        {
+            Ok(rows) => rows.first().map_or(ServerVersion::LATEST, |r| {
+                ServerVersion::parse_or_latest(&str_at(r, 0))
+            }),
+            Err(_) => ServerVersion::LATEST,
+        }
     }
 
     /// Session settings that user statements can change and that must not leak into the pool:
@@ -93,16 +150,7 @@ impl Conn {
     /// database, `@@OPTIONS`, language, date format/first, isolation level, lock timeout,
     /// deadlock priority, text size, row count and the ANSI/quoting flags.
     pub async fn fingerprint(&mut self) -> Result<(String, i64)> {
-        let rows = self
-            .rows(
-                "SELECT CONCAT(DB_NAME(), '|', @@OPTIONS, '|', s.language, '|', s.date_format, '|', s.date_first, '|', \
-                 s.quoted_identifier, '|', s.arithabort, '|', s.ansi_null_dflt_on, '|', s.ansi_defaults, '|', \
-                 s.ansi_warnings, '|', s.ansi_padding, '|', s.ansi_nulls, '|', s.concat_null_yields_null, '|', \
-                 s.transaction_isolation_level, '|', s.lock_timeout, '|', s.deadlock_priority, '|', s.text_size, \
-                 '|', s.row_count), @@TRANCOUNT \
-                 FROM sys.dm_exec_sessions s WHERE s.session_id = @@SPID",
-            )
-            .await?;
+        let rows = self.rows(&fingerprint_sql()).await?;
         let r = rows.first().cloned().unwrap_or_default();
         Ok((str_at(&r, 0), int_at(&r, 1)))
     }
@@ -384,5 +432,18 @@ impl Shared {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fingerprint_sql;
+
+    #[test]
+    fn fingerprint_avoids_concat() {
+        let sql = fingerprint_sql();
+        assert!(!sql.to_ascii_uppercase().contains("CONCAT("));
+        assert!(sql.contains("sys.dm_exec_sessions"));
+        assert!(sql.contains("@@TRANCOUNT"));
     }
 }

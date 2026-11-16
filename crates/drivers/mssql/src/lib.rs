@@ -47,6 +47,7 @@ mod session;
 mod settings;
 mod sql;
 mod value;
+mod version;
 
 use async_trait::async_trait;
 use dbstudio_core::{

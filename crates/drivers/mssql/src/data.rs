@@ -229,6 +229,46 @@ fn target_of(sess: &MssqlSession, table: &ObjectPath) -> Result<(String, ObjRef)
     Ok((db, obj))
 }
 
+/// One page of a table. `OFFSET .. FETCH` from 2012; before that `ROW_NUMBER()` in a derived
+/// table. The outer select lists the table's own columns (`names`) so the row number is not
+/// part of the result and the column metadata stays that of the plain query; without known
+/// columns it falls back to `x.*` (the row-number column then shows up as `__dbs_rn`).
+#[allow(clippy::too_many_arguments)]
+fn page_sql(
+    v: &crate::version::ServerVersion,
+    list: &str,
+    names: &[String],
+    table: &str,
+    where_: &str,
+    order: &str,
+    offset: u64,
+    limit: u64,
+) -> String {
+    if v.has_offset_fetch() {
+        return format!(
+            "SELECT {list} FROM {table}{where_}{order} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
+        );
+    }
+    let order = order
+        .trim_start()
+        .strip_prefix("ORDER BY ")
+        .unwrap_or("(SELECT NULL)");
+    let outer = if names.is_empty() {
+        "x.*".to_string()
+    } else {
+        names
+            .iter()
+            .map(|c| quote(c))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "SELECT {outer} FROM (SELECT {list}, ROW_NUMBER() OVER (ORDER BY {order}) AS [__dbs_rn] \
+         FROM {table}{where_}) x WHERE x.[__dbs_rn] > {offset} AND x.[__dbs_rn] <= {} ORDER BY x.[__dbs_rn]",
+        offset + limit
+    )
+}
+
 pub async fn fetch_table(
     sess: &MssqlSession,
     req: TableDataRequest,
@@ -263,11 +303,16 @@ pub async fn fetch_table(
     let sql = if req.limit == 0 {
         format!("SELECT TOP (0) {list} FROM {table}{where_}")
     } else {
-        format!(
-            "SELECT {list} FROM {table}{where_}{} OFFSET {} ROWS FETCH NEXT {} ROWS ONLY",
-            order_by(&req.sort, &key),
+        let names: Vec<String> = info.columns.iter().map(|(c, _)| c.clone()).collect();
+        page_sql(
+            &conn.version,
+            &list,
+            &names,
+            &table,
+            &where_,
+            &order_by(&req.sort, &key),
             req.offset,
-            req.limit
+            req.limit,
         )
     };
     let params = RunParams {
@@ -522,6 +567,45 @@ pub async fn search_objects(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn page_sql_versions() {
+        use crate::version::ServerVersion;
+        let new = ServerVersion::new(16, 0, 1000);
+        let old = ServerVersion::new(10, 50, 6000);
+        let names = vec!["a".to_string(), "b]".to_string()];
+        assert_eq!(
+            page_sql(
+                &new,
+                "*",
+                &names,
+                "[dbo].[t]",
+                " WHERE 1=1",
+                " ORDER BY [a]",
+                20,
+                10
+            ),
+            "SELECT * FROM [dbo].[t] WHERE 1=1 ORDER BY [a] OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY"
+        );
+        assert_eq!(
+            page_sql(
+                &old,
+                "*",
+                &names,
+                "[dbo].[t]",
+                " WHERE 1=1",
+                " ORDER BY [a] DESC, [k]",
+                20,
+                10
+            ),
+            "SELECT [a], [b]]] FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY [a] DESC, [k]) AS [__dbs_rn] \
+             FROM [dbo].[t] WHERE 1=1) x WHERE x.[__dbs_rn] > 20 AND x.[__dbs_rn] <= 30 ORDER BY x.[__dbs_rn]"
+        );
+        assert!(
+            page_sql(&old, "*", &[], "[t]", "", " ORDER BY (SELECT NULL)", 0, 5)
+                .contains("SELECT x.* FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL))")
+        );
+    }
+
     use super::*;
     use dbstudio_core::{ColumnFilter, FilterOp};
 

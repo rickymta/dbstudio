@@ -415,8 +415,10 @@ async fn ddl_round_trip_keeps_constraints_options_collations_and_sequences() {
     }
     assert_eq!(signature(&*src).await, signature(&*dst).await);
     // The sequence continues where the source stopped (3 values were used: 10, 13, 16).
-    let r = run(&*dst, "SELECT NEXT VALUE FOR dbo.sq").await;
-    assert_eq!(rows_of(&r[0]).rows[0][0], Value::Int(19));
+    if !legacy_forced() {
+        let r = run(&*dst, "SELECT NEXT VALUE FOR dbo.sq").await;
+        assert_eq!(rows_of(&r[0]).rows[0][0], Value::Int(19));
+    }
     // Re-running with guards is harmless, including the indexed view and the untrusted checks.
     let again = src
         .generate_ddl(dbstudio_core::DdlRequest {

@@ -16,6 +16,7 @@ use crate::ddl::{self, Names};
 use crate::session::MssqlSession;
 use crate::sql::{ObjRef, lit, object_path, parse_object, quote, schema_path};
 use crate::value::{bool_at, int_at, kind_of_type_name, opt_str_at, str_at};
+use crate::version::ServerVersion;
 
 pub(crate) fn node(
     path: ObjectPath,
@@ -230,6 +231,28 @@ fn type_codes(key: &str) -> &'static str {
     }
 }
 
+/// Detail subquery of the TABLES folder (memory-optimized 2014+, temporal/external 2016+).
+fn tables_extra_sql(v: &ServerVersion) -> &'static str {
+    if v.has_temporal() {
+        "(SELECT CASE WHEN tb.is_memory_optimized = 1 THEN 'memory-optimized' WHEN tb.temporal_type = 2 THEN 'temporal' WHEN tb.is_external = 1 THEN 'external' END FROM sys.tables tb WHERE tb.object_id = o.object_id)"
+    } else if v.has_memory_optimized() {
+        "(SELECT CASE WHEN tb.is_memory_optimized = 1 THEN 'memory-optimized' END FROM sys.tables tb WHERE tb.object_id = o.object_id)"
+    } else {
+        "NULL"
+    }
+}
+
+/// Comma separated event list of a trigger (`tr`): `STRING_AGG` (2017+) or `FOR XML PATH`.
+fn trigger_events_sql(v: &ServerVersion) -> &'static str {
+    if v.has_string_agg() {
+        "(SELECT STRING_AGG(te.type_desc, ', ') WITHIN GROUP (ORDER BY te.type_desc) \
+         FROM sys.trigger_events te WHERE te.object_id = tr.object_id)"
+    } else {
+        "(SELECT STUFF((SELECT N', ' + te.type_desc FROM sys.trigger_events te \
+         WHERE te.object_id = tr.object_id ORDER BY te.type_desc FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, N''))"
+    }
+}
+
 async fn schema_folders(
     sess: &MssqlSession,
     parent: &ObjectPath,
@@ -237,6 +260,7 @@ async fn schema_folders(
     schema: &str,
 ) -> Result<Vec<ObjectNode>> {
     let mut conn = sess.shared.acquire_catalog(db).await?;
+    let has_sequences = conn.version.has_sequences();
     let mut counts = Vec::new();
     for key in [
         folder::TABLES,
@@ -246,6 +270,10 @@ async fn schema_folders(
         folder::SEQUENCES,
         folder::SYNONYMS,
     ] {
+        // No sequences before 2012: the folder is not offered.
+        if key == folder::SEQUENCES && !has_sequences {
+            continue;
+        }
         counts.push((key, 0i64));
     }
     let rows = conn
@@ -342,6 +370,10 @@ async fn schema_folder(
         | folder::PROCEDURES
         | folder::SEQUENCES
         | folder::SYNONYMS => {
+            if key == folder::SEQUENCES && !conn.version.has_sequences() {
+                conn.release();
+                return Ok(Vec::new());
+            }
             let extra = match key {
                 folder::SEQUENCES => {
                     "(SELECT TYPE_NAME(sq.user_type_id) FROM sys.sequences sq WHERE sq.object_id = o.object_id)"
@@ -349,9 +381,7 @@ async fn schema_folder(
                 folder::SYNONYMS => {
                     "(SELECT sn.base_object_name FROM sys.synonyms sn WHERE sn.object_id = o.object_id)"
                 }
-                folder::TABLES => {
-                    "(SELECT CASE WHEN tb.is_memory_optimized = 1 THEN 'memory-optimized' WHEN tb.temporal_type = 2 THEN 'temporal' WHEN tb.is_external = 1 THEN 'external' END FROM sys.tables tb WHERE tb.object_id = o.object_id)"
-                }
+                folder::TABLES => tables_extra_sql(&conn.version),
                 _ => "NULL",
             };
             let rows = conn
@@ -515,12 +545,12 @@ async fn object_folder(
                 .collect()
         }
         folder::TRIGGERS => {
+            let ver = conn.version;
             let rows = conn
                 .rows(&format!(
-                    "SELECT tr.name, tr.is_instead_of_trigger, tr.is_disabled, \
-                     (SELECT STRING_AGG(te.type_desc, ', ') WITHIN GROUP (ORDER BY te.type_desc) \
-                      FROM sys.trigger_events te WHERE te.object_id = tr.object_id) \
+                    "SELECT tr.name, tr.is_instead_of_trigger, tr.is_disabled, {} \
                      FROM sys.triggers tr WHERE tr.parent_id = OBJECT_ID({}) ORDER BY tr.name",
+                    trigger_events_sql(&ver),
                     lit(&obj.qualified())
                 ))
                 .await?;
@@ -982,6 +1012,9 @@ pub(crate) async fn table_triggers(
 }
 
 async fn sequence_ddl(conn: &mut Conn, obj: &ObjRef) -> Result<String> {
+    if !conn.version.has_sequences() {
+        return Err(Error::NotFound(format!("sequence {}", obj.qualified())));
+    }
     let rows = conn
         .rows(&format!(
             "SELECT TYPE_NAME(s.user_type_id), CAST((SELECT CASE WHEN x.n > CAST(s.maximum_value AS DECIMAL(38,0)) THEN CAST(s.maximum_value AS DECIMAL(38,0)) WHEN x.n < CAST(s.minimum_value AS DECIMAL(38,0)) THEN CAST(s.minimum_value AS DECIMAL(38,0)) ELSE x.n END FROM (SELECT CASE WHEN s.last_used_value IS NULL THEN CAST(s.start_value AS DECIMAL(38,0)) ELSE CAST(s.last_used_value AS DECIMAL(38,0)) + CAST(s.increment AS DECIMAL(38,0)) END AS n) x) AS NVARCHAR(60)), CAST(s.increment AS NVARCHAR(60)), \
@@ -1064,6 +1097,25 @@ pub(crate) fn schema_node_path(db: &str, schema: &str) -> ObjectPath {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn version_dependent_catalog_sql() {
+        let old = ServerVersion::new(10, 50, 6000);
+        let v2012 = ServerVersion::new(11, 0, 2100);
+        let v2014 = ServerVersion::new(12, 0, 2000);
+        let new = ServerVersion::new(16, 0, 1000);
+        assert!(tables_extra_sql(&new).contains("temporal_type"));
+        assert!(tables_extra_sql(&new).contains("is_external"));
+        assert_eq!(tables_extra_sql(&old), "NULL");
+        assert_eq!(tables_extra_sql(&v2012), "NULL");
+        let m = tables_extra_sql(&v2014);
+        assert!(m.contains("is_memory_optimized") && !m.contains("temporal_type"));
+        assert!(trigger_events_sql(&new).contains("STRING_AGG"));
+        assert!(trigger_events_sql(&ServerVersion::new(14, 0, 1)).contains("STRING_AGG"));
+        let x = trigger_events_sql(&old);
+        assert!(x.contains("FOR XML PATH") && !x.contains("STRING_AGG"));
+        assert!(trigger_events_sql(&v2014).contains("FOR XML PATH"));
+    }
+
     use super::*;
 
     #[test]

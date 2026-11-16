@@ -15,6 +15,15 @@ pub const IT_DB: &str = "dbstudio_it";
 pub const WORK_DB: &str = "dbstudio_it_work";
 pub const PASSWORD: &str = "Dbstudio_test1!";
 
+/// True when `DBSTUDIO_MSSQL_FORCE_VERSION` makes the driver behave like a server before 2012
+/// (no sequences), so tests skip what needs them.
+pub fn legacy_forced() -> bool {
+    std::env::var("DBSTUDIO_MSSQL_FORCE_VERSION")
+        .ok()
+        .and_then(|v| v.split('.').next().and_then(|m| m.parse::<u32>().ok()))
+        .is_some_and(|m| m < 11)
+}
+
 pub fn it_enabled() -> bool {
     std::env::var("DBSTUDIO_IT").is_ok_and(|v| v == "1")
 }

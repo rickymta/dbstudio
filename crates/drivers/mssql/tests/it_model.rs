@@ -243,7 +243,13 @@ async fn counts(s: &dyn dbstudio_core::Session, what: &str) -> Vec<String> {
         ),
     )
     .await;
-    rows_of(&r[0]).rows.iter().map(|r| text(&r[0])).collect()
+    rows_of(&r[0])
+        .rows
+        .iter()
+        .map(|r| text(&r[0]))
+        // A legacy (pre-2012) driver does not script sequences.
+        .filter(|c| !(legacy_forced() && c.starts_with("SO")))
+        .collect()
 }
 
 async fn run_items(s: &dyn dbstudio_core::Session, items: &[DdlItem]) {
