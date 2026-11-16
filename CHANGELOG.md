@@ -2,6 +2,17 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.1.7 - 2026-11-16
+
+Thay đổi từ v0.1.6. Bản v0.1.6 không được phát hành (dừng ở bước test), nên bản này gồm cả các
+thay đổi của v0.1.6:
+
+- feat(editor): chọn kết nối và database đang dùng cho tab query (như DBeaver)
+
+Thay đổi riêng của v0.1.7:
+
+- fix(editor): DatabasePicker đọc lease hiện tại lúc chọn database (dde96d10)
+
 ## v0.1.6 - 2026-11-16
 
 Thay đổi từ v0.1.5.
