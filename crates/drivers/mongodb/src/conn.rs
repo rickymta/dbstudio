@@ -488,7 +488,11 @@ pub fn check_write_errors(reply: &Document) -> Result<()> {
             let code = e.get_i32("code").unwrap_or(0);
             let msg = e.get_str("errmsg").unwrap_or("write error");
             return Err(Error::Query {
-                message: format!("{msg} (code {code})"),
+                // Raw command replies carry `errInfo` in each write error (the editor's path).
+                message: with_err_info(
+                    format!("{msg} (code {code})"),
+                    e.get_document("errInfo").ok(),
+                ),
                 position: None,
             });
         }
@@ -551,6 +555,31 @@ mod tests {
         assert!(rest.starts_with("errInfo: {"), "{rest}");
         assert!(rest.contains("\"propertyName\": \"fare\""), "{rest}");
         assert!(rest.contains("\"consideredType\": \"double\""), "{rest}");
+    }
+
+    #[test]
+    fn write_errors_of_a_raw_reply_keep_err_info() {
+        // Shape of a real `insert` reply from MongoDB 8.0 when the validator rejects a document.
+        let reply = doc! {
+            "n": 0,
+            "writeErrors": [{
+                "index": 0, "code": 121, "errmsg": "Document failed validation",
+                "errInfo": { "failingDocumentId": "x", "details": { "operatorName": "$jsonSchema" } },
+            }],
+            "ok": 1.0,
+        };
+        let Err(Error::Query { message, .. }) = check_write_errors(&reply) else {
+            panic!("must fail");
+        };
+        let (head, rest) = message.split_once('\n').unwrap();
+        assert_eq!(head, "Document failed validation (code 121)");
+        assert!(rest.contains("\"operatorName\": \"$jsonSchema\""), "{rest}");
+        // Without errInfo the message stays one line.
+        let reply = doc! { "writeErrors": [{ "index": 0, "code": 11000, "errmsg": "E11000 dup" }] };
+        let Err(Error::Query { message, .. }) = check_write_errors(&reply) else {
+            panic!("must fail");
+        };
+        assert_eq!(message, "E11000 dup (code 11000)");
     }
 
     #[test]

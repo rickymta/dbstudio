@@ -434,7 +434,10 @@ impl Lease for MongoLease {
                         if let Some(Bson::Document(e)) = errs.first() {
                             let row = c * 1000 + num(e, "index").max(0) as usize + 1;
                             let msg = e.get_str("errmsg").unwrap_or("write error");
-                            return Err(bad(format!("row {row}: {msg} (code {})", num(e, "code"))));
+                            return Err(bad(crate::conn::with_err_info(
+                                format!("row {row}: {msg} (code {})", num(e, "code")),
+                                e.get_document("errInfo").ok(),
+                            )));
                         }
                     }
                     check_write_errors(&r)?;
