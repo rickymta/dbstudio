@@ -2,6 +2,19 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.1.5 - 2026-11-16
+
+Thay đổi từ v0.1.4.
+
+- test(mssql): smoke test bỏ qua DDL view/routine khi login không có VIEW DEFINITION (6890b561)
+- docs(mssql): hỗ trợ từ SQL Server 2008 R2 (620b86ac)
+- feat(mssql): kết nối SQL Server 2008/2008 R2 — TLS backend của hệ điều hành, encrypt=none, tự fallback (a14a344c)
+- test(mssql): smoke test chỉ cấm DROP … IF EXISTS, không cấm IF EXISTS (SELECT …) (33a45801)
+- feat(mssql): chạy được trên SQL Server 2008 R2 (ServerVersion, paging ROW_NUMBER, DDL/IF OBJECT_ID, FOR XML PATH) (2871d708)
+- feat(uri): ADO.NET connection strings for SQL Server + read-only MSSQL smoke test (50872ad4)
+- feat(connections): tự đặt tên kết nối "<loại> N" khi để trống (như DBeaver) (52ff70f4)
+- feat(app): icon mới — icon ứng dụng từ icon1, icon tray/taskbar từ icon2 (f086a945)
+
 ## v0.1.4 - 2026-11-15
 
 Thay đổi từ v0.1.3. Bản v0.1.3 không được phát hành (dừng ở bước test), nên bản này gồm cả các
