@@ -358,6 +358,13 @@ function planRead(text: string, base: number, dialect: ScriptDialect): Plan {
       ],
     };
   }
+  // A MongoDB-style validation failure: the driver appends `errInfo` after the first line.
+  if (/\bfailValidation\b/.test(text)) {
+    throw ipcError(
+      'query',
+      'Document failed validation (code 121)\nerrInfo: {\n  "failingDocumentId": 1,\n  "details": {\n    "operatorName": "$jsonSchema"\n  }\n}',
+    );
+  }
   const bad = /\bnope\b/i.exec(text);
   if (bad) {
     throw ipcError('query', 'column "nope" does not exist', {

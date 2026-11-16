@@ -80,6 +80,16 @@ describe('EditorTab', () => {
     expect(getTabData(id)!.text.slice(mark.from, mark.to)).toBe('nope');
   });
 
+  it('shows server details after the first line of an error as a separate block', async () => {
+    await mountEditor('SELECT failValidation');
+    await run();
+    const alert = await screen.findByTestId('result-error');
+    expect(within(alert).getByText('Document failed validation (code 121)')).toBeInTheDocument();
+    const detail = within(alert).getByTestId('result-error-detail');
+    expect(detail.textContent).toMatch(/^errInfo: \{\n {2}"failingDocumentId": 1,/);
+    expect(detail.textContent).toContain('"operatorName": "$jsonSchema"');
+  });
+
   it('asks for parameter values first and validates numbers', async () => {
     const user = userEvent.setup();
     await mountEditor('SELECT * FROM users WHERE id = :id');

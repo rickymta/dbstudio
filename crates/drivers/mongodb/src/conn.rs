@@ -68,7 +68,10 @@ pub fn map_error(err: mongodb::error::Error) -> Error {
             },
         },
         ErrorKind::Write(WriteFailure::WriteError(w)) => Error::Query {
-            message: format!("{} (code {})", w.message, w.code),
+            message: with_err_info(
+                format!("{} (code {})", w.message, w.code),
+                w.details.as_ref(),
+            ),
             position: None,
         },
         ErrorKind::BulkWrite(_) => Error::Query {
@@ -87,6 +90,29 @@ pub fn map_error(err: mongodb::error::Error) -> Error {
         }
         _ => Error::Other(text),
     }
+}
+
+/// Longest `errInfo` text appended to an error message; longer details are cut with a marker.
+const ERR_INFO_MAX: usize = 8 * 1024;
+
+/// Append the server's `errInfo` (e.g. which `$jsonSchema` rule a document broke, error 121)
+/// to `message` as indented relaxed Extended JSON, so the editor shows why a write failed and
+/// not only that it failed. Without details the message is returned unchanged.
+pub fn with_err_info(message: String, details: Option<&Document>) -> String {
+    let Some(details) = details.filter(|d| !d.is_empty()) else {
+        return message;
+    };
+    // Same relaxed Extended JSON as the editor's document view.
+    let mut text = crate::convert::doc_to_ejson(details, true, false);
+    if text.len() > ERR_INFO_MAX {
+        let mut cut = ERR_INFO_MAX;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str("\n…");
+    }
+    format!("{message}\nerrInfo: {text}")
 }
 
 fn bad(msg: impl Into<String>) -> Error {
@@ -504,6 +530,43 @@ impl Cmd<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn err_info_is_appended_as_indented_json() {
+        let details = doc! {
+            "failingDocumentId": 7,
+            "details": { "operatorName": "$jsonSchema", "schemaRulesNotSatisfied": [
+                { "operatorName": "properties", "propertiesNotSatisfied": [
+                    { "propertyName": "fare", "details": [ { "operatorName": "bsonType",
+                      "specifiedAs": { "bsonType": ["int", "long"] }, "consideredType": "double" } ] }
+                ] }
+            ] }
+        };
+        let msg = with_err_info(
+            "Document failed validation (code 121)".into(),
+            Some(&details),
+        );
+        let (head, rest) = msg.split_once('\n').unwrap();
+        assert_eq!(head, "Document failed validation (code 121)");
+        assert!(rest.starts_with("errInfo: {"), "{rest}");
+        assert!(rest.contains("\"propertyName\": \"fare\""), "{rest}");
+        assert!(rest.contains("\"consideredType\": \"double\""), "{rest}");
+    }
+
+    #[test]
+    fn err_info_absent_or_empty_keeps_the_message() {
+        let m = "E11000 duplicate key (code 11000)".to_string();
+        assert_eq!(with_err_info(m.clone(), None), m);
+        assert_eq!(with_err_info(m.clone(), Some(&Document::new())), m);
+    }
+
+    #[test]
+    fn err_info_is_capped() {
+        let big = doc! { "x": "é".repeat(ERR_INFO_MAX) };
+        let msg = with_err_info("m".into(), Some(&big));
+        assert!(msg.len() < ERR_INFO_MAX + 64, "{}", msg.len());
+        assert!(msg.ends_with("\n…"));
+    }
 
     #[test]
     fn proxy_option_is_parsed() {

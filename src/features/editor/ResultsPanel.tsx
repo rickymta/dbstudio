@@ -305,7 +305,7 @@ function ResultBody({
   const elapsed =
     result.elapsedMs !== null ? t('results.elapsed', { ms: nf.format(result.elapsedMs) }) : '';
   return (
-    <div className="flex h-full items-center justify-center" data-testid="result-summary">
+    <div className="flex h-full flex-col items-center justify-center" data-testid="result-summary">
       <EmptyState
         icon={<CheckCircle2 size={28} className="text-success" />}
         title={
@@ -488,6 +488,10 @@ function ErrorView({ run, result }: { run: RunSnapshot; result: StatementResult 
   const err = result.error!;
   const mark = run.error === err ? run.errorMark : null;
   const cancelled = err.kind === 'cancelled';
+  // Drivers may add server details after the first line (MongoDB `errInfo` for error 121):
+  // the first line is the error, the rest is shown as preformatted detail.
+  const [headline, ...detailLines] = cancelled ? [t('results.cancelled')] : err.message.split('\n');
+  const detail = detailLines.join('\n');
   return (
     <div className="h-full overflow-auto p-4" data-testid="result-error" role="alert">
       <div
@@ -498,9 +502,15 @@ function ErrorView({ run, result }: { run: RunSnapshot; result: StatementResult 
       >
         <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden />
         <div className="min-w-0">
-          <p className="font-medium break-words select-text">
-            {cancelled ? t('results.cancelled') : err.message}
-          </p>
+          <p className="font-medium break-words select-text">{headline}</p>
+          {detail && (
+            <pre
+              className="mt-2 font-mono text-xs break-words whitespace-pre-wrap text-foreground select-text"
+              data-testid="result-error-detail"
+            >
+              {detail}
+            </pre>
+          )}
           {mark && (
             <p className="mt-1 text-xs text-muted-foreground">
               {t('results.errorAt', { line: mark.line, column: mark.column })}
