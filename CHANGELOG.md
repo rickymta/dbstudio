@@ -2,6 +2,12 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.1.6 - 2026-11-16
+
+Thay đổi từ v0.1.5.
+
+- feat(editor): chọn kết nối và database đang dùng cho tab query (như DBeaver) (3bdf5c86)
+
 ## v0.1.5 - 2026-11-16
 
 Thay đổi từ v0.1.4.
