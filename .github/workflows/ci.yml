@@ -1,9 +1,8 @@
 name: CI
 
 on:
-  # CI runs on master (the release branch) and on pull requests into it; develop is not built.
-  push:
-    branches: [master]
+  # No run on push to master: the release workflow runs this whole suite on the tagged commit
+  # before it builds (`workflow_call` below). Pull requests and manual runs still use it.
   pull_request:
   # Weekly run of the heavy / old-version service groups (`integration-extra`).
   schedule:

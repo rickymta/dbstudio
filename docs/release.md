@@ -1,8 +1,9 @@
 # Phát hành DBStudio
 
 Bản phát hành được CI (`.github/workflows/release.yml`) tự build và đăng lên GitHub Releases khi có tag
-`vX.Y.Z` (hoặc `vX.Y.Z-beta.1`) nằm trên nhánh `master` được push. CI (`ci.yml`) chỉ chạy khi push lên
-`master` và với pull request; push lên `develop` không chạy gì.
+`vX.Y.Z` (hoặc `vX.Y.Z-beta.1`) nằm trên nhánh `master` được push. CI (`ci.yml`) không chạy khi push lên
+`master` hay `develop`: workflow `Release` gọi lại toàn bộ `ci.yml` trên commit của tag trước khi build.
+`ci.yml` vẫn chạy với pull request, chạy tay (`workflow_dispatch`) và theo lịch hằng tuần.
 
 ## Quy trình
 
