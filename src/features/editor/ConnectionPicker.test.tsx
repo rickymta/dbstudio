@@ -171,17 +171,35 @@ describe('connection picker', () => {
 });
 
 describe('database picker', () => {
+  /**
+   * Name of a database other than the current one. The current one is only checked once the
+   * connection profile (its default database) has loaded: before that no item is checked, and
+   * picking the "first unchecked" item could pick the current database, which is a no-op.
+   */
+  const otherDatabase = async (menu: HTMLElement) => {
+    await waitFor(
+      () =>
+        expect(
+          within(menu)
+            .getAllByRole('menuitemradio')
+            .some((o) => o.getAttribute('aria-checked') === 'true'),
+        ).toBe(true),
+      { timeout: 5000 },
+    );
+    return within(menu)
+      .getAllByRole('menuitemradio')
+      .find((o) => o.getAttribute('aria-checked') === 'false')!.textContent!;
+  };
+  const pick = async (menu: HTMLElement, name: string) =>
+    userEvent.click(within(menu).getByRole('menuitemradio', { name }));
+
   it('only patches the tab when it has no lease', async () => {
     const { id } = await mount();
     const set = vi.spyOn(ipc, 'leaseSetContext');
     const menu = await openByKeyboard('Active database');
-    const options = within(menu).getAllByRole('menuitemradio');
-    const target = options.find((o) => o.getAttribute('aria-checked') === 'false')!;
-    await userEvent.click(target);
-    // Generous timeout: the update goes through the mock IPC, slower on a busy CI runner.
-    await waitFor(() => expect(getTabData(id)!.database).toBe(target.textContent), {
-      timeout: 5000,
-    });
+    const name = await otherDatabase(menu);
+    await pick(menu, name);
+    await waitFor(() => expect(getTabData(id)!.database).toBe(name));
     expect(set).not.toHaveBeenCalled();
   });
 
@@ -196,11 +214,8 @@ describe('database picker', () => {
     );
     const set = vi.spyOn(ipc, 'leaseSetContext');
     const menu = await openByKeyboard('Active database');
-    const target = within(menu)
-      .getAllByRole('menuitemradio')
-      .find((o) => o.getAttribute('aria-checked') === 'false')!;
-    const name = target.textContent!;
-    await userEvent.click(target);
+    const name = await otherDatabase(menu);
+    await pick(menu, name);
     await waitFor(() =>
       expect(set).toHaveBeenCalledWith(leaseId, { database: name, schema: null }),
     );

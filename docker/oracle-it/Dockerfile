@@ -9,7 +9,16 @@
 # Cargo output goes to the named volume mounted at /target-oracle, the repo is mounted at /work.
 FROM ghcr.io/oracle/oraclelinux9-instantclient:23
 
-RUN dnf install -y gcc gcc-c++ make pkgconf-pkg-config openssl-devel curl git ca-certificates \
+# yum.oracle.com is sometimes unreachable from CI runners for a short while (curl error 7 on the
+# repo metadata): retry with growing pauses instead of failing the whole integration job.
+RUN for attempt in 1 2 3 4 5; do \
+      dnf install -y --setopt=retries=10 --setopt=timeout=60 \
+        gcc gcc-c++ make pkgconf-pkg-config openssl-devel curl git ca-certificates \
+        && break; \
+      if [ "$attempt" = 5 ]; then exit 1; fi; \
+      echo "dnf install failed (attempt $attempt), retrying in $((attempt * 20))s" >&2; \
+      dnf clean all; sleep $((attempt * 20)); \
+    done \
     && dnf clean all
 
 ENV RUSTUP_HOME=/usr/local/rustup \
