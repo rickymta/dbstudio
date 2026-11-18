@@ -178,7 +178,10 @@ describe('database picker', () => {
     const options = within(menu).getAllByRole('menuitemradio');
     const target = options.find((o) => o.getAttribute('aria-checked') === 'false')!;
     await userEvent.click(target);
-    await waitFor(() => expect(getTabData(id)!.database).toBe(target.textContent));
+    // Generous timeout: the update goes through the mock IPC, slower on a busy CI runner.
+    await waitFor(() => expect(getTabData(id)!.database).toBe(target.textContent), {
+      timeout: 5000,
+    });
     expect(set).not.toHaveBeenCalled();
   });
 

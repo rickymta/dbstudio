@@ -294,33 +294,34 @@ async fn session_state_does_not_leak_between_calls() {
 async fn concurrent_queries_share_the_pool() {
     it!();
     let s = fixture().await;
-    let started = Instant::now();
     let mut tasks = Vec::new();
     for i in 0..8 {
         let s = s.clone();
         tasks.push(tokio::spawn(async move {
             let r = execute_collect(
                 &*s,
-                QueryRequest::new(format!("WAITFOR DELAY '00:00:01'; SELECT {i}")),
+                QueryRequest::new(format!(
+                    "WAITFOR DELAY '00:00:01'; SELECT {i}, CAST(@@SPID AS INT)"
+                )),
             )
             .await
             .unwrap();
-            rows_of(r.last().unwrap()).rows[0][0].clone()
+            rows_of(r.last().unwrap()).rows[0].clone()
         }));
     }
     let mut got = Vec::new();
+    let mut spids = std::collections::BTreeSet::new();
     for t in tasks {
-        got.push(t.await.unwrap());
+        let row = t.await.unwrap();
+        got.push(row[0].clone());
+        spids.insert(format!("{:?}", row[1]));
     }
     got.sort_by_key(|v| if let Value::Int(i) = v { *i } else { -1 });
     assert_eq!(got, (0..8).map(Value::Int).collect::<Vec<_>>());
-    // Pool of 4: two waves of one second (an unlimited pool would take ~1 s; WAITFOR is not
-    // precise to the millisecond on a busy runner).
-    assert!(
-        started.elapsed() >= Duration::from_millis(1500),
-        "{:?}",
-        started.elapsed()
-    );
+    // Pool of 4 (`DEFAULT_POOL_MAX`): the 8 overlapping queries run on at most 4 server sessions;
+    // an unlimited pool would open 8. Counting sessions instead of timing two waves of WAITFOR
+    // keeps this stable on busy CI runners, where WAITFOR may return early.
+    assert!(spids.len() <= 4, "{} sessions: {spids:?}", spids.len());
     let _ = Arc::strong_count(&s);
 }
 
