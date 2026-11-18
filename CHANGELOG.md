@@ -2,6 +2,25 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.1.10 - 2026-11-18
+
+Thay đổi từ v0.1.9. Bản v0.1.8 và v0.1.9 không được phát hành (dừng ở bước test), nên bản này gồm
+cả các thay đổi của hai bản đó:
+
+- feat(sidebar): ô tìm kiếm ở cuối cột trái như Navicat, chỉ tìm trong kết nối đang mở và tô sáng chỗ khớp
+- fix(mongodb): errInfo cả khi lỗi ghi đến từ reply của lệnh raw
+- feat(mongo-shell): UUID() không tham số sinh UUID v4 như mongosh
+- feat(editor): chế độ Bảng của kết quả MongoDB tách trường thành cột
+- feat(editor): hiện thông điệp của câu lệnh ngay dưới số dòng bị ảnh hưởng
+- feat(mongodb): hiện errInfo khi server từ chối ghi (lỗi 121)
+- fix(explorer): double-click collection MongoDB mở dữ liệu thay vì chỉ thu gọn nút
+- test: ổn định hai test chập chờn trên CI
+
+Thay đổi riêng của v0.1.10:
+
+- ci: bỏ chạy CI khi push lên master, workflow Release đã chạy toàn bộ CI trước khi build (6f29b63)
+- test: sửa nguyên nhân test DatabasePicker chập chờn, thử lại dnf khi dựng image Oracle (fe16d9a)
+
 ## v0.1.9 - 2026-11-18
 
 Thay đổi từ v0.1.8. Bản v0.1.8 không được phát hành (dừng ở bước test), nên bản này gồm cả các
