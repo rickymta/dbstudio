@@ -21,11 +21,12 @@
   },
   "sidebar": {
     "title": "Connections",
-    "search": "Filter connections and objects",
-    "clearSearch": "Clear filter",
+    "search": "Search open connections",
+    "clearSearch": "Clear search",
     "loading": "Loading connections...",
     "loadError": "Could not load connections",
     "noResults": "No matches",
+    "noOpenConnection": "Connect to a database to search its objects",
     "empty": "No connections yet",
     "emptyHint": "Create a connection to start browsing a database."
   },

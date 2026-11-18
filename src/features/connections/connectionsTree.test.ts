@@ -78,6 +78,10 @@ describe('buildConnectionsTree', () => {
     // A matching group name keeps its whole subtree.
     const byGroup = filterConnectionsTree(tree, 'a', () => false);
     expect(byGroup.groups.find((g) => g.group.id === 'a')!.profiles).toHaveLength(2);
+
+    // Without group matching a group is only kept for the profiles it holds.
+    const profilesOnly = filterConnectionsTree(tree, 'a', () => false, { matchGroups: false });
+    expect(profilesOnly).toEqual({ groups: [], profiles: [] });
   });
 
   it('builds readable group path options', () => {

@@ -11,8 +11,8 @@ export function moveFocus(e: KeyboardEvent<HTMLElement>, delta: number) {
   if (next) {
     e.preventDefault();
     next.focus();
-  } else if (delta < 0) {
-    // Up from the first row returns to the search box.
+  } else if (delta > 0) {
+    // Down from the last row goes to the search box below the list.
     const search = root.querySelector<HTMLElement>('[data-search-input]');
     if (search) {
       e.preventDefault();

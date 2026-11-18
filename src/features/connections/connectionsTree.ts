@@ -57,11 +57,13 @@ export function filterConnectionsTree(
   tree: ConnectionsTree,
   filter: string,
   keepProfile: (p: ConnectionProfile) => boolean,
+  { matchGroups = true }: { matchGroups?: boolean } = {},
 ): ConnectionsTree {
   const f = filter.trim().toLowerCase();
   if (!f) return tree;
   const filterGroup = (node: GroupNode, ancestorMatched: boolean): GroupNode | null => {
-    const selfMatches = node.group.name.toLowerCase().includes(f);
+    // Without `matchGroups` a group is only kept for the profiles it still holds.
+    const selfMatches = matchGroups && node.group.name.toLowerCase().includes(f);
     const all = ancestorMatched || selfMatches;
     const groups = node.groups
       .map((g) => filterGroup(g, all))

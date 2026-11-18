@@ -11,6 +11,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/ContextMenu';
+import { Highlight } from '@/components/ui/Highlight';
 import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
 import type { ConnectionGroup, ConnectionProfile, Uuid } from '@/lib/types';
@@ -173,11 +174,14 @@ export function ProfileRow({
   error,
   groupOptions,
   actions,
+  highlight,
   children,
 }: {
   profile: ConnectionProfile;
   depth: number;
   expanded: boolean;
+  /** Sidebar search text whose occurrences in the name are highlighted. */
+  highlight?: string;
   /** Last connect error message, shown as an error state with a retry button. */
   error?: string;
   groupOptions: { id: Uuid; label: string }[];
@@ -267,7 +271,9 @@ export function ProfileRow({
             >
               {kindBadgeFor(profile.kind)}
             </span>
-            <span className="min-w-0 truncate">{profile.name}</span>
+            <span className="min-w-0 truncate">
+              <Highlight text={profile.name} query={highlight} />
+            </span>
             {profile.readOnly && (
               <Lock
                 size={10}

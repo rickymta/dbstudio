@@ -21,11 +21,12 @@
   },
   "sidebar": {
     "title": "Kết nối",
-    "search": "Lọc kết nối và đối tượng",
-    "clearSearch": "Xoá bộ lọc",
+    "search": "Tìm trong các kết nối đang mở",
+    "clearSearch": "Xoá tìm kiếm",
     "loading": "Đang tải kết nối...",
     "loadError": "Không tải được danh sách kết nối",
     "noResults": "Không có kết quả",
+    "noOpenConnection": "Hãy mở kết nối để tìm đối tượng trong đó",
     "empty": "Chưa có kết nối nào",
     "emptyHint": "Tạo kết nối để bắt đầu duyệt cơ sở dữ liệu."
   },

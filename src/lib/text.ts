@@ -28,3 +28,19 @@ export function utf16ToCharOffset(text: string, utf16Offset: number): number {
   }
   return chars;
 }
+
+/** Ranges `[start, end)` of every case-insensitive, non-overlapping occurrence of `query`. */
+export function matchRanges(text: string, query: string): [number, number][] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const lower = text.toLowerCase();
+  const ranges: [number, number][] = [];
+  let from = 0;
+  for (;;) {
+    const at = lower.indexOf(q, from);
+    if (at < 0) break;
+    ranges.push([at, at + q.length]);
+    from = at + q.length;
+  }
+  return ranges;
+}

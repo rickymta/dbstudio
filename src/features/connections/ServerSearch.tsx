@@ -6,6 +6,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@/components/ui/ContextMenu';
+import { Highlight } from '@/components/ui/Highlight';
 import { Spinner } from '@/components/ui/Spinner';
 import { KindIcon } from '@/features/explorer/kindIcons';
 import { openObjectTab } from '@/features/explorer/openObject';
@@ -92,6 +93,7 @@ export function ServerSearch({
                 node={node}
                 session={session}
                 connectionName={name}
+                query={query}
                 onShowInTree={onShowInTree}
               />
             ))}
@@ -106,11 +108,13 @@ function ResultRow({
   node,
   session,
   connectionName,
+  query,
   onShowInTree,
 }: {
   node: ObjectNode;
   session: SessionInfo;
   connectionName: string;
+  query: string;
   onShowInTree: (connectionId: Uuid, node: ObjectNode) => void;
 }) {
   const { t } = useTranslation('connections');
@@ -144,7 +148,9 @@ function ResultRow({
           className="flex h-[26px] cursor-default items-center gap-1 pr-2 text-[13px] outline-none hover:bg-surface-muted focus-visible:bg-accent/20"
         >
           <KindIcon kind={node.kind} className="shrink-0 text-muted-foreground" />
-          <span className="min-w-0 truncate">{node.name}</span>
+          <span className="min-w-0 truncate">
+            <Highlight text={node.name} query={query} />
+          </span>
           {context && (
             <span className="min-w-0 truncate text-[11px] text-muted-foreground">{context}</span>
           )}

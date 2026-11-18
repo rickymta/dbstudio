@@ -485,18 +485,23 @@ describe('ConnectionsSidebar', () => {
     expect(await screen.findByRole('button', { name: 'Retry connecting' })).toBeInTheDocument();
   });
 
-  it('filters profiles and groups by name', async () => {
+  it('searches only open connections and highlights matching names', async () => {
     const user = setup();
     await profileRow('PostgreSQL dev');
-    await user.type(
-      screen.getByRole('searchbox', { name: 'Filter connections and objects' }),
-      'staging',
-    );
-    expect(screen.getByRole('treeitem', { name: 'MySQL staging' })).toBeInTheDocument();
-    expect(screen.queryByRole('treeitem', { name: 'PostgreSQL dev' })).toBeNull();
+    const search = screen.getByRole('searchbox', { name: 'Search open connections' });
+    await user.type(search, 'staging');
+    // Nothing is connected: closed profiles are not searched.
+    expect(screen.queryByRole('treeitem', { name: 'MySQL staging' })).toBeNull();
+    expect(screen.getByText('Connect to a database to search its objects')).toBeInTheDocument();
+    await user.clear(search);
+    await user.dblClick(await profileRow('PostgreSQL dev'));
+    await screen.findByTestId('object-tree', {}, WAIT);
+    await user.type(search, 'dev');
+    const row = screen.getByRole('treeitem', { name: 'PostgreSQL dev' });
+    expect(within(row).getByText('dev', { selector: 'mark' })).toBeInTheDocument();
     expect(screen.queryByRole('treeitem', { name: 'PostgreSQL prod (read-only)' })).toBeNull();
-    await user.clear(screen.getByRole('searchbox'));
-    expect(await profileRow('PostgreSQL dev')).toBeInTheDocument();
+    await user.clear(search);
+    expect(await profileRow('MySQL staging')).toBeInTheDocument();
   });
 
   it('filters already loaded tree nodes, keeping their ancestors', async () => {
@@ -508,8 +513,9 @@ describe('ConnectionsSidebar', () => {
     await screen.findByText('order_items', {}, WAIT);
     await user.type(screen.getByRole('searchbox'), 'order_items');
     await waitFor(() => expect(screen.queryByText('products')).toBeNull());
-    expect(screen.getByText('order_items')).toBeInTheDocument();
-    expect(screen.getByText('Tables')).toBeInTheDocument();
+    const tree = screen.getByTestId('object-tree');
+    expect(within(tree).getByText('order_items', { selector: 'mark' })).toBeInTheDocument();
+    expect(within(tree).getByText('Tables')).toBeInTheDocument();
     expect(screen.getByRole('treeitem', { name: 'PostgreSQL dev' })).toBeInTheDocument();
     expect(screen.queryByRole('treeitem', { name: 'MySQL staging' })).toBeNull();
   });
@@ -660,7 +666,7 @@ describe('ConnectionsSidebar', () => {
   });
 
   describe('server-side search', () => {
-    const search = () => screen.getByRole('searchbox', { name: 'Filter connections and objects' });
+    const search = () => screen.getByRole('searchbox', { name: 'Search open connections' });
 
     async function connectDev(user: ReturnType<typeof userEvent.setup>) {
       await user.dblClick(await profileRow('PostgreSQL dev'));
@@ -767,10 +773,13 @@ describe('ConnectionsSidebar', () => {
       await connectDev(user);
       await user.type(search(), 'users');
       await screen.findByRole('treeitem', { name: 'users - PostgreSQL dev' }, WAIT);
+      // The search box sits below the list: Up jumps to the last row, Down from it returns.
+      await user.keyboard('{ArrowUp}');
+      expect(document.activeElement).toHaveAttribute('data-nav-row');
+      await user.keyboard('{ArrowDown}');
+      expect(document.activeElement).toBe(search());
       await user.keyboard('{ArrowDown}');
       expect(document.activeElement).toHaveAttribute('data-nav-row');
-      await user.keyboard('{ArrowUp}');
-      expect(document.activeElement).toBe(search());
     });
 
     it('is skipped when no open driver supports searching', async () => {
@@ -904,7 +913,7 @@ describe('ConnectionsSidebar', () => {
   });
 
   describe('follow-ups from review', () => {
-    const search = () => screen.getByRole('searchbox', { name: 'Filter connections and objects' });
+    const search = () => screen.getByRole('searchbox', { name: 'Search open connections' });
     const node = (name: string) => ({
       path: { segments: [{ kind: 'database' as const, name }] },
       kind: 'database' as const,
@@ -941,9 +950,12 @@ describe('ConnectionsSidebar', () => {
       expect(calls).toEqual(['or']); // still waiting for the running search
       finishers[0]!();
       await waitFor(() => expect(calls).toEqual(['or', 'order']), WAIT);
-      expect(screen.queryByText('found_or')).toBeNull(); // the stale answer is never shown
+      // The stale answer is never shown (names are split by the highlight: match by row label).
+      expect(screen.queryByRole('treeitem', { name: 'found_or - PostgreSQL dev' })).toBeNull();
       finishers[1]!();
-      expect(await screen.findByText('found_order', {}, WAIT)).toBeInTheDocument();
+      expect(
+        await screen.findByRole('treeitem', { name: 'found_order - PostgreSQL dev' }, WAIT),
+      ).toBeInTheDocument();
       expect(maxActive).toBe(1);
     }, 20_000);
 

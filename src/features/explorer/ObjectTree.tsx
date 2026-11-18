@@ -24,6 +24,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/ContextMenu';
 import { Badge } from '@/components/ui/Badge';
+import { Highlight } from '@/components/ui/Highlight';
 import { Spinner } from '@/components/ui/Spinner';
 import { toast } from '@/components/ui/toastStore';
 import { DeleteByPatternDialog } from '@/features/keyvalue/DeleteByPatternDialog';
@@ -395,6 +396,7 @@ function SessionTree({
                   capabilities={capabilities}
                   descriptor={session.descriptor}
                   label={label(row.node)}
+                  highlight={filter}
                   selected={row.key === focusKey}
                   onSelect={setFocusKey}
                   onToggle={setNodeExpanded}
@@ -473,6 +475,8 @@ interface NodeRowProps {
   capabilities: Capabilities;
   descriptor: DriverDescriptor;
   label: string;
+  /** Sidebar search text whose occurrences in the label are highlighted. */
+  highlight?: string;
   selected: boolean;
   onSelect: (key: string) => void;
   onToggle: (row: NodeRow, expand: boolean) => void;
@@ -488,6 +492,7 @@ const TreeNodeRow = memo(function TreeNodeRow({
   capabilities,
   descriptor,
   label,
+  highlight,
   selected,
   onSelect,
   onToggle,
@@ -542,7 +547,9 @@ const TreeNodeRow = memo(function TreeNodeRow({
         ) : null}
       </span>
       <KindIcon kind={node.kind} className="shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className="min-w-0 flex-1 truncate">
+        <Highlight text={label} query={highlight} />
+      </span>
       {keyDetail ? (
         <span className="ml-auto flex shrink-0 items-center gap-1 pl-2">
           {keyDetail.ttlSeconds !== null && (

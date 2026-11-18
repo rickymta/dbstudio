@@ -379,14 +379,20 @@ export function ConnectionsSidebar() {
   };
 
   const sessionsByConnection = useSessionsStore((s) => s.sessionsByConnection);
+  // The search only looks inside open connections: closed profiles are hidden while searching.
   const profileMatches = (p: ConnectionProfile): boolean => {
-    const f = filter.trim().toLowerCase();
-    if (p.name.toLowerCase().includes(f)) return true;
     const session = sessionsByConnection[p.id];
-    return session !== undefined && treeHasMatch(qc, session.sessionId, f, explorerLabel);
+    if (!session) return false;
+    const f = filter.trim().toLowerCase();
+    return (
+      p.name.toLowerCase().includes(f) || treeHasMatch(qc, session.sessionId, f, explorerLabel)
+    );
   };
+  const hasOpenConnection = Object.keys(sessionsByConnection).length > 0;
 
-  const visible = tree ? filterConnectionsTree(tree, filter, profileMatches) : null;
+  const visible = tree
+    ? filterConnectionsTree(tree, filter, profileMatches, { matchGroups: false })
+    : null;
   const isEmpty = !!snapshot && snapshot.groups.length === 0 && snapshot.profiles.length === 0;
 
   const renderProfile = (p: ConnectionProfile, depth: number) => {
@@ -407,6 +413,7 @@ export function ConnectionsSidebar() {
         error={errors[p.id]}
         groupOptions={groupOptions}
         actions={actions}
+        highlight={filtering ? filter : undefined}
       >
         {session && (
           <div
@@ -508,43 +515,6 @@ export function ConnectionsSidebar() {
       </header>
 
       <QuickAccess />
-      <div className="relative shrink-0 border-b border-border px-2 py-1.5">
-        <Search
-          size={13}
-          aria-hidden
-          className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-muted-foreground"
-        />
-        <Input
-          type="search"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          data-search-input
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setFilter('');
-            else if (e.key === 'ArrowDown') {
-              const first = asideRef.current?.querySelector<HTMLElement>('[data-nav-row]');
-              if (first) {
-                e.preventDefault();
-                first.focus();
-              }
-            }
-          }}
-          placeholder={t('sidebar.search')}
-          aria-label={t('sidebar.search')}
-          className="h-8 pr-6 pl-6 text-xs [&::-webkit-search-cancel-button]:hidden"
-        />
-        {filter && (
-          <button
-            type="button"
-            aria-label={t('sidebar.clearSearch')}
-            onClick={() => setFilter('')}
-            className="absolute top-1/2 right-3.5 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
-          >
-            <X size={12} />
-          </button>
-        )}
-      </div>
-
       <div
         role="tree"
         onDragOver={(e) => isRootDropZone(e) && hover(e, { type: 'root' })}
@@ -587,7 +557,7 @@ export function ConnectionsSidebar() {
             {visible.profiles.map((p) => renderProfile(p, 0))}
             {filtering && visible.groups.length === 0 && visible.profiles.length === 0 && (
               <p className="px-3 py-4 text-center text-xs text-muted-foreground">
-                {t('sidebar.noResults')}
+                {hasOpenConnection ? t('sidebar.noResults') : t('sidebar.noOpenConnection')}
               </p>
             )}
           </>
@@ -599,6 +569,48 @@ export function ConnectionsSidebar() {
         />
         {/* Empty area at the end of the list: dropping here moves an item to the top level. */}
         <div data-drop-root className="h-8" />
+      </div>
+
+      {/* Navicat-style search at the bottom of the list (BROWSE-06). */}
+      <div className="relative shrink-0 border-t border-border px-2 py-1.5">
+        <Search
+          size={13}
+          aria-hidden
+          className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          type="search"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          data-search-input
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setFilter('');
+            else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              // The box sits below the list: Up goes to the last row, Down to the first one.
+              const rows = Array.from(
+                asideRef.current?.querySelectorAll<HTMLElement>('[data-nav-row]') ?? [],
+              ).filter((r) => !r.closest('[hidden]'));
+              const row = e.key === 'ArrowUp' ? rows.at(-1) : rows[0];
+              if (row) {
+                e.preventDefault();
+                row.focus();
+              }
+            }
+          }}
+          placeholder={t('sidebar.search')}
+          aria-label={t('sidebar.search')}
+          className="h-8 pr-6 pl-6 text-xs [&::-webkit-search-cancel-button]:hidden"
+        />
+        {filter && (
+          <button
+            type="button"
+            aria-label={t('sidebar.clearSearch')}
+            onClick={() => setFilter('')}
+            className="absolute top-1/2 right-3.5 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+          >
+            <X size={12} />
+          </button>
+        )}
       </div>
 
       {hostKeyDialog}
