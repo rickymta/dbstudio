@@ -61,7 +61,14 @@
     "close": "Close",
     "save": "Save",
     "delete": "Delete",
-    "retry": "Retry"
+    "retry": "Retry",
+    "discard": "Discard",
+    "copy": "Copy",
+    "continue": "Continue"
+  },
+  "confirmDialog": {
+    "unsavedTitle": "Unsaved changes",
+    "largeValueTitle": "Large value"
   },
   "toast": {
     "dismiss": "Dismiss notification"

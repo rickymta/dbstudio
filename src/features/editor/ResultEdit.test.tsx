@@ -4,6 +4,7 @@
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { dialogs } from '@/components/ui/confirm';
 import { Providers } from '@/app/providers';
 import { resetDataStores } from '@/features/data/store';
 import { usePendingChanges } from '@/features/data/edit/pendingChanges';
@@ -283,14 +284,14 @@ describe('unsaved edits', () => {
     usePendingChanges.getState().addInsert(GRID, {});
     expect(hasResultEdits(TAB)).toBe(true);
 
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const confirm = vi.spyOn(dialogs, 'confirm').mockResolvedValue(false);
     const kept = await runText(TAB, SESSION, { text: 'SELECT 1', baseChar: 0 });
     expect(kept).toBeNull();
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(leaseExecute).not.toHaveBeenCalled();
     expect(hasResultEdits(TAB)).toBe(true);
 
-    confirm.mockReturnValue(true);
+    confirm.mockResolvedValue(true);
     act(() => {
       leaseExecute.mockRejectedValue({ kind: 'connection', message: 'no server' });
     });

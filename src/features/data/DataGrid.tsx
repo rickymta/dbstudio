@@ -47,6 +47,7 @@ import {
 import type { TimestampDisplay } from './timestamp';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Button } from '@/components/ui/Button';
+import { confirmDialog } from '@/components/ui/confirm';
 import {
   defaultColumnWidth,
   formatCell,
@@ -323,11 +324,20 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
     [bodyViewport, scale.ratio, scale.virtualHeight, colVirtualizer, freeIdx],
   );
 
-  const copySelected = useCallback(() => {
+  const copySelected = useCallback(async () => {
     if (!selection) return;
     const value = rows[selection.row - insertCount]?.[selection.col];
     if (!value || selection.row < insertCount) return;
-    if (estimateValueSize(value) > LARGE_COPY_BYTES && !window.confirm(t('grid.copyLarge'))) return;
+    if (
+      estimateValueSize(value) > LARGE_COPY_BYTES &&
+      !(await confirmDialog({
+        title: t('common:confirmDialog.largeValueTitle'),
+        description: t('grid.copyLarge'),
+        confirmLabel: t('common:actions.copy'),
+      }))
+    ) {
+      return;
+    }
     void navigator.clipboard?.writeText(valueToText(value, timestamp)).catch(() => undefined);
   }, [rows, insertCount, selection, t, timestamp]);
 
@@ -414,7 +424,7 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
     }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
       e.preventDefault();
-      copySelected();
+      void copySelected();
       return;
     }
     if (!selection) {

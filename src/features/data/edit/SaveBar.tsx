@@ -2,6 +2,7 @@ import { Check, X } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
+import { confirmDialog } from '@/components/ui/confirm';
 import { applyTarget, type EditTarget } from './editActions';
 import { patchEditSession, useEditSession } from './editSession';
 import { countChanges, usePending, usePendingChanges } from './pendingChanges';
@@ -33,8 +34,14 @@ export function SaveBar({ tabId, target, discardConfirm }: SaveBarProps) {
     setSaving(false);
   };
 
-  const cancel = () => {
-    if (!window.confirm(discardConfirm ?? t('edit.discardConfirm'))) return;
+  const cancel = async () => {
+    const ok = await confirmDialog({
+      title: t('common:confirmDialog.unsavedTitle'),
+      description: discardConfirm ?? t('edit.discardConfirm'),
+      confirmLabel: t('common:actions.discard'),
+      destructive: true,
+    });
+    if (!ok) return;
     usePendingChanges.getState().discard(tabId);
     patchEditSession(tabId, { editing: null, failure: null });
   };

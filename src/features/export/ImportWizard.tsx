@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/Checkbox';
 import { Dialog, DialogContent } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
+import { Radio, RadioGroup } from '@/components/ui/RadioGroup';
 import { Select } from '@/components/ui/Select';
 import { toast } from '@/components/ui/toastStore';
 import { useJobsStore } from '@/features/jobs/jobsStore';
@@ -377,17 +378,19 @@ function TargetStep({
     <div className="space-y-3">
       <fieldset className="space-y-1.5">
         <legend className="text-xs font-medium text-muted-foreground">{t('import.target')}</legend>
-        {(['existing', 'new'] as TargetMode[]).map((mode) => (
-          <label key={mode} className="flex items-center gap-2 text-[13px]">
-            <input
-              type="radio"
-              name="target"
-              checked={form.targetMode === mode}
-              onChange={() => setForm({ ...form, targetMode: mode, mapping: [], newColumns: [] })}
-            />
-            {t(`import.targetMode.${mode}`)}
-          </label>
-        ))}
+        <RadioGroup
+          value={form.targetMode}
+          onValueChange={(v) =>
+            setForm({ ...form, targetMode: v as TargetMode, mapping: [], newColumns: [] })
+          }
+        >
+          {(['existing', 'new'] as TargetMode[]).map((mode) => (
+            <label key={mode} className="flex items-center gap-2 text-[13px]">
+              <Radio value={mode} />
+              {t(`import.targetMode.${mode}`)}
+            </label>
+          ))}
+        </RadioGroup>
       </fieldset>
       {form.targetMode === 'existing' ? (
         <Field label={t('import.table')} htmlFor="import-table">

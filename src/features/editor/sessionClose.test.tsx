@@ -2,6 +2,7 @@
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { dialogs } from '@/components/ui/confirm';
 import { Providers } from '@/app/providers';
 import { polyfillLayoutApis } from '@/features/data/testUtils';
 import '@/features/data/edit/pendingGuard';
@@ -69,13 +70,13 @@ describe('disconnect with unfinished work', () => {
       payload: { sessionId: session.sessionId, connectionId: PG_DEV, path },
     });
     usePendingChanges.getState().toggleDelete(tabId, [{ t: 'int', v: 1 }]);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false);
+    const confirm = vi.spyOn(dialogs, 'confirm').mockResolvedValueOnce(false);
     expect(await useSessionsStore.getState().requestClose(PG_DEV)).toBe(false);
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(connected()).toBeDefined();
     expect(useTabsStore.getState().tabs.some((t) => t.id === tabId)).toBe(true);
 
-    confirm.mockReturnValueOnce(true);
+    confirm.mockResolvedValueOnce(true);
     expect(await useSessionsStore.getState().requestClose(PG_DEV)).toBe(true);
     expect(connected()).toBeUndefined();
     expect(useTabsStore.getState().tabs.some((t) => t.id === tabId)).toBe(false);
@@ -83,7 +84,7 @@ describe('disconnect with unfinished work', () => {
 
   it('closes without asking when no tab has unfinished work', async () => {
     await openSession();
-    const confirm = vi.spyOn(window, 'confirm');
+    const confirm = vi.spyOn(dialogs, 'confirm');
     expect(await useSessionsStore.getState().requestClose(PG_DEV)).toBe(true);
     expect(confirm).not.toHaveBeenCalled();
     expect(connected()).toBeUndefined();

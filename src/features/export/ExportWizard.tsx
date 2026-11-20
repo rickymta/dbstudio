@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/Checkbox';
 import { Dialog, DialogContent } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
+import { Radio, RadioGroup } from '@/components/ui/RadioGroup';
 import { Select } from '@/components/ui/Select';
 import { Textarea } from '@/components/ui/Textarea';
 import { toast } from '@/components/ui/toastStore';
@@ -139,24 +140,24 @@ function SourceStep({
           <legend className="text-xs font-medium text-muted-foreground">
             {t('source.objects')}
           </legend>
-          <label className="flex items-center gap-2 text-[13px]">
-            <input
-              type="radio"
-              name="scope"
-              checked={!picking}
-              onChange={() => setForm({ ...form, source: all })}
-            />
-            {all.kind === 'database' ? t('source.allDatabase') : t('source.allSchema')}
-          </label>
-          <label className="flex items-center gap-2 text-[13px]">
-            <input
-              type="radio"
-              name="scope"
-              checked={picking}
-              onChange={() => setForm({ ...form, source: { kind: 'tables', paths: [] } })}
-            />
-            {t('source.chooseTables')}
-          </label>
+          <RadioGroup
+            value={picking ? 'tables' : 'all'}
+            onValueChange={(v) =>
+              setForm({
+                ...form,
+                source: v === 'tables' ? { kind: 'tables', paths: [] } : all,
+              })
+            }
+          >
+            <label className="flex items-center gap-2 text-[13px]">
+              <Radio value="all" />
+              {all.kind === 'database' ? t('source.allDatabase') : t('source.allSchema')}
+            </label>
+            <label className="flex items-center gap-2 text-[13px]">
+              <Radio value="tables" />
+              {t('source.chooseTables')}
+            </label>
+          </RadioGroup>
           {picking && (
             <ul
               data-testid="export-tables"

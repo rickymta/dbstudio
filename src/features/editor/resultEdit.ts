@@ -7,6 +7,7 @@
 // the loaded rows.
 
 import { create } from 'zustand';
+import { confirmDialog } from '@/components/ui/confirm';
 import i18n from '@/lib/i18n';
 import { ipc, toIpcError } from '@/lib/ipc';
 import type {
@@ -298,6 +299,14 @@ export function onResultEditsChanged(listener: (tabStateId: string) => void): ()
 }
 
 /** Ask whether unsaved result edits may be thrown away (re-run, close). */
-export function confirmDiscardResultEdits(message: string): boolean {
-  return window.confirm(message);
+export function confirmDiscardResultEdits(
+  message: string,
+  confirmLabel?: string,
+): Promise<boolean> {
+  return confirmDialog({
+    title: i18n.t('confirmDialog.unsavedTitle'),
+    description: message,
+    confirmLabel: confirmLabel ?? i18n.t('actions.discard'),
+    destructive: true,
+  });
 }

@@ -9,6 +9,7 @@ import { TabBar } from '@/features/tabs/TabBar';
 import { AppWindows } from '@/features/workspace/AppWindows';
 import { CommandPalette } from '@/features/workspace/CommandPalette';
 import { useTabsStore } from '@/stores/tabs';
+import { ConfirmHost } from '@/components/ui/ConfirmHost';
 import { Toaster } from '@/components/ui/Toast';
 import { StatusBar } from './StatusBar';
 import { renderTab } from './tabRegistry';
@@ -64,6 +65,7 @@ export function App() {
       </div>
       <StatusBar />
       <Toaster />
+      <ConfirmHost />
       {/* App-wide hosts, mounted once: editor shortcuts/dialogs and the destructive confirmation. */}
       <EditorHost />
       <ConfirmDestructiveHost />

@@ -211,7 +211,13 @@ export async function runText(
   if (!data || data.run?.status === 'running' || data.run?.fetchingMore) return null;
   // Running replaces the results, and with them the edits made in their grids.
   if (hasResultEdits(tabId)) {
-    if (!confirmDiscardResultEdits(i18n.t('editor:results.edit.runConfirm'))) return null;
+    const ok = await confirmDiscardResultEdits(
+      i18n.t('editor:results.edit.runConfirm'),
+      i18n.t('actions.continue'),
+    );
+    // The dialog is asynchronous: another run may have started while it was open.
+    const now = getTabData(tabId);
+    if (!ok || !now || now.run?.status === 'running' || now.run?.fetchingMore) return null;
     dropResultEdits(tabId);
   }
   const docAtStart = data.text;
@@ -464,7 +470,10 @@ export function setCloseTransactionAsker(ask: (tabId: string) => Promise<CloseAn
 export async function confirmClose(tabStateId: string): Promise<boolean> {
   if (
     hasResultEdits(tabStateId) &&
-    !confirmDiscardResultEdits(i18n.t('editor:results.edit.closeConfirm'))
+    !(await confirmDiscardResultEdits(
+      i18n.t('editor:results.edit.closeConfirm'),
+      i18n.t('actions.close'),
+    ))
   ) {
     return false;
   }
@@ -472,11 +481,12 @@ export async function confirmClose(tabStateId: string): Promise<boolean> {
   if (
     data &&
     isDirty(data) &&
-    !confirmDiscardResultEdits(
+    !(await confirmDiscardResultEdits(
       i18n.t('editor:file.closeConfirm', {
         name: data.filePath?.split(/[\\/]/).pop() ?? '',
       }),
-    )
+      i18n.t('actions.close'),
+    ))
   ) {
     return false;
   }

@@ -2,6 +2,8 @@ import { Check, Copy, PanelBottom, PanelRight, Save, X } from 'lucide-react';
 import { memo, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
+import { Checkbox } from '@/components/ui/Checkbox';
+import { confirmDialog } from '@/components/ui/confirm';
 import { IconButton } from '@/components/ui/IconButton';
 import { useToastStore } from '@/components/ui/toastStore';
 import { ipc } from '@/lib/ipc';
@@ -35,8 +37,15 @@ const MAX_SIZE = 900;
 function useCopy(timestamp: TimestampDisplay) {
   const { t } = useTranslation('data');
   const [copied, setCopied] = useState(false);
-  const copy = (value: Value) => {
-    if (estimateValueSize(value) > LARGE_COPY_BYTES && !window.confirm(t('viewer.copyLarge'))) {
+  const copy = async (value: Value) => {
+    if (
+      estimateValueSize(value) > LARGE_COPY_BYTES &&
+      !(await confirmDialog({
+        title: t('common:confirmDialog.largeValueTitle'),
+        description: t('viewer.copyLarge'),
+        confirmLabel: t('common:actions.copy'),
+      }))
+    ) {
       return;
     }
     void navigator.clipboard
@@ -143,7 +152,7 @@ function TextView({ text }: { text: string }) {
       <div className="flex h-7 shrink-0 items-center gap-3 border-b border-border px-3 text-xs text-muted-foreground">
         <span>{t('viewer.chars', { count: text.length })}</span>
         <label className="flex items-center gap-1">
-          <input type="checkbox" checked={wrap} onChange={(e) => setWrap(e.target.checked)} />
+          <Checkbox checked={wrap} onCheckedChange={(v) => setWrap(v === true)} />
           {t('viewer.wrap')}
         </label>
       </div>
@@ -374,7 +383,12 @@ export function CellViewer({ tabId, model, timestamp = 'utc' }: CellViewerProps)
             {t('viewer.saveToFile')}
           </Button>
         )}
-        <Button size="sm" variant="ghost" disabled={!value} onClick={() => value && copy(value)}>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={!value}
+          onClick={() => value && void copy(value)}
+        >
           {copied ? <Check size={12} /> : <Copy size={12} />}
           {copied ? t('viewer.copied') : t('viewer.copy')}
         </Button>

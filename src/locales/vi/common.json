@@ -61,7 +61,14 @@
     "close": "Đóng",
     "save": "Lưu",
     "delete": "Xóa",
-    "retry": "Thử lại"
+    "retry": "Thử lại",
+    "discard": "Bỏ thay đổi",
+    "copy": "Sao chép",
+    "continue": "Tiếp tục"
+  },
+  "confirmDialog": {
+    "unsavedTitle": "Thay đổi chưa lưu",
+    "largeValueTitle": "Giá trị rất lớn"
   },
   "toast": {
     "dismiss": "Đóng thông báo"

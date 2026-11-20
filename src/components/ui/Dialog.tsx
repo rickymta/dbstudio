@@ -53,7 +53,10 @@ export function DialogContent({
             <X size={14} />
           </DialogPrimitive.Close>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">{children}</div>
+        {/* A question without a body (e.g. a confirm dialog) shows no empty strip. */}
+        {children != null && children !== false && (
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">{children}</div>
+        )}
         {footer && (
           <footer className="flex justify-end gap-2 border-t border-border px-4 py-3">
             {footer}

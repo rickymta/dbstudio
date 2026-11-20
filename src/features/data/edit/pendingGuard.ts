@@ -1,14 +1,20 @@
 // Closing a tab with pending edits asks first. The guard is registered from the pending store, not
 // from a component: only the active tab is mounted, but a background tab can be closed too.
 
+import { confirmDialog } from '@/components/ui/confirm';
 import i18n from '@/lib/i18n';
 import { registerTabGuard } from '@/stores/tabGuard';
 import { countChanges, usePendingChanges } from './pendingChanges';
 
 const unregister = new Map<string, () => void>();
 
-function confirmClose(): boolean {
-  return window.confirm(i18n.t('data:edit.closeConfirm'));
+function confirmClose(): Promise<boolean> {
+  return confirmDialog({
+    title: i18n.t('confirmDialog.unsavedTitle'),
+    description: i18n.t('data:edit.closeConfirm'),
+    confirmLabel: i18n.t('actions.close'),
+    destructive: true,
+  });
 }
 
 usePendingChanges.subscribe((state) => {

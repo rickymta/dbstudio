@@ -1,6 +1,7 @@
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { dialogs } from '@/components/ui/confirm';
 import { ipc } from '@/lib/ipc';
 import { TableTab } from '../TableTab';
 import { peekGridModel, resetDataStores } from '../store';
@@ -61,7 +62,7 @@ describe('edit mode', () => {
     expect(cell(0, 2).className).toContain('bg-cell-edited');
     expect(save).toBeEnabled();
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.spyOn(dialogs, 'confirm').mockResolvedValue(true);
     await user.click(cancel);
     expect(cell(0, 2)).not.toHaveAttribute('data-pending');
     expect(save).toBeDisabled();
@@ -177,7 +178,7 @@ describe('edit mode', () => {
     // Cells nobody typed in show the column default.
     expect(cell(0, 1).textContent).toBe('DEFAULT');
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.spyOn(dialogs, 'confirm').mockResolvedValue(true);
     await user.click(screen.getByRole('button', { name: /^Cancel$/ }));
     expect(screen.getByTestId('pending-count')).toHaveTextContent('No pending changes');
     expect(rowEl(3)).not.toHaveAttribute('data-pending');

@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { dialogs } from '@/components/ui/confirm';
 import { Providers } from '@/app/providers';
 import { registerEditorTab } from '@/features/editor/editorRunner';
 import { newTabData, useEditorStore } from '@/features/editor/editorStore';
@@ -93,19 +94,21 @@ describe('TabBar unsaved file', () => {
   });
 
   it('marks the tab of a changed file and asks before closing it', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const confirm = vi.spyOn(dialogs, 'confirm').mockResolvedValue(false);
     const user = mount('select 2');
     expect(screen.getByTestId('tab-unsaved')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /^Close tab/ }));
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('report.sql'));
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({ description: expect.stringContaining('report.sql') }),
+    );
     expect(useTabsStore.getState().tabs).toHaveLength(2);
-    confirm.mockReturnValue(true);
+    confirm.mockResolvedValue(true);
     await user.click(screen.getByRole('button', { name: /^Close tab/ }));
     await waitFor(() => expect(useTabsStore.getState().tabs).toHaveLength(1));
   });
 
   it('closes a saved file without asking', async () => {
-    const confirm = vi.spyOn(window, 'confirm');
+    const confirm = vi.spyOn(dialogs, 'confirm');
     const user = mount('select 1');
     expect(screen.queryByTestId('tab-unsaved')).toBeNull();
     await user.click(screen.getByRole('button', { name: /^Close tab/ }));
