@@ -204,7 +204,8 @@
       "help": "Show keyboard shortcuts",
       "explain": "Show the execution plan",
       "toggleSidebar": "Toggle sidebar",
-      "focusResults": "Switch editor / results"
+      "focusResults": "Switch editor / results",
+      "palette": "Open the command palette"
     }
   },
   "picker": {

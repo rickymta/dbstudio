@@ -159,7 +159,8 @@
     "retry": "Thử lại",
     "unsupported": "Đối tượng này chưa hỗ trợ xem DDL trên hệ CSDL này.",
     "ariaLabel": "DDL",
-    "editorLoading": "Đang tải trình soạn thảo..."
+    "editorLoading": "Đang tải trình soạn thảo...",
+    "openInEditor": "Mở trong editor"
   },
   "columns": {
     "menu": "Cột",

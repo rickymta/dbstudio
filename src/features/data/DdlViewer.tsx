@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Check, Copy, RefreshCw } from 'lucide-react';
+import { Check, Copy, RefreshCw, SquarePen } from 'lucide-react';
 import { lazy, Suspense, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
@@ -7,9 +7,11 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { IconButton } from '@/components/ui/IconButton';
 import { Spinner } from '@/components/ui/Spinner';
 import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
+import { openEditor } from '@/features/editor/open';
 import { ipc } from '@/lib/ipc';
 import { pathKey } from '@/lib/objectPath';
 import type { IpcError, ObjectPath, Uuid } from '@/lib/types';
+import { useSessionsStore } from '@/stores/sessions';
 
 // CodeMirror is a separate chunk, fetched when the first DDL is shown.
 const CodeView = lazy(() => import('./CodeView'));
@@ -23,7 +25,10 @@ interface DdlViewerProps {
   path: ObjectPath;
 }
 
-/** Read-only, highlighted DDL of an object with Copy and Refresh. Shared by TableTab and DdlTab. */
+/**
+ * Read-only, highlighted DDL of an object with Copy, Refresh and "Open in editor" (BROWSE-07).
+ * Shared by TableTab and DdlTab.
+ */
 export function DdlViewer({ sessionId, connectionId, path }: DdlViewerProps) {
   const { t } = useTranslation('data');
   const profile = useConnectionProfile(connectionId);
@@ -43,6 +48,14 @@ export function DdlViewer({ sessionId, connectionId, path }: DdlViewerProps) {
         setTimeout(() => setCopied(false), 1200);
       })
       .catch(() => undefined);
+  };
+
+  // The DDL becomes the text of a new query tab in the object's database / schema.
+  const openInEditor = () => {
+    const session = useSessionsStore.getState().sessionsByConnection[connectionId];
+    if (query.data === undefined || session?.sessionId !== sessionId) return;
+    const name = path.segments.at(-1)?.name;
+    openEditor(session, { path, text: query.data, title: name });
   };
 
   let body;
@@ -88,6 +101,15 @@ export function DdlViewer({ sessionId, connectionId, path }: DdlViewerProps) {
         <Button size="sm" variant="ghost" onClick={copy} disabled={query.data === undefined}>
           {copied ? <Check size={12} /> : <Copy size={12} />}
           {copied ? t('ddl.copied') : t('ddl.copy')}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={openInEditor}
+          disabled={query.data === undefined}
+        >
+          <SquarePen size={12} />
+          {t('ddl.openInEditor')}
         </Button>
         <IconButton
           label={t('ddl.refresh')}

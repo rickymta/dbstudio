@@ -89,5 +89,19 @@
     "savedConnections": "Kết nối đã lưu",
     "startConnection": "Tạo một kết nối",
     "continue": "Tiếp tục công việc"
+  },
+  "palette": {
+    "title": "Bảng lệnh",
+    "placeholder": "Gõ tên lệnh, tab, kết nối hoặc đối tượng…",
+    "empty": "Không có kết quả phù hợp.",
+    "newConnection": "Kết nối mới…",
+    "backup": "Sao lưu và khôi phục",
+    "shortcuts": "Bảng phím tắt",
+    "group": {
+      "action": "Lệnh",
+      "tab": "Tab đang mở",
+      "connection": "Kết nối",
+      "object": "Yêu thích và đối tượng gần đây"
+    }
   }
 }

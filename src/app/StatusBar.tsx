@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { Languages, Lock, Monitor, Moon, Settings, Sun } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
 import { StatusTransaction } from '@/features/editor/StatusTransaction';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
+import { useSettingsDialog } from '@/features/workspace/paletteStore';
 import { ipc, ipcTransport } from '@/lib/ipc';
 import { setLanguage, type Language } from '@/lib/i18n';
 import { useSessionsStore } from '@/stores/sessions';
@@ -67,7 +68,8 @@ function ActiveConnection() {
 export function StatusBar() {
   const { t, i18n } = useTranslation();
   const { data: info } = useQuery({ queryKey: ['appInfo'], queryFn: ipc.appInfo });
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsOpen = useSettingsDialog((s) => s.open);
+  const setSettingsOpen = useSettingsDialog((s) => s.setOpen);
   const transport = ipcTransport();
   const mode = useThemeStore((s) => s.mode);
   const setMode = useThemeStore((s) => s.setMode);
@@ -82,7 +84,7 @@ export function StatusBar() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [setSettingsOpen]);
 
   const nextMode = THEME_MODES[(THEME_MODES.indexOf(mode) + 1) % THEME_MODES.length] ?? 'system';
   const ThemeIcon = themeIcons[mode];

@@ -159,7 +159,8 @@
     "retry": "Retry",
     "unsupported": "DDL is not available for this object on this database.",
     "ariaLabel": "DDL",
-    "editorLoading": "Loading editor..."
+    "editorLoading": "Loading editor...",
+    "openInEditor": "Open in editor"
   },
   "columns": {
     "menu": "Columns",

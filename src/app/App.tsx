@@ -6,6 +6,7 @@ import { SessionHealthBanner } from '@/features/connections/SessionHealthBanner'
 import { EditorHost } from '@/features/editor/EditorHost';
 import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
 import { TabBar } from '@/features/tabs/TabBar';
+import { CommandPalette } from '@/features/workspace/CommandPalette';
 import { useTabsStore } from '@/stores/tabs';
 import { Toaster } from '@/components/ui/Toast';
 import { StatusBar } from './StatusBar';
@@ -65,6 +66,7 @@ export function App() {
       {/* App-wide hosts, mounted once: editor shortcuts/dialogs and the destructive confirmation. */}
       <EditorHost />
       <ConfirmDestructiveHost />
+      <CommandPalette />
     </div>
   );
 }

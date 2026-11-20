@@ -1,7 +1,10 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { useEditorStore } from '@/features/editor/editorStore';
 import { ipc } from '@/lib/ipc';
+import { useSessionsStore } from '@/stores/sessions';
+import { useTabsStore } from '@/stores/tabs';
 import { DdlViewer } from './DdlViewer';
 import {
   PG_CONNECTION,
@@ -59,5 +62,27 @@ describe('DdlViewer (mock IPC)', () => {
     const editor = await screen.findByTestId('code-view', undefined, { timeout: 5000 });
     await waitFor(() => expect(editor.textContent).toContain('CREATE TABLE t'));
     expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens the DDL as the text of a new query tab', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(ipc, 'objectDdl').mockResolvedValue('CREATE TABLE t (id int);');
+    const session = await ipc.sessionOpen(PG_CONNECTION);
+    useSessionsStore.setState({ sessionsByConnection: { [PG_CONNECTION]: session } });
+    renderWithProviders(
+      <DdlViewer
+        sessionId={session.sessionId}
+        connectionId={PG_CONNECTION}
+        path={pgPath('events')}
+      />,
+    );
+    const open = screen.getByRole('button', { name: 'Open in editor' });
+    await waitFor(() => expect(open).toBeEnabled());
+    await user.click(open);
+    const tab = useTabsStore.getState().tabs.find((t) => t.kind === 'editor');
+    expect(tab?.title).toBe('events');
+    expect(useTabsStore.getState().activeId).toBe(tab?.id);
+    const texts = Object.values(useEditorStore.getState().tabs).map((t) => t.text);
+    expect(texts).toContain('CREATE TABLE t (id int);');
   });
 });

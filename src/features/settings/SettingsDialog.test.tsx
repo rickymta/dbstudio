@@ -7,10 +7,12 @@ import i18n from '@/lib/i18n';
 import { useAppearanceStore } from '@/stores/appearance';
 import { ipc } from '@/lib/ipc';
 import { resetMockSettings } from '@/lib/mock';
+import { useSettingsDialog } from '@/features/workspace/paletteStore';
 import { parseBounded, parseNumberField, ROWS_RANGE } from './queries';
 
 beforeEach(async () => {
   resetMockSettings();
+  useSettingsDialog.setState({ open: false });
   useAppearanceStore.getState().reset();
   await i18n.changeLanguage('en');
 });

@@ -204,7 +204,8 @@
       "help": "Hiện bảng phím tắt",
       "explain": "Xem kế hoạch thực thi",
       "toggleSidebar": "Ẩn/hiện sidebar",
-      "focusResults": "Chuyển editor / kết quả"
+      "focusResults": "Chuyển editor / kết quả",
+      "palette": "Mở bảng lệnh"
     }
   },
   "picker": {

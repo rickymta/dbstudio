@@ -16,6 +16,7 @@ import { openEditorForActiveTab } from './open';
 import { restoreEditorTabsOnce, startEditorPersistence } from './persist';
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { useShortcutsHelp } from './shortcutsHelpStore';
+import { useCommandPalette } from '@/features/workspace/paletteStore';
 import { SHORTCUTS, matchesKeys } from './shortcuts';
 
 type CloseAnswer = 'commit' | 'rollback' | 'cancel';
@@ -92,6 +93,10 @@ function useGlobalShortcuts(): void {
           }
           break;
         }
+        case 'palette':
+          e.preventDefault();
+          useCommandPalette.getState().setOpen(true);
+          break;
         case 'help':
           e.preventDefault();
           useShortcutsHelp.getState().setOpen(true);

@@ -89,5 +89,19 @@
     "savedConnections": "Saved connections",
     "startConnection": "Create a connection",
     "continue": "Continue working"
+  },
+  "palette": {
+    "title": "Command palette",
+    "placeholder": "Type a command, a tab, a connection or an object…",
+    "empty": "Nothing matches.",
+    "newConnection": "New connection…",
+    "backup": "Backup and restore",
+    "shortcuts": "Keyboard shortcuts",
+    "group": {
+      "action": "Commands",
+      "tab": "Open tabs",
+      "connection": "Connections",
+      "object": "Favorites and recent objects"
+    }
   }
 }
