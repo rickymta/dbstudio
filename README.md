@@ -291,5 +291,7 @@ tests (`crates/dbstudio-core/tests/contract.rs`, `src/lib/types/contract.test.ts
 sides against `contract/fixtures`. Outside Tauri (plain browser), the IPC layer serves data from
 `src/lib/mock/`.
 
-The app icon source is `app-icon.svg`; regenerate with `cargo tauri icon app-icon.svg -o src-tauri/icons`
-(delete the generated `android/` and `ios/` folders afterwards, they are not used).
+The app icon source is `src-tauri/app-icon.png`; regenerate with
+`pnpm tauri icon src-tauri/app-icon.png -o src-tauri/icons` (delete the generated `android/` and `ios/`
+folders afterwards, they are not used). `src-tauri/icons/tray.png` (white glyph, 64 px) is the tray /
+menu bar icon and `public/icon.png` the favicon; both are maintained by hand.

@@ -39,15 +39,13 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
                 show_main_window(tray.app_handle());
             }
         })
-        .icon(TRAY_ICON);
+        .icon(TRAY_ICON)
+        // macOS tints a template image itself, so the white glyph stays visible on a light menu bar.
+        .icon_as_template(true);
     builder.build(app)?;
     Ok(())
 }
 
-/// Monochrome database glyph for the menu bar / notification area (the app icon is the coloured
-/// one in `icon.icns` / `icon.ico`).
+/// White database glyph for the menu bar / notification area. The window, taskbar and Dock use
+/// the coloured app icon (`icon.icns` / `icon.ico`).
 const TRAY_ICON: Image<'static> = tauri::include_image!("icons/tray.png");
-
-/// Same glyph, larger, for the window icon the Windows and Linux taskbars show.
-#[cfg(not(target_os = "macos"))]
-pub const TASKBAR_ICON: Image<'static> = tauri::include_image!("icons/taskbar.png");
