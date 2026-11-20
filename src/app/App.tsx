@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useWorkspaceStore, useSavedLayout } from '@/features/workspace/layout';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 import { ConnectionsSidebar } from '@/features/connections/ConnectionsSidebar';
+import { SessionHealthBanner } from '@/features/connections/SessionHealthBanner';
 import { EditorHost } from '@/features/editor/EditorHost';
 import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
 import { TabBar } from '@/features/tabs/TabBar';
@@ -15,6 +16,7 @@ function MainArea() {
   return (
     <div className="flex h-full min-w-0 flex-col bg-background">
       <TabBar />
+      <SessionHealthBanner />
       <main className="min-h-0 flex-1" role="tabpanel">
         {activeTab && (
           <div key={activeTab.id} className="h-full">

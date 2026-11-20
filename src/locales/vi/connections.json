@@ -246,5 +246,17 @@
       "label": "Mã định tuyến cụm",
       "hint": "Chỉ dùng cho CockroachDB Cloud, ví dụ funny-otter-1234."
     }
+  },
+  "health": {
+    "lost": "Đã mất kết nối tới “{{name}}”.",
+    "reconnecting": "Đang kết nối lại tới “{{name}}” (lần {{attempt}})…",
+    "reconnected": "Đã kết nối lại tới “{{name}}”.",
+    "gaveUp": "Không thể kết nối lại tới “{{name}}”.",
+    "leasesBroken_one": "Một transaction đang mở đã mất theo kết nối; nó không được chạy lại.",
+    "leasesBroken_other": "{{count}} transaction đang mở đã mất theo kết nối; chúng không được chạy lại.",
+    "leasesReopened_one": "Một tab truy vấn nhận phiên server mới: giá trị SET và bảng tạm đã mất.",
+    "leasesReopened_other": "{{count}} tab truy vấn nhận phiên server mới: giá trị SET và bảng tạm đã mất.",
+    "reconnect": "Kết nối lại",
+    "dismiss": "Đóng"
   }
 }

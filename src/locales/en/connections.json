@@ -246,5 +246,17 @@
       "label": "Cluster routing id",
       "hint": "CockroachDB Cloud only, for example funny-otter-1234."
     }
+  },
+  "health": {
+    "lost": "Connection to “{{name}}” was lost.",
+    "reconnecting": "Reconnecting to “{{name}}” (attempt {{attempt}})…",
+    "reconnected": "Reconnected to “{{name}}”.",
+    "gaveUp": "Could not reconnect to “{{name}}”.",
+    "leasesBroken_one": "One open transaction was lost with the connection; it was not replayed.",
+    "leasesBroken_other": "{{count}} open transactions were lost with the connection; they were not replayed.",
+    "leasesReopened_one": "One query tab got a new server session: SET values and temporary tables are gone.",
+    "leasesReopened_other": "{{count}} query tabs got a new server session: SET values and temporary tables are gone.",
+    "reconnect": "Reconnect",
+    "dismiss": "Dismiss"
   }
 }

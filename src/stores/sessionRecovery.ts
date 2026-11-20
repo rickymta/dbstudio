@@ -36,7 +36,11 @@ export async function reconnectSession(
   opts: { password?: string | null } = {},
 ): Promise<SessionInfo> {
   try {
-    const info = await ipc.sessionReconnect(sessionId);
+    // The password typed for this attempt also serves a reconnect of the same session.
+    const info =
+      opts.password == null
+        ? await ipc.sessionReconnect(sessionId)
+        : await ipc.sessionReconnect(sessionId, opts.password);
     useSessionsStore.setState((s) => ({
       sessionsByConnection: { ...s.sessionsByConnection, [connectionId]: info },
     }));
