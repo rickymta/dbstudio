@@ -2,6 +2,18 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.1.11 - 2026-11-20
+
+Thay đổi từ v0.1.10.
+
+- feat(plan): panel lịch sử plan trong ngăn bên của editor (PLAN-07) (151ed0c)
+- feat(editor): chấm "chưa lưu" trên tab, hỏi khi đóng; phát hiện sửa đồng thời Redis list / Mongo (95f844d)
+- feat(workspace): command palette (APP-08) và nút "Mở trong editor" cho DDL (BROWSE-07) (4b11d5f)
+- feat(connections): banner trạng thái kết nối theo sự kiện session://state (CONN-12) (d533244)
+- feat(connections): giao diện cho driver mới (Cassandra/ScyllaDB, ClickHouse, CockroachDB, TiDB) (518452e)
+- feat(settings): trang Cài đặt đủ trường editor, kết nối, lịch sử plan, chạy nền (0f845c3)
+- feat(app): icon ứng dụng và icon statusbar mới (c7a9f73)
+
 ## v0.1.10 - 2026-11-18
 
 Thay đổi từ v0.1.9. Bản v0.1.8 và v0.1.9 không được phát hành (dừng ở bước test), nên bản này gồm

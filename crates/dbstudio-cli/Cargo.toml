@@ -22,8 +22,8 @@ dbstudio-driver-mysql = { path = "../drivers/mysql", optional = true }
 dbstudio-driver-mssql = { path = "../drivers/mssql", optional = true }
 dbstudio-driver-oracle = { path = "../drivers/oracle", optional = true }
 dbstudio-driver-mongodb = { path = "../drivers/mongodb", optional = true }
-dbstudio-driver-cassandra = { version = "0.1.10", path = "../drivers/cassandra", optional = true }
-dbstudio-driver-clickhouse = { version = "0.1.10", path = "../drivers/clickhouse", optional = true }
+dbstudio-driver-cassandra = { version = "0.1.11", path = "../drivers/cassandra", optional = true }
+dbstudio-driver-clickhouse = { version = "0.1.11", path = "../drivers/clickhouse", optional = true }
 dbstudio-driver-redis = { path = "../drivers/redis", optional = true }
 chrono.workspace = true
 clap.workspace = true
