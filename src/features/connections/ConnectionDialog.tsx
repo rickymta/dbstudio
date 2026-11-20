@@ -44,6 +44,8 @@ import {
 } from './kindConfig';
 import { needsTlsWarning } from './tlsWarning';
 import { OptionsEditor } from '@/features/document/OptionsEditor';
+import { KindOptions } from './KindOptions';
+import { optionsForKind } from './kindOptionFields';
 import { UriPaste } from '@/features/document/UriPaste';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
 import { useHostKeyPrompt } from './useHostKeyPrompt';
@@ -160,6 +162,7 @@ function ConnectionDialogBody({
     if (!next) return;
     update({
       kind: next.kind,
+      options: optionsForKind(form.options, next.kind),
       ...(form.portTouched ? {} : { port: String(next.defaultPort) }),
     });
   };
@@ -566,6 +569,11 @@ function ConnectionDialogBody({
               onChange={(e) => update({ timeoutSec: e.target.value })}
             />
           </Field>
+          <KindOptions
+            kind={form.kind}
+            value={form.options}
+            onChange={(options) => update({ options })}
+          />
           {form.kind === 'mongodb' && (
             <OptionsEditor value={form.options} onChange={(options) => update({ options })} />
           )}

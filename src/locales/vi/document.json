@@ -84,7 +84,7 @@
   },
   "uri": {
     "label": "URI kết nối",
-    "placeholder": "mongodb://user@host:27017/db hoặc jdbc:oracle:thin:@//host:1521/service hoặc Server=host,1433;Database=db;User Id=u;",
+    "placeholder": "postgres://user@host/db, mongodb://…, clickhouse://host:8123/db, cassandra://host:9042/keyspace, jdbc:… hoặc Server=host,1433;Database=db;",
     "parse": "Điền từ URI",
     "applied": "Đã điền các trường từ URI.",
     "appliedPassword": "Đã điền các trường từ URI. Hãy nhập lại mật khẩu bên dưới."

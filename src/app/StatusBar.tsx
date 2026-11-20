@@ -9,6 +9,7 @@ import { StatusTransaction } from '@/features/editor/StatusTransaction';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
 import { ipc, ipcTransport } from '@/lib/ipc';
 import { setLanguage, type Language } from '@/lib/i18n';
+import { useSessionsStore } from '@/stores/sessions';
 import { useTabsStore } from '@/stores/tabs';
 import { StatusBarSlot } from './StatusBarSlot';
 import { THEME_MODES, useThemeStore, type ThemeMode } from '@/stores/theme';
@@ -22,6 +23,12 @@ function ActiveConnection() {
     (s) => s.tabs.find((x) => x.id === s.activeId)?.payload?.connectionId,
   );
   const profile = useConnectionProfile(connectionId ?? '');
+  // TiDB has no server-side read-only session: only DBStudio's statement guard blocks writes.
+  const appOnly = useSessionsStore(
+    (s) =>
+      s.sessionsByConnection[connectionId ?? '']?.serverInfo.extra?.readOnlyEnforcement ===
+      'application',
+  );
   if (!connectionId || !profile) return null;
   const color = connectionColor(profile);
   return (
@@ -43,6 +50,15 @@ function ActiveConnection() {
       )}
       {profile.readOnly && (
         <Lock size={11} aria-label={t('connections:row.readOnly')} className="shrink-0" />
+      )}
+      {profile.readOnly && appOnly && (
+        <span
+          data-testid="status-read-only-app"
+          className="shrink-0 text-warning"
+          title={t('connections:row.readOnlyAppOnlyHint')}
+        >
+          {t('connections:row.readOnlyAppOnly')}
+        </span>
       )}
     </span>
   );

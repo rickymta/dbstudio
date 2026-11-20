@@ -14,7 +14,9 @@
     "collections": "Collections",
     "synonyms": "Synonyms",
     "packages": "Packages",
-    "types": "Types"
+    "types": "Types",
+    "dictionaries": "Dictionaries",
+    "aggregates": "Aggregates"
   },
   "kind": {
     "database": "Database",
@@ -35,7 +37,8 @@
     "keyPrefix": "Key prefix",
     "synonym": "Synonym",
     "package": "Package",
-    "type": "Type"
+    "type": "Type",
+    "dictionary": "Dictionary"
   },
   "treeLabel": "Object tree",
   "expand": "Expand",

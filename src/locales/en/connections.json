@@ -41,7 +41,9 @@
   "row": {
     "retry": "Retry connecting",
     "connected": "Connected",
-    "readOnly": "Read-only"
+    "readOnly": "Read-only",
+    "readOnlyAppOnly": "enforced by DBStudio only",
+    "readOnlyAppOnlyHint": "This server has no read-only session mode: writes are blocked by DBStudio, not by the server."
   },
   "menu": {
     "connect": "Connect",
@@ -196,5 +198,53 @@
   "authMode": {
     "password": "Username and password",
     "none": "No authentication"
+  },
+  "kindOption": {
+    "localDc": {
+      "label": "Local datacenter",
+      "hint": "Datacenter whose nodes are preferred. Empty: taken from the first node."
+    },
+    "consistency": {
+      "label": "Consistency level"
+    },
+    "lwtEdits": {
+      "label": "Edit rows with lightweight transactions",
+      "hint": "IF EXISTS / IF NOT EXISTS detects rows changed by someone else. Slower; turn off for tables where LWT is not allowed."
+    },
+    "singleNode": {
+      "label": "Use only the contact host",
+      "hint": "Do not connect to the other nodes of the cluster (always on through an SSH tunnel)."
+    },
+    "showSystem": {
+      "label": "Show system keyspaces"
+    },
+    "secure": {
+      "label": "Transport",
+      "hint": "Automatic follows the TLS mode above.",
+      "value": {
+        "auto": "Automatic",
+        "true": "HTTPS",
+        "false": "HTTP"
+      }
+    },
+    "compression": {
+      "label": "Compression",
+      "value": {
+        "lz4": "LZ4",
+        "none": "None"
+      }
+    },
+    "editing": {
+      "label": "Data editing",
+      "hint": "Updates and deletes run as mutations; insert only turns them off.",
+      "value": {
+        "full": "Insert, update and delete",
+        "insertOnly": "Insert only"
+      }
+    },
+    "cluster": {
+      "label": "Cluster routing id",
+      "hint": "CockroachDB Cloud only, for example funny-otter-1234."
+    }
   }
 }

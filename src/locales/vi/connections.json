@@ -41,7 +41,9 @@
   "row": {
     "retry": "Thử kết nối lại",
     "connected": "Đã kết nối",
-    "readOnly": "Chỉ đọc"
+    "readOnly": "Chỉ đọc",
+    "readOnlyAppOnly": "chỉ DBStudio chặn ghi",
+    "readOnlyAppOnlyHint": "Server này không có chế độ phiên chỉ đọc: lệnh ghi do DBStudio chặn, không phải server."
   },
   "menu": {
     "connect": "Kết nối",
@@ -196,5 +198,53 @@
   "authMode": {
     "password": "Tên đăng nhập và mật khẩu",
     "none": "Không cần xác thực"
+  },
+  "kindOption": {
+    "localDc": {
+      "label": "Datacenter cục bộ",
+      "hint": "Datacenter có các node được ưu tiên. Để trống: lấy theo node đầu tiên."
+    },
+    "consistency": {
+      "label": "Mức nhất quán"
+    },
+    "lwtEdits": {
+      "label": "Sửa dòng bằng lightweight transaction",
+      "hint": "IF EXISTS / IF NOT EXISTS phát hiện dòng đã bị người khác sửa. Chậm hơn; tắt với bảng không cho phép LWT."
+    },
+    "singleNode": {
+      "label": "Chỉ dùng host liên hệ",
+      "hint": "Không kết nối tới các node khác của cụm (luôn bật khi đi qua SSH tunnel)."
+    },
+    "showSystem": {
+      "label": "Hiện keyspace hệ thống"
+    },
+    "secure": {
+      "label": "Giao thức",
+      "hint": "Tự động là theo chế độ TLS ở trên.",
+      "value": {
+        "auto": "Tự động",
+        "true": "HTTPS",
+        "false": "HTTP"
+      }
+    },
+    "compression": {
+      "label": "Nén",
+      "value": {
+        "lz4": "LZ4",
+        "none": "Không nén"
+      }
+    },
+    "editing": {
+      "label": "Sửa dữ liệu",
+      "hint": "Sửa và xoá chạy dưới dạng mutation; chế độ chỉ thêm sẽ tắt chúng.",
+      "value": {
+        "full": "Thêm, sửa và xoá",
+        "insertOnly": "Chỉ thêm"
+      }
+    },
+    "cluster": {
+      "label": "Mã định tuyến cụm",
+      "hint": "Chỉ dùng cho CockroachDB Cloud, ví dụ funny-otter-1234."
+    }
   }
 }

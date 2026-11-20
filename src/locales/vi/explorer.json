@@ -14,7 +14,9 @@
     "collections": "Collection",
     "synonyms": "Synonym",
     "packages": "Package",
-    "types": "Kiểu"
+    "types": "Kiểu",
+    "dictionaries": "Dictionary",
+    "aggregates": "Hàm tổng hợp"
   },
   "kind": {
     "database": "Cơ sở dữ liệu",
@@ -35,7 +37,8 @@
     "keyPrefix": "Tiền tố khóa",
     "synonym": "Synonym",
     "package": "Package",
-    "type": "Kiểu"
+    "type": "Kiểu",
+    "dictionary": "Dictionary"
   },
   "treeLabel": "Cây đối tượng",
   "expand": "Mở rộng",

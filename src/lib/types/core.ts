@@ -355,9 +355,10 @@ export const FOLDER_KEYS = [
   'synonyms',
   'packages',
   'types',
-  // `dictionaries` (ClickHouse) and `aggregates` (CQL) exist in Rust (`folder::DICTIONARIES`,
-  // `folder::AGGREGATES`); they join this list together with their `explorer:folder.*` strings
-  // (src/locales/locales.test.ts requires every key to be translated), which belong to the UI.
+  /** ClickHouse. */
+  'dictionaries',
+  /** CQL user-defined aggregates. */
+  'aggregates',
 ] as const;
 export type FolderKey = (typeof FOLDER_KEYS)[number];
 

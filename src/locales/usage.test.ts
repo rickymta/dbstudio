@@ -64,6 +64,7 @@ const DYNAMIC_FAMILIES: Record<string, readonly string[]> = {
     'synonym',
     'package',
     'type',
+    'dictionary',
   ],
   'explorer:action': [
     'openData',

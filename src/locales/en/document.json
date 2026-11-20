@@ -84,7 +84,7 @@
   },
   "uri": {
     "label": "Connection URI",
-    "placeholder": "mongodb://user@host:27017/db or jdbc:oracle:thin:@//host:1521/service or Server=host,1433;Database=db;User Id=u;",
+    "placeholder": "postgres://user@host/db, mongodb://…, clickhouse://host:8123/db, cassandra://host:9042/keyspace, jdbc:… or Server=host,1433;Database=db;",
     "parse": "Fill from URI",
     "applied": "Fields filled in from the URI.",
     "appliedPassword": "Fields filled in from the URI. Type the password again below."
