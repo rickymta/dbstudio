@@ -139,7 +139,8 @@
     "saved": "Đã lưu {{name}}",
     "saveFailed": "Không lưu được file: {{message}}",
     "openFailed": "Không mở được file: {{message}}",
-    "unsaved": "có thay đổi chưa lưu"
+    "unsaved": "có thay đổi chưa lưu",
+    "closeConfirm": "“{{name}}” có thay đổi chưa lưu. Đóng tab và bỏ các thay đổi này?"
   },
   "history": {
     "title": "Lịch sử",

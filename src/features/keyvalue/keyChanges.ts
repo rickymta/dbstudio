@@ -6,7 +6,8 @@ import { textValue } from './valueFormat';
  * Order list edits that address elements by index. Every index refers to the list as it was
  * loaded, but the backend applies changes one after the other: removing index 2 and then index 3
  * would remove the wrong element. So: value replacements first, then removals from the highest
- * index down (each removed index once, a replaced-then-removed index only removed), then pushes
+ * index down (each removed index once, a replaced-then-removed index only removed, an index
+ * replaced twice written once), then pushes
  * (a head push shifts every index). Other changes keep their relative order.
  */
 export function normalizeListChanges(changes: KeyChange[]): KeyChange[] {
@@ -23,7 +24,15 @@ export function normalizeListChanges(changes: KeyChange[]): KeyChange[] {
   const uniqueRemoves = removes
     .filter((r, i) => removes.findIndex((x) => x.key === r.key && x.index === r.index) === i)
     .sort((a, b) => (a.key === b.key ? b.index - a.index : a.key < b.key ? -1 : 1));
-  const keptSets = sets.filter(
+  // An element edited twice is written once: the last value, checked against what was loaded
+  // (the `expected` of the first edit), since the second edit would otherwise see the first.
+  const mergedSets: typeof sets = [];
+  for (const s of sets) {
+    const at = mergedSets.findIndex((x) => x.key === s.key && x.index === s.index);
+    if (at < 0) mergedSets.push(s);
+    else mergedSets[at] = { ...s, expected: mergedSets[at]!.expected };
+  }
+  const keptSets = mergedSets.filter(
     (s) => !uniqueRemoves.some((r) => r.key === s.key && r.index === s.index),
   );
   return [...other, ...keptSets, ...uniqueRemoves, ...pushes];
@@ -50,11 +59,21 @@ export const hashDeleteChange = (key: string, field: Value): KeyChange => ({
   key,
   fields: [field],
 });
-export const listSetChange = (key: string, index: number, value: Value): KeyChange => ({
+/**
+ * `expected` is the element the UI showed at `index`: the backend refuses the change when the
+ * list holds something else there by now (another client pushed, popped or edited it).
+ */
+export const listSetChange = (
+  key: string,
+  index: number,
+  value: Value,
+  expected?: Value,
+): KeyChange => ({
   op: 'listSet',
   key,
   index,
   value,
+  ...(expected === undefined ? {} : { expected }),
 });
 export const listPushChange = (key: string, value: Value, head: boolean): KeyChange => ({
   op: 'listPush',
@@ -62,10 +81,11 @@ export const listPushChange = (key: string, value: Value, head: boolean): KeyCha
   values: [value],
   head,
 });
-export const listRemoveChange = (key: string, index: number): KeyChange => ({
+export const listRemoveChange = (key: string, index: number, expected?: Value): KeyChange => ({
   op: 'listRemoveAt',
   key,
   index,
+  ...(expected === undefined ? {} : { expected }),
 });
 export const setAddChange = (key: string, member: Value): KeyChange => ({
   op: 'setAdd',

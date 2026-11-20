@@ -5,6 +5,7 @@ import type {
   DocumentChange,
   DocumentChangeSet,
   FieldEdit,
+  FieldOriginal,
   ObjectPath,
   Value,
 } from '@/lib/types';
@@ -62,6 +63,7 @@ function diffDocuments(
   prefix: string[],
   set: FieldEdit[],
   unset: string[][],
+  expected: FieldOriginal[],
 ): void {
   const old = new Map(before);
   const next = new Map(after);
@@ -69,20 +71,32 @@ function diffDocuments(
     if (badKey(k)) throw new Unrepresentable(k);
     return [...prefix, k];
   };
-  for (const [k] of before) if (!next.has(k)) unset.push(touch(k));
+  // `expected` records what each written field held when the document was loaded (null = it
+  // did not exist), so the server refuses the write if someone else changed it meanwhile.
+  for (const [k, v] of before) {
+    if (!next.has(k)) {
+      unset.push(touch(k));
+      expected.push({ path: touch(k), value: v });
+    }
+  }
   for (const [k, v] of after) {
     const prev = old.get(k);
-    if (prev === undefined) set.push({ path: touch(k), value: v });
-    else if (prev.t === 'document' && v.t === 'document') {
+    if (prev === undefined) {
+      set.push({ path: touch(k), value: v });
+      expected.push({ path: touch(k), value: null });
+    } else if (prev.t === 'document' && v.t === 'document') {
       // Both sides are documents: descend so only the changed fields are written.
-      diffDocuments(prev.v, v.v, [...prefix, k], set, unset);
-    } else if (!sameValue(prev, v)) set.push({ path: touch(k), value: v });
+      diffDocuments(prev.v, v.v, [...prefix, k], set, unset, expected);
+    } else if (!sameValue(prev, v)) {
+      set.push({ path: touch(k), value: v });
+      expected.push({ path: touch(k), value: prev });
+    }
   }
 }
 
 /**
- * Plans the save of an edited document: a field-level `update` (set/unset) computed against the
- * original, or a `replace` only when the diff cannot be expressed as paths. `_id` must not change.
+ * Plans the save of an edited document: a field-level `update` (set/unset, with the original
+ * values of those fields as `expected`) computed against the original, or a `replace` only when the diff cannot be expressed as paths. `_id` must not change.
  */
 export function planDocumentEdit(original: Value, id: Value, text: string): EditPlan {
   let next: Value;
@@ -100,8 +114,9 @@ export function planDocumentEdit(original: Value, id: Value, text: string): Edit
 
   const set: FieldEdit[] = [];
   const unset: string[][] = [];
+  const expected: FieldOriginal[] = [];
   try {
-    diffDocuments(before, after, [], set, unset);
+    diffDocuments(before, after, [], set, unset, expected);
   } catch (e) {
     if (!(e instanceof Unrepresentable)) throw e;
     // Replace cannot carry operator-like first keys (the server would read them as operators).
@@ -111,6 +126,6 @@ export function planDocumentEdit(original: Value, id: Value, text: string): Edit
   if (set.length === 0 && unset.length === 0) return { kind: 'none' };
   return {
     kind: 'change',
-    change: { op: 'update', id, set, ...(unset.length > 0 ? { unset } : {}) },
+    change: { op: 'update', id, set, ...(unset.length > 0 ? { unset } : {}), expected },
   };
 }

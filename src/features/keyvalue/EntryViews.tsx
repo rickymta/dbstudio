@@ -249,7 +249,7 @@ export function ListView({
                       onCommit={(d) => {
                         const next = editedValue(v, d);
                         if (!next) return false;
-                        stage(listSetChange(keyName, index, next));
+                        stage(listSetChange(keyName, index, next, v));
                         return true;
                       }}
                     />
@@ -257,7 +257,7 @@ export function ListView({
                   <td className={`${td} w-8`}>
                     <DeleteButton
                       disabled={readOnly}
-                      onClick={() => stage(listRemoveChange(keyName, index))}
+                      onClick={() => stage(listRemoveChange(keyName, index, v))}
                     />
                   </td>
                 </tr>

@@ -21,7 +21,9 @@
       "deleteManyAll": "deleteMany với bộ lọc rỗng: xoá mọi document",
       "updateManyAll": "updateMany với bộ lọc rỗng: sửa mọi document",
       "restore": "Khôi phục đè lên dữ liệu hiện có",
-      "importReplace": "Nhập dữ liệu thay thế dữ liệu hiện có"
+      "importReplace": "Nhập dữ liệu thay thế dữ liệu hiện có",
+      "write": "Thay đổi dữ liệu",
+      "keywordScan": "Có từ khoá nguy hiểm (không phân tích được đầy đủ câu lệnh)"
     }
   }
 }

@@ -4,7 +4,8 @@
   },
   "tabs": {
     "welcome": "Welcome",
-    "close": "Close tab"
+    "close": "Close tab",
+    "unsaved": "Unsaved changes"
   },
   "welcome": {
     "title": "Welcome to DBStudio",

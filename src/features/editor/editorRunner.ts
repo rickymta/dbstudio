@@ -22,6 +22,7 @@ import { editorTabId } from '@/stores/tabs';
 import {
   getTabData,
   hasOpenTransaction,
+  isDirty,
   onEditorTabRemoved,
   patchTabData,
   useEditorStore,
@@ -456,7 +457,8 @@ export function setCloseTransactionAsker(ask: (tabId: string) => Promise<CloseAn
 }
 
 /**
- * Guard of an editor tab (QUERY-11): with a transaction open the user chooses between commit,
+ * Guard of an editor tab (QUERY-11): unsaved result edits and unsaved changes of the file ask
+ * first; with a transaction open the user chooses between commit,
  * rollback and keeping the tab. Resolves to whether the tab may close.
  */
 export async function confirmClose(tabStateId: string): Promise<boolean> {
@@ -467,6 +469,17 @@ export async function confirmClose(tabStateId: string): Promise<boolean> {
     return false;
   }
   const data = getTabData(tabStateId);
+  if (
+    data &&
+    isDirty(data) &&
+    !confirmDiscardResultEdits(
+      i18n.t('editor:file.closeConfirm', {
+        name: data.filePath?.split(/[\\/]/).pop() ?? '',
+      }),
+    )
+  ) {
+    return false;
+  }
   if (!hasOpenTransaction(data)) {
     dropResultEdits(tabStateId);
     return true;
@@ -488,7 +501,8 @@ const guards = new Map<string, () => void>();
  * close synchronously (the tab bar and `requestClose` treat any guard as asynchronous).
  */
 function syncGuard(tabStateId: string, data: EditorTabData | undefined): void {
-  const needed = hasOpenTransaction(data) || hasResultEdits(tabStateId);
+  const needed =
+    hasOpenTransaction(data) || hasResultEdits(tabStateId) || (!!data && isDirty(data));
   const registered = guards.get(tabStateId);
   if (needed && !registered) {
     guards.set(

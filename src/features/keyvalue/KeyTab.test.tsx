@@ -214,7 +214,13 @@ describe('KeyTab editing', () => {
     await waitFor(() => expect(spy).toHaveBeenCalled(), WAIT);
     expect(keyChanges(spy)).toEqual([
       // Index-based removals go before pushes so indexes keep referring to the loaded list.
-      { op: 'listRemoveAt', key: 'user:1:recent', index: 1 },
+      // `expected` is the element shown at that index: a list changed meanwhile is refused.
+      {
+        op: 'listRemoveAt',
+        key: 'user:1:recent',
+        index: 1,
+        expected: { t: 'text', v: '/page/1/1' },
+      },
       { op: 'listPush', key: 'user:1:recent', values: [{ t: 'text', v: 'tail' }], head: false },
     ]);
   });

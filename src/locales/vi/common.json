@@ -4,7 +4,8 @@
   },
   "tabs": {
     "welcome": "Chào mừng",
-    "close": "Đóng tab"
+    "close": "Đóng tab",
+    "unsaved": "Có thay đổi chưa lưu"
   },
   "welcome": {
     "title": "Chào mừng đến với DBStudio",

@@ -139,7 +139,8 @@
     "saved": "Saved {{name}}",
     "saveFailed": "Could not save the file: {{message}}",
     "openFailed": "Could not open the file: {{message}}",
-    "unsaved": "unsaved changes"
+    "unsaved": "unsaved changes",
+    "closeConfirm": "“{{name}}” has unsaved changes. Close the tab and lose them?"
   },
   "history": {
     "title": "History",

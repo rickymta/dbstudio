@@ -162,3 +162,32 @@ describe('normalizeListChanges', () => {
     expect(out[0]).toMatchObject({ index: 4 });
   });
 });
+
+describe('list changes carry the loaded element', () => {
+  const v = (text: string) => ({ t: 'text', v: text }) as const;
+
+  it('adds expected only when it is given', () => {
+    expect(listSetChange('k', 0, v('new'))).toEqual({
+      op: 'listSet',
+      key: 'k',
+      index: 0,
+      value: v('new'),
+    });
+    expect(listRemoveChange('k', 2, v('old'))).toEqual({
+      op: 'listRemoveAt',
+      key: 'k',
+      index: 2,
+      expected: v('old'),
+    });
+  });
+
+  it('writes an element edited twice once, checked against the loaded value', () => {
+    const changes = normalizeListChanges([
+      listSetChange('k', 1, v('first'), v('loaded')),
+      listSetChange('k', 1, v('second'), v('loaded')),
+    ]);
+    expect(changes).toEqual([
+      { op: 'listSet', key: 'k', index: 1, value: v('second'), expected: v('loaded') },
+    ]);
+  });
+});

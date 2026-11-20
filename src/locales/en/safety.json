@@ -21,7 +21,9 @@
       "deleteManyAll": "deleteMany with an empty filter: removes every document",
       "updateManyAll": "updateMany with an empty filter: changes every document",
       "restore": "Restores over existing data",
-      "importReplace": "Import replaces existing data"
+      "importReplace": "Import replaces existing data",
+      "write": "Changes data",
+      "keywordScan": "Contains a destructive keyword (the statement could not be fully analysed)"
     }
   }
 }

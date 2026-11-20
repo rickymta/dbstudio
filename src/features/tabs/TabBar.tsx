@@ -16,6 +16,7 @@ import { formatKeys } from '@/features/editor/shortcuts';
 import { useTranslation } from 'react-i18next';
 import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
 import { cn } from '@/lib/cn';
+import { isDirty, useEditorStore } from '@/features/editor/editorStore';
 import { useTabsStore, type TabItem, type TabTitle } from '@/stores/tabs';
 
 function useTabTitle(title: TabTitle): string {
@@ -39,6 +40,11 @@ function TabButton({
   const profile = useConnectionProfile(tab.payload?.connectionId ?? '');
   const color = connectionColor(profile);
   const togglePin = useTabsStore((s) => s.togglePin);
+  // An editor tab whose file has unsaved changes shows a dot after its title.
+  const unsaved = useEditorStore((s) => {
+    const data = tab.kind === 'editor' ? s.tabs[tab.payload.tabStateId] : undefined;
+    return !!data && isDirty(data);
+  });
   const path =
     tab.payload && 'path' in tab.payload
       ? tab.payload.path.segments
@@ -89,6 +95,11 @@ function TabButton({
         )}
       >
         {title}
+        {unsaved && (
+          <span data-testid="tab-unsaved" aria-label={t('tabs.unsaved')} title={t('tabs.unsaved')}>
+            {' •'}
+          </span>
+        )}
         {duplicate && (
           <span className="ml-2 text-xs text-muted-foreground">
             {profile?.name}

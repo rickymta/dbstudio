@@ -82,6 +82,23 @@ describe('planDocumentEdit', () => {
           { path: ['n'], value: { t: 'text', v: 'x' } },
         ],
         unset: [['gone']],
+        // What each written field held when the document was loaded (null = absent).
+        expected: [
+          { path: ['gone'], value: { t: 'bool', v: true } },
+          { path: ['a'], value: { t: 'int', v: 1 } },
+          {
+            path: ['b', 'd'],
+            value: {
+              t: 'array',
+              v: [
+                { t: 'int', v: 1 },
+                { t: 'int', v: 2 },
+              ],
+            },
+          },
+          { path: ['b', 'e'], value: null },
+          { path: ['n'], value: null },
+        ],
       },
     });
   });
