@@ -2,6 +2,12 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.1.13 - 2026-11-20
+
+Thay đổi từ v0.1.12.
+
+- feat(ui): hộp thoại xác nhận và radio theo giao diện app thay cho mặc định của webview (a1afec8)
+
 ## v0.1.12 - 2026-11-20
 
 Thay đổi từ v0.1.11.
