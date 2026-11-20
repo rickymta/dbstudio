@@ -35,18 +35,41 @@ const cell = (r: number, c: number) =>
   document.querySelector<HTMLElement>(`[role="gridcell"][data-r="${r}"][data-c="${c}"]`)!;
 const rowEl = (r: number) => cell(r, 1).closest<HTMLElement>('[role="row"]')!;
 
-async function openEditMode(user: ReturnType<typeof userEvent.setup>) {
+/** Open a table tab; editing in place is on from the start. */
+async function openEditMode() {
   renderWithProviders(<TableTab {...payload()} />);
   await waitFor(() => expect(screen.getByText('250 rows loaded')).toBeInTheDocument(), {
     timeout: 5000,
   });
-  await user.click(await screen.findByRole('button', { name: /Edit data/ }));
+  await screen.findByRole('button', { name: /Edit data/ });
 }
 
 describe('edit mode', () => {
+  it('edits a cell straight in the grid and offers Save / Cancel under it', async () => {
+    const user = userEvent.setup();
+    await openEditMode();
+    const bar = await screen.findByTestId('save-bar');
+    const save = within(bar).getByRole('button', { name: /^Save$/ });
+    const cancel = within(bar).getByRole('button', { name: /^Cancel$/ });
+    expect(save).toBeDisabled();
+    expect(cancel).toBeDisabled();
+
+    // No switch to flip first: a double click starts editing.
+    await user.dblClick(cell(0, 2));
+    await user.type(screen.getByRole('textbox', { name: 'Value of name' }), 'x{Enter}');
+    expect(cell(0, 2)).toHaveAttribute('data-pending', 'updated');
+    expect(cell(0, 2).className).toContain('bg-cell-edited');
+    expect(save).toBeEnabled();
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await user.click(cancel);
+    expect(cell(0, 2)).not.toHaveAttribute('data-pending');
+    expect(save).toBeDisabled();
+  });
+
   it('tints edited cells and keeps NULL and the empty text apart', async () => {
     const user = userEvent.setup();
-    await openEditMode(user);
+    await openEditMode();
 
     // sku -> '' (empty text), name -> NULL, price -> a big decimal typed as text.
     await user.dblClick(cell(0, 1));
@@ -54,7 +77,7 @@ describe('edit mode', () => {
     await user.clear(sku);
     await user.type(sku, '{Enter}');
     expect(cell(0, 1)).toHaveAttribute('data-pending', 'updated');
-    expect(cell(0, 1).className).toContain('bg-warning-soft');
+    expect(cell(0, 1).className).toContain('bg-cell-edited');
     expect(cell(0, 1).textContent).toBe('');
 
     await user.dblClick(cell(0, 2));
@@ -85,7 +108,7 @@ describe('edit mode', () => {
 
   it('rejects an invalid number and keeps the cell unchanged on Escape', async () => {
     const user = userEvent.setup();
-    await openEditMode(user);
+    await openEditMode();
     const before = cell(0, 3).textContent;
     await user.dblClick(cell(0, 3));
     const price = screen.getByRole('textbox', { name: 'Value of price' });
@@ -100,14 +123,14 @@ describe('edit mode', () => {
 
   it('does not edit generated columns', async () => {
     const user = userEvent.setup();
-    await openEditMode(user);
+    await openEditMode();
     await user.dblClick(cell(0, 0));
     expect(screen.queryByRole('textbox')).toBeNull();
   });
 
   it('adds, duplicates and deletes rows through the pending list', async () => {
     const user = userEvent.setup();
-    await openEditMode(user);
+    await openEditMode();
 
     // New rows come first, so loading more pages never moves them.
     await user.click(screen.getByRole('button', { name: /Add row/ }));
@@ -143,7 +166,7 @@ describe('edit mode', () => {
     await waitFor(() => expect(screen.getByText('24 rows loaded')).toBeInTheDocument(), {
       timeout: 5000,
     });
-    await user.click(await screen.findByRole('button', { name: /Edit data/ }));
+    await screen.findByRole('button', { name: /Edit data/ });
     await user.click(screen.getByRole('button', { name: /Add row/ }));
     await user.click(cell(3, 1));
     await user.click(screen.getByRole('button', { name: /Delete row/ }));
@@ -155,7 +178,7 @@ describe('edit mode', () => {
     expect(cell(0, 1).textContent).toBe('DEFAULT');
 
     vi.spyOn(window, 'confirm').mockReturnValue(true);
-    await user.click(screen.getByRole('button', { name: /Discard/ }));
+    await user.click(screen.getByRole('button', { name: /^Cancel$/ }));
     expect(screen.getByTestId('pending-count')).toHaveTextContent('No pending changes');
     expect(rowEl(3)).not.toHaveAttribute('data-pending');
     expect(screen.getByRole('grid')).toHaveAttribute('aria-rowcount', '25');
@@ -167,7 +190,7 @@ describe('edit mode', () => {
     await waitFor(() => expect(screen.getByText('24 rows loaded')).toBeInTheDocument(), {
       timeout: 5000,
     });
-    await user.click(await screen.findByRole('button', { name: /Edit data/ }));
+    await screen.findByRole('button', { name: /Edit data/ });
     await user.click(screen.getByRole('button', { name: /Add row/ }));
     await user.dblClick(cell(0, 1));
     const box = screen.getByRole('textbox', { name: 'Value of name' });
@@ -194,7 +217,7 @@ describe('edit mode', () => {
     await waitFor(() => expect(screen.getByText('24 rows loaded')).toBeInTheDocument(), {
       timeout: 5000,
     });
-    await user.click(await screen.findByRole('button', { name: /Edit data/ }));
+    await screen.findByRole('button', { name: /Edit data/ });
     let r = 0;
     while (r < 24 && cell(r, 2)?.textContent !== 'NULL') r++;
     expect(r).toBeLessThan(24);
@@ -207,7 +230,7 @@ describe('edit mode', () => {
 
   it('locks the grid while changes are being applied', async () => {
     const user = userEvent.setup();
-    await openEditMode(user);
+    await openEditMode();
     let finish!: () => void;
     vi.spyOn(ipc, 'changesApply').mockImplementation(
       () =>
@@ -218,9 +241,7 @@ describe('edit mode', () => {
     await user.dblClick(cell(0, 2));
     const box = screen.getByRole('textbox', { name: 'Value of name' });
     await user.type(box, 'x{Enter}');
-    await user.click(
-      within(screen.getByTestId('edit-bar')).getByRole('button', { name: /^Apply$/ }),
-    );
+    await user.click(screen.getByRole('button', { name: /^Save$/ }));
     expect(screen.getByRole('button', { name: /Add row/ })).toBeDisabled();
     await user.dblClick(cell(1, 2));
     expect(screen.queryByRole('textbox')).toBeNull();
@@ -240,7 +261,7 @@ describe('edit mode', () => {
       atomic: true,
     });
     const user = userEvent.setup();
-    await openEditMode(user);
+    await openEditMode();
     await user.dblClick(cell(0, 0));
     const box = screen.getByRole('textbox', { name: 'Value of id' });
     await user.clear(box);
@@ -251,16 +272,14 @@ describe('edit mode', () => {
 
   it('applies and reloads; a failing change stays pending and points at its row', async () => {
     const user = userEvent.setup();
-    await openEditMode(user);
+    await openEditMode();
     const apply = vi.spyOn(ipc, 'changesApply');
 
     await user.dblClick(cell(3, 2));
     const name = screen.getByRole('textbox', { name: 'Value of name' });
     await user.clear(name);
     await user.type(name, '__fail__{Enter}');
-    await user.click(
-      within(screen.getByTestId('edit-bar')).getByRole('button', { name: /^Apply$/ }),
-    );
+    await user.click(screen.getByRole('button', { name: /^Save$/ }));
     await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/Change 1 failed and nothing was saved/)).toBeInTheDocument();
     expect(rowEl(3)).toHaveAttribute('data-failed', 'true');
@@ -272,9 +291,7 @@ describe('edit mode', () => {
     const again = screen.getByRole('textbox', { name: 'Value of name' });
     await user.clear(again);
     await user.type(again, 'fine{Enter}');
-    await user.click(
-      within(screen.getByTestId('edit-bar')).getByRole('button', { name: /^Apply$/ }),
-    );
+    await user.click(screen.getByRole('button', { name: /^Save$/ }));
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
     await waitFor(() =>
       expect(screen.getByTestId('pending-count')).toHaveTextContent('No pending changes'),

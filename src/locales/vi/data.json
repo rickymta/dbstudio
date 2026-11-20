@@ -180,7 +180,6 @@
     "preview": "Xem trước",
     "apply": "Áp dụng",
     "applying": "Đang áp dụng...",
-    "discard": "Bỏ thay đổi",
     "pending": "{{count}} thay đổi đang chờ",
     "pendingOne": "1 thay đổi đang chờ",
     "noPending": "Không có thay đổi chờ",
@@ -256,7 +255,10 @@
       }
     },
     "undoRow": "Hoàn tác dòng",
-    "truncatedCell": "Giá trị bị cắt bớt, không nhân bản hoặc sửa được"
+    "truncatedCell": "Giá trị bị cắt bớt, không nhân bản hoặc sửa được",
+    "save": "Lưu",
+    "saving": "Đang lưu...",
+    "cancel": "Huỷ"
   },
   "header": {
     "path": "Đường dẫn đối tượng"

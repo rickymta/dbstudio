@@ -1,4 +1,4 @@
-import { Check, Copy, Eye, Plus, RotateCcw, Trash2, Undo2 } from 'lucide-react';
+import { Copy, Eye, Plus, Trash2, Undo2 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
@@ -7,7 +7,7 @@ import type { GridModel } from '../gridModel';
 import { useTabUi } from '../store';
 import { useGridVersion } from '../useGridVersion';
 import { ChangesPreviewDialog } from './ChangesPreviewDialog';
-import { applyTarget, type EditTarget } from './editActions';
+import type { EditTarget } from './editActions';
 import { patchEditSession, useEditSession } from './editSession';
 import {
   countChanges,
@@ -22,25 +22,22 @@ interface EditToolbarProps {
   tabId: string;
   model: GridModel;
   target: EditTarget;
-  /** Message shown instead of the discard confirmation text (default: the table one). */
-  discardConfirm?: string;
   /** Extra controls placed after the standard ones. */
   children?: ReactNode;
 }
 
 /**
- * Row operations (add, duplicate, delete, undo) and the pending changes (count, Preview, Apply,
- * Discard) of an edit session, shared by the table view and the query results. Only rendered
- * while the grid is in edit mode or has pending changes.
+ * Row operations (add, duplicate, delete, undo) and the pending changes (count, Preview) of an
+ * edit session, shared by the table view and the query results. Saving and cancelling are under
+ * the grid (`SaveBar`). Only rendered while the grid is in edit mode or has pending changes.
  */
-export function EditToolbar({ tabId, model, target, discardConfirm, children }: EditToolbarProps) {
+export function EditToolbar({ tabId, model, target, children }: EditToolbarProps) {
   const { t } = useTranslation('data');
   useGridVersion(model);
   const session = useEditSession(tabId);
   const pending = usePending(tabId);
   const [ui, patchUi] = useTabUi(tabId);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [applying, setApplying] = useState(false);
 
   const ed = target.editability;
   const count = countChanges(pending);
@@ -94,18 +91,6 @@ export function EditToolbar({ tabId, model, target, discardConfirm, children }: 
     patchEditSession(tabId, { failure: null });
   };
 
-  const discard = () => {
-    if (count > 0 && !window.confirm(discardConfirm ?? t('edit.discardConfirm'))) return;
-    store().discard(tabId);
-    patchEditSession(tabId, { editing: null, failure: null });
-  };
-
-  const apply = async () => {
-    setApplying(true);
-    await applyTarget(tabId, target);
-    setApplying(false);
-  };
-
   return (
     <>
       {editMode && (
@@ -153,17 +138,6 @@ export function EditToolbar({ tabId, model, target, discardConfirm, children }: 
           </span>
           <Button size="sm" disabled={count === 0} onClick={() => setPreviewOpen(true)}>
             <Eye size={12} /> {t('edit.preview')}
-          </Button>
-          <Button
-            size="sm"
-            variant="primary"
-            disabled={count === 0 || applying}
-            onClick={() => void apply()}
-          >
-            <Check size={12} /> {applying ? t('edit.applying') : t('edit.apply')}
-          </Button>
-          <Button size="sm" disabled={count === 0} onClick={discard}>
-            <RotateCcw size={12} /> {t('edit.discard')}
           </Button>
         </>
       )}

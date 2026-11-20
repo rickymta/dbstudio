@@ -15,6 +15,7 @@ export interface EditSessionState {
   editability: Editability | null;
   /** Reading the editability failed. */
   error: IpcError | null;
+  /** Cells can be edited in place. On by default (as in DBeaver); the toolbar switch locks the grid. */
   editMode: boolean;
   editing: EditingCell | null;
   /** The last apply failed at this change (index into the change list) and was rolled back. */
@@ -28,7 +29,7 @@ export interface EditSessionState {
 export const INITIAL_EDIT_SESSION: EditSessionState = {
   editability: null,
   error: null,
-  editMode: false,
+  editMode: true,
   editing: null,
   failure: null,
   applying: false,

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect } from 'react';
+import { useEffect, useLayoutEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { cn } from '@/lib/cn';
@@ -11,6 +11,9 @@ import { DataGrid } from './DataGrid';
 import { DdlViewer } from './DdlViewer';
 import { EditBar } from './edit/EditBar';
 import { FilterBar } from './FilterBar';
+import { tableTarget } from './edit/editActions';
+import { useEditSession } from './edit/editSession';
+import { SaveBar } from './edit/SaveBar';
 import { GridStatusBar } from './GridStatusBar';
 import { ObjectHeader } from './ObjectHeader';
 import { StructureTab } from './StructureTab';
@@ -64,6 +67,11 @@ function DataPane({
   const [ui, patchUi] = useTabUi(tabId);
   const settings = useAppSettings();
   const layoutKey = layoutStorageKey(connectionId, pathKey(path));
+  const editability = useEditSession(tabId).editability;
+  const target = useMemo(
+    () => (editability ? tableTarget({ sessionId, path, editability, model }) : null),
+    [editability, sessionId, path, model],
+  );
 
   // Row/cell budget from the settings; takes effect on the next page that gets loaded.
   useEffect(() => {
@@ -101,7 +109,11 @@ function DataPane({
           <CellViewer tabId={tabId} model={model} timestamp={settings.timestampDisplay} />
         )}
       </div>
-      <GridStatusBar model={model} showActions={false} />
+      <GridStatusBar
+        model={model}
+        showActions={false}
+        leading={target && <SaveBar tabId={tabId} target={target} />}
+      />
     </div>
   );
 }

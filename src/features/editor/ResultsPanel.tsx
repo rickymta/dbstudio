@@ -20,7 +20,7 @@ import type { EditorMode } from '@/stores/tabs';
 import { getConsolePlugin } from './consolePlugins';
 import { dropPending, runText } from './editorRunner';
 import { getTabData, patchTabData, useTabData, type RunSnapshot } from './editorStore';
-import { ResultEditBar } from './ResultEditBar';
+import { ResultEditBar, ResultSaveBar } from './ResultEditBar';
 import { hasOrigins, loadResultEditability, patchResultEdit, useResultEdit } from './resultEdit';
 import { resultKind, type StatementResult } from './results';
 
@@ -419,6 +419,12 @@ function ResultGrid({
   const elapsed =
     result.elapsedMs !== null ? t('results.elapsed', { ms: nf.format(result.elapsedMs) }) : '';
 
+  const onApplied = () => {
+    // Saving on the tab's connection discarded the cursor "load more" continues.
+    if (run.canFetchMore) patchResultEdit(gridId, { needsRerun: true });
+    dropPending(tabStateId);
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="result-grid">
       <div
@@ -439,11 +445,7 @@ function ResultGrid({
               editability={editSession.editability}
               needsRerun={edit?.needsRerun ?? false}
               onRerun={rerun}
-              onApplied={() => {
-                // Saving on the tab's connection discarded the cursor "load more" continues.
-                if (run.canFetchMore) patchResultEdit(gridId, { needsRerun: true });
-                dropPending(tabStateId);
-              }}
+              onApplied={onApplied}
             />
           )}
           <DataGrid
@@ -458,6 +460,17 @@ function ResultGrid({
         )}
       </div>
       <div className="flex min-h-9 flex-wrap py-1 shrink-0 items-center gap-3 border-t border-border bg-surface px-2 text-xs text-muted-foreground">
+        {editable && value && editSession.editability && sessionId && (
+          <ResultSaveBar
+            gridId={gridId}
+            model={model}
+            sessionId={sessionId}
+            leaseId={leaseId}
+            value={value}
+            editability={editSession.editability}
+            onApplied={onApplied}
+          />
+        )}
         <span>{t('results.rows', { count: loaded, formatted: nf.format(loaded) })}</span>
         {elapsed && <span>{elapsed}</span>}
         {truncated && canFetchMore && (

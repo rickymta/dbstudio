@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { GridActions } from './GridActions';
 import { useTranslation } from 'react-i18next';
 import { useSessionsStore } from '@/stores/sessions';
@@ -9,10 +10,12 @@ import { useGridVersion } from './useGridVersion';
 interface GridStatusBarProps {
   model: GridModel;
   showActions?: boolean;
+  /** Shown before the counts (Save / Cancel of the edits). */
+  leading?: ReactNode;
 }
 
 /** Loaded/total counts, last fetch time, Stop/Refresh, and load notices. */
-export function GridStatusBar({ model, showActions = true }: GridStatusBarProps) {
+export function GridStatusBar({ model, showActions = true, leading }: GridStatusBarProps) {
   const { t, i18n } = useTranslation('data');
   useGridVersion(model);
   const nf = new Intl.NumberFormat(i18n.language);
@@ -61,6 +64,7 @@ export function GridStatusBar({ model, showActions = true }: GridStatusBarProps)
         </div>
       )}
       <div className="flex min-h-8 flex-wrap py-1 items-center gap-3 px-3 text-muted-foreground">
+        {leading}
         <span className="tabular-nums text-foreground">
           {loaded === 1 ? t('status.loadedOne') : t('status.loaded', { count: nf.format(loaded) })}
           {model.total !== null && ` ${t('status.total', { total: nf.format(model.total) })}`}

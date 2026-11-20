@@ -664,7 +664,9 @@ export function DataGrid({ tabId, model, layoutKey, timestamp = 'utc' }: DataGri
           'absolute top-0 truncate border-r border-b border-border/35 px-2 [unicode-bidi:isolate]',
           d.align === 'right' && 'text-right',
           TONE[d.kind],
-          edit && !ctx.insert && 'bg-warning-soft not-italic',
+          edit &&
+            !ctx.insert &&
+            'bg-cell-edited font-medium text-cell-edited-foreground not-italic',
           ctx.deleted && 'text-muted-foreground line-through',
           selected && 'z-[5] bg-accent/15 not-italic outline-2 -outline-offset-2 outline-accent',
           editing && !dialog && 'z-[6] overflow-visible p-0',

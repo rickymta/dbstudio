@@ -61,6 +61,8 @@ describe('TableTab (mock IPC)', () => {
 
     // Select a cell and open the viewer.
     const user = userEvent.setup();
+    // Editing in place is on by default; with the switch off a double click opens the viewer.
+    await user.click(await screen.findByRole('button', { name: /Edit data/ }));
     await user.dblClick(cells[1]!);
     expect(screen.getByRole('complementary', { name: 'Cell' })).toBeInTheDocument();
 
@@ -219,6 +221,8 @@ describe('TableTab column layout, settings and timestamps', () => {
 
     // Selection / viewer use the real column, not the display position.
     const cell = screen.getAllByRole('gridcell').find((c) => c.dataset.c === '3')!; // amount
+    // Editing in place is on by default; with the switch off a double click opens the viewer.
+    await user.click(await screen.findByRole('button', { name: /Edit data/ }));
     await user.dblClick(cell);
     expect(screen.getByRole('complementary', { name: 'Cell' })).toHaveTextContent('amount');
 

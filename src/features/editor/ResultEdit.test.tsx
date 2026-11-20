@@ -142,7 +142,8 @@ describe('editable result', () => {
 
     const toggle = await screen.findByRole('button', { name: /Edit data/ });
     expect(check).toHaveBeenCalledWith(SESSION, LEASE, COLUMNS);
-    await user.click(toggle);
+    // Editing in place is on from the start.
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
 
     // `label` is `name` in the table; `shout` is an expression.
     await user.dblClick(cell(0, 1));
@@ -186,13 +187,13 @@ describe('editable result', () => {
       atomic: true,
     });
     renderPanel(runWith());
-    await user.click(await screen.findByRole('button', { name: /Edit data/ }));
+    await screen.findByRole('button', { name: /Edit data/ });
 
     await user.click(cell(1, 1)); // select row 2
     await user.click(screen.getByRole('button', { name: 'Delete row' }));
     expect(cell(1, 1).closest('[role="row"]')).toHaveAttribute('data-pending', 'deleted');
     await user.click(screen.getByRole('button', { name: 'Add row' }));
-    await user.click(screen.getByRole('button', { name: /^Apply$/ }));
+    await user.click(screen.getByRole('button', { name: /^Save$/ }));
 
     await waitFor(() => expect(apply).toHaveBeenCalled());
     const sent = apply.mock.calls[0]![1];
@@ -205,7 +206,7 @@ describe('editable result', () => {
     const user = userEvent.setup();
     vi.spyOn(ipc, 'resultEditability').mockResolvedValue(editable());
     renderPanel(runWith());
-    await user.click(await screen.findByRole('button', { name: /Edit data/ }));
+    await screen.findByRole('button', { name: /Edit data/ });
     await user.dblClick(cell(0, 2));
     expect(screen.queryByRole('textbox', { name: 'Value of shout' })).toBeNull();
     expect(cell(0, 2)).toHaveAttribute('title', expect.stringMatching(/expression/i));

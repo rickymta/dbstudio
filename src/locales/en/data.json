@@ -180,7 +180,6 @@
     "preview": "Preview",
     "apply": "Apply",
     "applying": "Applying...",
-    "discard": "Discard",
     "pending": "{{count}} pending changes",
     "pendingOne": "1 pending change",
     "noPending": "No pending changes",
@@ -256,7 +255,10 @@
       }
     },
     "undoRow": "Undo row changes",
-    "truncatedCell": "The value was cut short: it cannot be duplicated or edited"
+    "truncatedCell": "The value was cut short: it cannot be duplicated or edited",
+    "save": "Save",
+    "saving": "Saving...",
+    "cancel": "Cancel"
   },
   "header": {
     "path": "Object path"
