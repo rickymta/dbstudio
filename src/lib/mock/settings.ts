@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS, type AppSettings } from '../types';
-import { clone, sleep } from './util';
+import { clone, ipcError, sleep } from './util';
 
 let settings: AppSettings = { ...DEFAULT_SETTINGS };
 
@@ -14,6 +14,20 @@ export async function settingsGet(): Promise<AppSettings> {
 
 export async function settingsSet(next: AppSettings): Promise<AppSettings> {
   await sleep(5, 20);
+  // Same ranges as the backend, for the fields the settings dialog edits.
+  const inRange = (n: number, min: number, max: number) =>
+    Number.isInteger(n) && n >= min && n <= max;
+  const checks: [string, boolean][] = [
+    ['gridMaxRows', inRange(next.gridMaxRows, 1_000, 5_000_000)],
+    ['gridMaxCells', inRange(next.gridMaxCells, 100_000, 200_000_000)],
+    ['editorMaxRows', inRange(next.editorMaxRows, 100, 1_000_000)],
+    ['queryTimeoutMs', inRange(next.queryTimeoutMs, 0, 86_400_000)],
+    ['historyMaxPerConnection', inRange(next.historyMaxPerConnection, 100, 100_000)],
+    ['keepaliveSecs', next.keepaliveSecs === 0 || inRange(next.keepaliveSecs, 30, 3_600)],
+    ['planHistoryMaxPerConnection', inRange(next.planHistoryMaxPerConnection, 10, 5_000)],
+  ];
+  const bad = checks.find(([, ok]) => !ok);
+  if (bad) throw ipcError('invalid', `${bad[0]} is out of range`);
   settings = clone(next);
   return clone(settings);
 }

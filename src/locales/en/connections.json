@@ -96,7 +96,8 @@
     "driverUnavailable": "Driver unavailable",
     "sshHostKey": "SSH host key",
     "integrity": "Integrity check failed",
-    "changeFailed": "Change failed"
+    "changeFailed": "Change failed",
+    "invalid": "Invalid value"
   },
   "dialog": {
     "newTitle": "New connection",

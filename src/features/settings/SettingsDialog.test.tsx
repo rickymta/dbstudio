@@ -1,18 +1,22 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Providers } from '@/app/providers';
 import { StatusBar } from '@/app/StatusBar';
 import i18n from '@/lib/i18n';
 import { useAppearanceStore } from '@/stores/appearance';
 import { ipc } from '@/lib/ipc';
 import { resetMockSettings } from '@/lib/mock';
-import { parseBounded, ROWS_RANGE } from './queries';
+import { parseBounded, parseNumberField, ROWS_RANGE } from './queries';
 
 beforeEach(async () => {
   resetMockSettings();
   useAppearanceStore.getState().reset();
   await i18n.changeLanguage('en');
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 function setup() {
@@ -33,6 +37,18 @@ describe('parseBounded', () => {
     expect(parseBounded('5000001', ROWS_RANGE)).toBeNull();
     expect(parseBounded('12a', ROWS_RANGE)).toBeNull();
     expect(parseBounded('', ROWS_RANGE)).toBeNull();
+  });
+});
+
+describe('parseNumberField', () => {
+  it('accepts 0 only for the fields where it means off', () => {
+    expect(parseNumberField('keepaliveSecs', '0')).toBe(0);
+    expect(parseNumberField('keepaliveSecs', '29')).toBeNull();
+    expect(parseNumberField('keepaliveSecs', '30')).toBe(30);
+    expect(parseNumberField('queryTimeoutSecs', '0')).toBe(0);
+    expect(parseNumberField('queryTimeoutSecs', '86401')).toBeNull();
+    expect(parseNumberField('editorMaxRows', '0')).toBeNull();
+    expect(parseNumberField('editorMaxRows', '100')).toBe(100);
   });
 });
 
@@ -112,13 +128,96 @@ describe('SettingsDialog', () => {
   });
 
   it('shows a save error inside the dialog', async () => {
-    const { vi } = await import('vitest');
     vi.spyOn(ipc, 'settingsSet').mockRejectedValue({ kind: 'storage', message: 'read-only disk' });
     const user = setup();
     await user.click(screen.getByRole('button', { name: 'Settings' }));
     const dialog = await screen.findByRole('dialog', { name: 'Settings' });
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
     expect(await within(dialog).findByText(/read-only disk/)).toBeInTheDocument();
-    vi.restoreAllMocks();
+  });
+
+  it('saves the editor, connection and plan history settings', async () => {
+    const user = setup();
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Settings' });
+    const type = async (label: string, value: string) => {
+      const input = within(dialog).getByLabelText(label);
+      await user.clear(input);
+      await user.type(input, value);
+    };
+    await type('Rows kept per result set', '500');
+    await type('Query timeout (seconds)', '30');
+    await type('Keepalive interval (seconds)', '0');
+    await user.click(
+      within(dialog).getByRole('switch', { name: 'Record statements in the query history' }),
+    );
+    await user.click(
+      within(dialog).getByRole('switch', {
+        name: 'Reconnect automatically when a connection is lost',
+      }),
+    );
+    await user.click(
+      within(dialog).getByRole('switch', { name: 'Record explained plans in the plan history' }),
+    );
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(await ipc.settingsGet()).toMatchObject({
+      editorMaxRows: 500,
+      queryTimeoutMs: 30_000,
+      historyEnabled: false,
+      autoReconnect: false,
+      keepaliveSecs: 0,
+      planHistoryEnabled: false,
+      language: 'en',
+    });
+  }, 15_000);
+
+  it('rejects a keepalive below the minimum and keeps the dialog open', async () => {
+    const user = setup();
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Settings' });
+    const keepalive = within(dialog).getByLabelText('Keepalive interval (seconds)');
+    await user.clear(keepalive);
+    await user.type(keepalive, '5');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(
+      await within(dialog).findByText('Enter 0 or a whole number from 30 to 3600'),
+    ).toBeInTheDocument();
+    expect((await ipc.settingsGet()).keepaliveSecs).toBe(240);
+  });
+
+  it('labels a value the backend rejects', async () => {
+    vi.spyOn(ipc, 'settingsSet').mockRejectedValue({
+      kind: 'invalid',
+      message: 'keepaliveSecs is out of range',
+    });
+    const user = setup();
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Settings' });
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(
+      await within(dialog).findByText('Invalid value: keepaliveSecs is out of range'),
+    ).toBeInTheDocument();
+  });
+
+  it('saves the background settings at once and keeps them when the dialog is saved', async () => {
+    const set = vi.spyOn(ipc, 'backgroundSet');
+    const user = setup();
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Settings' });
+    await user.click(
+      await within(dialog).findByRole('switch', { name: 'Start DBStudio when I sign in' }),
+    );
+    await waitFor(() => expect(set).toHaveBeenCalledWith({ closeToTray: 'auto', autostart: true }));
+    await user.click(within(dialog).getByRole('combobox', { name: 'When the window is closed' }));
+    await user.click(
+      await screen.findByRole('option', { name: 'Always keep running in the tray' }),
+    );
+    await waitFor(() =>
+      expect(set).toHaveBeenLastCalledWith({ closeToTray: 'always', autostart: true }),
+    );
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect((await ipc.backgroundGet()).closeToTray).toBe('always');
   });
 });

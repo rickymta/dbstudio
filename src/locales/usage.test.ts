@@ -99,6 +99,7 @@ const DYNAMIC_FAMILIES: Record<string, readonly string[]> = {
     'sshHostKey',
     'integrity',
     'changeFailed',
+    'invalid',
   ],
   'connections:color': [
     'default',

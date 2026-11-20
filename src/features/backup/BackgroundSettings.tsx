@@ -24,16 +24,16 @@ export function BackgroundSettings() {
   });
   const current = query.data;
 
-  if (query.isPending) return <Spinner className="m-3" />;
+  if (query.isPending) return <Spinner />;
   if (!current)
     return (
-      <p role="alert" className="p-3 text-xs text-danger">
+      <p role="alert" className="text-xs text-danger">
         {describeError(t, query.error)}
       </p>
     );
 
   return (
-    <div className="flex max-w-xl flex-col gap-4 p-3" data-testid="background-settings">
+    <div className="flex flex-col gap-2.5" data-testid="background-settings">
       <p className="text-xs text-muted-foreground">{t('background.description')}</p>
       <div className="flex flex-col gap-1">
         <Label htmlFor={`${id}-close`}>{t('background.closeToTray.label')}</Label>

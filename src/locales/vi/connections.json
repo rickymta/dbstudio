@@ -96,7 +96,8 @@
     "driverUnavailable": "Driver không khả dụng",
     "sshHostKey": "Khóa máy chủ SSH",
     "integrity": "Kiểm tra toàn vẹn thất bại",
-    "changeFailed": "Thay đổi thất bại"
+    "changeFailed": "Thay đổi thất bại",
+    "invalid": "Giá trị không hợp lệ"
   },
   "dialog": {
     "newTitle": "Kết nối mới",

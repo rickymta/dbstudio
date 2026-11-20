@@ -39,3 +39,24 @@ export function parseBounded(text: string, range: { min: number; max: number }):
   const n = Number(cleaned);
   return n >= range.min && n <= range.max ? n : null;
 }
+
+/**
+ * Whole-number settings of the dialog and the ranges the backend accepts
+ * (`crates/dbstudio-store/src/settings.rs`). `zeroIsOff` also accepts 0 below `min`.
+ */
+export const NUMBER_FIELDS = {
+  editorMaxRows: { min: 100, max: 1_000_000, zeroIsOff: false },
+  /** Stored as `queryTimeoutMs`; 0 = no timeout. */
+  queryTimeoutSecs: { min: 1, max: 86_400, zeroIsOff: true },
+  historyMaxPerConnection: { min: 100, max: 100_000, zeroIsOff: false },
+  keepaliveSecs: { min: 30, max: 3_600, zeroIsOff: true },
+  planHistoryMaxPerConnection: { min: 10, max: 5_000, zeroIsOff: false },
+} as const;
+
+export type NumberFieldKey = keyof typeof NUMBER_FIELDS;
+
+export function parseNumberField(key: NumberFieldKey, text: string): number | null {
+  const field = NUMBER_FIELDS[key];
+  if (field.zeroIsOff && /^0+$/.test(text.trim())) return 0;
+  return parseBounded(text, field);
+}

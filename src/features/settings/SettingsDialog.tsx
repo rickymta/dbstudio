@@ -12,12 +12,22 @@ import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { Switch } from '@/components/ui/Switch';
 import { toast } from '@/components/ui/toastStore';
+import { BackgroundSettings } from '@/features/backup/BackgroundSettings';
 import { describeError } from '@/features/connections/errors';
 import { ipc } from '@/lib/ipc';
 import { setLanguage, type Language } from '@/lib/i18n';
 import type { AppSettings, LogLevel, TimestampDisplay } from '@/lib/types';
 import { THEME_MODES, useThemeStore, type ThemeMode } from '@/stores/theme';
-import { CELLS_RANGE, parseBounded, ROWS_RANGE, useAppSettings, useSaveSettings } from './queries';
+import {
+  CELLS_RANGE,
+  NUMBER_FIELDS,
+  parseBounded,
+  parseNumberField,
+  ROWS_RANGE,
+  useAppSettings,
+  useSaveSettings,
+  type NumberFieldKey,
+} from './queries';
 
 const LOG_LEVELS: LogLevel[] = ['error', 'warn', 'info', 'debug', 'trace'];
 const TIMESTAMPS: TimestampDisplay[] = ['utc', 'local'];
@@ -49,6 +59,16 @@ function SettingsBody({ onClose }: { onClose: () => void }) {
   const [advisorMetadata, setAdvisorMetadata] = useState(current.planAdvisorMetadata);
   const [rows, setRows] = useState(String(current.gridMaxRows));
   const [cells, setCells] = useState(String(current.gridMaxCells));
+  const [numbers, setNumbers] = useState<Record<NumberFieldKey, string>>(() => ({
+    editorMaxRows: String(current.editorMaxRows),
+    queryTimeoutSecs: String(Math.ceil(current.queryTimeoutMs / 1000)),
+    historyMaxPerConnection: String(current.historyMaxPerConnection),
+    keepaliveSecs: String(current.keepaliveSecs),
+    planHistoryMaxPerConnection: String(current.planHistoryMaxPerConnection),
+  }));
+  const [historyEnabled, setHistoryEnabled] = useState(current.historyEnabled);
+  const [autoReconnect, setAutoReconnect] = useState(current.autoReconnect);
+  const [planHistoryEnabled, setPlanHistoryEnabled] = useState(current.planHistoryEnabled);
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,21 +77,87 @@ function SettingsBody({ onClose }: { onClose: () => void }) {
   const rowsValue = parseBounded(rows, ROWS_RANGE);
   const cellsValue = parseBounded(cells, CELLS_RANGE);
   const language: Language = i18n.language.startsWith('vi') ? 'vi' : 'en';
+  const parsed = {
+    editorMaxRows: parseNumberField('editorMaxRows', numbers.editorMaxRows),
+    queryTimeoutSecs: parseNumberField('queryTimeoutSecs', numbers.queryTimeoutSecs),
+    historyMaxPerConnection: parseNumberField(
+      'historyMaxPerConnection',
+      numbers.historyMaxPerConnection,
+    ),
+    keepaliveSecs: parseNumberField('keepaliveSecs', numbers.keepaliveSecs),
+    planHistoryMaxPerConnection: parseNumberField(
+      'planHistoryMaxPerConnection',
+      numbers.planHistoryMaxPerConnection,
+    ),
+  };
+
+  const numberField = (key: NumberFieldKey) => {
+    const { min, max, zeroIsOff } = NUMBER_FIELDS[key];
+    const invalid = submitted && parsed[key] === null;
+    const message = zeroIsOff
+      ? t('validation.rangeOrZero', { min, max })
+      : t('validation.range', { min, max });
+    return (
+      <Field
+        label={t(`number.${key}`)}
+        htmlFor={`${id}-${key}`}
+        error={invalid ? message : undefined}
+      >
+        <Input
+          id={`${id}-${key}`}
+          inputMode="numeric"
+          value={numbers[key]}
+          aria-invalid={invalid}
+          onChange={(e) => setNumbers((n) => ({ ...n, [key]: e.target.value }))}
+        />
+      </Field>
+    );
+  };
 
   const submit = async () => {
     setSubmitted(true);
-    if (saving || rowsValue === null || cellsValue === null) return;
+    const {
+      editorMaxRows,
+      queryTimeoutSecs,
+      historyMaxPerConnection,
+      keepaliveSecs,
+      planHistoryMaxPerConnection,
+    } = parsed;
+    if (
+      saving ||
+      rowsValue === null ||
+      cellsValue === null ||
+      editorMaxRows === null ||
+      queryTimeoutSecs === null ||
+      historyMaxPerConnection === null ||
+      keepaliveSecs === null ||
+      planHistoryMaxPerConnection === null
+    )
+      return;
     setSaving(true);
     setError(null);
-    const next: AppSettings = {
-      ...current,
-      logLevel,
-      gridMaxRows: rowsValue,
-      gridMaxCells: cellsValue,
-      timestampDisplay: timestamp,
-      planAdvisorMetadata: advisorMetadata,
-    };
     try {
+      // Other screens write settings too (close-to-tray, debugger): start from the stored values,
+      // not from the copy this dialog read when it opened.
+      const stored = await ipc.settingsGet().catch(() => current);
+      const next: AppSettings = {
+        ...stored,
+        logLevel,
+        gridMaxRows: rowsValue,
+        gridMaxCells: cellsValue,
+        timestampDisplay: timestamp,
+        planAdvisorMetadata: advisorMetadata,
+        editorMaxRows,
+        queryTimeoutMs: queryTimeoutSecs * 1000,
+        historyEnabled,
+        historyMaxPerConnection,
+        autoReconnect,
+        keepaliveSecs,
+        planHistoryEnabled,
+        planHistoryMaxPerConnection,
+        // Mirrors the interface language so OS notifications use it too.
+        language,
+      };
       await save(next);
       useAppearanceStore.getState().update(appearance);
       onClose();
@@ -189,19 +275,52 @@ function SettingsBody({ onClose }: { onClose: () => void }) {
           </Field>
         </Section>
 
-        <Section title={t('section.plan')}>
-          <div className="flex items-start gap-2">
-            <Switch
-              id={`${id}-advisor`}
-              checked={advisorMetadata}
-              onCheckedChange={setAdvisorMetadata}
-              className="mt-0.5"
-            />
-            <div className="flex min-w-0 flex-col gap-0.5">
-              <Label htmlFor={`${id}-advisor`}>{t('planAdvisorMetadata')}</Label>
-              <p className="text-xs text-muted-foreground">{t('planAdvisorMetadataHint')}</p>
-            </div>
+        <Section title={t('section.editor')}>
+          <div className="grid grid-cols-2 gap-2">
+            {numberField('editorMaxRows')}
+            {numberField('queryTimeoutSecs')}
           </div>
+          <p className="text-xs text-muted-foreground">{t('queryTimeoutHint')}</p>
+          <Toggle
+            id={`${id}-history`}
+            label={t('historyEnabled')}
+            checked={historyEnabled}
+            onCheckedChange={setHistoryEnabled}
+          />
+          {numberField('historyMaxPerConnection')}
+        </Section>
+
+        <Section title={t('section.connection')}>
+          <Toggle
+            id={`${id}-reconnect`}
+            label={t('autoReconnect')}
+            hint={t('autoReconnectHint')}
+            checked={autoReconnect}
+            onCheckedChange={setAutoReconnect}
+          />
+          {numberField('keepaliveSecs')}
+          <p className="text-xs text-muted-foreground">{t('keepaliveHint')}</p>
+        </Section>
+
+        <Section title={t('section.plan')}>
+          <Toggle
+            id={`${id}-advisor`}
+            label={t('planAdvisorMetadata')}
+            hint={t('planAdvisorMetadataHint')}
+            checked={advisorMetadata}
+            onCheckedChange={setAdvisorMetadata}
+          />
+          <Toggle
+            id={`${id}-plan-history`}
+            label={t('planHistoryEnabled')}
+            checked={planHistoryEnabled}
+            onCheckedChange={setPlanHistoryEnabled}
+          />
+          {numberField('planHistoryMaxPerConnection')}
+        </Section>
+
+        <Section title={t('section.background')}>
+          <BackgroundSettings />
         </Section>
 
         <Section title={t('section.logging')}>
@@ -259,6 +378,30 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
       </h3>
       {children}
     </section>
+  );
+}
+
+function Toggle({
+  id,
+  label,
+  hint,
+  checked,
+  onCheckedChange,
+}: {
+  id: string;
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start gap-2">
+      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} className="mt-0.5" />
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <Label htmlFor={id}>{label}</Label>
+        {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      </div>
+    </div>
   );
 }
 

@@ -117,21 +117,6 @@ describe('BackupTab', () => {
     );
   });
 
-  it('saves the background settings', async () => {
-    const set = vi.spyOn(ipc, 'backgroundSet');
-    const user = setup();
-    await user.click(await screen.findByRole('tab', { name: 'Background' }));
-    await user.click(await screen.findByRole('switch', { name: 'Start DBStudio when I sign in' }));
-    await waitFor(() => expect(set).toHaveBeenCalledWith({ closeToTray: 'auto', autostart: true }));
-    await user.click(screen.getByRole('combobox', { name: 'When the window is closed' }));
-    await user.click(
-      await screen.findByRole('option', { name: 'Always keep running in the tray' }),
-    );
-    await waitFor(() =>
-      expect(set).toHaveBeenLastCalledWith({ closeToTray: 'always', autostart: true }),
-    );
-  });
-
   it('opens the create-job and restore dialogs', async () => {
     const user = setup();
     await user.click(await screen.findByRole('button', { name: 'Restore from file...' }));

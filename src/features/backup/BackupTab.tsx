@@ -12,7 +12,6 @@ import { describeError } from '@/features/connections/errors';
 import { useConnectionsSnapshot } from '@/features/connections/queries';
 import { ipc } from '@/lib/ipc';
 import type { BackupJob } from '@/lib/types';
-import { BackgroundSettings } from './BackgroundSettings';
 import { BackupJobDialog } from './BackupJobDialog';
 import { JobProgressView } from './JobProgress';
 import { JobsList } from './JobsList';
@@ -27,7 +26,7 @@ type Dialogs =
   | { kind: 'once' }
   | { kind: 'restore'; file: string | null };
 
-/** Singleton backup tab: jobs, run history, native tools and background settings. */
+/** Singleton backup tab: jobs, run history and native tools. */
 export function BackupTab() {
   const { t } = useTranslation('backup');
   const qc = useQueryClient();
@@ -103,7 +102,6 @@ export function BackupTab() {
           <TabsTrigger value="jobs">{t('section.jobs')}</TabsTrigger>
           <TabsTrigger value="history">{t('section.history')}</TabsTrigger>
           <TabsTrigger value="tools">{t('section.tools')}</TabsTrigger>
-          <TabsTrigger value="background">{t('section.background')}</TabsTrigger>
         </TabsList>
         <TabsContent value="jobs" className="overflow-auto p-3">
           {jobsQuery.isPending ? (
@@ -140,9 +138,6 @@ export function BackupTab() {
         </TabsContent>
         <TabsContent value="tools" className="overflow-auto">
           <NativeToolsPanel />
-        </TabsContent>
-        <TabsContent value="background" className="overflow-auto">
-          <BackgroundSettings />
         </TabsContent>
       </Tabs>
 

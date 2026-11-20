@@ -14,8 +14,7 @@
   "section": {
     "jobs": "Tác vụ",
     "history": "Lịch sử chạy",
-    "tools": "Công cụ gốc",
-    "background": "Chạy nền"
+    "tools": "Công cụ gốc"
   },
   "running": {
     "title": "Đang chạy"

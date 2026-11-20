@@ -6,7 +6,10 @@
     "appearance": "Giao diện",
     "data": "Dữ liệu",
     "logging": "Nhật ký",
-    "plan": "Kế hoạch truy vấn"
+    "plan": "Kế hoạch truy vấn",
+    "editor": "Trình soạn truy vấn",
+    "connection": "Kết nối",
+    "background": "Chạy nền"
   },
   "language": "Ngôn ngữ",
   "theme": "Chủ đề",
@@ -18,6 +21,19 @@
     "utc": "UTC",
     "local": "Giờ máy"
   },
+  "number": {
+    "editorMaxRows": "Số dòng giữ lại cho mỗi kết quả",
+    "queryTimeoutSecs": "Thời gian chờ truy vấn (giây)",
+    "historyMaxPerConnection": "Số mục lịch sử giữ cho mỗi kết nối",
+    "keepaliveSecs": "Chu kỳ keepalive (giây)",
+    "planHistoryMaxPerConnection": "Số plan giữ cho mỗi kết nối"
+  },
+  "queryTimeoutHint": "0 là không giới hạn thời gian chờ.",
+  "historyEnabled": "Ghi câu lệnh vào lịch sử truy vấn",
+  "autoReconnect": "Tự kết nối lại khi mất kết nối",
+  "autoReconnectHint": "Transaction đang mở không bao giờ được chạy lại: nó được báo là đã mất.",
+  "keepaliveHint": "Tần suất kiểm tra các kết nối đang rảnh. 0 là tắt keepalive.",
+  "planHistoryEnabled": "Ghi các plan đã phân tích vào lịch sử plan",
   "logLevel": "Mức nhật ký",
   "level": {
     "error": "Lỗi",
@@ -36,7 +52,9 @@
   "loadError": "Không tải được cài đặt",
   "validation": {
     "rows": "Số dòng phải là số nguyên từ 1.000 đến 5.000.000",
-    "cells": "Số ô phải là số nguyên từ 100.000 đến 200.000.000"
+    "cells": "Số ô phải là số nguyên từ 100.000 đến 200.000.000",
+    "range": "Nhập số nguyên từ {{min}} đến {{max}}",
+    "rangeOrZero": "Nhập 0 hoặc số nguyên từ {{min}} đến {{max}}"
   },
   "appearance": {
     "density": "Mật độ hiển thị",

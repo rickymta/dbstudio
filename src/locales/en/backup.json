@@ -14,8 +14,7 @@
   "section": {
     "jobs": "Jobs",
     "history": "Run history",
-    "tools": "Native tools",
-    "background": "Background"
+    "tools": "Native tools"
   },
   "running": {
     "title": "Running now"
