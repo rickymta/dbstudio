@@ -1,4 +1,5 @@
-// Query history (QUERY-07) and saved queries / snippets (QUERY-08), as a drawer of the editor.
+// Query history (QUERY-07), saved queries / snippets (QUERY-08) and the plan history (PLAN-07),
+// as a drawer of the editor.
 
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -23,6 +24,7 @@ import { Label } from '@/components/ui/Label';
 import { Select } from '@/components/ui/Select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { Spinner } from '@/components/ui/Spinner';
+import { PlanHistoryList } from '@/features/plan/PlanHistoryList';
 import { ipc } from '@/lib/ipc';
 import type { DbKind, HistoryEntry, SavedFolder, SavedQuery, Uuid } from '@/lib/types';
 
@@ -51,12 +53,16 @@ export function SidePanel(props: SidePanelProps) {
         <TabsList>
           <TabsTrigger value="history">{t('history.title')}</TabsTrigger>
           <TabsTrigger value="saved">{t('saved.title')}</TabsTrigger>
+          <TabsTrigger value="plans">{t('planHistory')}</TabsTrigger>
         </TabsList>
         <TabsContent value="history" className="min-h-0 flex-1 overflow-hidden">
           <HistoryList {...props} />
         </TabsContent>
         <TabsContent value="saved" className="min-h-0 flex-1 overflow-hidden">
           <SavedList {...props} />
+        </TabsContent>
+        <TabsContent value="plans" className="min-h-0 flex-1 overflow-hidden">
+          <PlanHistoryList connectionId={props.connectionId} />
         </TabsContent>
       </Tabs>
     </aside>

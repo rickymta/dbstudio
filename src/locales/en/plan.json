@@ -637,5 +637,21 @@
       "transientLoad": "The load is transient and may not reproduce on the next run.",
       "unionAllSemantics": "UNION ALL keeps duplicates; confirm that is acceptable."
     }
+  },
+  "history": {
+    "hint": "Plans explained on this connection. Click one to open it again.",
+    "notConnected": "Connect to open a plan from the history.",
+    "empty": "No plans in the history yet.",
+    "open": "Open as a plan tab",
+    "analyze": "ANALYZE",
+    "warnings_one": "{{count}} warning",
+    "warnings_other": "{{count}} warnings",
+    "cost": "cost {{cost}}",
+    "ms": "{{ms}} ms",
+    "more": "Load more",
+    "delete": "Delete from the plan history",
+    "clear": "Clear plan history",
+    "clearTitle": "Clear the plan history?",
+    "clearDescription": "Every recorded plan of this connection is removed. This cannot be undone."
   }
 }

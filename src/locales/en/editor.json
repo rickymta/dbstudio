@@ -225,5 +225,6 @@
     "databaseNone": "No matching databases",
     "databaseFailed": "Could not switch database: {{message}}",
     "debugging": "Stop the debug session before switching connection or database."
-  }
+  },
+  "planHistory": "Plans"
 }

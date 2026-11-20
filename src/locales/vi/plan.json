@@ -637,5 +637,21 @@
       "transientLoad": "Tải này chỉ tạm thời và có thể không lặp lại ở lần chạy sau.",
       "unionAllSemantics": "UNION ALL giữ các dòng trùng; hãy xác nhận điều này chấp nhận được."
     }
+  },
+  "history": {
+    "hint": "Các plan đã phân tích trên kết nối này. Bấm vào để mở lại.",
+    "notConnected": "Hãy kết nối để mở plan từ lịch sử.",
+    "empty": "Chưa có plan nào trong lịch sử.",
+    "open": "Mở thành tab plan",
+    "analyze": "ANALYZE",
+    "warnings_one": "{{count}} cảnh báo",
+    "warnings_other": "{{count}} cảnh báo",
+    "cost": "chi phí {{cost}}",
+    "ms": "{{ms}} ms",
+    "more": "Tải thêm",
+    "delete": "Xoá khỏi lịch sử plan",
+    "clear": "Xoá lịch sử plan",
+    "clearTitle": "Xoá lịch sử plan?",
+    "clearDescription": "Mọi plan đã ghi của kết nối này sẽ bị xoá. Không thể hoàn tác."
   }
 }

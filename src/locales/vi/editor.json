@@ -225,5 +225,6 @@
     "databaseNone": "Không có cơ sở dữ liệu phù hợp",
     "databaseFailed": "Không thể đổi cơ sở dữ liệu: {{message}}",
     "debugging": "Hãy dừng phiên gỡ lỗi trước khi đổi kết nối hoặc cơ sở dữ liệu."
-  }
+  },
+  "planHistory": "Plan"
 }
