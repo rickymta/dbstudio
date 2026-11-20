@@ -191,6 +191,11 @@ jobs:
           sh docker/gen-certs.sh
           sh docker/gen-ssh-keys.sh
 
+      # Registries rate-limit now and then; `up` would fail the job on the first refused pull.
+      - name: Pull test database images
+        timeout-minutes: 20
+        run: sh docker/pull-images.sh "${{ matrix.profile }}" ${{ matrix.services }}
+
       - name: Start test databases
         timeout-minutes: 25
         run: |
@@ -312,6 +317,10 @@ jobs:
         run: |
           sh docker/gen-certs.sh
           sh docker/gen-ssh-keys.sh
+
+      - name: Pull test database images
+        timeout-minutes: 20
+        run: sh docker/pull-images.sh "${{ matrix.group }}" ${{ matrix.services }}
 
       - name: Start test databases
         timeout-minutes: 25
