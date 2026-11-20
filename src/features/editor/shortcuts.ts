@@ -16,31 +16,50 @@ export type ShortcutId =
   | 'toggleSidebar'
   | 'focusResults'
   | 'palette'
+  | 'settings'
+  | 'activity'
+  | 'zoomIn'
+  | 'zoomOut'
+  | 'zoomReset'
   | 'help';
+
+/** Sections of the keyboard shortcuts window, in display order. */
+export const SHORTCUT_GROUPS = ['editor', 'app', 'window'] as const;
+export type ShortcutGroup = (typeof SHORTCUT_GROUPS)[number];
 
 export interface Shortcut {
   id: ShortcutId;
   keys: string;
+  /** Other combos that do the same (shown in the cheat sheet, matched by `matchesShortcut`). */
+  alt?: string[];
   /** Where it works: inside the editor only, or anywhere in the app. */
   scope: 'editor' | 'global';
+  group: ShortcutGroup;
 }
 
 export const SHORTCUTS: readonly Shortcut[] = [
-  { id: 'run', keys: 'Mod-Enter', scope: 'editor' },
-  { id: 'runAll', keys: 'Mod-Shift-Enter', scope: 'editor' },
-  { id: 'explain', keys: 'Mod-e', scope: 'editor' },
-  { id: 'cancel', keys: 'Mod-.', scope: 'editor' },
-  { id: 'format', keys: 'Mod-Shift-f', scope: 'editor' },
-  { id: 'save', keys: 'Mod-s', scope: 'editor' },
-  { id: 'open', keys: 'Mod-o', scope: 'editor' },
-  { id: 'history', keys: 'Mod-Shift-h', scope: 'editor' },
-  { id: 'newTab', keys: 'Mod-t', scope: 'global' },
-  { id: 'closeTab', keys: 'Mod-w', scope: 'global' },
-  { id: 'findObject', keys: 'Mod-Shift-o', scope: 'global' },
-  { id: 'toggleSidebar', keys: 'Mod-b', scope: 'global' },
-  { id: 'focusResults', keys: 'F6', scope: 'editor' },
-  { id: 'palette', keys: 'Mod-Shift-p', scope: 'global' },
-  { id: 'help', keys: 'Mod-/', scope: 'global' },
+  { id: 'run', keys: 'Mod-Enter', scope: 'editor', group: 'editor' },
+  { id: 'runAll', keys: 'Mod-Shift-Enter', scope: 'editor', group: 'editor' },
+  { id: 'explain', keys: 'Mod-e', scope: 'editor', group: 'editor' },
+  { id: 'cancel', keys: 'Mod-.', scope: 'editor', group: 'editor' },
+  { id: 'format', keys: 'Mod-Shift-f', scope: 'editor', group: 'editor' },
+  { id: 'save', keys: 'Mod-s', scope: 'editor', group: 'editor' },
+  { id: 'open', keys: 'Mod-o', scope: 'editor', group: 'editor' },
+  { id: 'history', keys: 'Mod-Shift-h', scope: 'editor', group: 'editor' },
+  { id: 'focusResults', keys: 'F6', scope: 'editor', group: 'editor' },
+  { id: 'newTab', keys: 'Mod-t', scope: 'global', group: 'app' },
+  { id: 'closeTab', keys: 'Mod-w', scope: 'global', group: 'app' },
+  { id: 'findObject', keys: 'Mod-Shift-o', scope: 'global', group: 'app' },
+  { id: 'toggleSidebar', keys: 'Mod-b', scope: 'global', group: 'app' },
+  { id: 'palette', keys: 'Mod-Shift-p', scope: 'global', group: 'app' },
+  // Handled by the status bar (settings) and by `AppWindows` (the rest), which listen before
+  // the editor so the combos also work while typing a statement.
+  { id: 'settings', keys: 'Mod-,', scope: 'global', group: 'app' },
+  { id: 'activity', keys: 'Mod-Shift-l', scope: 'global', group: 'window' },
+  { id: 'zoomIn', keys: 'Mod-=', alt: ['Mod-+'], scope: 'global', group: 'window' },
+  { id: 'zoomOut', keys: 'Mod--', scope: 'global', group: 'window' },
+  { id: 'zoomReset', keys: 'Mod-0', scope: 'global', group: 'window' },
+  { id: 'help', keys: 'Mod-/', scope: 'global', group: 'window' },
 ];
 
 export const keysOf = (id: ShortcutId): string => SHORTCUTS.find((s) => s.id === id)!.keys;
@@ -75,4 +94,18 @@ export function matchesKeys(e: KeyboardEvent, keys: string, mac = isMac()): bool
   // The other platform's modifier must not be pressed.
   if (mac ? e.ctrlKey : e.metaKey) return false;
   return e.key.toLowerCase() === key.toLowerCase();
+}
+
+/**
+ * Whether the event is shortcut `id` or one of its alternatives. Symbols typed with Shift
+ * (`+`) match with or without it, since layouts differ.
+ */
+export function matchesShortcut(e: KeyboardEvent, id: ShortcutId, mac = isMac()): boolean {
+  const s = SHORTCUTS.find((x) => x.id === id)!;
+  return [s.keys, ...(s.alt ?? [])].some((keys) => {
+    if (matchesKeys(e, keys, mac)) return true;
+    const key = keys.slice(-1);
+    if (!/[^\w]/.test(key) || keys.includes('Shift')) return false;
+    return matchesKeys(e, keys.replace(/-(?=.$)/, '-Shift-'), mac);
+  });
 }

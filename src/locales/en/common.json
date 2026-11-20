@@ -103,6 +103,61 @@
       "tab": "Open tabs",
       "connection": "Connections",
       "object": "Favorites and recent objects"
+    },
+    "activity": "Activity Logs",
+    "help": "Help & Support"
+  },
+  "activity": {
+    "title": "Activity Logs",
+    "application": "Application",
+    "connection": "Connection",
+    "clear": "Clear log",
+    "empty": "Nothing logged yet.",
+    "ms": "{{ms}} ms",
+    "status": {
+      "started": "started",
+      "finished": "finished",
+      "failed": "failed"
+    },
+    "event": {
+      "connect": "Connect",
+      "disconnect": "Disconnect",
+      "reconnect": "Reconnect",
+      "testConnection": "Test connection",
+      "saveConnection": "Save connection",
+      "deleteConnection": "Delete connection",
+      "duplicateConnection": "Duplicate connection",
+      "importConnections": "Import connections",
+      "exportConnections": "Export connections",
+      "trustHostKey": "Trust SSH host key",
+      "runStatements": "Run statements",
+      "beginTransaction": "Begin transaction",
+      "commit": "Commit",
+      "rollback": "Roll back",
+      "applyChanges": "Apply data changes",
+      "explain": "Explain plan",
+      "startExport": "Start export",
+      "startImport": "Start import",
+      "runBackup": "Run backup job",
+      "saveBackupJob": "Save backup job",
+      "deleteBackupJob": "Delete backup job",
+      "verifyBackup": "Verify backup file",
+      "startRestore": "Start restore",
+      "cancelJob": "Cancel job",
+      "startDebug": "Start debug session",
+      "stopDebug": "Stop debug session",
+      "saveSettings": "Save settings",
+      "clearHistory": "Clear query history",
+      "clearPlanHistory": "Clear plan history",
+      "connectionLost": "Connection lost",
+      "connectionRestored": "Connection restored",
+      "reconnectGaveUp": "Automatic reconnect gave up",
+      "appStarted": "DBStudio {{version}} started"
     }
+  },
+  "zoom": {
+    "in": "Zoom in",
+    "out": "Zoom out",
+    "reset": "Reset zoom"
   }
 }

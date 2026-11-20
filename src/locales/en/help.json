@@ -1,0 +1,36 @@
+{
+  "open": "Help",
+  "title": "Help & Support",
+  "description": "Report a problem, suggest a feature or ask a question. We reply by email.",
+  "version": "Version",
+  "copyVersion": "Copy",
+  "versionCopied": "Version copied",
+  "name": "Name",
+  "email": "Email",
+  "topic": "What do you need help with?",
+  "topicPlaceholder": "Choose a topic",
+  "topics": {
+    "bug": "Bug report",
+    "feature": "Feature request",
+    "question": "Question",
+    "other": "Other"
+  },
+  "subject": "Subject",
+  "message": "Message",
+  "messagePlaceholder": "Describe the problem or idea. For a bug, list the steps to reproduce it.",
+  "includeSystem": "Attach the app version and operating system",
+  "privacy": "Only what you type here is sent. Connections, statements and data are never attached.",
+  "submit": "Submit",
+  "sending": "Sending…",
+  "tryAgain": "Try again",
+  "sendFailed": "Could not send your message.",
+  "sent": "Message sent",
+  "sentHint": "Thanks! We will reply to {{email}}.",
+  "sendAnother": "Send another",
+  "error": {
+    "required": "This field is required.",
+    "email": "Enter a valid email address.",
+    "topic": "Choose a topic.",
+    "tooLong": "Too long."
+  }
+}

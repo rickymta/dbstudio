@@ -13,7 +13,9 @@ import { useTabsStore } from '@/stores/tabs';
 import { THEME_MODES, useThemeStore } from '@/stores/theme';
 import {
   filterCommands,
+  useActivityWindow,
   useCommandPalette,
+  useHelpDialog,
   useSettingsDialog,
   type PaletteCommand,
 } from './paletteStore';
@@ -92,6 +94,19 @@ function useCommands(): PaletteCommand[] {
         label: t('palette.shortcuts'),
         keys: formatKeys(keysOf('help')),
         run: () => useShortcutsHelp.getState().setOpen(true),
+      },
+      {
+        id: 'activity',
+        group: 'action',
+        label: t('palette.activity'),
+        keys: formatKeys(keysOf('activity')),
+        run: () => useActivityWindow.getState().setOpen(true),
+      },
+      {
+        id: 'help',
+        group: 'action',
+        label: t('palette.help'),
+        run: () => useHelpDialog.getState().setOpen(true),
       },
       ...THEME_MODES.filter((m) => m !== mode).map((m): PaletteCommand => ({
         id: `theme:${m}`,

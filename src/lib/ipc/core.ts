@@ -1,8 +1,10 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { mock, mockAppInfo, mockDrivers, mockLogDir, mockListen } from '../mock';
+import { trackCommand } from '@/stores/activity';
 import type {
   AppInfo,
+  SupportRequest,
   AppSettings,
   ConnectionGroup,
   ConnectionProfile,
@@ -230,15 +232,18 @@ export async function call<T>(
   mockFn: () => T | Promise<T>,
   args?: Record<string, unknown> | (() => Record<string, unknown>),
 ): Promise<T> {
-  try {
-    const transport = ipcTransport();
-    if (transport === 'mock') return await mockFn();
-    const resolved = typeof args === 'function' ? args() : args;
-    if (transport === 'bridge') return await bridgeCall<T>(command, resolved);
-    return await invoke<T>(command, resolved);
-  } catch (e) {
-    throw toIpcError(e);
-  }
+  // Lazy arguments (they create a Channel) are not inspected by the activity log.
+  return trackCommand(command, typeof args === 'function' ? undefined : args, async () => {
+    try {
+      const transport = ipcTransport();
+      if (transport === 'mock') return await mockFn();
+      const resolved = typeof args === 'function' ? args() : args;
+      if (transport === 'bridge') return await bridgeCall<T>(command, resolved);
+      return await invoke<T>(command, resolved);
+    } catch (e) {
+      throw toIpcError(e);
+    }
+  });
 }
 
 /** How long to wait for `statementEnd` after the command resolved before giving up. */
@@ -328,14 +333,16 @@ export interface StreamOptions<R> {
  */
 export function streamCommand<R>(options: StreamOptions<R>): Promise<R> {
   const { command, args, onEvent, queryId, expectedEnds } = options;
-  return streamFetch<R>(command, onEvent, expectedEnds, (handler) => {
-    const transport = ipcTransport();
-    if (transport === 'mock') return options.mock(handler);
-    if (transport === 'bridge') return bridgeStream<R>(command, args, queryId, handler);
-    const channel = new Channel<QueryEvent>();
-    channel.onmessage = handler;
-    return invoke<R>(command, { ...args, onEvent: channel });
-  });
+  return trackCommand(command, args, () =>
+    streamFetch<R>(command, onEvent, expectedEnds, (handler) => {
+      const transport = ipcTransport();
+      if (transport === 'mock') return options.mock(handler);
+      if (transport === 'bridge') return bridgeStream<R>(command, args, queryId, handler);
+      const channel = new Channel<QueryEvent>();
+      channel.onmessage = handler;
+      return invoke<R>(command, { ...args, onEvent: channel });
+    }),
+  );
 }
 
 /** Table fetches always wait for exactly one `statementEnd`. */
@@ -530,6 +537,9 @@ export const coreApi = {
   settingsSet: (settings: AppSettings): Promise<AppSettings> =>
     call('settings_set', () => mock.settingsSet(settings), { settings }),
   logDir: (): Promise<string> => call('log_dir', () => mockLogDir),
+  /** Send the Help & Support form to the developer as an email. */
+  supportSend: (request: SupportRequest): Promise<void> =>
+    call('support_send', () => mock.supportSend(request), { request }),
   openLogDir: (): Promise<void> => call('open_log_dir', () => undefined),
   /** Save bytes (base64) through a native save dialog; resolves to the path, `null` if cancelled. */
   saveCellValue: (suggestedName: string, dataBase64: string): Promise<string | null> =>

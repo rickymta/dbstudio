@@ -16,6 +16,20 @@ export const useSettingsDialog = create<{ open: boolean; setOpen: (open: boolean
   }),
 );
 
+/** Whether the Activity Logs window is shown. */
+export const useActivityWindow = create<{ open: boolean; setOpen: (open: boolean) => void }>(
+  (set) => ({
+    open: false,
+    setOpen: (open) => set({ open }),
+  }),
+);
+
+/** Whether the Help & Support dialog is shown. */
+export const useHelpDialog = create<{ open: boolean; setOpen: (open: boolean) => void }>((set) => ({
+  open: false,
+  setOpen: (open) => set({ open }),
+}));
+
 export type CommandGroup = 'action' | 'tab' | 'connection' | 'object';
 
 export interface PaletteCommand {

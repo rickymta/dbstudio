@@ -21,6 +21,7 @@ pub mod keyvalue;
 pub mod plan;
 pub mod sessions;
 pub mod ssh;
+pub mod support;
 pub mod uri;
 
 /// Run blocking work (SQLite, keychain) off the async executor threads.

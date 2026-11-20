@@ -164,6 +164,19 @@ export interface AppInfo {
   arch: string;
 }
 
+export type SupportTopic = 'bug' | 'feature' | 'question' | 'other';
+
+/** What the Help & Support form sends (`support_send`). */
+export interface SupportRequest {
+  name: string;
+  email: string;
+  topic: SupportTopic;
+  subject: string;
+  message: string;
+  /** Attach the app version and OS to the email. */
+  includeSystem: boolean;
+}
+
 /** Shape of errors serialized from Rust `dbstudio_core::Error`. */
 export type IpcErrorKind =
   | 'connection'

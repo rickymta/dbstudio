@@ -152,6 +152,7 @@ pub fn run() {
             commands::app::settings_get,
             commands::app::settings_set,
             commands::app::save_cell_value,
+            commands::support::support_send,
             commands::connections::connections_list,
             commands::connections::connection_save,
             commands::connections::connection_delete,

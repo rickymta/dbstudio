@@ -103,6 +103,61 @@
       "tab": "Tab đang mở",
       "connection": "Kết nối",
       "object": "Yêu thích và đối tượng gần đây"
+    },
+    "activity": "Nhật ký hoạt động",
+    "help": "Trợ giúp & hỗ trợ"
+  },
+  "activity": {
+    "title": "Nhật ký hoạt động",
+    "application": "Ứng dụng",
+    "connection": "Kết nối",
+    "clear": "Xoá nhật ký",
+    "empty": "Chưa có gì được ghi lại.",
+    "ms": "{{ms}} ms",
+    "status": {
+      "started": "bắt đầu",
+      "finished": "hoàn tất",
+      "failed": "thất bại"
+    },
+    "event": {
+      "connect": "Kết nối",
+      "disconnect": "Ngắt kết nối",
+      "reconnect": "Kết nối lại",
+      "testConnection": "Thử kết nối",
+      "saveConnection": "Lưu kết nối",
+      "deleteConnection": "Xoá kết nối",
+      "duplicateConnection": "Nhân bản kết nối",
+      "importConnections": "Nhập danh sách kết nối",
+      "exportConnections": "Xuất danh sách kết nối",
+      "trustHostKey": "Tin cậy host key SSH",
+      "runStatements": "Chạy câu lệnh",
+      "beginTransaction": "Bắt đầu transaction",
+      "commit": "Commit",
+      "rollback": "Rollback",
+      "applyChanges": "Ghi thay đổi dữ liệu",
+      "explain": "Phân tích plan",
+      "startExport": "Bắt đầu xuất dữ liệu",
+      "startImport": "Bắt đầu nhập dữ liệu",
+      "runBackup": "Chạy tác vụ sao lưu",
+      "saveBackupJob": "Lưu tác vụ sao lưu",
+      "deleteBackupJob": "Xoá tác vụ sao lưu",
+      "verifyBackup": "Kiểm tra file sao lưu",
+      "startRestore": "Bắt đầu khôi phục",
+      "cancelJob": "Huỷ tác vụ",
+      "startDebug": "Bắt đầu phiên debug",
+      "stopDebug": "Dừng phiên debug",
+      "saveSettings": "Lưu cài đặt",
+      "clearHistory": "Xoá lịch sử truy vấn",
+      "clearPlanHistory": "Xoá lịch sử plan",
+      "connectionLost": "Mất kết nối",
+      "connectionRestored": "Đã kết nối lại",
+      "reconnectGaveUp": "Tự kết nối lại đã bỏ cuộc",
+      "appStarted": "DBStudio {{version}} đã khởi động"
     }
+  },
+  "zoom": {
+    "in": "Phóng to",
+    "out": "Thu nhỏ",
+    "reset": "Đặt lại thu phóng"
   }
 }

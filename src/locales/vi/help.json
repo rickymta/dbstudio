@@ -1,0 +1,36 @@
+{
+  "open": "Trợ giúp",
+  "title": "Trợ giúp & hỗ trợ",
+  "description": "Báo lỗi, đề xuất tính năng hoặc đặt câu hỏi. Chúng tôi trả lời qua email.",
+  "version": "Phiên bản",
+  "copyVersion": "Sao chép",
+  "versionCopied": "Đã sao chép phiên bản",
+  "name": "Họ tên",
+  "email": "Email",
+  "topic": "Bạn cần hỗ trợ về việc gì?",
+  "topicPlaceholder": "Chọn chủ đề",
+  "topics": {
+    "bug": "Báo lỗi",
+    "feature": "Đề xuất tính năng",
+    "question": "Câu hỏi",
+    "other": "Khác"
+  },
+  "subject": "Tiêu đề",
+  "message": "Nội dung",
+  "messagePlaceholder": "Mô tả vấn đề hoặc ý tưởng. Với lỗi, hãy ghi các bước để tái hiện.",
+  "includeSystem": "Gửi kèm phiên bản ứng dụng và hệ điều hành",
+  "privacy": "Chỉ những gì bạn nhập ở đây được gửi đi. Kết nối, câu lệnh và dữ liệu không bao giờ được gửi kèm.",
+  "submit": "Gửi",
+  "sending": "Đang gửi…",
+  "tryAgain": "Thử lại",
+  "sendFailed": "Không gửi được tin nhắn.",
+  "sent": "Đã gửi",
+  "sentHint": "Cảm ơn bạn! Chúng tôi sẽ trả lời tới {{email}}.",
+  "sendAnother": "Gửi tin khác",
+  "error": {
+    "required": "Trường này là bắt buộc.",
+    "email": "Hãy nhập địa chỉ email hợp lệ.",
+    "topic": "Hãy chọn chủ đề.",
+    "tooLong": "Quá dài."
+  }
+}

@@ -6,6 +6,7 @@ import { SessionHealthBanner } from '@/features/connections/SessionHealthBanner'
 import { EditorHost } from '@/features/editor/EditorHost';
 import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost';
 import { TabBar } from '@/features/tabs/TabBar';
+import { AppWindows } from '@/features/workspace/AppWindows';
 import { CommandPalette } from '@/features/workspace/CommandPalette';
 import { useTabsStore } from '@/stores/tabs';
 import { Toaster } from '@/components/ui/Toast';
@@ -67,6 +68,7 @@ export function App() {
       <EditorHost />
       <ConfirmDestructiveHost />
       <CommandPalette />
+      <AppWindows />
     </div>
   );
 }

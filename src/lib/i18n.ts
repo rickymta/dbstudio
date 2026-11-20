@@ -14,6 +14,7 @@ import enJobs from '../locales/en/jobs.json';
 import enKeyvalue from '../locales/en/keyvalue.json';
 import enPlan from '../locales/en/plan.json';
 import enSafety from '../locales/en/safety.json';
+import enHelp from '../locales/en/help.json';
 import enSettings from '../locales/en/settings.json';
 import enSsh from '../locales/en/ssh.json';
 import viBackup from '../locales/vi/backup.json';
@@ -30,6 +31,7 @@ import viJobs from '../locales/vi/jobs.json';
 import viKeyvalue from '../locales/vi/keyvalue.json';
 import viPlan from '../locales/vi/plan.json';
 import viSafety from '../locales/vi/safety.json';
+import viHelp from '../locales/vi/help.json';
 import viSettings from '../locales/vi/settings.json';
 import viSsh from '../locales/vi/ssh.json';
 
@@ -43,6 +45,7 @@ export const NAMESPACES = [
   'explorer',
   'data',
   'settings',
+  'help',
   'editor',
   'plan',
   'erd',
@@ -92,6 +95,7 @@ void i18n.use(initReactI18next).init({
       explorer: enExplorer,
       data: enData,
       settings: enSettings,
+      help: enHelp,
       editor: enEditor,
       plan: enPlan,
       erd: enErd,
@@ -110,6 +114,7 @@ void i18n.use(initReactI18next).init({
       explorer: viExplorer,
       data: viData,
       settings: viSettings,
+      help: viHelp,
       editor: viEditor,
       plan: viPlan,
       erd: viErd,

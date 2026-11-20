@@ -22,7 +22,7 @@ import { mockDriverFor } from './drivers';
 
 export { mockAppInfo, mockDrivers } from './drivers';
 export { resetMockConnections } from './connections';
-export { resetMockSettings, mockLogDir } from './settings';
+export { resetMockSettings, mockLogDir, mockSupportOutbox } from './settings';
 export { mockEmit, mockListen, resetMockEvents } from './events';
 export { mockAddJob } from './jobs';
 
@@ -72,6 +72,7 @@ export const mock = {
   settingsGet: settings.settingsGet,
   settingsSet: settings.settingsSet,
   saveCellValue: settings.saveCellValue,
+  supportSend: settings.supportSend,
   connectionParseUri: mockParseMongoUri,
   async driverDiagnostics(kind: DbKind): Promise<DriverDiagnostics> {
     return { status: mockDriverFor(kind).status, message: '', helpUrl: null, checks: [] };

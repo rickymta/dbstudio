@@ -18,6 +18,8 @@ tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
 rustls = { workspace = true, features = ["ring"] }
+# Help & Support form (commands/support.rs). No bundled crypto provider: ring is installed at run time.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 dbstudio-core.workspace = true
 dbstudio-sql.workspace = true
 dbstudio-plan.workspace = true

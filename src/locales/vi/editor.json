@@ -206,7 +206,25 @@
       "explain": "Xem kế hoạch thực thi",
       "toggleSidebar": "Ẩn/hiện sidebar",
       "focusResults": "Chuyển editor / kết quả",
-      "palette": "Mở bảng lệnh"
+      "palette": "Mở bảng lệnh",
+      "settings": "Mở cài đặt",
+      "activity": "Nhật ký hoạt động",
+      "zoomIn": "Phóng to",
+      "zoomOut": "Thu nhỏ",
+      "zoomReset": "Đặt lại thu phóng"
+    },
+    "filter": "Lọc phím tắt",
+    "noMatch": "Không có phím tắt phù hợp.",
+    "or": "hoặc",
+    "group": {
+      "editor": "Trình soạn truy vấn",
+      "app": "Ứng dụng",
+      "window": "Cửa sổ",
+      "debugger": "Debugger (bộ phím {{keymap}})"
+    },
+    "keymap": {
+      "jetBrains": "JetBrains",
+      "vsCode": "VS Code"
     }
   },
   "picker": {

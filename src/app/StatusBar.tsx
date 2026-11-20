@@ -1,5 +1,17 @@
 import { useQuery } from '@tanstack/react-query';
-import { Languages, Lock, Monitor, Moon, Settings, Sun } from 'lucide-react';
+import {
+  CircleHelp,
+  Keyboard,
+  Languages,
+  ListChecks,
+  Lock,
+  Minus,
+  Monitor,
+  Moon,
+  Plus,
+  Settings,
+  Sun,
+} from 'lucide-react';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
@@ -7,7 +19,14 @@ import { Tooltip } from '@/components/ui/Tooltip';
 import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
 import { StatusTransaction } from '@/features/editor/StatusTransaction';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
-import { useSettingsDialog } from '@/features/workspace/paletteStore';
+import { formatKeys, keysOf } from '@/features/editor/shortcuts';
+import { useShortcutsHelp } from '@/features/editor/shortcutsHelpStore';
+import {
+  useActivityWindow,
+  useHelpDialog,
+  useSettingsDialog,
+} from '@/features/workspace/paletteStore';
+import { ZOOM_STEP, useZoom } from '@/features/workspace/zoom';
 import { ipc, ipcTransport } from '@/lib/ipc';
 import { setLanguage, type Language } from '@/lib/i18n';
 import { useSessionsStore } from '@/stores/sessions';
@@ -70,6 +89,8 @@ export function StatusBar() {
   const { data: info } = useQuery({ queryKey: ['appInfo'], queryFn: ipc.appInfo });
   const settingsOpen = useSettingsDialog((s) => s.open);
   const setSettingsOpen = useSettingsDialog((s) => s.setOpen);
+  const zoom = useZoom((s) => s.zoom);
+  const setZoom = useZoom((s) => s.setZoom);
   const transport = ipcTransport();
   const mode = useThemeStore((s) => s.mode);
   const setMode = useThemeStore((s) => s.setMode);
@@ -112,6 +133,55 @@ export function StatusBar() {
         <StatusBarSlot name="jobs" />
       </div>
       <div className="flex items-center gap-1">
+        <Tooltip content={`${t('activity.title')} (${formatKeys(keysOf('activity'))})`}>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={t('activity.title')}
+            onClick={() => useActivityWindow.getState().setOpen(true)}
+          >
+            <ListChecks size={14} />
+          </Button>
+        </Tooltip>
+        <Tooltip content={`${t('editor:shortcuts.title')} (${formatKeys(keysOf('help'))})`}>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={t('editor:shortcuts.title')}
+            onClick={() => useShortcutsHelp.getState().setOpen(true)}
+          >
+            <Keyboard size={14} />
+          </Button>
+        </Tooltip>
+        <span className="flex items-center" data-testid="zoom-control">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={t('zoom.out')}
+            onClick={() => setZoom(zoom - ZOOM_STEP)}
+          >
+            <Minus size={12} />
+          </Button>
+          <Tooltip content={`${t('zoom.reset')} (${formatKeys(keysOf('zoomReset'))})`}>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={t('zoom.reset')}
+              className="tabular-nums"
+              onClick={() => setZoom(1)}
+            >
+              {`${Math.round(zoom * 100)}%`}
+            </Button>
+          </Tooltip>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={t('zoom.in')}
+            onClick={() => setZoom(zoom + ZOOM_STEP)}
+          >
+            <Plus size={12} />
+          </Button>
+        </span>
         <Tooltip content={t('settings:open')}>
           <Button
             variant="ghost"
@@ -143,6 +213,17 @@ export function StatusBar() {
           >
             <Languages size={14} />
             <span>{language.toUpperCase()}</span>
+          </Button>
+        </Tooltip>
+        <Tooltip content={t('help:title')}>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={t('help:title')}
+            onClick={() => useHelpDialog.getState().setOpen(true)}
+          >
+            <CircleHelp size={14} />
+            <span>{t('help:open')}</span>
           </Button>
         </Tooltip>
       </div>

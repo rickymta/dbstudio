@@ -206,7 +206,25 @@
       "explain": "Show the execution plan",
       "toggleSidebar": "Toggle sidebar",
       "focusResults": "Switch editor / results",
-      "palette": "Open the command palette"
+      "palette": "Open the command palette",
+      "settings": "Open settings",
+      "activity": "Activity Logs",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "zoomReset": "Reset zoom"
+    },
+    "filter": "Filter shortcuts",
+    "noMatch": "No shortcut matches.",
+    "or": "or",
+    "group": {
+      "editor": "Query editor",
+      "app": "Application",
+      "window": "Window",
+      "debugger": "Debugger ({{keymap}} keymap)"
+    },
+    "keymap": {
+      "jetBrains": "JetBrains",
+      "vsCode": "VS Code"
     }
   },
   "picker": {

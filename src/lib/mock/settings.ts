@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, type AppSettings } from '../types';
+import { DEFAULT_SETTINGS, type AppSettings, type SupportRequest } from '../types';
 import { clone, ipcError, sleep } from './util';
 
 let settings: AppSettings = { ...DEFAULT_SETTINGS };
@@ -38,4 +38,13 @@ export async function saveCellValue(suggestedName: string, dataBase64: string): 
   await sleep(5, 20);
   void dataBase64; // the mock writes nothing
   return `/mock/downloads/${suggestedName}`;
+}
+
+/** Requests "sent" through the mock, newest last (nothing leaves the browser). */
+export const mockSupportOutbox: SupportRequest[] = [];
+
+export async function supportSend(request: SupportRequest): Promise<void> {
+  await sleep(100, 300);
+  if (!request.email.includes('@')) throw ipcError('invalid', 'the email address is not valid');
+  mockSupportOutbox.push(clone(request));
 }
