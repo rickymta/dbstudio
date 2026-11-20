@@ -2,6 +2,14 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.1.12 - 2026-11-20
+
+Thay đổi từ v0.1.11.
+
+- feat(data): sửa dữ liệu trực tiếp trên lưới kiểu DBeaver, Save / Cancel dưới lưới (677996b)
+- feat(app): Activity Logs, Help & Support, cửa sổ phím tắt theo nhóm, zoom, chặn phím trình duyệt (c334526)
+- ci: thử lại khi tải image CSDL test bị registry từ chối (428d461)
+
 ## v0.1.11 - 2026-11-20
 
 Thay đổi từ v0.1.10.
