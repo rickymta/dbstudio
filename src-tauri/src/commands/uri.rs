@@ -349,6 +349,46 @@ fn parse_sql(p: &Parts) -> Result<ConnectionConfig> {
     if let Some(secs) = q(p, "connect_timeout").and_then(|v| v.parse::<u64>().ok()) {
         cfg.connect_timeout_ms = Some(secs.saturating_mul(1000));
     }
+    // libpq / MySQL Connector host lists (`postgres://h1,h2:5433/db`): every host is tried in
+    // turn, `target_session_attrs` picks the primary or a standby. (Oracle uses descriptors.)
+    if p.hosts.len() > 1 && kind != DbKind::Oracle {
+        let extra: Vec<String> = p.hosts[1..]
+            .iter()
+            .map(|(h, port)| {
+                let h = if h.contains(':') {
+                    format!("[{h}]")
+                } else {
+                    h.clone()
+                };
+                format!("{h}:{}", port.unwrap_or(default_port))
+            })
+            .collect();
+        cfg.options.insert("hosts".into(), extra.join(","));
+    }
+    if let Some(attrs) = q(p, "target_session_attrs").or_else(|| q(p, "targetServerType")) {
+        let attrs = match attrs.to_ascii_lowercase().as_str() {
+            "master" | "primary" | "read-write" => "read-write",
+            "slave" | "secondary" | "standby" | "read-only" | "replica" => "read-only",
+            _ => "any",
+        };
+        cfg.options
+            .insert("targetSessionAttrs".into(), attrs.into());
+    }
+    if let Some(lb) = q(p, "load_balance_hosts") {
+        cfg.options
+            .insert("loadBalanceHosts".into(), lb.to_ascii_lowercase());
+    }
+    // SQL Server Always On keywords.
+    if kind == DbKind::SqlServer {
+        if let Some(intent) = q(p, "applicationIntent") {
+            cfg.options
+                .insert("applicationIntent".into(), intent.to_string());
+        }
+        if let Some(msf) = q(p, "multiSubnetFailover") {
+            cfg.options
+                .insert("multiSubnetFailover".into(), msf.to_ascii_lowercase());
+        }
+    }
     // CockroachDB Cloud routes by cluster id (`options=--cluster=<id>` at startup).
     if kind == DbKind::CockroachDb {
         let cluster = q(p, "cluster").map(str::to_string).or_else(|| {
@@ -582,7 +622,8 @@ fn parse_jdbc(rest: &str) -> Result<(ConnectionProfile, bool, Vec<String>)> {
     let mut parts = split_uri(&format!("{scheme}://{body}"))
         .map_err(|e| jdbc_invalid(&e.to_string().replace("invalid connection URI: ", "")))?;
     let mut notes = Vec::new();
-    if parts.hosts.len() > 1 {
+    // Every host of a SQL URL is kept (host list); ClickHouse takes one server.
+    if parts.hosts.len() > 1 && scheme == "clickhouse" {
         notes.push(format!(
             "The URL lists {} hosts; only the first one ({}) was used.",
             parts.hosts.len(),
@@ -1362,6 +1403,55 @@ mod tests {
     }
 
     #[test]
+    fn host_lists_and_cluster_keywords() {
+        let (p, _) = parse_uri(
+            "postgresql://u@pg1,pg2:5433,[::1]/app?target_session_attrs=read-write&load_balance_hosts=random",
+        )
+        .unwrap();
+        let c = p.config;
+        assert_eq!((c.host.as_str(), c.port), ("pg1", 5432));
+        assert_eq!(
+            c.options.get("hosts").map(String::as_str),
+            Some("pg2:5433,[::1]:5432")
+        );
+        assert_eq!(
+            c.options.get("targetSessionAttrs").map(String::as_str),
+            Some("read-write")
+        );
+        assert_eq!(
+            c.options.get("loadBalanceHosts").map(String::as_str),
+            Some("random")
+        );
+        assert_eq!(c.nodes().len(), 3);
+        let (p, _) = parse_uri("mysql://u@m1,m2/shop?targetServerType=replica").unwrap();
+        assert_eq!(
+            p.config
+                .options
+                .get("targetSessionAttrs")
+                .map(String::as_str),
+            Some("read-only")
+        );
+        let (p, _) = parse_uri(
+            "sqlserver://sa@ag-listener/sales?applicationIntent=ReadOnly&multiSubnetFailover=True",
+        )
+        .unwrap();
+        assert_eq!(
+            p.config
+                .options
+                .get("applicationIntent")
+                .map(String::as_str),
+            Some("ReadOnly")
+        );
+        assert_eq!(
+            p.config
+                .options
+                .get("multiSubnetFailover")
+                .map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
     fn jdbc_other_databases() {
         let (p, s, n) = parse_uri_full(
             "jdbc:postgresql://h1:6432,h2/app?user=me&password=p%40&ssl=true&sslmode=verify-full",
@@ -1375,7 +1465,9 @@ mod tests {
         assert_eq!(c.database.as_deref(), Some("app"));
         assert_eq!(c.username.as_deref(), Some("me"));
         assert_eq!(c.tls.mode, TlsMode::VerifyFull);
-        assert!(s && n.len() == 1);
+        // Both hosts are kept (host list): nothing was dropped, so no note.
+        assert_eq!(c.options.get("hosts").map(String::as_str), Some("h2:5432"));
+        assert!(s && n.is_empty());
         let (p, s, _) = parse_uri_full("jdbc:mysql://db:3307/shop?user=u&useSSL=true").unwrap();
         assert_eq!((p.config.kind, p.config.port), (DbKind::MySql, 3307));
         assert_eq!(p.config.tls.mode, TlsMode::Require);

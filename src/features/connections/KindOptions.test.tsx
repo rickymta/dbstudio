@@ -29,13 +29,29 @@ function Harness({ kind, initial = {} }: { kind: DbKind; initial?: Record<string
 const stored = () => JSON.parse(screen.getByTestId('options').textContent ?? '{}') as unknown;
 
 describe('kindOptions model', () => {
-  it('has no fields for kinds without driver options', () => {
-    expect(kindOptionsFor('postgres')).toEqual([]);
+  const field = (kind: Parameters<typeof kindOptionsFor>[0], id: string) =>
+    kindOptionsFor(kind).find((o) => o.id === id)!;
+
+  it('shares the fields of related kinds and offers a host list to clustered servers', () => {
     expect(kindOptionsFor('scylladb')).toBe(kindOptionsFor('cassandra'));
+    expect(kindOptionsFor('yugabytedb')).toBe(kindOptionsFor('postgres'));
+    for (const kind of [
+      'postgres',
+      'mysql',
+      'sqlserver',
+      'redis',
+      'cassandra',
+      'mongodb',
+    ] as const) {
+      expect(field(kind, 'hosts')?.type).toBe('textarea');
+    }
+    expect(kindOptionsFor('clickhouse').some((o) => o.id === 'hosts')).toBe(false);
   });
 
   it('reads defaults and stores only values that differ from them', () => {
-    const [localDc, consistency, lwt] = kindOptionsFor('cassandra');
+    const [localDc, consistency, lwt] = ['localDc', 'consistency', 'lwtEdits'].map((id) =>
+      field('cassandra', id),
+    );
     expect(readKindOption({}, consistency!)).toBe('LOCAL_ONE');
     expect(readKindOption({ 'cql.consistency': 'quorum' }, consistency!)).toBe('QUORUM');
     expect(readKindOption({}, lwt!)).toBe(true);
@@ -58,9 +74,29 @@ describe('kindOptions model', () => {
 });
 
 describe('KindOptions', () => {
-  it('renders nothing for PostgreSQL', () => {
-    render(<Harness kind="postgres" />);
-    expect(screen.queryByTestId('kind-options')).toBeNull();
+  it('drops the cluster options another driver does not understand', () => {
+    const options = { hosts: 'h2', sentinelMaster: 'mymaster', targetSessionAttrs: 'read-write' };
+    // PostgreSQL would send `sentinelMaster` to the server as a startup parameter.
+    expect(optionsForKind(options, 'postgres')).toEqual({
+      hosts: 'h2',
+      targetSessionAttrs: 'read-write',
+    });
+    expect(optionsForKind(options, 'redis')).toEqual({ hosts: 'h2', sentinelMaster: 'mymaster' });
+  });
+
+  it('asks for the Sentinel master name only with the Sentinel topology', async () => {
+    const user = userEvent.setup();
+    render(<Harness kind="redis" />);
+    expect(screen.queryByLabelText('Master name')).toBeNull();
+    await user.click(screen.getByRole('combobox', { name: 'Topology' }));
+    await user.click(await screen.findByRole('option', { name: 'Sentinel' }));
+    await user.type(screen.getByLabelText('Master name'), 'mymaster');
+    await user.type(screen.getByLabelText('Other servers of the cluster'), 's2:26379');
+    expect(stored()).toEqual({
+      topology: 'sentinel',
+      sentinelMaster: 'mymaster',
+      hosts: 's2:26379',
+    });
   });
 
   it('edits the Cassandra options', async () => {

@@ -48,6 +48,11 @@ fn empty(kind: &str) -> Error {
 }
 
 impl PutPlan {
+    /// The key written (a cluster routes the plan by it).
+    pub fn key(&self) -> &[u8] {
+        &self.key
+    }
+
     /// Validate and convert; no I/O.
     pub fn new(key: &str, data: &KeyData, ttl_ms: Option<u64>, mode: PutMode) -> Result<PutPlan> {
         if ttl_ms == Some(0) {

@@ -218,11 +218,24 @@ fn base_uri(config: &ConnectionConfig) -> String {
     } else {
         host.clone()
     };
+    // `all_nodes`: behind SSH, MongoDB goes through a SOCKS5 proxy that reaches every member.
+    let nodes = config.all_nodes();
     if srv {
         format!("mongodb+srv://{host}/")
-    } else if let Some(hosts) = opt(config, "hosts") {
-        // Seed list from a pasted URI.
-        format!("mongodb://{hosts}/")
+    } else if nodes.len() > 1 {
+        // Replica set seed list: the host, then `options.hosts` (a pasted URI lists them all;
+        // duplicates are dropped).
+        let seeds: Vec<String> = nodes
+            .iter()
+            .map(|(h, p)| {
+                if h.contains(':') && !h.starts_with('[') {
+                    format!("[{h}]:{p}")
+                } else {
+                    format!("{h}:{p}")
+                }
+            })
+            .collect();
+        format!("mongodb://{}/", seeds.join(","))
     } else {
         format!("mongodb://{host}:{}/", config.port)
     }

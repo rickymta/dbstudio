@@ -425,9 +425,20 @@ impl Shared {
         let mut conn = self.dedicated(db).await?;
         let mut affected = Vec::with_capacity(plans.len());
         for (i, step) in plans.iter().enumerate() {
+            // In a cluster each step (one key: WATCH, MULTI and EXEC included) runs on the
+            // primary owning that key.
+            let key = match step {
+                Step::Plan(p) => p.route_key(),
+                Step::Put(p) => Some(p.key()),
+            };
+            let mut node = match key {
+                Some(k) => self.node_conn_for_key(k).await?,
+                None => None,
+            };
+            let target = node.as_mut().unwrap_or(&mut conn);
             let outcome = match step {
-                Step::Plan(p) => apply_one(&mut conn, p).await,
-                Step::Put(p) => put_key(&mut conn, p).await,
+                Step::Plan(p) => apply_one(target, p).await,
+                Step::Put(p) => put_key(target, p).await,
             };
             match outcome {
                 Ok(n) => affected.push(n),
@@ -445,6 +456,18 @@ impl Shared {
 enum Step {
     Plan(Plan),
     Put(PutPlan),
+}
+
+impl Plan {
+    /// The key a cluster routes this plan by: the watched key, else the first command's key.
+    fn route_key(&self) -> Option<&[u8]> {
+        self.watch.first().map(Vec::as_slice).or_else(|| {
+            self.commands
+                .first()
+                .and_then(|c| c.get(1))
+                .map(Vec::as_slice)
+        })
+    }
 }
 
 async fn apply_one(

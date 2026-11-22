@@ -245,6 +245,56 @@
     "cluster": {
       "label": "Mã định tuyến cụm",
       "hint": "Chỉ dùng cho CockroachDB Cloud, ví dụ funny-otter-1234."
+    },
+    "hosts": {
+      "label": "Các máy chủ khác của cụm",
+      "hint": "Mỗi dòng một host:port (hoặc cách nhau bằng dấu phẩy), được thử sau host ở trên khi host đó không trả lời. Không dùng khi đi qua SSH tunnel, vì tunnel chỉ tới được một địa chỉ.",
+      "placeholder": "db2.internal:5432\ndb3.internal:5432"
+    },
+    "targetSessionAttrs": {
+      "label": "Máy chủ cần giữ",
+      "hint": "Khi có nhiều máy chủ: máy đầu tiên trả lời, primary (ghi được, kể cả sau failover) hoặc standby.",
+      "value": {
+        "any": "Bất kỳ máy chủ nào",
+        "read-write": "Primary (ghi được)",
+        "read-only": "Standby (chỉ đọc)"
+      }
+    },
+    "loadBalanceHosts": {
+      "label": "Thứ tự thử máy chủ",
+      "value": {
+        "disable": "Theo thứ tự liệt kê",
+        "random": "Ngẫu nhiên (chia tải)"
+      }
+    },
+    "topology": {
+      "label": "Kiểu triển khai",
+      "hint": "Sentinel: host ở trên (và các máy chủ khác) là sentinel, sentinel cho biết master. Cluster: Redis Cluster, key được định tuyến tới primary giữ nó (chỉ có database 0). Cả hai không đi qua SSH tunnel được.",
+      "value": {
+        "standalone": "Một máy chủ",
+        "sentinel": "Sentinel",
+        "cluster": "Redis Cluster"
+      }
+    },
+    "sentinelMaster": {
+      "label": "Tên master",
+      "hint": "Tên mà sentinel theo dõi (sentinel monitor <tên> …), ví dụ mymaster."
+    },
+    "applicationIntent": {
+      "label": "Mục đích kết nối",
+      "hint": "Chỉ đọc sẽ đưa kết nối tới một secondary đọc được của availability group Always On (read-only routing trên listener).",
+      "value": {
+        "ReadWrite": "Đọc và ghi",
+        "ReadOnly": "Chỉ đọc"
+      }
+    },
+    "multiSubnetFailover": {
+      "label": "Failover nhiều subnet",
+      "hint": "Kết nối cùng lúc tới mọi địa chỉ của listener và giữ địa chỉ trả lời đầu tiên (availability group trải trên nhiều subnet)."
+    },
+    "racHint": {
+      "label": "Oracle RAC",
+      "hint": "Nhập địa chỉ SCAN vào Host, hoặc dán TNS descriptor có ADDRESS_LIST, FAILOVER và LOAD_BALANCE vào ô Database / service."
     }
   },
   "health": {
@@ -258,5 +308,13 @@
     "leasesReopened_other": "{{count}} tab truy vấn nhận phiên server mới: giá trị SET và bảng tạm đã mất.",
     "reconnect": "Kết nối lại",
     "dismiss": "Đóng"
+  },
+  "nodeStatus": {
+    "title": "Đang kết nối tới {{node}}",
+    "cluster": "Cụm · {{count}} primary",
+    "role": {
+      "primary": "primary",
+      "replica": "replica"
+    }
   }
 }

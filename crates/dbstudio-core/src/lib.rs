@@ -57,7 +57,10 @@ pub use browse::{
     ColumnFilter, FilterOp, ObjectSearchRequest, SortKey, TableCountRequest, TableDataRequest,
 };
 pub use capabilities::Capabilities;
-pub use config::{AuthMode, ConnectionConfig, Environment, Secret, TlsConfig, TlsMode};
+pub use config::{
+    AuthMode, ConnectionConfig, Environment, HOSTS_OPTION, Secret, TOPOLOGY_OPTION, TlsConfig,
+    TlsMode,
+};
 pub use driver::{
     Driver, DriverDescriptor, DriverRegistry, DriverStatus, ServerInfo, Session, UnavailableReason,
     execute_collect, planned_descriptors,

@@ -748,6 +748,23 @@ impl MySqlSession {
         }
         extra.insert("full_version".into(), raw.clone());
         extra.insert("flavor".into(), flavor.into());
+        // Which server answered and whether it takes writes (a host list or a cluster member;
+        // shared keys of every driver, read by the status bar). Best effort.
+        if let Ok(Some(node)) = conn
+            .query_first::<Row, _>("SELECT @@hostname, @@port, @@global.read_only")
+            .await
+        {
+            if let (Some(host), Some(port)) = (cell(&node, 0), cell(&node, 1)) {
+                extra.insert("node".into(), format!("{host}:{port}"));
+            }
+            if let Some(ro) = cell(&node, 2) {
+                let replica = matches!(ro.as_str(), "1" | "ON" | "on");
+                extra.insert(
+                    "nodeRole".into(),
+                    if replica { "replica" } else { "primary" }.into(),
+                );
+            }
+        }
         if flavor == "tidb" {
             // TiDB has no server-side read-only session or transaction (noop implementation):
             // a read-only profile is enforced by DBStudio's statement guard only. The UI shows

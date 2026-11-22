@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
 import { Select } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
+import { Textarea } from '@/components/ui/Textarea';
 import type { DbKind } from '@/lib/types';
 import {
   kindOptionsFor,
@@ -33,10 +34,21 @@ export function KindOptions({
   return (
     <div className="flex flex-col gap-2.5" data-testid="kind-options">
       {fields.map((option) => {
+        if (option.when && (value[option.when.name] ?? '').toLowerCase() !== option.when.value) {
+          return null;
+        }
         const fieldId = `${id}-${option.id}`;
         const label = t(`kindOption.${option.id}.label`);
         const hint = t(`kindOption.${option.id}.hint`, { defaultValue: '' });
         const current = readKindOption(value, option);
+        if (option.type === 'note') {
+          return (
+            <p key={option.id} className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">{label}. </span>
+              {hint}
+            </p>
+          );
+        }
         if (option.type === 'switch') {
           return (
             <div key={option.id} className="flex items-start gap-2">
@@ -62,6 +74,16 @@ export function KindOptions({
               <Input
                 id={fieldId}
                 spellCheck={false}
+                value={String(current)}
+                onChange={(e) => set(option, e.target.value)}
+              />
+            ) : option.type === 'textarea' ? (
+              <Textarea
+                id={fieldId}
+                spellCheck={false}
+                rows={3}
+                className="font-mono text-xs"
+                placeholder={t(`kindOption.${option.id}.placeholder`, { defaultValue: '' })}
                 value={String(current)}
                 onChange={(e) => set(option, e.target.value)}
               />

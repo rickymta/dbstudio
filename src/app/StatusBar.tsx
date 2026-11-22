@@ -49,8 +49,16 @@ function ActiveConnection() {
       s.sessionsByConnection[connectionId ?? '']?.serverInfo.extra?.readOnlyEnforcement ===
       'application',
   );
+  // Server the session landed on (a host list, Sentinel, Redis Cluster): drivers report it.
+  const extra = useSessionsStore(
+    (s) => s.sessionsByConnection[connectionId ?? '']?.serverInfo.extra,
+  );
   if (!connectionId || !profile) return null;
   const color = connectionColor(profile);
+  const clustered =
+    !!profile.options.hosts?.trim() ||
+    ['sentinel', 'cluster'].includes((profile.options.topology ?? '').toLowerCase());
+  const node = clustered ? extra?.node : undefined;
   return (
     <span
       data-testid="status-connection"
@@ -78,6 +86,18 @@ function ActiveConnection() {
           title={t('connections:row.readOnlyAppOnlyHint')}
         >
           {t('connections:row.readOnlyAppOnly')}
+        </span>
+      )}
+      {node && (
+        <span
+          data-testid="status-node"
+          className="min-w-0 truncate"
+          title={t('connections:nodeStatus.title', { node })}
+        >
+          {extra?.clusterPrimaries
+            ? t('connections:nodeStatus.cluster', { count: Number(extra.clusterPrimaries) })
+            : node}
+          {extra?.nodeRole && ` · ${t(`connections:nodeStatus.role.${extra.nodeRole}`)}`}
         </span>
       )}
     </span>

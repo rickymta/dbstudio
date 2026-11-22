@@ -256,6 +256,9 @@ fn emit_reply(
     })
 }
 
+/// Commands that need one connection across several lines: not possible on a cluster console.
+const CLUSTER_UNSUPPORTED: &[&str] = &["MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH"];
+
 /// Hook called after each successful command with its upper-case name and arguments.
 pub type Hook<'a> = &'a mut (dyn FnMut(&str, &[Vec<u8>]) + Send);
 
@@ -300,11 +303,26 @@ pub async fn run_script(
             },
         })?;
         let t0 = Instant::now();
+        if shared.is_cluster() && CLUSTER_UNSUPPORTED.contains(&name.as_str()) {
+            return Err(Error::Unsupported(format!(
+                "{name} is not available on a Redis Cluster in the console: each line may run on \
+                 another primary, so a transaction cannot span lines"
+            )));
+        }
         if name == DELETE_PATTERN {
             let pattern = tokens
                 .get(1)
                 .ok_or_else(|| Error::Invalid(format!("{DELETE_PATTERN} needs a pattern")))?;
-            let deleted = delete_pattern(conn, pattern, sink).await?;
+            // In a cluster every primary holds part of the keys: delete on each of them.
+            let deleted = if shared.is_cluster() {
+                let mut total = 0;
+                for mut node in shared.primary_conns().await? {
+                    total += delete_pattern(&mut node, pattern, sink).await?;
+                }
+                total
+            } else {
+                delete_pattern(conn, pattern, sink).await?
+            };
             sink.on_statement_end(StatementEnd {
                 outcome: EndOutcome::Affected { rows: deleted },
                 elapsed_ms: t0.elapsed().as_millis() as u64,
@@ -319,14 +337,22 @@ pub async fn run_script(
         let remaining = req
             .timeout_ms
             .map(|t| Duration::from_millis(t).saturating_sub(started.elapsed()));
-        let call = cmd.query_async::<redis::Value>(conn);
+        // A cluster routes each command to the primary owning its key (and answers SCAN,
+        // DBSIZE, INFO keyspace for the whole cluster); a single server uses `conn`.
+        let call = async {
+            if shared.is_cluster() {
+                shared.run::<redis::Value>(0, &cmd).await
+            } else {
+                cmd.query_async::<redis::Value>(conn).await.map_err(map_err)
+            }
+        };
         let reply = match remaining {
             Some(d) => tokio::time::timeout(d, call)
                 .await
                 .map_err(|_| Error::Timeout)?,
             None => call.await,
         };
-        let reply = reply.map_err(|e| match map_err(e) {
+        let reply = reply.map_err(|e| match e {
             Error::Query { message, .. } => Error::Query {
                 message,
                 position: Some(line.start),

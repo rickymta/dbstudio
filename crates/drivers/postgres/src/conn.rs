@@ -149,13 +149,60 @@ pub struct Shared {
     pub read_only: bool,
 }
 
+/// `options` key: which server of the host list to keep (`any`, `read-write`, `read-only`).
+pub const TARGET_SESSION_ATTRS: &str = "targetSessionAttrs";
+/// `options` key: try the hosts in order (`disable`) or at random (`random`).
+pub const LOAD_BALANCE_HOSTS: &str = "loadBalanceHosts";
+/// Options read by the client; never sent to the server as `-c name=value`.
+const CLIENT_OPTIONS: &[&str] = &[
+    dbstudio_core::HOSTS_OPTION,
+    dbstudio_core::TOPOLOGY_OPTION,
+    TARGET_SESSION_ATTRS,
+    LOAD_BALANCE_HOSTS,
+];
+
+fn parse_target_session_attrs(value: &str) -> Result<tokio_postgres::config::TargetSessionAttrs> {
+    use tokio_postgres::config::TargetSessionAttrs as T;
+    match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "" | "any" => Ok(T::Any),
+        "read-write" | "primary" => Ok(T::ReadWrite),
+        "read-only" | "standby" => Ok(T::ReadOnly),
+        other => Err(Error::Invalid(format!(
+            "options.{TARGET_SESSION_ATTRS}: expected `any`, `read-write` or `read-only`, got {other:?}"
+        ))),
+    }
+}
+
 impl Shared {
+    /// The profile lists several servers (a host list): the server info names the one used.
+    pub fn multi_host(&self) -> bool {
+        self.base.get_hosts().len() > 1
+    }
+
     /// Build the shared state from a connection config without touching the network.
     pub fn new(config: &ConnectionConfig, secret: Option<&Secret>) -> Result<Self> {
         let tls = tls::build(&config.tls)?;
         let mut base = tokio_postgres::Config::new();
-        base.host(&config.host);
-        base.port(config.port);
+        // Several servers (a primary and its standbys, e.g. under Patroni): libpq-style host
+        // list, tried in order (or at random), keeping the first one that has the wanted role.
+        for (host, port) in config.nodes() {
+            base.host(&host);
+            base.port(port);
+        }
+        if let Some(attrs) = config.options.get(TARGET_SESSION_ATTRS) {
+            base.target_session_attrs(parse_target_session_attrs(attrs)?);
+        }
+        if let Some(mode) = config.options.get(LOAD_BALANCE_HOSTS) {
+            base.load_balance_hosts(match mode.trim().to_ascii_lowercase().as_str() {
+                "random" => tokio_postgres::config::LoadBalanceHosts::Random,
+                "disable" | "" => tokio_postgres::config::LoadBalanceHosts::Disable,
+                other => {
+                    return Err(Error::Invalid(format!(
+                        "options.{LOAD_BALANCE_HOSTS}: expected `disable` or `random`, got {other:?}"
+                    )));
+                }
+            });
+        }
         base.user(config.login_user().unwrap_or(default_user(config.kind)));
         if let Some(secret) = config.effective_secret(secret) {
             base.password(secret.expose());
@@ -173,7 +220,11 @@ impl Shared {
             startup.push_str("-c default_transaction_read_only=on ");
         }
         for (key, value) in &config.options {
-            if key == "application_name" || key == "search_timeout_ms" {
+            // Client-side settings, not server parameters.
+            if key == "application_name"
+                || key == "search_timeout_ms"
+                || CLIENT_OPTIONS.contains(&key.as_str())
+            {
                 continue;
             }
             if key == "cockroach.cluster" {
@@ -521,3 +572,54 @@ macro_rules! opaque_debug {
     )*};
 }
 opaque_debug!(Conn, Pool, PooledConn, Shared);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbstudio_core::DbKind;
+
+    fn config(options: &[(&str, &str)]) -> ConnectionConfig {
+        let mut c = ConnectionConfig::new(DbKind::Postgres, "pg", "db1");
+        for (k, v) in options {
+            c.options.insert((*k).into(), (*v).into());
+        }
+        c
+    }
+
+    #[test]
+    fn a_host_list_becomes_the_libpq_host_list_and_stays_client_side() {
+        let shared = Shared::new(
+            &config(&[
+                ("hosts", "db2:5433,db3"),
+                ("targetSessionAttrs", "read-write"),
+                ("loadBalanceHosts", "random"),
+                ("work_mem", "64MB"),
+            ]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(shared.base.get_hosts().len(), 3);
+        assert_eq!(shared.base.get_ports(), &[5432, 5433, 5432]);
+        assert_eq!(
+            shared.base.get_target_session_attrs(),
+            tokio_postgres::config::TargetSessionAttrs::ReadWrite
+        );
+        // Only real server parameters are sent as `-c name=value`.
+        let startup = shared.base.get_options().unwrap_or("");
+        assert!(startup.contains("work_mem=64MB"), "{startup}");
+        for key in ["hosts", "targetSessionAttrs", "loadBalanceHosts"] {
+            assert!(!startup.contains(key), "{key} leaked into {startup}");
+        }
+    }
+
+    #[test]
+    fn bad_cluster_options_are_reported() {
+        for (key, value) in [
+            ("targetSessionAttrs", "primary-ish"),
+            ("loadBalanceHosts", "yes"),
+        ] {
+            let err = Shared::new(&config(&[(key, value)]), None).err().unwrap();
+            assert!(err.to_string().contains(key), "{err}");
+        }
+    }
+}

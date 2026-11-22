@@ -5,8 +5,10 @@ import type { DbKind } from '@/lib/types';
  * (`connections:kindOption.<id>`), `name` the key in `ConnectionProfile.options`. A value equal
  * to the driver default is not stored.
  */
-export type KindOption =
+export type KindOption = (
   | { id: string; name: string; type: 'text' }
+  /** Several lines (a host list); stored as typed. */
+  | { id: string; name: string; type: 'textarea' }
   | { id: string; name: string; type: 'switch'; default: boolean }
   | {
       id: string;
@@ -16,10 +18,75 @@ export type KindOption =
       default: string;
       /** Show the values as they are (protocol names) instead of translating them. */
       rawLabels?: boolean;
-    };
+    }
+  /** Text only (its hint), no value. */
+  | { id: string; name: ''; type: 'note' }
+) & {
+  /** Shown only while another option has this value (e.g. the Sentinel master name). */
+  when?: { name: string; value: string };
+};
+
+// Every server after the first: `dbstudio-core` `ConnectionConfig::nodes` (ignored behind an
+// SSH tunnel, which forwards a single address).
+const HOSTS: KindOption = { id: 'hosts', name: 'hosts', type: 'textarea' };
+// crates/drivers/postgres/src/conn.rs and crates/drivers/mysql/src/lib.rs (`wanted_role`).
+const TARGET_SESSION: KindOption = {
+  id: 'targetSessionAttrs',
+  name: 'targetSessionAttrs',
+  type: 'select',
+  values: ['any', 'read-write', 'read-only'],
+  default: 'any',
+};
+const LOAD_BALANCE: KindOption = {
+  id: 'loadBalanceHosts',
+  name: 'loadBalanceHosts',
+  type: 'select',
+  values: ['disable', 'random'],
+  default: 'disable',
+};
+const PG_CLUSTER: KindOption[] = [HOSTS, TARGET_SESSION, LOAD_BALANCE];
+const MYSQL_CLUSTER: KindOption[] = [HOSTS, TARGET_SESSION];
+
+// crates/drivers/redis/src/conn.rs (`Shared::connect`, `sentinel_master`).
+const REDIS: KindOption[] = [
+  {
+    id: 'topology',
+    name: 'topology',
+    type: 'select',
+    values: ['standalone', 'sentinel', 'cluster'],
+    default: 'standalone',
+  },
+  {
+    id: 'sentinelMaster',
+    name: 'sentinelMaster',
+    type: 'text',
+    when: { name: 'topology', value: 'sentinel' },
+  },
+  HOSTS,
+];
+
+// crates/drivers/mssql/src/settings.rs (Always On availability groups).
+const SQLSERVER: KindOption[] = [
+  HOSTS,
+  {
+    id: 'applicationIntent',
+    name: 'applicationIntent',
+    type: 'select',
+    values: ['ReadWrite', 'ReadOnly'],
+    default: 'ReadWrite',
+  },
+  { id: 'multiSubnetFailover', name: 'multiSubnetFailover', type: 'switch', default: false },
+];
+
+// crates/drivers/oracle/src/target.rs: RAC through a TNS descriptor or a SCAN address.
+const ORACLE: KindOption[] = [{ id: 'racHint', name: '', type: 'note' }];
+
+// crates/drivers/mongodb/src/conn.rs (`base_uri`): replica set seed list.
+const MONGO: KindOption[] = [HOSTS];
 
 // crates/drivers/cassandra/src/conn.rs (`Settings::from_config`, `parse_consistency`).
 const CQL: KindOption[] = [
+  HOSTS,
   { id: 'localDc', name: 'cql.localDc', type: 'text' },
   {
     id: 'consistency',
@@ -72,13 +139,37 @@ const CLICKHOUSE: KindOption[] = [
 ];
 
 // crates/drivers/postgres/src/conn.rs (CockroachDB Cloud routing id).
-const COCKROACH: KindOption[] = [{ id: 'cluster', name: 'cockroach.cluster', type: 'text' }];
+const COCKROACH: KindOption[] = [
+  { id: 'cluster', name: 'cockroach.cluster', type: 'text' },
+  ...PG_CLUSTER,
+];
 
 const BY_KIND: Partial<Record<DbKind, KindOption[]>> = {
   cassandra: CQL,
   scylladb: CQL,
   clickhouse: CLICKHOUSE,
   cockroachdb: COCKROACH,
+  postgres: PG_CLUSTER,
+  yugabytedb: PG_CLUSTER,
+  mysql: MYSQL_CLUSTER,
+  tidb: MYSQL_CLUSTER,
+  redis: REDIS,
+  sqlserver: SQLSERVER,
+  oracle: ORACLE,
+  mongodb: MONGO,
+};
+
+/**
+ * Whole option names that only some drivers understand. The PostgreSQL driver sends unknown
+ * options to the server as startup parameters, so a leftover `sentinelMaster` would fail there.
+ */
+const OWNED_KEYS: Record<string, readonly DbKind[]> = {
+  topology: ['redis'],
+  sentinelMaster: ['redis'],
+  applicationIntent: ['sqlserver'],
+  multiSubnetFailover: ['sqlserver'],
+  targetSessionAttrs: ['postgres', 'cockroachdb', 'yugabytedb', 'mysql', 'tidb'],
+  loadBalanceHosts: ['postgres', 'cockroachdb', 'yugabytedb'],
 };
 
 /** Prefixes of options that only one driver family understands. */
@@ -101,6 +192,8 @@ export function optionsForKind(
   kind: DbKind,
 ): Record<string, string> {
   const kept = Object.entries(options).filter(([key]) => {
+    const exact = OWNED_KEYS[key];
+    if (exact) return exact.includes(kind);
     const owner = Object.entries(OWNED_PREFIXES).find(([prefix]) => key.startsWith(prefix));
     return !owner || owner[1].includes(kind);
   });
@@ -115,8 +208,9 @@ export function readKindOption(
   option: KindOption,
 ): string | boolean {
   const stored = options[option.name];
+  if (option.type === 'note') return '';
   if (option.type === 'switch') return stored === undefined ? option.default : isTrue(stored);
-  if (option.type === 'text') return stored ?? '';
+  if (option.type === 'text' || option.type === 'textarea') return stored ?? '';
   if (stored === undefined) return option.default;
   const known = option.values.find((v) => v.toLowerCase() === stored.trim().toLowerCase());
   return known ?? stored;
@@ -128,8 +222,12 @@ export function writeKindOption(
   option: KindOption,
   value: string | boolean,
 ): Record<string, string> {
+  if (option.type === 'note') return options;
   const next = { ...options };
-  const isDefault = option.type === 'text' ? String(value).trim() === '' : value === option.default;
+  const isDefault =
+    option.type === 'text' || option.type === 'textarea'
+      ? String(value).trim() === ''
+      : value === option.default;
   if (isDefault) delete next[option.name];
   else next[option.name] = String(value);
   return next;

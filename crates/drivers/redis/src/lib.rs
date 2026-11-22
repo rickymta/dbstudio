@@ -10,6 +10,7 @@
 //! * The console executes one redis-cli line per command; leases are dedicated connections.
 
 mod cli;
+mod cluster;
 mod conn;
 mod convert;
 mod edit;

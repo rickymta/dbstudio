@@ -444,12 +444,18 @@ impl Pool {
                     .to_string(),
             );
         } else {
-            let host = if settings.host.contains(':') && !settings.host.starts_with('[') {
-                format!("[{}]", settings.host)
-            } else {
-                settings.host.clone()
-            };
-            builder = builder.known_node(format!("{host}:{}", settings.port));
+            // Every listed node is a contact point: the cluster is still found when the first
+            // one is down (the driver then discovers the other peers by itself).
+            let mut nodes = config.nodes();
+            nodes[0] = (settings.host.clone(), settings.port);
+            for (host, port) in nodes {
+                let host = if host.contains(':') && !host.starts_with('[') {
+                    format!("[{host}]")
+                } else {
+                    host
+                };
+                builder = builder.known_node(format!("{host}:{port}"));
+            }
         }
         if let Some(user) = config.credential_user() {
             builder = builder.user(

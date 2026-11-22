@@ -245,6 +245,56 @@
     "cluster": {
       "label": "Cluster routing id",
       "hint": "CockroachDB Cloud only, for example funny-otter-1234."
+    },
+    "hosts": {
+      "label": "Other servers of the cluster",
+      "hint": "One host:port per line (or separated by commas), tried after the host above when it does not answer. Not used through an SSH tunnel, which reaches only one address.",
+      "placeholder": "db2.internal:5432\ndb3.internal:5432"
+    },
+    "targetSessionAttrs": {
+      "label": "Server to keep",
+      "hint": "With several servers: the first that answers, the primary (read-write, after a failover too) or a standby.",
+      "value": {
+        "any": "Any server",
+        "read-write": "Primary (read-write)",
+        "read-only": "Standby (read-only)"
+      }
+    },
+    "loadBalanceHosts": {
+      "label": "Order of the servers",
+      "value": {
+        "disable": "In the order listed",
+        "random": "Random (spread the load)"
+      }
+    },
+    "topology": {
+      "label": "Topology",
+      "hint": "Sentinel: the host above (and the other servers) are sentinels that name the master. Cluster: Redis Cluster, keys are routed to the primary that owns them (database 0 only). Neither goes through an SSH tunnel.",
+      "value": {
+        "standalone": "Single server",
+        "sentinel": "Sentinel",
+        "cluster": "Redis Cluster"
+      }
+    },
+    "sentinelMaster": {
+      "label": "Master name",
+      "hint": "The name the sentinels watch (sentinel monitor <name> …), e.g. mymaster."
+    },
+    "applicationIntent": {
+      "label": "Application intent",
+      "hint": "Read-only routes the connection to a readable secondary of an Always On availability group (read-only routing on the listener).",
+      "value": {
+        "ReadWrite": "Read-write",
+        "ReadOnly": "Read-only"
+      }
+    },
+    "multiSubnetFailover": {
+      "label": "Multi-subnet failover",
+      "hint": "Connect to every address of the listener at once and keep the first that answers (an availability group spread over several subnets)."
+    },
+    "racHint": {
+      "label": "Oracle RAC",
+      "hint": "Put a SCAN address in Host, or paste a TNS descriptor with ADDRESS_LIST, FAILOVER and LOAD_BALANCE in the Database / service field."
     }
   },
   "health": {
@@ -258,5 +308,13 @@
     "leasesReopened_other": "{{count}} query tabs got a new server session: SET values and temporary tables are gone.",
     "reconnect": "Reconnect",
     "dismiss": "Dismiss"
+  },
+  "nodeStatus": {
+    "title": "Connected to {{node}}",
+    "cluster": "Cluster · {{count}} primaries",
+    "role": {
+      "primary": "primary",
+      "replica": "replica"
+    }
   }
 }

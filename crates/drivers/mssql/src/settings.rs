@@ -74,6 +74,15 @@ pub struct Settings {
     pub encrypt_none: bool,
     /// Set once a connection needed the native backend; shared by every clone (all pools).
     native_learned: Arc<AtomicBool>,
+    /// Option `applicationIntent=ReadOnly`: route to a readable secondary of an Always On
+    /// availability group (read-only routing on the listener).
+    pub read_only_intent: bool,
+    /// Option `multiSubnetFailover=true`: connect to every address of the host name at once and
+    /// keep the first that answers (a listener spread over several subnets).
+    pub multi_subnet_failover: bool,
+    /// Servers to try in order (`host:port` first, then `options.hosts`, e.g. a mirroring /
+    /// failover partner).
+    pub nodes: Vec<(String, u16)>,
 }
 
 impl std::fmt::Debug for Settings {
@@ -153,6 +162,26 @@ impl Settings {
                 )));
             }
         };
+        let read_only_intent = match opt("applicationIntent")
+            .or_else(|| opt("ApplicationIntent"))
+            .map(|v| v.to_ascii_lowercase().replace(['_', ' '], ""))
+            .as_deref()
+        {
+            None | Some("readwrite") => false,
+            Some("readonly") => true,
+            Some(other) => {
+                return Err(Error::Invalid(format!(
+                    "invalid applicationIntent `{other}` (expected ReadWrite or ReadOnly)"
+                )));
+            }
+        };
+        let multi_subnet_failover = matches!(
+            opt("multiSubnetFailover")
+                .or_else(|| opt("MultiSubnetFailover"))
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("true" | "yes" | "1")
+        );
         let user = cfg.login_user().map(str::to_string);
         if auth != AuthKind::Integrated && user.is_none() {
             return Err(Error::Authentication(
@@ -160,6 +189,9 @@ impl Settings {
             ));
         }
         Ok(Settings {
+            read_only_intent,
+            multi_subnet_failover,
+            nodes: cfg.nodes(),
             host: cfg.host.clone(),
             port: cfg.port,
             user,
@@ -235,6 +267,14 @@ impl Settings {
         self.tiberius_config_for(database, self.use_native_now())
     }
 
+    /// The same settings pointed at another server of the host list (TLS verifies that name).
+    pub fn for_node(&self, host: &str, port: u16) -> Settings {
+        let mut s = self.clone();
+        s.host = host.to_string();
+        s.port = port;
+        s
+    }
+
     /// Like [`Settings::tiberius_config`] with the TLS backend chosen by the caller.
     pub fn tiberius_config_for(&self, database: &str, native: bool) -> Result<Config> {
         let mut c = Config::new();
@@ -251,6 +291,7 @@ impl Settings {
         c.host(&self.host);
         c.port(self.port);
         c.application_name(&self.app_name);
+        c.readonly(self.read_only_intent);
         // Statements may legitimately be silent for a long time (`WAITFOR`, big scans): the
         // time limit is the request's `timeout_ms`, not a per-round-trip bound.
         c.command_timeout(None);
@@ -343,6 +384,31 @@ mod tests {
         let mut c = ConnectionConfig::new(DbKind::SqlServer, "t", "localhost");
         c.username = Some("sa".into());
         c
+    }
+
+    #[test]
+    fn always_on_options_are_parsed() {
+        let mut c = cfg();
+        let s = Settings::from_config(&c, None).unwrap();
+        assert!(!s.read_only_intent && !s.multi_subnet_failover);
+        assert_eq!(s.nodes, vec![("localhost".to_string(), 1433)]);
+        c.options
+            .insert("applicationIntent".into(), "ReadOnly".into());
+        c.options
+            .insert("multiSubnetFailover".into(), "True".into());
+        c.options.insert("hosts".into(), "partner:1434".into());
+        let s = Settings::from_config(&c, None).unwrap();
+        assert!(s.read_only_intent && s.multi_subnet_failover);
+        assert_eq!(s.nodes[1], ("partner".to_string(), 1434));
+        // The intent reaches the TDS login; another node keeps the options with its own name.
+        let other = s.for_node("partner", 1434);
+        assert_eq!(
+            other.tiberius_config("").unwrap().get_addr(),
+            "partner:1434"
+        );
+        assert!(other.read_only_intent);
+        c.options.insert("applicationIntent".into(), "maybe".into());
+        assert!(Settings::from_config(&c, None).is_err());
     }
 
     #[test]

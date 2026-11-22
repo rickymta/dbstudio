@@ -281,6 +281,29 @@ impl Session for PostgresSession {
         if let Some(tz) = self.shared.server_timezone() {
             info.extra.insert("timezone".into(), tz.to_string());
         }
+        if self.shared.multi_host() {
+            // Best effort: which server of the host list answered, and whether it is a standby.
+            if let Ok(mut conn) = self.shared.acquire_catalog(self.login_db()).await {
+                if let Ok(row) = conn
+                    .client
+                    .query_one(
+                        "SELECT coalesce(host(inet_server_addr()), '') || ':' || \
+                                coalesce(inet_server_port()::text, ''), pg_is_in_recovery()",
+                        &[],
+                    )
+                    .await
+                {
+                    info.extra.insert("topology".into(), "hostList".into());
+                    info.extra.insert("node".into(), row.get::<_, String>(0));
+                    let standby: bool = row.get(1);
+                    info.extra.insert(
+                        "nodeRole".into(),
+                        if standby { "replica" } else { "primary" }.into(),
+                    );
+                }
+                conn.finish().await;
+            }
+        }
         Ok(info)
     }
 

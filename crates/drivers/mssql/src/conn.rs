@@ -194,15 +194,11 @@ impl Conn {
             error,
             handshake_cause: None,
         };
-        let config = settings.tiberius_config_for(db, native).map_err(plain)?;
-        let addr = config.get_addr();
         let attempt = async {
-            let tcp = TcpStream::connect(addr).await.map_err(|e| {
-                plain(Error::Connection(format!(
-                    "cannot connect to {}:{}: {e}",
-                    settings.host, settings.port
-                )))
-            })?;
+            // The first server of the host list that accepts the TCP connection; TLS then
+            // verifies that server's name.
+            let (tcp, node) = open_tcp(settings).await.map_err(plain)?;
+            let config = node.tiberius_config_for(db, native).map_err(plain)?;
             let _ = tcp.set_nodelay(true);
             Client::connect(config, tcp.compat_write())
                 .await
@@ -506,6 +502,42 @@ impl Shared {
             }
         }
     }
+}
+
+/// TCP connection to the first server of `settings.nodes` that answers, with the settings of
+/// that server. With `multiSubnetFailover` every address of a host name is tried at once (an
+/// Always On listener registered in several subnets), else they are tried in turn.
+async fn open_tcp(settings: &Settings) -> Result<(TcpStream, Settings)> {
+    let mut last = None;
+    for (host, port) in &settings.nodes {
+        let attempt = if settings.multi_subnet_failover {
+            connect_parallel(host, *port).await
+        } else {
+            TcpStream::connect((host.as_str(), *port)).await
+        };
+        match attempt {
+            Ok(tcp) => return Ok((tcp, settings.for_node(host, *port))),
+            Err(e) => last = Some(format!("cannot connect to {host}:{port}: {e}")),
+        }
+    }
+    Err(Error::Connection(
+        last.unwrap_or_else(|| "no server to connect to".into()),
+    ))
+}
+
+/// Resolve `host` and connect to all of its addresses at once; the first success wins.
+async fn connect_parallel(host: &str, port: u16) -> std::io::Result<TcpStream> {
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port)).await?.collect();
+    if addrs.len() < 2 {
+        return TcpStream::connect((host, port)).await;
+    }
+    let attempts = addrs
+        .into_iter()
+        .map(|a| Box::pin(TcpStream::connect(a)))
+        .collect::<Vec<_>>();
+    futures_util::future::select_ok(attempts)
+        .await
+        .map(|(tcp, _)| tcp)
 }
 
 #[cfg(test)]

@@ -159,6 +159,77 @@ impl ConnectionConfig {
             self.login_user()
         }
     }
+
+    /// The servers to try, in order: `host:port` first, then the extra nodes of `options.hosts`
+    /// (`host[:port]` separated by commas, spaces or new lines; `[v6]:port` for IPv6; a missing
+    /// port is `port`). Duplicates are dropped. Behind an SSH tunnel only the first one is
+    /// reachable (the tunnel forwards a single address), so the extra nodes are ignored.
+    pub fn nodes(&self) -> Vec<(String, u16)> {
+        if self.ssh.is_some() {
+            return vec![(self.host.clone(), self.port)];
+        }
+        self.all_nodes()
+    }
+
+    /// Like [`ConnectionConfig::nodes`] but also behind an SSH tunnel, for a driver whose
+    /// tunnel reaches every server (MongoDB goes through a SOCKS5 proxy).
+    pub fn all_nodes(&self) -> Vec<(String, u16)> {
+        let mut out = vec![(self.host.clone(), self.port)];
+        for item in self
+            .options
+            .get(HOSTS_OPTION)
+            .map(String::as_str)
+            .unwrap_or("")
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(node) = parse_node(item, self.port) {
+                if !out
+                    .iter()
+                    .any(|n| n.0.eq_ignore_ascii_case(&node.0) && n.1 == node.1)
+                {
+                    out.push(node);
+                }
+            }
+        }
+        out
+    }
+
+    /// `options.topology` (`standalone`, `cluster`, `sentinel`, …), lower-cased; empty when
+    /// not set. Drivers decide which values they understand.
+    pub fn topology(&self) -> String {
+        self.options
+            .get(TOPOLOGY_OPTION)
+            .map(|t| t.trim().to_ascii_lowercase())
+            .unwrap_or_default()
+    }
+}
+
+/// Option holding the extra cluster nodes of a profile (see [`ConnectionConfig::nodes`]).
+pub const HOSTS_OPTION: &str = "hosts";
+/// Option naming how the servers of a profile form a cluster (see [`ConnectionConfig::topology`]).
+pub const TOPOLOGY_OPTION: &str = "topology";
+
+/// `host`, `host:port`, `[v6]` or `[v6]:port`; `None` for an unusable entry.
+fn parse_node(item: &str, default_port: u16) -> Option<(String, u16)> {
+    if let Some(rest) = item.strip_prefix('[') {
+        let (host, tail) = rest.split_once(']')?;
+        let port = match tail.strip_prefix(':') {
+            Some(p) => p.parse().ok()?,
+            None if tail.is_empty() => default_port,
+            None => return None,
+        };
+        return (!host.is_empty()).then(|| (host.to_string(), port));
+    }
+    match item.rsplit_once(':') {
+        // A bare IPv6 address has several colons: take it whole.
+        Some((host, port)) if !host.contains(':') => {
+            let port = port.parse().ok()?;
+            (!host.is_empty()).then(|| (host.to_string(), port))
+        }
+        _ => Some((item.to_string(), default_port)),
+    }
 }
 
 /// A password or token. `Debug` never prints the content and the type is not `Serialize`.
@@ -192,6 +263,35 @@ impl From<String> for Secret {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nodes_list_the_main_host_first_then_the_extra_ones() {
+        let mut c = ConnectionConfig::new(DbKind::Postgres, "pg", "db1");
+        assert_eq!(c.nodes(), vec![("db1".to_string(), 5432)]);
+        c.options.insert(
+            "hosts".into(),
+            "db2:5433, db1
+[fe80::1]:6000 [::1] fe80::2  bad:port"
+                .into(),
+        );
+        assert_eq!(
+            c.nodes(),
+            vec![
+                ("db1".to_string(), 5432),
+                ("db2".to_string(), 5433),
+                ("fe80::1".to_string(), 6000),
+                ("::1".to_string(), 5432),
+                ("fe80::2".to_string(), 5432),
+            ]
+        );
+        c.options.insert("topology".into(), " Cluster ".into());
+        assert_eq!(c.topology(), "cluster");
+        // Behind an SSH tunnel only the tunnelled address is reachable (unless the driver's
+        // tunnel reaches them all).
+        assert_eq!(c.all_nodes().len(), 5);
+        c.ssh = Some(serde_json::from_value(serde_json::json!({"host": "bastion", "username": "u", "auth": {"method": "agent"}})).unwrap());
+        assert_eq!(c.nodes().len(), 1);
+    }
+
     #[test]
     fn auth_mode_defaults_to_password_for_old_profiles() {
         let mut v =

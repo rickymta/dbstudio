@@ -94,6 +94,23 @@ impl Session for RedisSession {
             "compatibleRedisVersion".into(),
             fields.get("redis_version").cloned().unwrap_or_default(),
         );
+        // Where the session landed (shared keys of every driver, read by the status bar).
+        extra.insert("topology".into(), self.shared.topology.to_string());
+        extra.insert("node".into(), self.shared.endpoint.clone());
+        if let Some(role) = fields.get("role") {
+            let role = if role == "master" {
+                "primary"
+            } else {
+                "replica"
+            };
+            extra.insert("nodeRole".into(), role.to_string());
+        }
+        if self.shared.is_cluster() {
+            extra.insert(
+                "clusterPrimaries".into(),
+                self.shared.primary_count().to_string(),
+            );
+        }
         Ok(ServerInfo {
             product,
             version,

@@ -174,6 +174,158 @@ pub(crate) fn sql_mode_no_backslash_escapes(sql_mode: &str) -> bool {
         .any(|m| m.trim().eq_ignore_ascii_case("NO_BACKSLASH_ESCAPES"))
 }
 
+/// Which server of the host list a profile wants (`options.targetSessionAttrs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WantedRole {
+    Any,
+    ReadWrite,
+    ReadOnly,
+}
+
+fn wanted_role(config: &ConnectionConfig) -> Result<WantedRole> {
+    match config
+        .options
+        .get("targetSessionAttrs")
+        .map(|v| v.trim().to_ascii_lowercase().replace('_', "-"))
+        .as_deref()
+    {
+        None | Some("") | Some("any") => Ok(WantedRole::Any),
+        Some("read-write") | Some("primary") => Ok(WantedRole::ReadWrite),
+        Some("read-only") | Some("standby") | Some("replica") => Ok(WantedRole::ReadOnly),
+        Some(other) => Err(Error::Invalid(format!(
+            "options.targetSessionAttrs: expected `any`, `read-write` or `read-only`, got {other:?}"
+        ))),
+    }
+}
+
+/// Errors after which the next server of the host list is worth a try (the server could not be
+/// reached); a rejected login or certificate would fail the same way everywhere.
+fn try_next_node(e: &Error) -> bool {
+    matches!(e, Error::Connection(_) | Error::Timeout | Error::Io(_))
+}
+
+/// Connect to the first server of `config.nodes()` that answers (and has the wanted role):
+/// a MySQL replication set, Group Replication / InnoDB Cluster members, a Galera cluster.
+async fn connect_any_node(
+    config: &ConnectionConfig,
+    secret: Option<&Secret>,
+    ssl: Option<mysql_async::SslOpts>,
+    tunables: &connect::Tunables,
+) -> Result<(Pool, mysql_async::Opts, Conn)> {
+    let want = wanted_role(config)?;
+    let nodes = config.nodes();
+    let mut last: Option<Error> = None;
+    for (i, (host, port)) in nodes.iter().enumerate() {
+        let node = if i == 0 {
+            config.clone()
+        } else {
+            let mut c = config.clone();
+            c.host = host.clone();
+            c.port = *port;
+            c
+        };
+        let more = i + 1 < nodes.len();
+        let (pool, opts, mut conn) = match connect_node(&node, secret, ssl.clone(), tunables).await
+        {
+            Ok(v) => v,
+            Err(e) if more && try_next_node(&e) => {
+                last = Some(e);
+                continue;
+            }
+            Err(e) => return Err(with_node(e, host, *port, nodes.len())),
+        };
+        if want != WantedRole::Any {
+            let read_only: Option<i64> = mysql_async::prelude::Queryable::query_first(
+                &mut conn,
+                "SELECT @@global.read_only OR @@global.super_read_only",
+            )
+            .await
+            .unwrap_or(None);
+            let is_read_only = read_only.unwrap_or(0) != 0;
+            if is_read_only != (want == WantedRole::ReadOnly) {
+                drop(conn);
+                let _ = pool.disconnect().await;
+                last = Some(Error::Connection(format!(
+                    "{host}:{port} is a {} server",
+                    if is_read_only {
+                        "read-only"
+                    } else {
+                        "read-write"
+                    }
+                )));
+                continue;
+            }
+        }
+        return Ok((pool, opts, conn));
+    }
+    Err(match last {
+        Some(e) if nodes.len() > 1 => Error::Connection(format!(
+            "none of the {} servers could be used; last: {e}",
+            nodes.len()
+        )),
+        Some(e) => e,
+        None => Error::Connection("no server to connect to".into()),
+    })
+}
+
+/// Name the server in an error when the profile lists several.
+fn with_node(e: Error, host: &str, port: u16, count: usize) -> Error {
+    if count < 2 {
+        return e;
+    }
+    match e {
+        Error::Connection(m) => Error::Connection(format!("{host}:{port}: {m}")),
+        other => other,
+    }
+}
+
+/// One server: the TiDB read-only retry and the TLS `Prefer` fallback, errors mapped.
+async fn connect_node(
+    config: &ConnectionConfig,
+    secret: Option<&Secret>,
+    ssl: Option<mysql_async::SslOpts>,
+    tunables: &connect::Tunables,
+) -> Result<(Pool, mysql_async::Opts, Conn)> {
+    let secret_text = secret.map(|s| s.expose().to_string());
+    // Server-side `SET SESSION TRANSACTION READ ONLY` is a setup command of read-only profiles;
+    // TiDB rejects it, which fails the connection: retry once without it.
+    let mut server_read_only = true;
+    let mut attempt = try_connect(config, secret, ssl.clone(), tunables, server_read_only).await;
+    if config.read_only {
+        if let Err(TryError::My(e)) = &attempt {
+            if error::is_tidb_noop_error(e) {
+                server_read_only = false;
+                attempt = try_connect(config, secret, ssl.clone(), tunables, false).await;
+            }
+        }
+    }
+    // `Prefer`: a server without TLS (or a failed handshake) falls back to plain text.
+    if config.tls.mode == TlsMode::Prefer {
+        if let Err(TryError::My(e)) = &attempt {
+            if error::is_tls_unavailable(e) {
+                attempt = try_connect(config, secret, None, tunables, server_read_only).await;
+            }
+        }
+    }
+    match attempt {
+        Ok(v) => Ok(v),
+        Err(TryError::Core(e)) => Err(e),
+        Err(TryError::My(e)) => {
+            let err = error::map_connect_error(e, secret_text.as_deref());
+            Err(match err {
+                Error::Tls(m) if m.contains("not valid for name") => Error::Tls(format!(
+                    "{m}. The server certificate does not list host `{}`. Connect with a host \
+                     name or address that appears in the certificate, or re-issue it with \
+                     that name. Note: with this driver verify-ca also checks the host name \
+                     (the TLS library cannot skip it).",
+                    config.tls.server_name.as_deref().unwrap_or(&config.host)
+                )),
+                other => other,
+            })
+        }
+    }
+}
+
 /// Shared by the MySQL and TiDB drivers: the flavour is read from `VERSION()` after connecting,
 /// whatever kind the profile names.
 async fn connect_flavored(
@@ -185,43 +337,7 @@ async fn connect_flavored(
     let ssl = connect::ssl_opts(&config.tls)?;
     let secret_text = secret.map(|s| s.expose().to_string());
 
-    // Server-side `SET SESSION TRANSACTION READ ONLY` is a setup command of read-only profiles;
-    // TiDB rejects it, which fails the connection: retry once without it.
-    let mut server_read_only = true;
-    let mut attempt = try_connect(config, secret, ssl.clone(), &tunables, server_read_only).await;
-    if config.read_only {
-        if let Err(TryError::My(e)) = &attempt {
-            if error::is_tidb_noop_error(e) {
-                server_read_only = false;
-                attempt = try_connect(config, secret, ssl.clone(), &tunables, false).await;
-            }
-        }
-    }
-    // `Prefer`: a server without TLS (or a failed handshake) falls back to plain text.
-    if config.tls.mode == TlsMode::Prefer {
-        if let Err(TryError::My(e)) = &attempt {
-            if error::is_tls_unavailable(e) {
-                attempt = try_connect(config, secret, None, &tunables, server_read_only).await;
-            }
-        }
-    }
-    let (pool, opts, mut conn) = match attempt {
-        Ok(v) => v,
-        Err(TryError::Core(e)) => return Err(e),
-        Err(TryError::My(e)) => {
-            let err = error::map_connect_error(e, secret_text.as_deref());
-            return Err(match err {
-                Error::Tls(m) if m.contains("not valid for name") => Error::Tls(format!(
-                    "{m}. The server certificate does not list host `{}`. Connect with a host \
-                     name or address that appears in the certificate, or re-issue it with \
-                     that name. Note: with this driver verify-ca also checks the host name \
-                     (the TLS library cannot skip it).",
-                    config.tls.server_name.as_deref().unwrap_or(&config.host)
-                )),
-                other => other,
-            });
-        }
-    };
+    let (pool, opts, mut conn) = connect_any_node(config, secret, ssl, &tunables).await?;
 
     // Identify the product from the version string.
     let version: Option<String> =
@@ -354,5 +470,40 @@ mod tests {
             "10.6.18-MariaDB-1:10.6.18+maria~ubu2004"
         );
         assert_eq!(normalize_version("8.4.0"), "8.4.0");
+    }
+}
+
+#[cfg(test)]
+mod cluster_tests {
+    use super::*;
+
+    #[test]
+    fn target_session_attrs_are_read_like_libpq() {
+        let mut c = ConnectionConfig::new(DbKind::MySql, "m", "db1");
+        assert_eq!(wanted_role(&c).unwrap(), WantedRole::Any);
+        for (value, role) in [
+            ("read-write", WantedRole::ReadWrite),
+            ("PRIMARY", WantedRole::ReadWrite),
+            ("read_only", WantedRole::ReadOnly),
+            ("replica", WantedRole::ReadOnly),
+        ] {
+            c.options.insert("targetSessionAttrs".into(), value.into());
+            assert_eq!(wanted_role(&c).unwrap(), role, "{value}");
+        }
+        c.options
+            .insert("targetSessionAttrs".into(), "leader".into());
+        assert!(wanted_role(&c).is_err());
+    }
+
+    #[test]
+    fn only_unreachable_servers_move_on_to_the_next_one() {
+        assert!(try_next_node(&Error::Connection("refused".into())));
+        assert!(try_next_node(&Error::Timeout));
+        assert!(!try_next_node(&Error::Authentication(
+            "bad password".into()
+        )));
+        assert!(!try_next_node(&Error::Tls("bad cert".into())));
+        let named = with_node(Error::Connection("refused".into()), "db2", 3307, 2);
+        assert!(named.to_string().contains("db2:3307"), "{named}");
     }
 }
