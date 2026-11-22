@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { ipc } from '@/lib/ipc';
 import type { IpcError, SessionInfo, Uuid } from '@/lib/types';
 import { getTabGuard } from './tabGuard';
-import { useTabsStore } from './tabs';
+import { allTabs, useTabsStore } from './tabs';
 
 interface SessionsState {
   /** Open sessions keyed by connection (profile) id; at most one per connection. */
@@ -71,9 +71,10 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
     const info = get().sessionsByConnection[connectionId];
     if (info) {
       // One at a time, so the user answers one dialog per tab; the first "no" stops everything.
-      const owned = useTabsStore
-        .getState()
-        .tabs.filter((t) => t.payload?.sessionId === info.sessionId);
+      // Tabs of every workspace: closing the session closes them all.
+      const owned = allTabs(useTabsStore.getState()).filter(
+        (t) => t.payload?.sessionId === info.sessionId,
+      );
       for (const tab of owned) {
         const guard = getTabGuard(tab.id);
         if (guard && !(await guard())) return false;

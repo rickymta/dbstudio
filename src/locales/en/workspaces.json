@@ -1,0 +1,139 @@
+{
+  "workspaces": "Workspaces",
+  "name": "Name",
+  "color": "Colour",
+  "allConnections": "All connections",
+  "folders": "Folders",
+  "breadcrumb": "Folder path",
+  "table": "Connections of the workspace",
+  "connectionCount": "{{count}} connection(s)",
+  "summary": "{{connections}} connection(s) · {{folders}} folder(s)",
+  "emptyWorkspace": "This workspace has no connections yet.",
+  "emptySidebar": "This workspace has no connections yet. Add saved connections to see them here.",
+  "notInWorkspace": "Not in workspace {{name}}",
+  "status": {
+    "connected": "Connected",
+    "opening": "Connecting…",
+    "reconnecting": "Reconnecting…",
+    "lost": "Connection lost",
+    "gaveUp": "Could not reconnect",
+    "failed": "Failed to connect",
+    "idle": "Not connected"
+  },
+  "strip": {
+    "title": "Workspace {{name}}: only its connections are listed",
+    "overview": "Workspace overview"
+  },
+  "actions": {
+    "addConnections": "Add connections",
+    "addSaved": "Add saved connections…",
+    "addOpen": "Add open connections ({{count}})",
+    "connectAll": "Connect all",
+    "connectAllHint": "Connect every connection shown (those that need a password are left for the sidebar)",
+    "disconnectAll": "Disconnect all",
+    "rename": "Rename workspace…",
+    "renameTitle": "Rename workspace",
+    "delete": "Delete workspace",
+    "more": "More workspace actions"
+  },
+  "delete": {
+    "title": "Delete workspace “{{name}}”?",
+    "body": "Connections and their saved settings are not touched. The workspace's tabs move to “No workspace”."
+  },
+  "remove": {
+    "title": "Remove “{{name}}” from the workspace?",
+    "body": "The connection stays saved; it is only taken out of {{name}}.",
+    "confirm": "Remove"
+  },
+  "folder": {
+    "new": "New folder…",
+    "newSubfolder": "New subfolder…",
+    "create": "Create folder",
+    "rename": "Rename folder…",
+    "renameTitle": "Rename folder",
+    "moveTo": "Move to",
+    "delete": "Delete folder",
+    "deleteTitle": "Delete folder “{{name}}”?",
+    "deleteBody": "What it holds moves to {{parent}}; no connection is removed.",
+    "expand": "Expand folder",
+    "collapse": "Collapse folder",
+    "menu": "Folder actions",
+    "hint": "Group related connections into folders (up to {{max}} levels).",
+    "showOnly": "Show only this folder",
+    "emptyHint": "Empty folder: drag connections here, or use “Move to” on a connection."
+  },
+  "rollup": {
+    "connected": "{{count}} connected",
+    "problems": "{{count}} with problems"
+  },
+  "row": {
+    "showInSidebar": "Show in the sidebar",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "newEditor": "New SQL editor",
+    "moveTo": "Move to folder",
+    "newFolderWith": "New folder with this connection…",
+    "remove": "Remove from workspace",
+    "tabs": "{{count}} tab(s)"
+  },
+  "filter": {
+    "placeholder": "Filter by name, host, database or type",
+    "status": "Filter by status",
+    "all": "All",
+    "connected": "Connected",
+    "idle": "Not connected",
+    "problems": "Problems",
+    "production": "Production",
+    "noMatch": "No connection matches."
+  },
+  "col": {
+    "connection": "Connection",
+    "kind": "Type",
+    "environment": "Environment",
+    "status": "Status",
+    "tabs": "Tabs"
+  },
+  "bulk": {
+    "connected": "Connected {{count}}",
+    "needPassword": "{{count}} need a password (connect them from the sidebar)",
+    "failed": "{{count}} failed"
+  },
+  "picker": {
+    "filter": "Filter connections",
+    "all": "Select all",
+    "none": "None",
+    "empty": "No saved connection matches.",
+    "already": "already added"
+  },
+  "new": {
+    "title": "New workspace",
+    "description": "A workspace groups connections; while it is active the sidebar lists only them and it keeps its own tabs.",
+    "namePlaceholder": "e.g. Billing, Customer A, Reporting",
+    "source": "Connections",
+    "sourcePick": "Pick saved connections",
+    "sourceOpen": "The open connections ({{count}})",
+    "sourceEmpty": "Start empty",
+    "selected": "{{count}} connection(s) selected",
+    "create": "Create workspace"
+  },
+  "add": {
+    "title": "Add connections to {{name}}",
+    "description": "Ticked connections join the workspace (into the folder being shown).",
+    "submit": "Add {{count}}"
+  },
+  "switcher": {
+    "active": "Workspace {{name}}",
+    "none": "No workspace: every connection is listed",
+    "overview": "Workspace overview",
+    "addSaved": "Add saved connections to “{{name}}”…",
+    "addOpen": "Add the {{count}} open connection(s) to “{{name}}”",
+    "addTab": "Add this tab's connection to “{{name}}”",
+    "noWorkspace": "No workspace",
+    "new": "New workspace…"
+  },
+  "toast": {
+    "created": "Created workspace {{name}}",
+    "added": "Added {{count}} connection(s) to {{name}}",
+    "joined": "{{count}} connection(s) joined workspace {{name}}"
+  }
+}

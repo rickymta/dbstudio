@@ -1,4 +1,6 @@
 import { QuickAccess } from '@/features/workspace/QuickAccess';
+import { WorkspaceEmptyHint, WorkspaceStrip } from '@/features/workspaces/WorkspaceStrip';
+import { useActiveWorkspace, useWorkspaces } from '@/features/workspaces/store';
 import { useNavigation, openSavedObject, type SavedObject } from '@/features/workspace/navigation';
 import { useWorkspaceStore } from '@/features/workspace/layout';
 import { useQueryClient } from '@tanstack/react-query';
@@ -39,11 +41,13 @@ import { treeHasMatch, useAnyTreeCacheVersion } from '@/features/explorer/querie
 import { nodeLabel } from '@/features/explorer/treeModel';
 import { useRevealStore } from '@/features/explorer/revealStore';
 import { ConnectionDialog } from './ConnectionDialog';
+import { useConnectErrors } from './connectErrors';
 import {
   buildConnectionsTree,
   filterConnectionsTree,
   groupPathOptions,
   needsPassword,
+  pruneEmptyGroups,
   type GroupNode,
 } from './connectionsTree';
 import { dropPosition, planMove, type DragItem, type DropTarget } from './dragModel';
@@ -111,9 +115,31 @@ export function ConnectionsSidebar() {
   const { t: te } = useTranslation('explorer');
   const explorerLabel = useCallback((n: ObjectNode) => nodeLabel(te, n), [te]);
 
+  // With a workspace active only its connections are listed (groups left empty are hidden).
+  const workspace = useActiveWorkspace();
   const tree = useMemo(() => {
     if (!snapshot) return null;
-    return buildConnectionsTree(snapshot);
+    if (!workspace) return buildConnectionsTree(snapshot);
+    const members = new Set(workspace.connections);
+    return pruneEmptyGroups(
+      buildConnectionsTree({
+        ...snapshot,
+        profiles: snapshot.profiles.filter((p) => members.has(p.id)),
+      }),
+    );
+  }, [snapshot, workspace]);
+
+  // A connection created or imported while a workspace is active joins it (else it would vanish
+  // from the list right after saving).
+  const knownProfiles = useRef<Set<Uuid> | null>(null);
+  useEffect(() => {
+    if (!snapshot) return;
+    const ids = new Set(snapshot.profiles.map((p) => p.id));
+    const before = knownProfiles.current;
+    knownProfiles.current = ids;
+    if (!before) return;
+    const fresh = [...ids].filter((id) => !before.has(id));
+    if (fresh.length > 0) useWorkspaces.getState().addToActive(fresh);
   }, [snapshot]);
 
   const groupOptions = useMemo(() => (snapshot ? groupPathOptions(snapshot) : []), [snapshot]);
@@ -163,6 +189,7 @@ export function ConnectionsSidebar() {
       setErrors((e) => {
         const rest = { ...e };
         delete rest[profile.id];
+        useConnectErrors.getState().clear(profile.id);
         return rest;
       });
       try {
@@ -176,6 +203,7 @@ export function ConnectionsSidebar() {
         if (error.kind === 'cancelled') return; // disconnected while connecting
         const message = describeError(t, error);
         setErrors((prev) => ({ ...prev, [profile.id]: message }));
+        useConnectErrors.getState().set(profile.id, message);
         toast.error(`${profile.name}: ${message}`);
       }
     },
@@ -514,6 +542,7 @@ export function ConnectionsSidebar() {
         </DropdownMenu>
       </header>
 
+      <WorkspaceStrip />
       <QuickAccess />
       <div
         role="tree"
@@ -559,6 +588,9 @@ export function ConnectionsSidebar() {
               <p className="px-3 py-4 text-center text-xs text-muted-foreground">
                 {hasOpenConnection ? t('sidebar.noResults') : t('sidebar.noOpenConnection')}
               </p>
+            )}
+            {workspace && !filtering && workspace.connections.length === 0 && (
+              <WorkspaceEmptyHint />
             )}
           </>
         )}

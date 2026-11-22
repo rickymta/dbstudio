@@ -97,9 +97,37 @@ export const erdTabId = (sessionId: Uuid, scope: ObjectPath) =>
   `erd:${sessionId}:${pathKey(scope)}`;
 export const keyTabId = (sessionId: Uuid, path: ObjectPath) => `key:${sessionId}:${pathKey(path)}`;
 
-interface TabsState {
+/** The tabs of one scope (workspace) with its active tab. */
+export interface TabSet {
   tabs: TabItem[];
   activeId: string;
+}
+
+/** Scope of the tabs shown when no workspace is active. */
+export const NO_SCOPE = '';
+
+const emptySet = (): TabSet => ({ tabs: [WELCOME_TAB], activeId: WELCOME_TAB.id });
+
+interface TabsState {
+  /** Tabs of the current scope, the ones on screen. */
+  tabs: TabItem[];
+  activeId: string;
+  /** Workspace id whose tabs are on screen ([`NO_SCOPE`] for none). */
+  scope: string;
+  /**
+   * Tab sets of the other scopes. Their tabs stay alive (editor text, pending edits, leases):
+   * code that cleans up after closed tabs must look at [`allTabs`], not only `tabs`.
+   */
+  stashed: Record<string, TabSet>;
+  /** Show the tab set of `scope` (a new one has only the welcome tab); the current one is kept. */
+  switchScope: (scope: string) => void;
+  /**
+   * A workspace was deleted: its tabs join the tabs of no workspace (nothing is closed). When it
+   * is the current scope, no workspace becomes current.
+   */
+  dropScope: (scope: string) => void;
+  /** Move tabs of the current scope into the stashed set of `scope` (restored editor tabs). */
+  moveToScope: (ids: string[], scope: string) => void;
   /** Add the tab and activate it; if a tab with the same id exists, only activate it. */
   openTab: (tab: TabItem) => void;
   /** Close a closable tab; the neighbor to the left (else right) becomes active. */
@@ -129,9 +157,89 @@ function afterClose(tabs: TabItem[], activeId: string, removedIndexes: number[])
   return (tabs[Math.max(0, first - 1)] ?? tabs[0] ?? WELCOME_TAB).id;
 }
 
+/** Every tab of every scope: the ones on screen first, then the stashed ones. */
+export function allTabs(state: Pick<TabsState, 'tabs' | 'stashed'>): TabItem[] {
+  const out = [...state.tabs];
+  for (const set of Object.values(state.stashed)) out.push(...set.tabs);
+  return out;
+}
+
+/** Scope holding the tab `id`, or `undefined` when no scope has it. */
+export function scopeOfTab(state: Pick<TabsState, 'tabs' | 'stashed' | 'scope'>, id: string) {
+  if (state.tabs.some((t) => t.id === id)) return state.scope;
+  return Object.entries(state.stashed).find(([, s]) => s.tabs.some((t) => t.id === id))?.[0];
+}
+
+/** `extra` appended to `tabs`, skipping ids already there (the welcome tab is shared). */
+function mergeTabs(tabs: TabItem[], extra: TabItem[]): TabItem[] {
+  const ids = new Set(tabs.map((t) => t.id));
+  return [...tabs, ...extra.filter((t) => !ids.has(t.id))];
+}
+
+/** `closeSessionTabs` on one tab set; `removed` lists the indexes of the tabs dropped. */
+function withoutSession(tabs: TabItem[], sessionId: Uuid) {
+  const owned = (t: TabItem) => t.payload?.sessionId === sessionId;
+  const removed = tabs
+    .map((t, i) => (t.kind !== 'editor' && owned(t) ? i : -1))
+    .filter((i) => i >= 0);
+  const detached = tabs.some((t) => t.kind === 'editor' && owned(t));
+  const next = tabs
+    .filter((t) => t.kind === 'editor' || !owned(t))
+    .map((t) =>
+      t.kind === 'editor' && owned(t) ? { ...t, payload: { ...t.payload, sessionId: null } } : t,
+    );
+  return { tabs: next, removed, changed: removed.length > 0 || detached };
+}
+
 export const useTabsStore = create<TabsState>((set, get) => ({
   tabs: [WELCOME_TAB],
   activeId: WELCOME_TAB.id,
+  scope: NO_SCOPE,
+  stashed: {},
+  switchScope: (scope) =>
+    set((s) => {
+      if (scope === s.scope) return s;
+      const stashed = { ...s.stashed, [s.scope]: { tabs: s.tabs, activeId: s.activeId } };
+      const next = stashed[scope] ?? emptySet();
+      delete stashed[scope];
+      return { scope, tabs: next.tabs, activeId: next.activeId, stashed };
+    }),
+  dropScope: (scope) =>
+    set((s) => {
+      if (scope === NO_SCOPE) return s;
+      if (scope === s.scope) {
+        const base = s.stashed[NO_SCOPE] ?? emptySet();
+        const stashed = { ...s.stashed };
+        delete stashed[NO_SCOPE];
+        return {
+          scope: NO_SCOPE,
+          tabs: mergeTabs(base.tabs, s.tabs),
+          activeId: s.activeId,
+          stashed,
+        };
+      }
+      const dropped = s.stashed[scope];
+      if (!dropped) return s;
+      const stashed = { ...s.stashed };
+      delete stashed[scope];
+      if (s.scope === NO_SCOPE) return { stashed, tabs: mergeTabs(s.tabs, dropped.tabs) };
+      const base = stashed[NO_SCOPE] ?? emptySet();
+      stashed[NO_SCOPE] = { ...base, tabs: mergeTabs(base.tabs, dropped.tabs) };
+      return { stashed };
+    }),
+  moveToScope: (ids, scope) =>
+    set((s) => {
+      if (scope === s.scope) return s;
+      const moving = s.tabs.filter((t) => ids.includes(t.id) && t.closable);
+      if (moving.length === 0) return s;
+      const tabs = s.tabs.filter((t) => !moving.includes(t));
+      const target = s.stashed[scope] ?? emptySet();
+      return {
+        tabs,
+        activeId: tabs.some((t) => t.id === s.activeId) ? s.activeId : (tabs[0] ?? WELCOME_TAB).id,
+        stashed: { ...s.stashed, [scope]: { ...target, tabs: mergeTabs(target.tabs, moving) } },
+      };
+    }),
   openTab: (tab) =>
     set((s) =>
       s.tabs.some((t) => t.id === tab.id)
@@ -176,22 +284,30 @@ export const useTabsStore = create<TabsState>((set, get) => ({
     })),
   closeSessionTabs: (sessionId) =>
     set((s) => {
-      const owned = (t: TabItem) => t.payload?.sessionId === sessionId;
-      const detached = s.tabs.some((t) => t.kind === 'editor' && owned(t));
-      const removed = s.tabs
-        .map((t, i) => (t.kind !== 'editor' && owned(t) ? i : -1))
-        .filter((i) => i >= 0);
-      if (removed.length === 0 && !detached) return s;
-      const tabs = s.tabs
-        .filter((t) => t.kind === 'editor' || !owned(t))
-        .map((t) =>
-          t.kind === 'editor' && owned(t)
-            ? { ...t, payload: { ...t.payload, sessionId: null } }
-            : t,
-        );
+      // Sessions are shared by every workspace: the stashed tab sets lose its tabs too.
+      let stashedChanged = false;
+      const stashed: Record<string, TabSet> = {};
+      for (const [scope, tabSet] of Object.entries(s.stashed)) {
+        const r = withoutSession(tabSet.tabs, sessionId);
+        stashedChanged ||= r.changed;
+        stashed[scope] = r.changed
+          ? {
+              tabs: r.tabs,
+              activeId: r.removed.length
+                ? afterClose(r.tabs, tabSet.activeId, r.removed)
+                : tabSet.activeId,
+            }
+          : tabSet;
+      }
+      const current = withoutSession(s.tabs, sessionId);
+      if (!current.changed && !stashedChanged) return s;
       return {
-        tabs,
-        activeId: removed.length > 0 ? afterClose(tabs, s.activeId, removed) : s.activeId,
+        tabs: current.tabs,
+        activeId:
+          current.removed.length > 0
+            ? afterClose(current.tabs, s.activeId, current.removed)
+            : s.activeId,
+        stashed: stashedChanged ? stashed : s.stashed,
       };
     }),
 }));

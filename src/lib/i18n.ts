@@ -17,6 +17,8 @@ import enSafety from '../locales/en/safety.json';
 import enHelp from '../locales/en/help.json';
 import enSettings from '../locales/en/settings.json';
 import enSsh from '../locales/en/ssh.json';
+import enLaunchpad from '../locales/en/launchpad.json';
+import enWorkspaces from '../locales/en/workspaces.json';
 import viBackup from '../locales/vi/backup.json';
 import viCommon from '../locales/vi/common.json';
 import viConnections from '../locales/vi/connections.json';
@@ -34,6 +36,8 @@ import viSafety from '../locales/vi/safety.json';
 import viHelp from '../locales/vi/help.json';
 import viSettings from '../locales/vi/settings.json';
 import viSsh from '../locales/vi/ssh.json';
+import viLaunchpad from '../locales/vi/launchpad.json';
+import viWorkspaces from '../locales/vi/workspaces.json';
 
 export const LANGUAGES = ['vi', 'en'] as const;
 export type Language = (typeof LANGUAGES)[number];
@@ -57,6 +61,8 @@ export const NAMESPACES = [
   'safety',
   'ssh',
   'debugger',
+  'workspaces',
+  'launchpad',
 ] as const;
 export type Namespace = (typeof NAMESPACES)[number];
 
@@ -107,6 +113,8 @@ void i18n.use(initReactI18next).init({
       safety: enSafety,
       ssh: enSsh,
       debugger: enDebugger,
+      workspaces: enWorkspaces,
+      launchpad: enLaunchpad,
     },
     vi: {
       common: viCommon,
@@ -126,6 +134,8 @@ void i18n.use(initReactI18next).init({
       safety: viSafety,
       ssh: viSsh,
       debugger: viDebugger,
+      workspaces: viWorkspaces,
+      launchpad: viLaunchpad,
     },
   },
   ns: [...NAMESPACES],

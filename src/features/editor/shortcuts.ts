@@ -13,6 +13,7 @@ export type ShortcutId =
   | 'newTab'
   | 'closeTab'
   | 'findObject'
+  | 'launchpad'
   | 'toggleSidebar'
   | 'focusResults'
   | 'palette'
@@ -50,6 +51,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'newTab', keys: 'Mod-t', scope: 'global', group: 'app' },
   { id: 'closeTab', keys: 'Mod-w', scope: 'global', group: 'app' },
   { id: 'findObject', keys: 'Mod-Shift-o', scope: 'global', group: 'app' },
+  { id: 'launchpad', keys: 'Mod-Shift-k', scope: 'global', group: 'app' },
   { id: 'toggleSidebar', keys: 'Mod-b', scope: 'global', group: 'app' },
   { id: 'palette', keys: 'Mod-Shift-p', scope: 'global', group: 'app' },
   // Handled by the status bar (settings) and by `AppWindows` (the rest), which listen before

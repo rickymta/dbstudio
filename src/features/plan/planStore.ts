@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { ipc, toIpcError } from '@/lib/ipc';
 import { guardedCall } from '@/features/safety/useGuardedCall';
 import type { ExplainRequest, IpcError, PlanTree, RawPlan, Uuid } from '@/lib/types';
-import { planTabId, useTabsStore } from '@/stores/tabs';
+import { allTabs, planTabId, useTabsStore } from '@/stores/tabs';
 
 export type PlanStatus = 'loading' | 'ready' | 'error';
 
@@ -77,7 +77,7 @@ export function cancelPlan(planId: string): void {
 
 // Forget the plans of closed tabs; a tab closed while its statement runs stops the statement.
 useTabsStore.subscribe((state) => {
-  const open = new Set(state.tabs.map((t) => t.id));
+  const open = new Set(allTabs(state).map((t) => t.id));
   const { entries, remove } = usePlanStore.getState();
   for (const id of Object.keys(entries)) {
     if (!open.has(planTabId(id))) {

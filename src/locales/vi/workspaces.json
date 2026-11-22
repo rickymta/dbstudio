@@ -1,0 +1,139 @@
+{
+  "workspaces": "Workspace",
+  "name": "Tên",
+  "color": "Màu",
+  "allConnections": "Tất cả kết nối",
+  "folders": "Thư mục",
+  "breadcrumb": "Đường dẫn thư mục",
+  "table": "Các kết nối của workspace",
+  "connectionCount": "{{count}} kết nối",
+  "summary": "{{connections}} kết nối · {{folders}} thư mục",
+  "emptyWorkspace": "Workspace này chưa có kết nối nào.",
+  "emptySidebar": "Workspace này chưa có kết nối nào. Thêm kết nối đã lưu để thấy chúng ở đây.",
+  "notInWorkspace": "Không thuộc workspace {{name}}",
+  "status": {
+    "connected": "Đã kết nối",
+    "opening": "Đang kết nối…",
+    "reconnecting": "Đang kết nối lại…",
+    "lost": "Mất kết nối",
+    "gaveUp": "Không kết nối lại được",
+    "failed": "Kết nối thất bại",
+    "idle": "Chưa kết nối"
+  },
+  "strip": {
+    "title": "Workspace {{name}}: chỉ liệt kê kết nối của workspace này",
+    "overview": "Tổng quan workspace"
+  },
+  "actions": {
+    "addConnections": "Thêm kết nối",
+    "addSaved": "Thêm kết nối đã lưu…",
+    "addOpen": "Thêm kết nối đang mở ({{count}})",
+    "connectAll": "Kết nối tất cả",
+    "connectAllHint": "Kết nối mọi kết nối đang hiện (kết nối cần mật khẩu để lại cho sidebar)",
+    "disconnectAll": "Ngắt tất cả",
+    "rename": "Đổi tên workspace…",
+    "renameTitle": "Đổi tên workspace",
+    "delete": "Xoá workspace",
+    "more": "Thao tác khác với workspace"
+  },
+  "delete": {
+    "title": "Xoá workspace “{{name}}”?",
+    "body": "Kết nối và cấu hình đã lưu không bị đụng tới. Các tab của workspace chuyển sang “Không workspace”."
+  },
+  "remove": {
+    "title": "Bỏ “{{name}}” khỏi workspace?",
+    "body": "Kết nối vẫn được lưu, chỉ không còn thuộc {{name}}.",
+    "confirm": "Bỏ khỏi workspace"
+  },
+  "folder": {
+    "new": "Thư mục mới…",
+    "newSubfolder": "Thư mục con mới…",
+    "create": "Tạo thư mục",
+    "rename": "Đổi tên thư mục…",
+    "renameTitle": "Đổi tên thư mục",
+    "moveTo": "Chuyển tới",
+    "delete": "Xoá thư mục",
+    "deleteTitle": "Xoá thư mục “{{name}}”?",
+    "deleteBody": "Nội dung bên trong chuyển lên {{parent}}; không kết nối nào bị bỏ.",
+    "expand": "Mở thư mục",
+    "collapse": "Thu gọn thư mục",
+    "menu": "Thao tác với thư mục",
+    "hint": "Gom các kết nối liên quan vào thư mục (tối đa {{max}} cấp).",
+    "showOnly": "Chỉ hiện thư mục này",
+    "emptyHint": "Thư mục trống: kéo kết nối vào đây, hoặc dùng “Chuyển tới” trên một kết nối."
+  },
+  "rollup": {
+    "connected": "{{count}} đã kết nối",
+    "problems": "{{count}} gặp sự cố"
+  },
+  "row": {
+    "showInSidebar": "Hiện ở sidebar",
+    "connect": "Kết nối",
+    "disconnect": "Ngắt kết nối",
+    "newEditor": "SQL editor mới",
+    "moveTo": "Chuyển vào thư mục",
+    "newFolderWith": "Thư mục mới chứa kết nối này…",
+    "remove": "Bỏ khỏi workspace",
+    "tabs": "{{count}} tab"
+  },
+  "filter": {
+    "placeholder": "Lọc theo tên, host, database hoặc loại",
+    "status": "Lọc theo trạng thái",
+    "all": "Tất cả",
+    "connected": "Đã kết nối",
+    "idle": "Chưa kết nối",
+    "problems": "Có sự cố",
+    "production": "Production",
+    "noMatch": "Không có kết nối nào khớp."
+  },
+  "col": {
+    "connection": "Kết nối",
+    "kind": "Loại",
+    "environment": "Môi trường",
+    "status": "Trạng thái",
+    "tabs": "Tab"
+  },
+  "bulk": {
+    "connected": "Đã kết nối {{count}}",
+    "needPassword": "{{count}} cần mật khẩu (kết nối từ sidebar)",
+    "failed": "{{count}} thất bại"
+  },
+  "picker": {
+    "filter": "Lọc kết nối",
+    "all": "Chọn tất cả",
+    "none": "Bỏ chọn",
+    "empty": "Không có kết nối đã lưu nào khớp.",
+    "already": "đã có"
+  },
+  "new": {
+    "title": "Workspace mới",
+    "description": "Workspace gom một nhóm kết nối; khi đang chọn, sidebar chỉ liệt kê chúng và workspace giữ bộ tab riêng.",
+    "namePlaceholder": "VD: Thanh toán, Khách hàng A, Báo cáo",
+    "source": "Kết nối",
+    "sourcePick": "Chọn từ kết nối đã lưu",
+    "sourceOpen": "Các kết nối đang mở ({{count}})",
+    "sourceEmpty": "Bắt đầu trống",
+    "selected": "Đã chọn {{count}} kết nối",
+    "create": "Tạo workspace"
+  },
+  "add": {
+    "title": "Thêm kết nối vào {{name}}",
+    "description": "Các kết nối được tick sẽ vào workspace (vào thư mục đang xem).",
+    "submit": "Thêm {{count}}"
+  },
+  "switcher": {
+    "active": "Workspace {{name}}",
+    "none": "Không workspace: liệt kê mọi kết nối",
+    "overview": "Tổng quan workspace",
+    "addSaved": "Thêm kết nối đã lưu vào “{{name}}”…",
+    "addOpen": "Thêm {{count}} kết nối đang mở vào “{{name}}”",
+    "addTab": "Thêm kết nối của tab này vào “{{name}}”",
+    "noWorkspace": "Không workspace",
+    "new": "Workspace mới…"
+  },
+  "toast": {
+    "created": "Đã tạo workspace {{name}}",
+    "added": "Đã thêm {{count}} kết nối vào {{name}}",
+    "joined": "{{count}} kết nối đã vào workspace {{name}}"
+  }
+}

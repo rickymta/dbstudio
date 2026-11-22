@@ -101,3 +101,15 @@ export const allGroupIds = (snapshot: ConnectionsSnapshot): Uuid[] =>
  */
 export const needsPassword = (p: ConnectionProfile): boolean =>
   p.authMode !== 'none' && (!p.savePassword || !p.hasPassword);
+
+/** The tree without groups that hold no profile, directly or in a subgroup. */
+export function pruneEmptyGroups(tree: ConnectionsTree): ConnectionsTree {
+  const prune = (node: GroupNode): GroupNode | null => {
+    const groups = node.groups.map(prune).filter((g): g is GroupNode => g !== null);
+    return groups.length > 0 || node.profiles.length > 0 ? { ...node, groups } : null;
+  };
+  return {
+    groups: tree.groups.map(prune).filter((g): g is GroupNode => g !== null),
+    profiles: tree.profiles,
+  };
+}

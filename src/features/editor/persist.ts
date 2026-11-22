@@ -4,7 +4,7 @@
 import i18n from '@/lib/i18n';
 import { ipc } from '@/lib/ipc';
 import type { DbKind, EditorTabState } from '@/lib/types';
-import { useTabsStore, type EditorMode, type TabItem } from '@/stores/tabs';
+import { allTabs, NO_SCOPE, useTabsStore, type EditorMode, type TabItem } from '@/stores/tabs';
 import { addEditorTab } from './open';
 import { getTabData, isDirty, useEditorStore, type EditorTabData } from './editorStore';
 import { applyDebugState, debugStateOf, onDebugStateChanged } from './persistHooks';
@@ -24,7 +24,8 @@ function titleText(tab: TabItem): string {
 /** The state to persist for the open editor tabs, in tab order. */
 export function collectEditorTabs(): EditorTabState[] {
   const states: EditorTabState[] = [];
-  for (const tab of useTabsStore.getState().tabs) {
+  // Editors of every workspace, not only the one on screen.
+  for (const tab of allTabs(useTabsStore.getState())) {
     if (tab.kind !== 'editor') continue;
     const data = getTabData(tab.payload.tabStateId);
     if (!data) continue;
@@ -46,6 +47,40 @@ export function collectEditorTabs(): EditorTabState[] {
 }
 
 const DIRTY_KEY = 'dbstudio.editor.dirtyTabs';
+const SCOPES_KEY = 'dbstudio.editor.tabScopes';
+
+/** Workspace of each editor tab that does not belong to "no workspace" (`EditorTabState` has none). */
+export function editorTabScopes(): Record<string, string> {
+  const { tabs, scope, stashed } = useTabsStore.getState();
+  const out: Record<string, string> = {};
+  const add = (list: TabItem[], s: string) => {
+    if (s === NO_SCOPE) return;
+    for (const t of list) if (t.kind === 'editor') out[t.payload.tabStateId] = s;
+  };
+  add(tabs, scope);
+  for (const [s, set] of Object.entries(stashed)) add(set.tabs, s);
+  return out;
+}
+
+function readScopes(): Record<string, string> {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(SCOPES_KEY) ?? '{}');
+    if (!raw || typeof raw !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(raw).filter((e): e is [string, string] => typeof e[1] === 'string'),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeScopes(scopes: Record<string, string>): void {
+  try {
+    localStorage.setItem(SCOPES_KEY, JSON.stringify(scopes));
+  } catch {
+    // storage unavailable: restored tabs then open in the current workspace
+  }
+}
 
 /** Ids of file-backed tabs with unsaved changes (`EditorTabState` has no field for it). */
 function readDirty(): Set<string> {
@@ -84,7 +119,9 @@ export async function restoreEditorTabs(): Promise<number | null> {
     // keep the empty map
   }
   const dirty = readDirty();
-  const open = new Set(useTabsStore.getState().tabs.map((t) => t.id));
+  const open = new Set(allTabs(useTabsStore.getState()).map((t) => t.id));
+  const scopes = readScopes();
+  const byScope = new Map<string, string[]>();
   const previous = useTabsStore.getState().activeId;
   let restored = 0;
   for (const state of [...states].sort((a, b) => a.position - b.position)) {
@@ -113,8 +150,12 @@ export async function restoreEditorTabs(): Promise<number | null> {
       false,
     );
     if (state.debug) applyDebugState(state.id, state.debug);
+    const scope = scopes[state.id] ?? NO_SCOPE;
+    byScope.set(scope, [...(byScope.get(scope) ?? []), `editor:${state.id}`]);
     restored++;
   }
+  // Each tab goes back to the workspace it was in (the tab set of that workspace).
+  for (const [scope, ids] of byScope) useTabsStore.getState().moveToScope(ids, scope);
   useTabsStore.getState().activate(previous);
   return restored;
 }
@@ -163,7 +204,7 @@ function dirtyIds(states: EditorTabState[]): string[] {
 
 function signatureNow(): string {
   const states = collectEditorTabs();
-  return JSON.stringify(states) + dirtyIds(states).join(',');
+  return JSON.stringify(states) + dirtyIds(states).join(',') + JSON.stringify(editorTabScopes());
 }
 
 /**
@@ -177,10 +218,12 @@ export function startEditorPersistence(): () => void {
     timer = null;
     const states = collectEditorTabs();
     const dirty = dirtyIds(states);
-    const signature = JSON.stringify(states) + dirty.join(',');
+    const scopes = editorTabScopes();
+    const signature = JSON.stringify(states) + dirty.join(',') + JSON.stringify(scopes);
     if (signature === last) return;
     last = signature;
     writeDirty(dirty);
+    writeScopes(scopes);
     ipc.editorTabsSet(states).catch(() => undefined);
   };
   const schedule = () => {

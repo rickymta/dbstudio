@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import type { Value } from '@/lib/types';
-import { useTabsStore } from '@/stores/tabs';
+import { allTabs, useTabsStore } from '@/stores/tabs';
 import { docId } from './flatten';
 
 export type DocViewMode = 'table' | 'tree' | 'json';
@@ -55,9 +55,10 @@ export function resetDocStores(): void {
   useDocUiStore.setState({ byTab: {} });
 }
 
-let previousIds = new Set(useTabsStore.getState().tabs.map((t) => t.id));
+// Tabs of a workspace that is not shown still exist: only a tab gone from every scope is closed.
+let previousIds = new Set(allTabs(useTabsStore.getState()).map((t) => t.id));
 useTabsStore.subscribe((state) => {
-  const ids = new Set(state.tabs.map((t) => t.id));
+  const ids = new Set(allTabs(state).map((t) => t.id));
   for (const id of previousIds) if (!ids.has(id)) useDocUiStore.getState().drop(id);
   previousIds = ids;
 });

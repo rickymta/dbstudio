@@ -17,7 +17,11 @@ import { useTranslation } from 'react-i18next';
 import { connectionColor, useConnectionProfile } from '@/features/connections/queries';
 import { cn } from '@/lib/cn';
 import { isDirty, useEditorStore } from '@/features/editor/editorStore';
-import { useTabsStore, type TabItem, type TabTitle } from '@/stores/tabs';
+import { useTabsStore, WELCOME_TAB, type TabItem, type TabTitle } from '@/stores/tabs';
+import { useActiveWorkspace } from '@/features/workspaces/store';
+import { WorkspaceSwitcher } from '@/features/workspaces/WorkspaceSwitcher';
+import { LaunchpadButton } from '@/features/launchpad/LaunchpadButton';
+import { useLaunchpad } from '@/features/launchpad/store';
 
 function useTabTitle(title: TabTitle): string {
   const { t } = useTranslation();
@@ -36,7 +40,10 @@ function TabButton({
   const { t } = useTranslation();
   const activate = useTabsStore((s) => s.activate);
   const closeTab = useTabsStore((s) => s.requestClose);
-  const title = useTabTitle(tab.title);
+  const workspace = useActiveWorkspace();
+  const baseTitle = useTabTitle(tab.title);
+  // The first tab shows the active workspace's overview: it carries the workspace's name.
+  const title = tab.id === WELCOME_TAB.id && workspace ? workspace.name : baseTitle;
   const profile = useConnectionProfile(tab.payload?.connectionId ?? '');
   const color = connectionColor(profile);
   const togglePin = useTabsStore((s) => s.togglePin);
@@ -52,7 +59,18 @@ function TabButton({
           .map((s) => s.name)
           .join('.')
       : '';
-  const detail = [title, profile?.name, path].filter(Boolean).join(' · ');
+  const outside =
+    !!workspace &&
+    !!tab.payload?.connectionId &&
+    !workspace.connections.includes(tab.payload.connectionId);
+  const detail = [
+    title,
+    profile?.name,
+    path,
+    outside ? t('workspaces:notInWorkspace', { name: workspace.name }) : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   // Middle click closes the tab (auxclick; mousedown would also start autoscroll).
   const onAuxClick = (e: MouseEvent) => {
@@ -87,11 +105,16 @@ function TabButton({
         tabIndex={active ? 0 : -1}
         data-tab-id={tab.id}
         title={detail}
-        onClick={() => activate(tab.id)}
+        onClick={() => {
+          // Picking a tab shows it, also the one already active under the Launchpad.
+          useLaunchpad.getState().setOpen(false);
+          activate(tab.id);
+        }}
         className={cn(
           'h-full max-w-56 truncate pl-3 text-[13px]',
           tab.closable ? 'pr-1' : 'pr-3',
           active && 'font-medium',
+          outside && 'italic',
         )}
       >
         {title}
@@ -144,6 +167,7 @@ export function TabBar() {
   const activeId = useTabsStore((s) => s.activeId);
   const activate = useTabsStore((s) => s.activate);
   const closeTab = useTabsStore((s) => s.requestClose);
+  const launchpadOpen = useLaunchpad((s) => s.open);
 
   const ordered = [...tabs.filter((t) => t.pinned), ...tabs.filter((t) => !t.pinned)];
   const label = (tab: TabItem) =>
@@ -196,6 +220,8 @@ export function TabBar() {
         aria-pressed={!hidden}
         onClick={toggleSidebar}
       />
+      <LaunchpadButton />
+      <WorkspaceSwitcher />
       <div
         ref={listRef}
         role="tablist"
@@ -206,7 +232,7 @@ export function TabBar() {
           <TabButton
             key={tab.id}
             tab={tab}
-            active={tab.id === activeId}
+            active={!launchpadOpen && tab.id === activeId}
             duplicate={tabs.some((other) => other.id !== tab.id && label(other) === label(tab))}
           />
         ))}
@@ -225,7 +251,13 @@ export function TabBar() {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="max-h-80 max-w-[min(480px,90vw)] overflow-auto">
           {ordered.map((tab) => (
-            <DropdownMenuItem key={tab.id} onSelect={() => activate(tab.id)}>
+            <DropdownMenuItem
+              key={tab.id}
+              onSelect={() => {
+                useLaunchpad.getState().setOpen(false);
+                activate(tab.id);
+              }}
+            >
               <span className="truncate">
                 {tab.pinned ? '• ' : ''}
                 {label(tab)}

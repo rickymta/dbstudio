@@ -42,7 +42,11 @@ export const dialogs = {
   confirm(options: ConfirmOptions): Promise<boolean> {
     return new Promise((resolve) => {
       const id = nextId++;
-      useConfirmStore.setState((s) => ({ queue: [...s.queue, { ...options, id, resolve }] }));
+      // One tick later: asked from a dropdown item, the closing menu would take the focus back
+      // from the dialog (its confirm button has the focus).
+      setTimeout(() => {
+        useConfirmStore.setState((s) => ({ queue: [...s.queue, { ...options, id, resolve }] }));
+      }, 0);
     });
   },
 };

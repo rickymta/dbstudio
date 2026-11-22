@@ -10,21 +10,30 @@ import { AppWindows } from '@/features/workspace/AppWindows';
 import { CommandPalette } from '@/features/workspace/CommandPalette';
 import { useTabsStore } from '@/stores/tabs';
 import { ConfirmHost } from '@/components/ui/ConfirmHost';
+import { LaunchpadView } from '@/features/launchpad/LaunchpadView';
+import { useLaunchpad } from '@/features/launchpad/store';
+import { WorkspaceDialogsHost } from '@/features/workspaces/WorkspaceDialogs';
 import { Toaster } from '@/components/ui/Toast';
 import { StatusBar } from './StatusBar';
 import { renderTab } from './tabRegistry';
 
 function MainArea() {
   const activeTab = useTabsStore((s) => s.tabs.find((t) => t.id === s.activeId));
+  // The Launchpad covers the tab content while open; the tabs stay as they are underneath.
+  const launchpad = useLaunchpad((s) => s.open);
   return (
     <div className="flex h-full min-w-0 flex-col bg-background">
       <TabBar />
       <SessionHealthBanner />
       <main className="min-h-0 flex-1" role="tabpanel">
-        {activeTab && (
-          <div key={activeTab.id} className="h-full">
-            {renderTab(activeTab)}
-          </div>
+        {launchpad ? (
+          <LaunchpadView />
+        ) : (
+          activeTab && (
+            <div key={activeTab.id} className="h-full">
+              {renderTab(activeTab)}
+            </div>
+          )
         )}
       </main>
     </div>
@@ -66,6 +75,7 @@ export function App() {
       <StatusBar />
       <Toaster />
       <ConfirmHost />
+      <WorkspaceDialogsHost />
       {/* App-wide hosts, mounted once: editor shortcuts/dialogs and the destructive confirmation. */}
       <EditorHost />
       <ConfirmDestructiveHost />

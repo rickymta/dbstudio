@@ -1,0 +1,75 @@
+{
+  "title": "Launchpad",
+  "subtitle": "Việc dang dở, tình trạng kết nối, đối tượng đã ghim và job trên mọi kết nối",
+  "badge": "{{count}} mục cần bạn xử lý",
+  "sections": "Các mục của Launchpad",
+  "search": "Tìm kiếm (nhấn /)",
+  "keysHint": "J / K hoặc ↑ ↓ để di chuyển · Enter để mở · / để tìm · Ctrl+Shift+K để đóng",
+  "goTo": "Đi tới",
+  "noWorkspace": "Không workspace",
+  "scope": {
+    "workspace": "Workspace “{{name}}”",
+    "all": "Mọi kết nối"
+  },
+  "section": {
+    "work": "Việc dang dở",
+    "connections": "Kết nối",
+    "objects": "Ghim & gần đây",
+    "jobs": "Job & backup"
+  },
+  "work": {
+    "empty": "Không có việc dang dở: không transaction nào đang mở, không câu lệnh nào đang chạy, không thay đổi nào chưa lưu.",
+    "committed": "Đã commit",
+    "rolledBack": "Đã rollback",
+    "commit": "Commit",
+    "rollback": "Rollback",
+    "cancel": "Huỷ",
+    "runningFor": "Đã chạy {{time}}",
+    "changes": "{{count}} thay đổi chưa lưu",
+    "kind": {
+      "transaction": "Transaction đang mở",
+      "running": "Câu lệnh đang chạy",
+      "pendingEdits": "Sửa dữ liệu chưa lưu",
+      "unsavedFile": "File .sql chưa lưu"
+    },
+    "tx": {
+      "active": "Transaction đang mở",
+      "failed": "Transaction lỗi: cần rollback",
+      "unknown": "Không rõ trạng thái transaction",
+      "idle": "Không có transaction"
+    }
+  },
+  "connections": {
+    "empty": "Không có kết nối nào ở đây.",
+    "connect": "Kết nối",
+    "retry": "Thử lại",
+    "disconnect": "Ngắt kết nối",
+    "newEditor": "Editor mới",
+    "group": {
+      "problems": "Cần xử lý",
+      "open": "Đang mở",
+      "idle": "Chưa kết nối"
+    }
+  },
+  "objects": {
+    "empty": "Chưa có đối tượng ghim hay mở gần đây. Đối tượng bạn mở sẽ hiện ở đây; gắn sao để ghim.",
+    "pinned": "Đã ghim",
+    "recent": "Gần đây",
+    "pin": "Ghim",
+    "unpin": "Bỏ ghim",
+    "open": "Mở",
+    "kind": {
+      "table": "Dữ liệu",
+      "ddl": "DDL",
+      "key": "Key"
+    }
+  },
+  "jobs": {
+    "empty": "Chưa có job export, import hay backup nào trong phiên này.",
+    "running": "Đang chạy",
+    "failed": "Thất bại",
+    "done": "Đã xong",
+    "cancel": "Huỷ",
+    "details": "Chi tiết"
+  }
+}

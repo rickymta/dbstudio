@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import type { IpcError, LeaseState, ParamValue, StatementInfo, Uuid } from '@/lib/types';
-import { useTabsStore } from '@/stores/tabs';
+import { allTabs, useTabsStore } from '@/stores/tabs';
 import type { ErrorMark } from './errorMarks';
 import type { ParamDraft } from './params';
 import type { StatementResult } from './results';
@@ -183,11 +183,11 @@ export function onEditorTabRemoved(hook: CleanupHook): () => void {
 }
 
 const EDITOR_PREFIX = 'editor:';
+// Every scope: an editor of a workspace that is not shown keeps its text and its lease.
 const editorIds = (): Set<string> =>
   new Set(
-    useTabsStore
-      .getState()
-      .tabs.filter((t) => t.kind === 'editor')
+    allTabs(useTabsStore.getState())
+      .filter((t) => t.kind === 'editor')
       .map((t) => t.id.slice(EDITOR_PREFIX.length)),
   );
 

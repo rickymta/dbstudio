@@ -1,7 +1,13 @@
 import i18n from '@/lib/i18n';
 import type { ObjectPath, SessionInfo } from '@/lib/types';
 import { useSessionsStore } from '@/stores/sessions';
-import { editorTabId, useTabsStore, type EditorMode, type EditorTabPayload } from '@/stores/tabs';
+import {
+  allTabs,
+  editorTabId,
+  useTabsStore,
+  type EditorMode,
+  type EditorTabPayload,
+} from '@/stores/tabs';
 import { newTabData, useEditorStore, type EditorTabData } from './editorStore';
 import { registerEditorTab } from './editorRunner';
 
@@ -48,7 +54,7 @@ let queryNumber = 0;
 /** Titles of the editors that are open (tabs restored after a reload included). */
 function openEditorTitles(): Set<string> {
   const titles = new Set<string>();
-  for (const tab of useTabsStore.getState().tabs) {
+  for (const tab of allTabs(useTabsStore.getState())) {
     if (tab.kind === 'editor' && typeof tab.title === 'string') titles.add(tab.title);
   }
   for (const data of Object.values(useEditorStore.getState().tabs)) {

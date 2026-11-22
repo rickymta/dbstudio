@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import type { ObjectPath, Uuid } from '@/lib/types';
-import { useTabsStore } from '@/stores/tabs';
+import { allTabs, useTabsStore } from '@/stores/tabs';
 import { GridModel } from './gridModel';
 import { patchEditSession, useEditSessionStore } from './edit/editSession';
 import './edit/pendingGuard';
@@ -141,9 +141,10 @@ export function resetDataStores(): void {
 }
 
 // Clean up when a tab disappears from the tabs store.
-let previousIds = new Set(useTabsStore.getState().tabs.map((t) => t.id));
+// Tabs of a workspace that is not shown still exist: only a tab gone from every scope is closed.
+let previousIds = new Set(allTabs(useTabsStore.getState()).map((t) => t.id));
 useTabsStore.subscribe((state) => {
-  const ids = new Set(state.tabs.map((t) => t.id));
+  const ids = new Set(allTabs(state).map((t) => t.id));
   for (const id of previousIds) if (!ids.has(id)) disposeTabData(id);
   previousIds = ids;
 });

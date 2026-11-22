@@ -1,6 +1,8 @@
 import { Button } from '@/components/ui/Button';
 import { useConnectionsSnapshot } from '@/features/connections/queries';
 import { useNavigation } from '@/features/workspace/navigation';
+import { useActiveWorkspace } from '@/features/workspaces/store';
+import { WorkspaceView } from '@/features/workspaces/WorkspaceView';
 import { useTabsStore } from '@/stores/tabs';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -52,7 +54,13 @@ function DriverCard({ driver }: { driver: DriverDescriptor }) {
   );
 }
 
+/** First tab: the active workspace's overview, else the welcome page. */
 export function WelcomeTab() {
+  const workspace = useActiveWorkspace();
+  return workspace ? <WorkspaceView ws={workspace} /> : <WelcomePage />;
+}
+
+function WelcomePage() {
   const connections = useConnectionsSnapshot();
   const recent = useNavigation((s) => s.recent);
   const navigate = useNavigation((s) => s.navigate);

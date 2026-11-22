@@ -1,0 +1,75 @@
+{
+  "title": "Launchpad",
+  "subtitle": "Unfinished work, connection health, pinned objects and jobs across your connections",
+  "badge": "{{count}} item(s) need you",
+  "sections": "Launchpad sections",
+  "search": "Search (press /)",
+  "keysHint": "J / K or ↑ ↓ move · Enter opens · / searches · Ctrl+Shift+K closes",
+  "goTo": "Go to",
+  "noWorkspace": "No workspace",
+  "scope": {
+    "workspace": "Workspace “{{name}}”",
+    "all": "Every connection"
+  },
+  "section": {
+    "work": "Unfinished work",
+    "connections": "Connections",
+    "objects": "Pinned & recent",
+    "jobs": "Jobs & backups"
+  },
+  "work": {
+    "empty": "Nothing unfinished: no open transaction, running statement or unsaved change.",
+    "committed": "Committed",
+    "rolledBack": "Rolled back",
+    "commit": "Commit",
+    "rollback": "Rollback",
+    "cancel": "Cancel",
+    "runningFor": "Running for {{time}}",
+    "changes": "{{count}} unsaved change(s)",
+    "kind": {
+      "transaction": "Open transactions",
+      "running": "Running statements",
+      "pendingEdits": "Unsaved data edits",
+      "unsavedFile": "Unsaved .sql files"
+    },
+    "tx": {
+      "active": "Transaction open",
+      "failed": "Transaction failed: roll it back",
+      "unknown": "Transaction state unknown",
+      "idle": "No transaction"
+    }
+  },
+  "connections": {
+    "empty": "No connection here.",
+    "connect": "Connect",
+    "retry": "Retry",
+    "disconnect": "Disconnect",
+    "newEditor": "New editor",
+    "group": {
+      "problems": "Need attention",
+      "open": "Open",
+      "idle": "Not connected"
+    }
+  },
+  "objects": {
+    "empty": "No pinned or recent object yet. Objects you open show up here; star one to pin it.",
+    "pinned": "Pinned",
+    "recent": "Recent",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "open": "Open",
+    "kind": {
+      "table": "Data",
+      "ddl": "DDL",
+      "key": "Key"
+    }
+  },
+  "jobs": {
+    "empty": "No export, import or backup job in this session.",
+    "running": "Running",
+    "failed": "Failed",
+    "done": "Finished",
+    "cancel": "Cancel",
+    "details": "Details"
+  }
+}
