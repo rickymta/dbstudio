@@ -2,6 +2,13 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.2.0 - 2026-11-22
+
+Thay đổi từ v0.1.13.
+
+- feat(workspace): Launchpad và Workspace như GitStudio (20f02e5)
+- feat(conn): kết nối tới cụm — danh sách máy chủ, chọn primary/standby, Redis Sentinel/Cluster, SQL Server Always On (913da6f)
+
 ## v0.1.13 - 2026-11-20
 
 Thay đổi từ v0.1.12.
