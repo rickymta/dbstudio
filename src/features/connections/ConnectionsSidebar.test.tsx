@@ -841,6 +841,9 @@ describe('ConnectionsSidebar', () => {
       await connectDev(user);
       await user.type(search(), 'users');
       await screen.findByRole('treeitem', { name: 'users - PostgreSQL dev' }, WAIT);
+      // The databases without a match are listed by their own request and come in after the
+      // matches: wait for the last one, else "the last row" changes between two key presses.
+      await screen.findByRole('treeitem', { name: 'postgres (0) - PostgreSQL dev' }, WAIT);
       // The search box sits below the list: Up jumps to the last row, Down from it returns.
       await user.keyboard('{ArrowUp}');
       expect(document.activeElement).toHaveAttribute('data-nav-row');
