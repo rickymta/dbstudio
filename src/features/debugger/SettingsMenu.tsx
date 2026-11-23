@@ -114,7 +114,7 @@ export const SettingsMenu: FC<{ tabId: string; trigger: ReactNode; label: string
   label,
 }) => (
   <Menu.Root>
-    <Tooltip content={label} side="bottom">
+    <Tooltip content={label}>
       <Menu.Trigger asChild>
         <Button size="icon" variant="ghost" aria-label={label}>
           {trigger}

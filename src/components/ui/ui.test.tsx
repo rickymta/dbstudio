@@ -8,6 +8,7 @@ import { Switch } from './Switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './Tabs';
 import { Toaster } from './Toast';
 import { toast } from './toastStore';
+import { Tooltip } from './Tooltip';
 
 describe('ui primitives', () => {
   it('ConfirmDialog confirms and cancels', async () => {
@@ -50,5 +51,22 @@ describe('ui primitives', () => {
     expect(screen.getByRole('switch', { name: 's' })).toBeChecked();
     await user.click(screen.getByRole('tab', { name: 'B' }));
     expect(screen.getByText('content b')).toBeInTheDocument();
+  });
+
+  it('Tooltip is the native title, also over a disabled button', () => {
+    render(
+      <Tooltip content="Help & Support">
+        <button type="button" disabled>
+          help
+        </button>
+      </Tooltip>,
+    );
+    // No bubble element of our own: nothing that could stick out of the window and make the
+    // page scroll sideways.
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(screen.getByRole('button', { name: 'help' }).parentElement).toHaveAttribute(
+      'title',
+      'Help & Support',
+    );
   });
 });

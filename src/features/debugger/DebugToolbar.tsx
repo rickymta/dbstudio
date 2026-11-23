@@ -59,7 +59,7 @@ export const ToolButton: FC<ToolButtonProps> = ({
   const text = keys ? `${label} (${keys})` : label;
   const enabled = commandEnabled(tabId, command) && !disabled;
   return (
-    <Tooltip content={text} side="bottom">
+    <Tooltip content={text}>
       <Button
         size="icon"
         variant="ghost"

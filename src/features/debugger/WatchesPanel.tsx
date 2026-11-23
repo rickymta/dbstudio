@@ -78,7 +78,7 @@ export const WatchesPanel: FC<{ tabId: string }> = ({ tabId }) => {
         <span className="flex-1 text-[11px] font-medium text-muted-foreground uppercase">
           {t('watches.title')}
         </span>
-        <Tooltip content={t('watches.add')} side="bottom">
+        <Tooltip content={t('watches.add')}>
           <Button
             size="icon"
             variant="ghost"
@@ -89,7 +89,7 @@ export const WatchesPanel: FC<{ tabId: string }> = ({ tabId }) => {
             <Plus size={13} aria-hidden />
           </Button>
         </Tooltip>
-        <Tooltip content={t('watches.remove')} side="bottom">
+        <Tooltip content={t('watches.remove')}>
           <Button
             size="icon"
             variant="ghost"
