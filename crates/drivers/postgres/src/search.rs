@@ -1,10 +1,10 @@
 //! Server-side object search (`search_objects`) over the catalogs.
 //!
-//! Scope handling: the root searches only the session's default database (searching every
-//! database would need a connection per database); a `Database` scope searches that database
-//! (through its own pool); a `Schema` scope searches that schema only, system schemas included
-//! when named explicitly. Without a schema scope the system schemas (`pg_catalog`,
-//! `information_schema`, `pg_toast*`) are skipped.
+//! Scope handling: the root searches every database the login can connect to, the session's
+//! default database first (one connection per database, see [`root_databases`]); a `Database`
+//! scope searches that database (through its own pool); a `Schema` scope searches that schema
+//! only, system schemas included when named explicitly. Without a schema scope the system
+//! schemas (`pg_catalog`, `information_schema`, `pg_toast*`) are skipped.
 
 use dbstudio_core::{Error, ObjectKind, ObjectNode, ObjectSearchRequest, Result};
 use tokio_postgres::Client;
@@ -21,6 +21,50 @@ const DEFAULT_KINDS: [ObjectKind; 6] = [
     ObjectKind::Procedure,
     ObjectKind::Sequence,
 ];
+
+/// Databases one root search looks into at most: each one costs a connection.
+pub const MAX_SEARCH_DATABASES: usize = 16;
+
+/// Databases a search from the root covers, the login database first.
+///
+/// The tree lists every database of the server, so a search limited to the login database
+/// (often `postgres`) found none of the tables and functions shown under the others.
+pub fn root_databases(login: &str, connectable: Vec<String>) -> Vec<String> {
+    let mut out = vec![login.to_string()];
+    out.extend(connectable.into_iter().filter(|d| d != login));
+    out.truncate(MAX_SEARCH_DATABASES);
+    out
+}
+
+/// Rank of a result for `query`: 0 exact, 1 prefix, 2 substring (case-insensitive). A routine
+/// is matched on its name, without the argument list.
+fn rank(name: &str, query: &str) -> u8 {
+    let base = name.split('(').next().unwrap_or(name).to_lowercase();
+    let q = query.trim().to_lowercase();
+    if base == q {
+        0
+    } else if base.starts_with(&q) {
+        1
+    } else {
+        2
+    }
+}
+
+/// One list out of the answers of several databases: best matches first, then by name; equal
+/// names keep the order of the databases. At most `limit` (clamped like a single search).
+pub fn merge(per_database: Vec<Vec<ObjectNode>>, query: &str, limit: u32) -> Vec<ObjectNode> {
+    let mut all: Vec<(u8, String, ObjectNode)> = per_database
+        .into_iter()
+        .flatten()
+        .map(|n| {
+            let base = n.name.split('(').next().unwrap_or(&n.name).to_lowercase();
+            (rank(&n.name, query), base, n)
+        })
+        .collect();
+    all.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    all.truncate(limit.clamp(1, 1000) as usize);
+    all.into_iter().map(|(_, _, n)| n).collect()
+}
 
 /// Where a search runs.
 #[derive(Debug, PartialEq, Eq)]
@@ -203,6 +247,60 @@ mod tests {
             kinds: vec![],
             limit: 10,
         }
+    }
+
+    #[test]
+    fn root_covers_every_database_login_first() {
+        let dbs = |login: &str, all: &[&str]| {
+            root_databases(login, all.iter().map(|d| d.to_string()).collect())
+        };
+        assert_eq!(
+            dbs("postgres", &["app", "hub", "postgres"]),
+            vec!["postgres", "app", "hub"]
+        );
+        // The login database is searched even when the list does not name it.
+        assert_eq!(dbs("shop", &["app"]), vec!["shop", "app"]);
+        let many: Vec<String> = (0..40).map(|n| format!("db{n:02}")).collect();
+        assert_eq!(root_databases("db07", many).len(), MAX_SEARCH_DATABASES);
+    }
+
+    #[test]
+    fn merges_databases_by_rank_then_name() {
+        let n = |db: &str, kind: ObjectKind, name: &str| ObjectNode {
+            path: object_path(db, "public", kind, name),
+            kind,
+            name: name.to_string(),
+            has_children: false,
+            detail: Some(format!("{db}.public")),
+        };
+        let merged = merge(
+            vec![
+                vec![n("postgres", ObjectKind::Table, "user_log")],
+                vec![
+                    n("app", ObjectKind::Table, "user"),
+                    n("app", ObjectKind::Function, "find_user(id integer)"),
+                    n("app", ObjectKind::Function, "User(text)"),
+                ],
+                vec![n("hub", ObjectKind::Table, "user")],
+            ],
+            " USER ",
+            4,
+        );
+        let got: Vec<(String, String)> = merged
+            .iter()
+            .map(|x| (x.detail.clone().unwrap(), x.name.clone()))
+            .collect();
+        let want = [
+            ("app.public", "user"),
+            ("app.public", "User(text)"),
+            ("hub.public", "user"),
+            ("postgres.public", "user_log"),
+        ];
+        assert_eq!(
+            got,
+            want.map(|(d, name)| (d.to_string(), name.to_string()))
+                .to_vec()
+        );
     }
 
     #[test]

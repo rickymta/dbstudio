@@ -46,16 +46,3 @@ export function extraDetail(node: Pick<ObjectNode, 'path' | 'detail'>): string {
   }
   return detail;
 }
-
-/**
- * Database a server search is limited to, or `undefined` when the driver searches the whole
- * server. PostgreSQL cannot look across databases from one connection, so it only sees the
- * database of the session.
- */
-export function searchScopeDatabase(
-  session: Pick<SessionInfo, 'descriptor' | 'serverInfo'>,
-  profileDatabase?: string | null,
-): string | undefined {
-  if (session.descriptor.kind !== 'postgres') return undefined;
-  return session.serverInfo.extra?.database || profileDatabase || undefined;
-}

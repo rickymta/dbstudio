@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { childPath, ROOT_PATH } from '@/lib/objectPath';
-import { extraDetail, resultContext, searchScopeDatabase } from './serverSearchModel';
+import { extraDetail, resultContext } from './serverSearchModel';
 
 const pgPath = childPath(
   childPath(
@@ -39,22 +39,5 @@ describe('result context and detail', () => {
     expect(extraDetail({ path: pgPath, detail: '~1M rows' })).toBe('~1M rows');
     // A prefix that is not a whole word is not context.
     expect(extraDetail({ path: pgPath, detail: 'benchmark' })).toBe('benchmark');
-  });
-});
-
-describe('searchScopeDatabase', () => {
-  const session = (kind: string, extra: Record<string, string> = {}) =>
-    ({ descriptor: { kind }, serverInfo: { extra } }) as unknown as Parameters<
-      typeof searchScopeDatabase
-    >[0];
-
-  it('limits PostgreSQL to the database of the session', () => {
-    expect(searchScopeDatabase(session('postgres', { database: 'shop' }), 'other')).toBe('shop');
-    expect(searchScopeDatabase(session('postgres'), 'fallback')).toBe('fallback');
-    expect(searchScopeDatabase(session('postgres'), null)).toBeUndefined();
-  });
-
-  it('does not limit drivers that search the whole server', () => {
-    expect(searchScopeDatabase(session('mysql', { database: 'shop' }), 'shop')).toBeUndefined();
   });
 });

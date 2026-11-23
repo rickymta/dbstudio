@@ -154,6 +154,46 @@ impl PostgresSession {
         }
     }
 
+    /// Search one database through its own pool.
+    async fn search_database(
+        &self,
+        req: &ObjectSearchRequest,
+        scope: &search::Scope,
+        database: &str,
+    ) -> Result<Vec<ObjectNode>> {
+        let mut conn = self.shared.acquire_catalog(database).await?;
+        let r = search::search(
+            &conn.client,
+            req,
+            scope,
+            database,
+            self.shared.search_timeout(),
+        )
+        .await;
+        if r.is_ok() || matches!(r, Err(Error::Query { .. } | Error::Timeout)) {
+            conn.mark_reusable();
+        }
+        r
+    }
+
+    /// Databases the login may connect to (the ones the tree lists).
+    async fn connectable_databases(&self) -> Result<Vec<String>> {
+        let mut conn = self.shared.acquire_catalog(self.login_db()).await?;
+        let rows = conn
+            .client
+            .query(
+                "SELECT datname::text FROM pg_database \
+                 WHERE NOT datistemplate AND datallowconn \
+                   AND has_database_privilege(datname, 'CONNECT') \
+                 ORDER BY datname",
+                &[],
+            )
+            .await
+            .map_err(map_error)?;
+        conn.mark_reusable();
+        Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
     pub(crate) fn login_db(&self) -> &str {
         &self.shared.login_db
     }
@@ -450,23 +490,22 @@ impl Session for PostgresSession {
 
     async fn search_objects(&self, req: ObjectSearchRequest) -> Result<Vec<ObjectNode>> {
         let scope = search::parse_scope(&req)?;
-        let database = scope
-            .database
-            .clone()
-            .unwrap_or_else(|| self.login_db().to_string());
-        let mut conn = self.shared.acquire_catalog(&database).await?;
-        let r = search::search(
-            &conn.client,
-            &req,
-            &scope,
-            &database,
-            self.shared.search_timeout(),
-        )
-        .await;
-        if r.is_ok() || matches!(r, Err(Error::Query { .. } | Error::Timeout)) {
-            conn.mark_reusable();
+        if let Some(database) = scope.database.clone() {
+            return self.search_database(&req, &scope, &database).await;
         }
-        r
+        // From the root: every database the login can connect to, its own first.
+        let login = self.login_db().to_string();
+        let first = self.search_database(&req, &scope, &login).await?;
+        let others = self.connectable_databases().await.unwrap_or_default();
+        let mut found = vec![first];
+        for database in search::root_databases(&login, others).iter().skip(1) {
+            // A database that cannot be opened or read (connection limit, `pg_hba`, being
+            // dropped) must not hide the matches of the others.
+            if let Ok(nodes) = self.search_database(&req, &scope, database).await {
+                found.push(nodes);
+            }
+        }
+        Ok(search::merge(found, &req.query, req.limit))
     }
 
     async fn close(&self) -> Result<()> {

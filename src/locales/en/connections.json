@@ -188,8 +188,7 @@
     "noServerResults": "No matches on the server",
     "openData": "Open data",
     "viewDdl": "View DDL",
-    "showInTree": "Show in tree",
-    "currentDbOnly": "Searching only in database {{database}}. Open another database to search there."
+    "showInTree": "Show in tree"
   },
   "slow": {
     "keychain": "Waiting for the system to grant access to the Keychain / password store - check the operating system dialog.",
