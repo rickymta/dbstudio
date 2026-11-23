@@ -18,6 +18,15 @@ describe('isBrowserKey', () => {
     expect(isBrowserKey(key('F4'))).toBe(true);
   });
 
+  it('covers find and find next, which open the find bar of the webview', () => {
+    expect(isBrowserKey(key('f', { ctrlKey: true }))).toBe(true);
+    expect(isBrowserKey(key('F', { metaKey: true }))).toBe(true);
+    expect(isBrowserKey(key('g', { ctrlKey: true }))).toBe(true);
+    expect(isBrowserKey(key('G', { ctrlKey: true, shiftKey: true }))).toBe(true);
+    expect(isBrowserKey(key('f'))).toBe(false);
+    expect(isBrowserKey(key('f', { ctrlKey: true, altKey: true }))).toBe(false);
+  });
+
   it('covers the reload shortcuts and nothing else on R', () => {
     expect(isBrowserKey(key('r', { ctrlKey: true }))).toBe(true);
     expect(isBrowserKey(key('R', { ctrlKey: true, shiftKey: true }))).toBe(true);

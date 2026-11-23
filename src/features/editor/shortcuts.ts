@@ -17,6 +17,7 @@ export type ShortcutId =
   | 'toggleSidebar'
   | 'focusResults'
   | 'palette'
+  | 'spotlight'
   | 'settings'
   | 'activity'
   | 'zoomIn'
@@ -54,6 +55,9 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'launchpad', keys: 'Mod-Shift-k', scope: 'global', group: 'app' },
   { id: 'toggleSidebar', keys: 'Mod-b', scope: 'global', group: 'app' },
   { id: 'palette', keys: 'Mod-Shift-p', scope: 'global', group: 'app' },
+  // Replaces the webview's own "find in page", which only sees the text on screen. Inside the
+  // SQL editor the same keys keep searching the text of the editor.
+  { id: 'spotlight', keys: 'Mod-f', scope: 'global', group: 'app' },
   // Handled by the status bar (settings) and by `AppWindows` (the rest), which listen before
   // the editor so the combos also work while typing a statement.
   { id: 'settings', keys: 'Mod-,', scope: 'global', group: 'app' },

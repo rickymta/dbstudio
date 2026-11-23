@@ -107,7 +107,8 @@
   },
   "palette": {
     "title": "Command palette",
-    "placeholder": "Type a command, a tab, a connection or an object…",
+    "placeholder": "Search tables, functions, commands, tabs, connections…",
+    "searching": "Searching the open connections…",
     "empty": "Nothing matches.",
     "newConnection": "New connection…",
     "backup": "Backup and restore",
@@ -116,7 +117,8 @@
       "action": "Commands",
       "tab": "Open tabs",
       "connection": "Connections",
-      "object": "Favorites and recent objects"
+      "object": "Favorites and recent objects",
+      "server": "Objects on the server"
     },
     "activity": "Activity Logs",
     "help": "Help & Support"

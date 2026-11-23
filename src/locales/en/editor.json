@@ -208,6 +208,7 @@
       "toggleSidebar": "Toggle sidebar",
       "focusResults": "Switch editor / results",
       "palette": "Open the command palette",
+      "spotlight": "Search tables, functions and commands (Spotlight)",
       "settings": "Open settings",
       "activity": "Activity Logs",
       "zoomIn": "Zoom in",

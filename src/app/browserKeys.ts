@@ -1,5 +1,5 @@
 // The desktop app runs in a webview, which still has a browser's own keys: F5 / Ctrl+R reload
-// the page (losing the open tabs' state), F3 opens "find", F7 caret browsing, F12 dev tools...
+// the page (losing the open tabs' state), F3 / Ctrl+F / Ctrl+G open "find in page", F7 caret browsing, F12 dev tools...
 // None of them belongs in the application, so their default action is cancelled. The
 // application's own bindings on the same keys (F6, the debugger's F7-F11) keep working: they are
 // handled before this listener, which only prevents what the webview would do afterwards.
@@ -14,8 +14,10 @@ export function isBrowserKey(e: KeyboardEvent): boolean {
     // Alt+F4 closes the window: that one belongs to the operating system.
     return !(e.altKey && e.key === 'F4');
   }
-  // Ctrl/Cmd+R and Ctrl/Cmd+Shift+R reload like F5.
-  return (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'r';
+  // Ctrl/Cmd+R and Ctrl/Cmd+Shift+R reload like F5; Ctrl/Cmd+F and Ctrl/Cmd+G (find, find
+  // next) open the webview's "find in page" bar. Ctrl+F is the application's Spotlight and
+  // the editor's own search, both handled before this listener.
+  return (e.ctrlKey || e.metaKey) && !e.altKey && ['r', 'f', 'g'].includes(e.key.toLowerCase());
 }
 
 /**

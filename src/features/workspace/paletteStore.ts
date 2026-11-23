@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { ObjectKind } from '@/lib/types';
 
 /** Whether the command palette (APP-08) is shown. */
 export const useCommandPalette = create<{ open: boolean; setOpen: (open: boolean) => void }>(
@@ -30,7 +31,7 @@ export const useHelpDialog = create<{ open: boolean; setOpen: (open: boolean) =>
   setOpen: (open) => set({ open }),
 }));
 
-export type CommandGroup = 'action' | 'tab' | 'connection' | 'object';
+export type CommandGroup = 'action' | 'tab' | 'connection' | 'object' | 'server';
 
 export interface PaletteCommand {
   id: string;
@@ -41,6 +42,10 @@ export interface PaletteCommand {
   detail?: string;
   /** Formatted keyboard shortcut, shown at the right. */
   keys?: string;
+  /** Kind of the database object, for its icon. */
+  kind?: ObjectKind;
+  /** Connection and path of the object: the same object is listed once. */
+  objectKey?: string;
   run: () => void;
 }
 

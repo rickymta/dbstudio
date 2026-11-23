@@ -65,9 +65,11 @@ function useGlobalShortcuts(): void {
       // Already handled (the tab bar closes its own tab on Ctrl+W; the editor handles its keys),
       // or a modal dialog has the focus: leave it alone.
       if (e.defaultPrevented) return;
-      if (document.querySelector('[role="dialog"]')) return;
       const hit = globals.find((s) => matchesKeys(e, s.keys));
       if (!hit) return;
+      // Ctrl+F never reaches the webview: its "find in page" bar is not part of the app.
+      if (hit.id === 'spotlight') e.preventDefault();
+      if (document.querySelector('[role="dialog"]')) return;
       switch (hit.id) {
         case 'newTab':
           if (openEditorForActiveTab()) e.preventDefault();
@@ -99,6 +101,7 @@ function useGlobalShortcuts(): void {
           useLaunchpad.getState().toggle();
           break;
         case 'palette':
+        case 'spotlight':
           e.preventDefault();
           useCommandPalette.getState().setOpen(true);
           break;

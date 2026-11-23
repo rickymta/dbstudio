@@ -3,7 +3,19 @@ import { Search } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { openBackup } from '@/features/backup/open';
+import { Spinner } from '@/components/ui/Spinner';
 import { useConnectionsSnapshot } from '@/features/connections/queries';
+import {
+  resultContextParts,
+  SERVER_SEARCH_MIN_CHARS,
+  useSearchableSessions,
+} from '@/features/connections/serverSearchModel';
+import { useServerSearch } from '@/features/connections/useServerSearch';
+import { KindIcon } from '@/features/explorer/kindIcons';
+import { openObjectTab } from '@/features/explorer/openObject';
+import { useRevealStore } from '@/features/explorer/revealStore';
+import { pathKey } from '@/lib/objectPath';
+import { useDebounced } from '@/lib/useDebounced';
 import { openEditorForActiveTab } from '@/features/editor/open';
 import { formatKeys, keysOf } from '@/features/editor/shortcuts';
 import { useShortcutsHelp } from '@/features/editor/shortcutsHelpStore';
@@ -25,7 +37,14 @@ import { useNavigation } from './navigation';
 /** Rows rendered at most; the list is filtered by typing, not by scrolling through hundreds. */
 const MAX_ROWS = 60;
 
-/** Command palette (APP-08): application actions, open tabs, connections and recent objects. */
+/** Pause after the last key before the open connections are asked for matching objects. */
+const SERVER_SEARCH_DELAY_MS = 250;
+
+/**
+ * Command palette / Spotlight (APP-08): application actions, open tabs, connections, recent
+ * objects, and the tables, views, functions... of every open connection, searched by name on
+ * the server (`object_search`).
+ */
 export function CommandPalette() {
   const open = useCommandPalette((s) => s.open);
   const setOpen = useCommandPalette((s) => s.setOpen);
@@ -167,11 +186,50 @@ function useCommands(): PaletteCommand[] {
             .filter((s) => s.kind !== 'folder')
             .map((s) => s.name),
         ].join(' › '),
+        objectKey: `${o.connectionId}:${pathKey(o.path)}`,
         run: () => useNavigation.getState().navigate(o.connectionId, o),
       }));
 
     return [...actions, ...tabCommands, ...connections, ...objects];
   }, [t, i18n.language, tabs, activeId, data, recent, favorites, mode]);
+}
+
+/**
+ * Objects of the open connections whose name contains `query`, found on the server: the object
+ * tree is loaded lazily, so a table or a function that was never expanded is only known there.
+ */
+function useServerObjects(query: string): { commands: PaletteCommand[]; fetching: boolean } {
+  const sessions = useSearchableSessions();
+  const { data } = useConnectionsSnapshot();
+  const typed = query.trim();
+  const text = useDebounced(typed, SERVER_SEARCH_DELAY_MS);
+  const enabled = text.length >= SERVER_SEARCH_MIN_CHARS;
+  const results = useServerSearch(sessions, text, enabled);
+  // Typed but not sent yet: for the user that is still "searching".
+  const fetching =
+    sessions.length > 0 &&
+    typed.length >= SERVER_SEARCH_MIN_CHARS &&
+    (text !== typed || results.some((r) => r.fetching));
+
+  const commands = sessions.flatMap((session, i) => {
+    const connection =
+      data?.profiles.find((p) => p.id === session.connectionId)?.name ?? session.serverInfo.product;
+    return (results[i]?.data ?? []).map((node): PaletteCommand => ({
+      id: `server:${session.sessionId}:${pathKey(node.path)}`,
+      group: 'server',
+      label: node.name,
+      detail: [connection, ...resultContextParts(node)].join(' › '),
+      kind: node.kind,
+      objectKey: `${session.connectionId}:${pathKey(node.path)}`,
+      run: () => {
+        if (openObjectTab(node, session)) return;
+        // No tab for this kind: show where it is in the tree instead.
+        useWorkspaceStore.getState().showSidebar();
+        useRevealStore.getState().reveal(session.connectionId, node.path);
+      },
+    }));
+  });
+  return { commands, fetching };
 }
 
 function PaletteBody({ onClose }: { onClose: () => void }) {
@@ -181,17 +239,21 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   const [cursor, setCursor] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const shown = useMemo(
-    () => filterCommands(commands, query).slice(0, MAX_ROWS),
-    [commands, query],
-  );
+  const server = useServerObjects(query);
+
+  const local = filterCommands(commands, query);
+  const known = new Set(local.map((c) => c.objectKey));
+  // The answer may belong to the text of a moment ago: keep only what still matches, and skip
+  // objects already listed as favorite or recent.
+  const found = filterCommands(server.commands, query).filter((c) => !known.has(c.objectKey));
+  const shown = [...local, ...found].slice(0, MAX_ROWS);
   const active = Math.min(cursor, Math.max(shown.length - 1, 0));
 
   useEffect(() => {
     listRef.current
       ?.querySelector<HTMLElement>('[aria-selected="true"]')
       ?.scrollIntoView?.({ block: 'nearest' });
-  }, [active, shown]);
+  }, [active, shown.length, query]);
 
   const run = (command: PaletteCommand | undefined) => {
     if (!command) return;
@@ -247,7 +309,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
           aria-label={t('palette.title')}
           className="min-h-0 flex-1 overflow-y-auto p-1"
         >
-          {shown.length === 0 && (
+          {shown.length === 0 && !server.fetching && (
             <p className="px-3 py-6 text-center text-xs text-muted-foreground">
               {t('palette.empty')}
             </p>
@@ -272,6 +334,9 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
                   onMouseMove={() => setCursor(index)}
                   onClick={() => run(command)}
                 >
+                  {command.kind && (
+                    <KindIcon kind={command.kind} className="shrink-0 text-muted-foreground" />
+                  )}
                   <span className="min-w-0 flex-1 truncate">{command.label}</span>
                   {command.detail && (
                     <span className="max-w-[45%] truncate text-xs text-muted-foreground">
@@ -287,6 +352,15 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
               </div>
             );
           })}
+          {server.fetching && (
+            <p
+              role="status"
+              className="flex items-center justify-center gap-2 px-3 py-2 text-xs text-muted-foreground"
+            >
+              <Spinner size={11} />
+              {t('palette.searching')}
+            </p>
+          )}
         </div>
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>

@@ -107,7 +107,8 @@
   },
   "palette": {
     "title": "Bảng lệnh",
-    "placeholder": "Gõ tên lệnh, tab, kết nối hoặc đối tượng…",
+    "placeholder": "Tìm bảng, function, lệnh, tab, kết nối…",
+    "searching": "Đang tìm trên các kết nối đang mở…",
     "empty": "Không có kết quả phù hợp.",
     "newConnection": "Kết nối mới…",
     "backup": "Sao lưu và khôi phục",
@@ -116,7 +117,8 @@
       "action": "Lệnh",
       "tab": "Tab đang mở",
       "connection": "Kết nối",
-      "object": "Yêu thích và đối tượng gần đây"
+      "object": "Yêu thích và đối tượng gần đây",
+      "server": "Đối tượng trên máy chủ"
     },
     "activity": "Nhật ký hoạt động",
     "help": "Trợ giúp & hỗ trợ"
