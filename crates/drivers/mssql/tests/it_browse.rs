@@ -524,7 +524,8 @@ async fn search_objects_ranking_and_scope() {
         kinds,
         limit: 50,
     };
-    // Root scope searches the session's database; `cust` finds the synonym only when asked.
+    // Root scope searches every user database (here: the only one); `cust` finds the synonym
+    // only when asked.
     let r = s
         .search_objects(q("CUSTOM", ObjectPath::root(), vec![]))
         .await

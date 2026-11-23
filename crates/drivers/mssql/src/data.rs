@@ -11,7 +11,7 @@ use crate::conn::Conn;
 use crate::exec::RunParams;
 use crate::session::{DEFAULT_BATCH, MssqlSession};
 use crate::sql::{ObjRef, lit, object_path, order_by, parse_object, quote, where_clause};
-use crate::value::str_at;
+use crate::value::{int_at, str_at};
 
 /// Check that `raw` parses as a `WHERE` expression of `table` (syntax only, nothing runs).
 pub(crate) async fn check_raw_where(conn: &mut Conn, table: &str, raw: &str) -> Result<()> {
@@ -461,34 +461,19 @@ fn kind_of_code(code: &str) -> ObjectKind {
     }
 }
 
-/// Search by name in one database (the session's default when the scope is the root).
-pub async fn search_objects(
-    sess: &MssqlSession,
-    req: ObjectSearchRequest,
-) -> Result<Vec<ObjectNode>> {
-    let q = req.query.trim();
-    if q.is_empty() {
-        return Ok(Vec::new());
-    }
-    let limit = req.limit.clamp(1, 1000);
-    let db = sess.database_of(&req.scope);
-    let schema = req
-        .scope
-        .segments
-        .iter()
-        .find(|s| s.kind == ObjectKind::Schema)
-        .map(|s| s.name.clone());
-    let kinds: Vec<ObjectKind> = if req.kinds.is_empty() {
-        DEFAULT_KINDS.to_vec()
-    } else {
-        req.kinds.clone()
-    };
-    let mut codes: Vec<&str> = kinds.iter().filter_map(|k| type_codes(*k)).collect();
-    codes.dedup();
-    let with_types = kinds.contains(&ObjectKind::Type);
-    if codes.is_empty() && !with_types {
-        return Ok(Vec::new());
-    }
+/// Databases one root search looks into at most (the login database first).
+const MAX_SEARCH_DATABASES: usize = 64;
+
+/// The statement that searches one database by name: columns schema, name, type code, rank
+/// (0 exact, 1 prefix, 2 substring). Three-part names, so that it runs from any database.
+fn search_sql(
+    db: &str,
+    schema: Option<&str>,
+    codes: &[&str],
+    with_types: bool,
+    q: &str,
+    limit: u32,
+) -> String {
     let pattern = crate::sql::like_escape(q);
     let name_match = |col: &str| {
         format!(
@@ -506,63 +491,162 @@ pub async fn search_objects(
         )
     };
     let schema_filter = schema
-        .as_ref()
-        .map(|s| format!(" AND SCHEMA_NAME(o.schema_id) = {}", lit(s)))
+        .map(|s| format!(" AND sc.name = {}", lit(s)))
         .unwrap_or_default();
+    let qdb = quote(db);
     let mut parts: Vec<String> = Vec::new();
     if !codes.is_empty() {
         parts.push(format!(
-            "SELECT SCHEMA_NAME(o.schema_id) AS s, o.name AS n, o.type AS t, {r} AS r \
-             FROM sys.objects o WHERE o.type IN ({}) AND {}{schema_filter}",
+            "SELECT sc.name AS s, o.name AS n, o.type AS t, {r} AS r \
+             FROM {qdb}.sys.objects o JOIN {qdb}.sys.schemas sc ON sc.schema_id = o.schema_id \
+             WHERE o.type IN ({}) AND {}{schema_filter}",
             codes.join(","),
             name_match("o.name"),
             r = rank("o.name"),
         ));
     }
     if with_types {
-        let tf = schema
-            .as_ref()
-            .map(|s| format!(" AND SCHEMA_NAME(t.schema_id) = {}", lit(s)))
-            .unwrap_or_default();
         parts.push(format!(
-            "SELECT SCHEMA_NAME(t.schema_id), t.name, 'TY', {r} FROM sys.types t \
-             WHERE t.is_user_defined = 1 AND {}{tf}",
+            "SELECT sc.name, t.name, 'TY', {r} \
+             FROM {qdb}.sys.types t JOIN {qdb}.sys.schemas sc ON sc.schema_id = t.schema_id \
+             WHERE t.is_user_defined = 1 AND {}{schema_filter}",
             name_match("t.name"),
             r = rank("t.name"),
         ));
     }
-    let sql = format!(
-        "SELECT TOP ({limit}) s, n, t FROM ({}) x ORDER BY r, n, s",
+    format!(
+        "SELECT TOP ({limit}) s, n, t, r FROM ({}) x ORDER BY r, n, s",
         parts.join(" UNION ALL ")
-    );
-    let mut conn = sess.shared.acquire_catalog(&db).await?;
-    let rows = conn.rows(&sql).await?;
+    )
+}
+
+/// Databases a search from the root covers: every user database the login can open, the login
+/// database first. With no user database at all it is the login database alone.
+///
+/// The tree lists every database of the server, so a search that only looked into the login
+/// database (`master` when the profile names none) found none of the tables shown there.
+async fn search_databases(sess: &MssqlSession) -> Result<Vec<String>> {
+    let login = sess.login_db().to_string();
+    let mut conn = sess.shared.acquire_catalog(&login).await?;
+    let rows = conn
+        .rows(
+            "SELECT name FROM sys.databases \
+             WHERE state = 0 AND HAS_DBACCESS(name) = 1 AND database_id > 4 ORDER BY name",
+        )
+        .await?;
     conn.release();
-    let show_db = req.scope.is_root();
-    Ok(rows
+    Ok(order_search_databases(
+        &login,
+        rows.iter().map(|r| str_at(r, 0)).collect(),
+    ))
+}
+
+fn order_search_databases(login: &str, user_dbs: Vec<String>) -> Vec<String> {
+    if user_dbs.is_empty() {
+        return vec![login.to_string()];
+    }
+    let (mut first, rest): (Vec<String>, Vec<String>) = user_dbs
+        .into_iter()
+        .partition(|d| d.eq_ignore_ascii_case(login));
+    first.extend(rest);
+    first.truncate(MAX_SEARCH_DATABASES);
+    first
+}
+
+/// Search by name: in the database (and schema) of the scope, or from the root in every user
+/// database of the server.
+pub async fn search_objects(
+    sess: &MssqlSession,
+    req: ObjectSearchRequest,
+) -> Result<Vec<ObjectNode>> {
+    let q = req.query.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = req.limit.clamp(1, 1000);
+    let schema = req
+        .scope
+        .segments
         .iter()
-        .map(|r| {
+        .find(|s| s.kind == ObjectKind::Schema)
+        .map(|s| s.name.clone());
+    let kinds: Vec<ObjectKind> = if req.kinds.is_empty() {
+        DEFAULT_KINDS.to_vec()
+    } else {
+        req.kinds.clone()
+    };
+    let mut codes: Vec<&str> = kinds.iter().filter_map(|k| type_codes(*k)).collect();
+    codes.dedup();
+    let with_types = kinds.contains(&ObjectKind::Type);
+    if codes.is_empty() && !with_types {
+        return Ok(Vec::new());
+    }
+    let scoped = req
+        .scope
+        .segments
+        .iter()
+        .any(|s| s.kind == ObjectKind::Database);
+    let dbs = if scoped {
+        vec![sess.database_of(&req.scope)]
+    } else {
+        search_databases(sess).await?
+    };
+    // One connection for every database (three-part names); a scoped search uses the pool of
+    // its own database as before.
+    let home = if scoped {
+        dbs[0].clone()
+    } else {
+        sess.login_db().to_string()
+    };
+    let show_db = req.scope.is_root();
+
+    // (rank, lower-cased name, node)
+    let mut found: Vec<(i64, String, ObjectNode)> = Vec::new();
+    let mut conn = None;
+    for db in &dbs {
+        let mut c = match conn.take() {
+            Some(c) => c,
+            None => sess.shared.acquire_catalog(&home).await?,
+        };
+        let sql = search_sql(db, schema.as_deref(), &codes, with_types, q, limit);
+        let rows = match c.rows(&sql).await {
+            Ok(rows) => rows,
+            Err(e) if dbs.len() == 1 => return Err(e),
+            // One database that cannot be read (being restored, no permission on its catalog,
+            // no cross-database access) must not hide the matches of the others.
+            Err(_) => continue,
+        };
+        conn = Some(c);
+        for r in rows.iter() {
             let s = str_at(r, 0);
             let name = str_at(r, 1);
             let code = str_at(r, 2);
-            let (kind, path) = if code.trim() == "TY" {
-                (
-                    ObjectKind::Type,
-                    object_path(&db, &s, ObjectKind::Type, &name),
-                )
+            let kind = if code.trim() == "TY" {
+                ObjectKind::Type
             } else {
-                let kind = kind_of_code(&code);
-                (kind, object_path(&db, &s, kind, &name))
+                kind_of_code(&code)
             };
-            ObjectNode {
-                path,
-                kind,
-                name,
-                has_children: matches!(kind, ObjectKind::Table | ObjectKind::View),
-                detail: Some(if show_db { format!("{db}.{s}") } else { s }),
-            }
-        })
-        .collect())
+            found.push((
+                int_at(r, 3),
+                name.to_lowercase(),
+                ObjectNode {
+                    path: object_path(db, &s, kind, &name),
+                    kind,
+                    has_children: matches!(kind, ObjectKind::Table | ObjectKind::View),
+                    detail: Some(if show_db { format!("{db}.{s}") } else { s }),
+                    name,
+                },
+            ));
+        }
+    }
+    if let Some(c) = conn {
+        c.release();
+    }
+    // Best matches first over every database; the sort is stable, so equal names keep the
+    // order of the databases (login database first) and of their schemas.
+    found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    found.truncate(limit as usize);
+    Ok(found.into_iter().map(|(_, _, node)| node).collect())
 }
 
 #[cfg(test)]
@@ -666,6 +750,67 @@ mod tests {
         assert_eq!(
             stream_sql(&obj, &req, &info).unwrap(),
             "SELECT * FROM [dbo].[t]"
+        );
+    }
+
+    #[test]
+    fn search_sql_names_the_database() {
+        let sql = search_sql(
+            "Shop]Db",
+            None,
+            &["'U'", "'FN','IF','TF','FS','FT'"],
+            false,
+            "VTT_User",
+            50,
+        );
+        assert!(
+            sql.starts_with("SELECT TOP (50) s, n, t, r FROM ("),
+            "{sql}"
+        );
+        // Three-part names: the statement runs from the login database (often `master`).
+        assert!(
+            sql.contains("FROM [Shop]]Db].sys.objects o JOIN [Shop]]Db].sys.schemas sc"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("o.type IN ('U','FN','IF','TF','FS','FT')"),
+            "{sql}"
+        );
+        // Substring match on the name, `_` taken literally.
+        assert!(sql.contains("LIKE N'%VTT\\_User%' ESCAPE N'\\'"), "{sql}");
+        assert!(
+            !sql.contains("sys.types") && !sql.contains("sc.name ="),
+            "{sql}"
+        );
+
+        let sql = search_sql("d", Some("dbo"), &[], true, "x", 5);
+        assert!(
+            sql.contains("FROM [d].sys.types t JOIN [d].sys.schemas sc"),
+            "{sql}"
+        );
+        assert!(sql.contains(" AND sc.name = N'dbo'"), "{sql}");
+        assert!(!sql.contains("sys.objects"), "{sql}");
+    }
+
+    #[test]
+    fn root_search_covers_every_user_database() {
+        let dbs = |login: &str, user: &[&str]| {
+            order_search_databases(login, user.iter().map(|d| d.to_string()).collect())
+        };
+        // The profile names no database: the login database is `master`, yet the tables shown
+        // in the tree live in the user databases.
+        assert_eq!(dbs("master", &["Hr", "Shop"]), vec!["Hr", "Shop"]);
+        // The login database comes first.
+        assert_eq!(
+            dbs("shop", &["Hr", "Shop", "Zeta"]),
+            vec!["Shop", "Hr", "Zeta"]
+        );
+        // No user database: the login database alone.
+        assert_eq!(dbs("master", &[]), vec!["master"]);
+        let many: Vec<String> = (0..100).map(|n| format!("db{n:03}")).collect();
+        assert_eq!(
+            order_search_databases("master", many).len(),
+            MAX_SEARCH_DATABASES
         );
     }
 

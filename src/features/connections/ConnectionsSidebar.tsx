@@ -57,7 +57,7 @@ import { PasswordDialog } from './PasswordDialog';
 import { useHostKeyPrompt } from './useHostKeyPrompt';
 import { connectionsQueryKey, useConnectionsSnapshot } from './queries';
 import { ServerSearch } from './ServerSearch';
-import { useSearchableSessions } from './serverSearchModel';
+import { SERVER_SEARCH_MIN_CHARS, useSearchableSessions } from './serverSearchModel';
 import { GroupRow, ProfileRow, type DndApi, type RowActions } from './SidebarRows';
 
 const COLLAPSED_KEY = 'dbstudio.connections.collapsedGroups';
@@ -109,6 +109,8 @@ export function ConnectionsSidebar() {
   const asideRef = useRef<HTMLElement>(null);
   const debouncedFilter = useDebounced(filter.trim(), 300);
   const searchableSessions = useSearchableSessions();
+  const serverSearching =
+    searchableSessions.length > 0 && filter.trim().length >= SERVER_SEARCH_MIN_CHARS;
   const reveal = useRevealStore((s) => s.reveal);
   useAnyTreeCacheVersion(filtering);
 
@@ -584,11 +586,16 @@ export function ConnectionsSidebar() {
           <>
             {visible.groups.map((g) => renderGroup(g, 0))}
             {visible.profiles.map((p) => renderProfile(p, 0))}
-            {filtering && visible.groups.length === 0 && visible.profiles.length === 0 && (
-              <p className="px-3 py-4 text-center text-xs text-muted-foreground">
-                {hasOpenConnection ? t('sidebar.noResults') : t('sidebar.noOpenConnection')}
-              </p>
-            )}
+            {/* Nothing among the loaded nodes; said only when the server is not asked too,
+                else "No matches" would sit right above the matches found there. */}
+            {filtering &&
+              !serverSearching &&
+              visible.groups.length === 0 &&
+              visible.profiles.length === 0 && (
+                <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                  {hasOpenConnection ? t('sidebar.noResults') : t('sidebar.noOpenConnection')}
+                </p>
+              )}
             {workspace && !filtering && workspace.connections.length === 0 && (
               <WorkspaceEmptyHint />
             )}
