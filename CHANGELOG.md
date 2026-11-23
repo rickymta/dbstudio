@@ -2,6 +2,12 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.2.1 - 2026-11-23
+
+Thay đổi từ v0.2.0.
+
+- fix(welcome): allow closing and reopening overview tabs (87dd10d)
+
 ## v0.2.0 - 2026-11-22
 
 Thay đổi từ v0.1.13.
