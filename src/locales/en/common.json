@@ -13,7 +13,14 @@
     "supported": "Supported database systems",
     "loadError": "Could not load the driver list.",
     "port": "Default port",
-    "family": "Family"
+    "family": "Family",
+    "reopen": "Open Welcome",
+    "emptyTitle": "No open tabs",
+    "emptyDescription": "Open a connection from the sidebar or return to your overview.",
+    "launchpad": "Open Launchpad",
+    "sessionHint": "You can close this tab. It opens again each time you start DBStudio.",
+    "noConnections": "No saved connections yet. Create a connection to get started.",
+    "connectionsError": "Could not load saved connections."
   },
   "status": {
     "available": "Ready",

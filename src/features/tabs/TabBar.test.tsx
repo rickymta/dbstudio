@@ -53,20 +53,23 @@ describe('TabBar keyboard support', () => {
     expect(useTabsStore.getState().activeId).toBe('welcome');
   });
 
-  it('closes the focused tab with Delete or Ctrl+W, except non-closable ones', async () => {
+  it('closes Welcome with Delete and focuses the next tab', async () => {
     const user = setup();
-    const welcome = screen.getByRole('tab', { name: 'Welcome' });
-    welcome.focus();
+    screen.getByRole('tab', { name: 'Welcome' }).focus();
     await user.keyboard('{Delete}');
-    expect(useTabsStore.getState().tabs).toHaveLength(3);
+    expect(useTabsStore.getState().tabs.map((t) => t.id)).toEqual(['table:a', 'table:b']);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'a' })).toHaveFocus());
+    await user.keyboard('{Control>}w{/Control}');
+    expect(useTabsStore.getState().tabs.map((t) => t.id)).toEqual(['table:b']);
+  });
 
-    await user.keyboard('{ArrowRight}');
-    await user.keyboard('{Delete}');
-    expect(useTabsStore.getState().tabs.map((t) => t.id)).toEqual(['welcome', 'table:b']);
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Welcome' })).toHaveFocus());
-
-    await user.keyboard('{ArrowRight}{Control>}w{/Control}');
-    expect(useTabsStore.getState().tabs.map((t) => t.id)).toEqual(['welcome']);
+  it('closes Welcome with its button and reopens it from the tab menu', async () => {
+    const user = setup();
+    await user.click(screen.getByRole('button', { name: 'Close tab: Welcome' }));
+    expect(screen.queryByRole('tab', { name: 'Welcome' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Open tabs' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Open Welcome' }));
+    expect(screen.getByRole('tab', { name: 'Welcome' })).toHaveAttribute('aria-selected', 'true');
   });
 });
 
@@ -97,13 +100,13 @@ describe('TabBar unsaved file', () => {
     const confirm = vi.spyOn(dialogs, 'confirm').mockResolvedValue(false);
     const user = mount('select 2');
     expect(screen.getByTestId('tab-unsaved')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /^Close tab/ }));
+    await user.click(screen.getByRole('button', { name: 'Close tab: report.sql' }));
     expect(confirm).toHaveBeenCalledWith(
       expect.objectContaining({ description: expect.stringContaining('report.sql') }),
     );
     expect(useTabsStore.getState().tabs).toHaveLength(2);
     confirm.mockResolvedValue(true);
-    await user.click(screen.getByRole('button', { name: /^Close tab/ }));
+    await user.click(screen.getByRole('button', { name: 'Close tab: report.sql' }));
     await waitFor(() => expect(useTabsStore.getState().tabs).toHaveLength(1));
   });
 
@@ -111,7 +114,7 @@ describe('TabBar unsaved file', () => {
     const confirm = vi.spyOn(dialogs, 'confirm');
     const user = mount('select 1');
     expect(screen.queryByTestId('tab-unsaved')).toBeNull();
-    await user.click(screen.getByRole('button', { name: /^Close tab/ }));
+    await user.click(screen.getByRole('button', { name: 'Close tab: report.sql' }));
     await waitFor(() => expect(useTabsStore.getState().tabs).toHaveLength(1));
     expect(confirm).not.toHaveBeenCalled();
   });

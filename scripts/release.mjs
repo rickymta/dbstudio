@@ -7,7 +7,7 @@
 // Không bao giờ push. Chỉ in lệnh push gợi ý.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -126,7 +126,7 @@ const ENV = {
           .filter((d) => d.startsWith('stable'))
           .map((d) => join(homedir(), '.rustup/toolchains', d, 'bin'))
       : []),
-  ].join(':'),
+  ].join(delimiter),
 };
 function run(cmd, args, { allowFail = false } = {}) {
   const r = spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', env: ENV });

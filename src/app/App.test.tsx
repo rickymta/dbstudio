@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import i18n, { setLanguage } from '@/lib/i18n';
 import { App } from './App';
 import { Providers } from './providers';
+import { useTabsStore, WELCOME_TAB } from '@/stores/tabs';
 
 function renderApp() {
   return render(
@@ -16,6 +17,7 @@ function renderApp() {
 describe('App shell (browser mock IPC)', () => {
   beforeEach(async () => {
     localStorage.clear();
+    useTabsStore.setState({ tabs: [WELCOME_TAB], activeId: WELCOME_TAB.id });
     await i18n.changeLanguage('en');
   });
 
@@ -38,6 +40,16 @@ describe('App shell (browser mock IPC)', () => {
     await waitFor(() =>
       expect(screen.getByTestId('app-version')).toHaveTextContent('DBStudio v0.1.0'),
     );
+  });
+
+  it('shows an actionable empty state after closing Welcome and can reopen it', async () => {
+    const user = userEvent.setup();
+    renderApp();
+    await user.click(screen.getByRole('button', { name: 'Close tab: Welcome' }));
+    expect(screen.queryByRole('tab', { name: 'Welcome' })).toBeNull();
+    expect(screen.getByText('No open tabs')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Open Welcome' }));
+    expect(screen.getByRole('tab', { name: 'Welcome' })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('switches language to Vietnamese and persists it', async () => {

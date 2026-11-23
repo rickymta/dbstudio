@@ -8,7 +8,11 @@ import { ConfirmDestructiveHost } from '@/features/safety/ConfirmDestructiveHost
 import { TabBar } from '@/features/tabs/TabBar';
 import { AppWindows } from '@/features/workspace/AppWindows';
 import { CommandPalette } from '@/features/workspace/CommandPalette';
-import { useTabsStore } from '@/stores/tabs';
+import { useTabsStore, WELCOME_TAB } from '@/stores/tabs';
+import { useTranslation } from 'react-i18next';
+import { Button } from '@/components/ui/Button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { useActiveWorkspace } from '@/features/workspaces/store';
 import { ConfirmHost } from '@/components/ui/ConfirmHost';
 import { LaunchpadView } from '@/features/launchpad/LaunchpadView';
 import { useLaunchpad } from '@/features/launchpad/store';
@@ -18,6 +22,8 @@ import { StatusBar } from './StatusBar';
 import { renderTab } from './tabRegistry';
 
 function MainArea() {
+  const { t } = useTranslation();
+  const workspace = useActiveWorkspace();
   const activeTab = useTabsStore((s) => s.tabs.find((t) => t.id === s.activeId));
   // The Launchpad covers the tab content while open; the tabs stay as they are underneath.
   const launchpad = useLaunchpad((s) => s.open);
@@ -28,12 +34,21 @@ function MainArea() {
       <main className="min-h-0 flex-1" role="tabpanel">
         {launchpad ? (
           <LaunchpadView />
+        ) : activeTab ? (
+          <div key={activeTab.id} className="h-full">
+            {renderTab(activeTab)}
+          </div>
         ) : (
-          activeTab && (
-            <div key={activeTab.id} className="h-full">
-              {renderTab(activeTab)}
-            </div>
-          )
+          <EmptyState
+            className="h-full"
+            title={t('welcome.emptyTitle')}
+            description={t('welcome.emptyDescription')}
+            action={
+              <Button onClick={() => useTabsStore.getState().openTab(WELCOME_TAB)}>
+                {workspace ? t('workspaces:switcher.overview') : t('welcome.reopen')}
+              </Button>
+            }
+          />
         )}
       </main>
     </div>

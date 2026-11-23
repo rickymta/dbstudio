@@ -35,7 +35,7 @@ export function WorkspaceSwitcher() {
 
   const showOverview = () => {
     useLaunchpad.getState().setOpen(false);
-    useTabsStore.getState().activate(WELCOME_TAB.id);
+    useTabsStore.getState().openTab(WELCOME_TAB);
   };
 
   return (

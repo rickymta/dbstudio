@@ -1,3 +1,5 @@
+import { Database, Plus, Rocket } from 'lucide-react';
+import { useLaunchpad } from '@/features/launchpad/store';
 import { Button } from '@/components/ui/Button';
 import { useConnectionsSnapshot } from '@/features/connections/queries';
 import { useNavigation } from '@/features/workspace/navigation';
@@ -66,28 +68,37 @@ function WelcomePage() {
   const navigate = useNavigation((s) => s.navigate);
   const tabs = useTabsStore((s) => s.tabs);
   const { t } = useTranslation();
-  const { data, isPending, isError } = useQuery({
+  const visibleRecent = recent
+    .filter((object) => connections.data?.profiles.some((p) => p.id === object.connectionId))
+    .slice(0, 6);
+  const editors = tabs.filter((tab) => tab.kind === 'editor');
+  const { data, isPending, isError, refetch } = useQuery({
     queryKey: ['drivers'],
     queryFn: ipc.listDrivers,
   });
 
   return (
-    <section className="h-full overflow-y-auto p-6" aria-labelledby="welcome-title">
-      <h1 id="welcome-title" className="text-xl font-semibold">
-        {t('welcome.title')}
-      </h1>
-      <p className="mt-1 text-muted-foreground">{t('welcome.subtitle')}</p>
-      <div className="mt-5 flex flex-wrap gap-2">
-        <Button variant="primary" onClick={() => useNavigation.getState().newConnection()}>
-          {t('workspace.startConnection')}
-        </Button>
-      </div>
-      <div className="mt-6 grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-5">
-        <section>
-          <h2 className="mb-2 font-medium">{t('workspace.continue')}</h2>
-          {tabs
-            .filter((tab) => tab.kind === 'editor')
-            .map((tab) => (
+    <section className="h-full overflow-y-auto p-4 sm:p-6" aria-labelledby="welcome-title">
+      <div className="mx-auto max-w-5xl">
+        <header className="rounded-xl border border-border bg-surface p-5">
+          <h1 id="welcome-title" className="text-xl font-semibold">
+            {t('welcome.title')}
+          </h1>
+          <p className="mt-1 text-muted-foreground">{t('welcome.subtitle')}</p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Button variant="primary" onClick={() => useNavigation.getState().newConnection()}>
+              <Plus size={15} aria-hidden /> {t('workspace.startConnection')}
+            </Button>
+            <Button onClick={() => useLaunchpad.getState().setOpen(true)}>
+              <Rocket size={15} aria-hidden /> {t('welcome.launchpad')}
+            </Button>
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">{t('welcome.sessionHint')}</p>
+        </header>
+        <div className="mt-6 grid grid-cols-[repeat(auto-fit,minmax(min(100%,260px),1fr))] gap-5">
+          <section className="min-w-0 rounded-xl border border-border bg-surface p-4">
+            <h2 className="mb-2 font-medium">{t('workspace.continue')}</h2>
+            {editors.map((tab) => (
               <button
                 key={tab.id}
                 className="block min-h-9 w-full truncate rounded px-2 text-left hover:bg-surface-muted"
@@ -98,12 +109,7 @@ function WelcomePage() {
                   : t(tab.title.key, { ns: tab.title.ns ?? 'common' })}
               </button>
             ))}
-          {recent
-            .filter((object) =>
-              connections.data?.profiles.some((p) => p.id === object.connectionId),
-            )
-            .slice(0, 6)
-            .map((object) => (
+            {visibleRecent.map((object) => (
               <button
                 key={object.key}
                 className="flex min-h-9 w-full items-center gap-2 rounded px-2 text-left hover:bg-surface-muted"
@@ -116,40 +122,74 @@ function WelcomePage() {
                 </span>
               </button>
             ))}
-          {!recent.length && !tabs.some((tab) => tab.kind === 'editor') && (
-            <p className="text-muted-foreground">{t('workspace.noRecent')}</p>
-          )}
-        </section>
-        <section>
-          <h2 className="mb-2 font-medium">{t('workspace.savedConnections')}</h2>
-          {connections.data?.profiles.slice(0, 8).map((profile) => (
-            <button
-              key={profile.id}
-              className="block min-h-9 w-full truncate rounded px-2 text-left hover:bg-surface-muted"
-              onClick={() => navigate(profile.id)}
-            >
-              {profile.name}
-            </button>
-          ))}
-        </section>
-      </div>
-      <details className="mt-8">
-        <summary className="cursor-pointer text-muted-foreground">
-          {t('workspace.databaseSupport')}
-        </summary>
-        <h2 className="mt-6 mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {t('welcome.supported')}
-        </h2>
-        {isError && <p role="alert">{t('welcome.loadError')}</p>}
-        {isPending && <p className="text-muted-foreground">…</p>}
-        {data && (
-          <ul className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3">
-            {data.map((d) => (
-              <DriverCard key={d.kind} driver={d} />
+            {!visibleRecent.length && !editors.length && (
+              <p className="text-muted-foreground">{t('workspace.noRecent')}</p>
+            )}
+          </section>
+          <section className="min-w-0 rounded-xl border border-border bg-surface p-4">
+            <h2 className="mb-2 font-medium">{t('workspace.savedConnections')}</h2>
+            {connections.isPending && (
+              <p role="status" className="text-muted-foreground">
+                {t('spinner.loading')}
+              </p>
+            )}
+            {connections.isError && (
+              <div role="alert">
+                <p>{t('welcome.connectionsError')}</p>
+                <Button size="sm" onClick={() => void connections.refetch()}>
+                  {t('actions.retry')}
+                </Button>
+              </div>
+            )}
+            {connections.isSuccess && !connections.data.profiles.length && (
+              <p className="text-muted-foreground">{t('welcome.noConnections')}</p>
+            )}
+            {connections.data?.profiles.slice(0, 8).map((profile) => (
+              <button
+                key={profile.id}
+                className="flex min-h-12 w-full items-center gap-3 rounded px-2 text-left hover:bg-surface-muted"
+                onClick={() => navigate(profile.id)}
+              >
+                <Database size={16} className="shrink-0 text-muted-foreground" aria-hidden />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm">{profile.name}</span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {profile.kind} · {profile.host}
+                  </span>
+                </span>
+              </button>
             ))}
-          </ul>
-        )}
-      </details>
+          </section>
+        </div>
+        <details className="mt-8">
+          <summary className="cursor-pointer text-muted-foreground">
+            {t('workspace.databaseSupport')}
+          </summary>
+          <h2 className="mt-6 mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t('welcome.supported')}
+          </h2>
+          {isError && (
+            <div role="alert">
+              <p>{t('welcome.loadError')}</p>
+              <Button size="sm" onClick={() => void refetch()}>
+                {t('actions.retry')}
+              </Button>
+            </div>
+          )}
+          {isPending && (
+            <p role="status" className="text-muted-foreground">
+              {t('spinner.loading')}
+            </p>
+          )}
+          {data && (
+            <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,240px),1fr))] gap-3">
+              {data.map((d) => (
+                <DriverCard key={d.kind} driver={d} />
+              ))}
+            </ul>
+          )}
+        </details>
+      </div>
     </section>
   );
 }

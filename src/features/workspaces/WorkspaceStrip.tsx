@@ -3,10 +3,14 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { IconButton } from '@/components/ui/IconButton';
 import { useTabsStore, WELCOME_TAB } from '@/stores/tabs';
+import { useLaunchpad } from '@/features/launchpad/store';
 import { openWorkspaceDialog } from './dialogs';
 import { useActiveWorkspace, useWorkspaces } from './store';
 
-const showOverview = () => useTabsStore.getState().activate(WELCOME_TAB.id);
+const showOverview = () => {
+  useLaunchpad.getState().setOpen(false);
+  useTabsStore.getState().openTab(WELCOME_TAB);
+};
 
 /** Sidebar band naming the active workspace (its connections are the only ones listed). */
 export function WorkspaceStrip() {

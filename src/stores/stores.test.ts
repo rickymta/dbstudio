@@ -23,11 +23,27 @@ describe('tabs store', () => {
     openTab(tab('s1', 'a')); // duplicate id: only activates
     expect(useTabsStore.getState().tabs).toHaveLength(3);
     expect(useTabsStore.getState().activeId).toBe(tab('s1', 'a').id);
-    closeTab('welcome'); // not closable
-    expect(useTabsStore.getState().tabs).toHaveLength(3);
+    closeTab('welcome');
+    expect(useTabsStore.getState().tabs).toHaveLength(2);
     activate(tab('s1', 'b').id);
     closeTab(tab('s1', 'b').id);
     expect(useTabsStore.getState().activeId).toBe(tab('s1', 'a').id);
+  });
+
+  it('closes the last tab without reopening Welcome, then allows reopening it', async () => {
+    await useTabsStore.getState().requestClose('welcome');
+    expect(useTabsStore.getState().tabs).toEqual([]);
+    expect(useTabsStore.getState().activeId).toBe('');
+    useTabsStore.getState().openTab(WELCOME_TAB);
+    useTabsStore.getState().openTab(WELCOME_TAB);
+    expect(useTabsStore.getState().tabs).toEqual([WELCOME_TAB]);
+    expect(useTabsStore.getState().activeId).toBe('welcome');
+  });
+
+  it('starts each app session with Welcome even after it was closed', () => {
+    useTabsStore.getState().closeTab('welcome');
+    expect(useTabsStore.getInitialState().tabs).toEqual([WELCOME_TAB]);
+    expect(useTabsStore.getInitialState().activeId).toBe('welcome');
   });
 
   it('closes all tabs of a session', () => {

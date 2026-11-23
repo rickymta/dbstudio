@@ -26,6 +26,25 @@ beforeEach(() => {
 });
 
 describe('tab sets per workspace', () => {
+  it('activates a transferred tab when a deleted scope joins an empty scope', () => {
+    useTabsStore.getState().closeTab(WELCOME_TAB.id);
+    useTabsStore.getState().switchScope('w1');
+    useTabsStore.getState().closeTab(WELCOME_TAB.id);
+    useTabsStore.getState().openTab(table('t1'));
+    useTabsStore.getState().switchScope(NO_SCOPE);
+    useTabsStore.getState().dropScope('w1');
+    expect(useTabsStore.getState().activeId).toBe('t1');
+  });
+
+  it('keeps Welcome closed when revisiting a scope during the same app session', () => {
+    useTabsStore.getState().closeTab(WELCOME_TAB.id);
+    useTabsStore.getState().switchScope('w1');
+    expect(useTabsStore.getState().tabs).toEqual([WELCOME_TAB]);
+    useTabsStore.getState().switchScope(NO_SCOPE);
+    expect(useTabsStore.getState().tabs).toEqual([]);
+    expect(useTabsStore.getState().activeId).toBe('');
+  });
+
   it('keeps each scope its own tabs and active tab, and every tab stays alive', () => {
     const s = useTabsStore.getState();
     s.openTab(table('t1'));

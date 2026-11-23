@@ -13,7 +13,14 @@
     "supported": "Các hệ quản trị được hỗ trợ",
     "loadError": "Không tải được danh sách driver.",
     "port": "Cổng mặc định",
-    "family": "Họ"
+    "family": "Họ",
+    "reopen": "Mở trang Chào mừng",
+    "emptyTitle": "Không có tab đang mở",
+    "emptyDescription": "Mở kết nối từ thanh bên hoặc quay lại trang tổng quan.",
+    "launchpad": "Mở Launchpad",
+    "sessionHint": "Bạn có thể đóng tab này. Tab sẽ tự mở lại mỗi lần khởi động DBStudio.",
+    "noConnections": "Chưa có kết nối đã lưu. Tạo kết nối để bắt đầu.",
+    "connectionsError": "Không thể tải các kết nối đã lưu."
   },
   "status": {
     "available": "Sẵn sàng",

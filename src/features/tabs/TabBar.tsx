@@ -130,7 +130,7 @@ function TabButton({
           </span>
         )}
       </button>
-      {tab.closable && (
+      {tab.closable && tab.kind !== 'welcome' && (
         <button
           type="button"
           aria-label={`${t(tab.pinned ? 'workspace.unpinTab' : 'workspace.pinTab')}: ${title}`}
@@ -168,10 +168,15 @@ export function TabBar() {
   const activate = useTabsStore((s) => s.activate);
   const closeTab = useTabsStore((s) => s.requestClose);
   const launchpadOpen = useLaunchpad((s) => s.open);
+  const workspace = useActiveWorkspace();
 
   const ordered = [...tabs.filter((t) => t.pinned), ...tabs.filter((t) => !t.pinned)];
   const label = (tab: TabItem) =>
-    typeof tab.title === 'string' ? tab.title : t(tab.title.key, { ns: tab.title.ns ?? 'common' });
+    tab.kind === 'welcome' && workspace
+      ? workspace.name
+      : typeof tab.title === 'string'
+        ? tab.title
+        : t(tab.title.key, { ns: tab.title.ns ?? 'common' });
   useEffect(() => {
     const active = Array.from(
       listRef.current?.querySelectorAll<HTMLElement>('[data-tab-id]') ?? [],
@@ -250,6 +255,16 @@ export function TabBar() {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="max-h-80 max-w-[min(480px,90vw)] overflow-auto">
+          {!tabs.some((tab) => tab.kind === 'welcome') && (
+            <DropdownMenuItem
+              onSelect={() => {
+                useLaunchpad.getState().setOpen(false);
+                useTabsStore.getState().openTab(WELCOME_TAB);
+              }}
+            >
+              {workspace ? t('workspaces:switcher.overview') : t('welcome.reopen')}
+            </DropdownMenuItem>
+          )}
           {ordered.map((tab) => (
             <DropdownMenuItem
               key={tab.id}

@@ -76,11 +76,12 @@ export type TabItem =
 
 export type TabKind = TabItem['kind'];
 
+// Welcome is session-only: every fresh app starts with it, even if closed last time.
 export const WELCOME_TAB: TabItem = {
   id: 'welcome',
   kind: 'welcome',
   title: { key: 'tabs.welcome' },
-  closable: false,
+  closable: true,
 };
 
 /** Stable tab id for the data tab of an object. */
@@ -154,7 +155,7 @@ interface TabsState {
 function afterClose(tabs: TabItem[], activeId: string, removedIndexes: number[]): string {
   if (tabs.some((t) => t.id === activeId)) return activeId;
   const first = Math.min(...removedIndexes);
-  return (tabs[Math.max(0, first - 1)] ?? tabs[0] ?? WELCOME_TAB).id;
+  return (tabs[Math.max(0, first - 1)] ?? tabs[0])?.id ?? '';
 }
 
 /** Every tab of every scope: the ones on screen first, then the stashed ones. */
@@ -211,10 +212,11 @@ export const useTabsStore = create<TabsState>((set, get) => ({
         const base = s.stashed[NO_SCOPE] ?? emptySet();
         const stashed = { ...s.stashed };
         delete stashed[NO_SCOPE];
+        const tabs = mergeTabs(base.tabs, s.tabs);
         return {
           scope: NO_SCOPE,
-          tabs: mergeTabs(base.tabs, s.tabs),
-          activeId: s.activeId,
+          tabs,
+          activeId: afterClose(tabs, s.activeId, [0]),
           stashed,
         };
       }
@@ -222,21 +224,25 @@ export const useTabsStore = create<TabsState>((set, get) => ({
       if (!dropped) return s;
       const stashed = { ...s.stashed };
       delete stashed[scope];
-      if (s.scope === NO_SCOPE) return { stashed, tabs: mergeTabs(s.tabs, dropped.tabs) };
+      if (s.scope === NO_SCOPE) {
+        const tabs = mergeTabs(s.tabs, dropped.tabs);
+        return { stashed, tabs, activeId: afterClose(tabs, s.activeId, [0]) };
+      }
       const base = stashed[NO_SCOPE] ?? emptySet();
-      stashed[NO_SCOPE] = { ...base, tabs: mergeTabs(base.tabs, dropped.tabs) };
+      const tabs = mergeTabs(base.tabs, dropped.tabs);
+      stashed[NO_SCOPE] = { tabs, activeId: afterClose(tabs, base.activeId, [0]) };
       return { stashed };
     }),
   moveToScope: (ids, scope) =>
     set((s) => {
       if (scope === s.scope) return s;
-      const moving = s.tabs.filter((t) => ids.includes(t.id) && t.closable);
+      const moving = s.tabs.filter((t) => ids.includes(t.id) && t.closable && t.kind !== 'welcome');
       if (moving.length === 0) return s;
       const tabs = s.tabs.filter((t) => !moving.includes(t));
       const target = s.stashed[scope] ?? emptySet();
       return {
         tabs,
-        activeId: tabs.some((t) => t.id === s.activeId) ? s.activeId : (tabs[0] ?? WELCOME_TAB).id,
+        activeId: tabs.some((t) => t.id === s.activeId) ? s.activeId : (tabs[0]?.id ?? ''),
         stashed: { ...s.stashed, [scope]: { ...target, tabs: mergeTabs(target.tabs, moving) } },
       };
     }),
