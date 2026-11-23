@@ -2415,12 +2415,17 @@ async fn search(port: u16) {
         search_names(s, "user_other", schema_path("dbs_it_search2")).await,
         ["user_other"]
     );
-    // Another database is only searched when it is the scope; the root uses the default one.
-    assert!(
-        search_names(s, "other_t", dbstudio_core::ObjectPath::root())
-            .await
-            .is_empty()
-    );
+    // The root searches every database the login can connect to, not only the default one:
+    // the hit says which database it is in and its path leads there.
+    let from_root = s
+        .search_objects(search_req("other_t", dbstudio_core::ObjectPath::root()))
+        .await
+        .unwrap();
+    assert_eq!(names(&from_root), ["other_t"]);
+    assert_eq!(from_root[0].detail.as_deref(), Some("dbs_it_other.public"));
+    assert_eq!(from_root[0].path.segments[0].name, "dbs_it_other");
+    // The default database does not hold it.
+    assert!(search_names(s, "other_t", db.clone()).await.is_empty());
     let other = dbstudio_core::ObjectPath::root().child(ObjectKind::Database, "dbs_it_other");
     let found = s
         .search_objects(search_req("other_t", other.clone()))
