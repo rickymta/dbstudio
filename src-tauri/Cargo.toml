@@ -27,17 +27,17 @@ dbstudio-export.workspace = true
 dbstudio-backup.workspace = true
 dbstudio-ssh.workspace = true
 dbstudio-debug.workspace = true
-dbstudio-driver-mysql = { version = "0.2.1", path = "../crates/drivers/mysql", optional = true }
-dbstudio-driver-postgres = { version = "0.2.1", path = "../crates/drivers/postgres", optional = true }
-dbstudio-driver-mssql = { version = "0.2.1", path = "../crates/drivers/mssql", optional = true }
-dbstudio-driver-oracle = { version = "0.2.1", path = "../crates/drivers/oracle", optional = true }
-dbstudio-driver-mongodb = { version = "0.2.1", path = "../crates/drivers/mongodb", optional = true }
-dbstudio-driver-cassandra = { version = "0.2.1", path = "../crates/drivers/cassandra", optional = true }
-dbstudio-driver-clickhouse = { version = "0.2.1", path = "../crates/drivers/clickhouse", optional = true }
-dbstudio-driver-redis = { version = "0.2.1", path = "../crates/drivers/redis", optional = true }
+dbstudio-driver-mysql = { version = "0.2.2", path = "../crates/drivers/mysql", optional = true }
+dbstudio-driver-postgres = { version = "0.2.2", path = "../crates/drivers/postgres", optional = true }
+dbstudio-driver-mssql = { version = "0.2.2", path = "../crates/drivers/mssql", optional = true }
+dbstudio-driver-oracle = { version = "0.2.2", path = "../crates/drivers/oracle", optional = true }
+dbstudio-driver-mongodb = { version = "0.2.2", path = "../crates/drivers/mongodb", optional = true }
+dbstudio-driver-cassandra = { version = "0.2.2", path = "../crates/drivers/cassandra", optional = true }
+dbstudio-driver-clickhouse = { version = "0.2.2", path = "../crates/drivers/clickhouse", optional = true }
+dbstudio-driver-redis = { version = "0.2.2", path = "../crates/drivers/redis", optional = true }
 axum = { workspace = true, optional = true }
 base64.workspace = true
-dbstudio-store = { version = "0.2.1", path = "../crates/dbstudio-store" }
+dbstudio-store = { version = "0.2.2", path = "../crates/dbstudio-store" }
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

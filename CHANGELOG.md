@@ -2,6 +2,16 @@
 
 Các thay đổi đáng chú ý của DBStudio. File này do `pnpm release` cập nhật.
 
+## v0.2.2 - 2026-11-23
+
+Thay đổi từ v0.2.1.
+
+- feat(search): kết quả tìm kiếm theo cây database, Spotlight chia theo loại (2274ca5)
+- fix(search): PostgreSQL tìm đối tượng trên mọi database khi tìm từ gốc (b33cf25)
+- feat(search): Spotlight tìm bảng/hàm/thủ tục, Ctrl+F mở Spotlight thay tìm kiếm của webview (dd371c6)
+- fix(ui): tooltip dùng title gốc như GitStudio, hết thanh cuộn ngang ở nút Help (4ea7328)
+- fix(search): SQL Server tìm đối tượng trên mọi database khi tìm từ gốc (399c9fc)
+
 ## v0.2.1 - 2026-11-23
 
 Thay đổi từ v0.2.0.
