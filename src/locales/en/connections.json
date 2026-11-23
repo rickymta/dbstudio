@@ -186,6 +186,7 @@
   "search": {
     "serverResults": "Results from the server",
     "noServerResults": "No matches on the server",
+    "truncated": "Only the {{count}} best matches are shown. Type more to narrow down.",
     "openData": "Open data",
     "viewDdl": "View DDL",
     "showInTree": "Show in tree"

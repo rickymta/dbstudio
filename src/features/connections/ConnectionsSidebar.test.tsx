@@ -685,7 +685,7 @@ describe('ConnectionsSidebar', () => {
       const section = await screen.findByTestId('server-results', {}, WAIT);
       await within(section).findByRole('treeitem', { name: 'orders - PostgreSQL dev' }, WAIT);
       expect(spy).toHaveBeenCalledTimes(1); // debounced: one call for the final text
-      expect(spy.mock.calls[0]![1]).toMatchObject({ query: 'orders', limit: 50 });
+      expect(spy.mock.calls[0]![1]).toMatchObject({ query: 'orders', limit: 200 });
       expect(within(section).getByText('Results from the server')).toBeInTheDocument();
     });
 
@@ -712,7 +712,74 @@ describe('ConnectionsSidebar', () => {
       );
     });
 
-    it('shows the location of a result once, plus any extra detail', async () => {
+    it('shows the results as the tree of the database and folds a branch', async () => {
+      const user = setup();
+      await connectDev(user);
+      await user.type(search(), 'order');
+      const section = await screen.findByTestId('server-results', {}, WAIT);
+      const item = (name: string) => within(section).getByRole('treeitem', { name });
+      // Database > Schemas > schema > folder of the kind > object, each level with its count.
+      const procedures = await within(section).findByRole(
+        'treeitem',
+        { name: 'Procedures (1) - PostgreSQL dev' },
+        WAIT,
+      );
+      expect(item('app_dev (4) - PostgreSQL dev')).toHaveAttribute('aria-expanded', 'true');
+      expect(item('public (4) - PostgreSQL dev')).toBeInTheDocument();
+      const labels = within(section)
+        .getAllByRole('treeitem')
+        .map((row) => row.getAttribute('aria-label'));
+      const at = (label: string) => labels.indexOf(`${label} - PostgreSQL dev`);
+      expect(at('app_dev (4)')).toBeLessThan(at('public (4)'));
+      expect(at('public (4)')).toBeLessThan(at('Tables (2)'));
+      expect(at('Tables (2)')).toBeLessThan(at('orders'));
+      expect(at('orders')).toBeLessThan(at('Procedures (1)'));
+      expect(at('Procedures (1)')).toBeLessThan(at('archive_old_orders'));
+      expect(at('archive_old_orders')).toBeLessThan(at('Sequences (1)'));
+      // No folder for a kind without a match; the databases of the tree all stay, empty too.
+      expect(labels.some((l) => l?.startsWith('Views'))).toBe(false);
+      const empty = await within(section).findByRole(
+        'treeitem',
+        { name: 'analytics (0) - PostgreSQL dev' },
+        WAIT,
+      );
+      expect(empty).not.toHaveAttribute('aria-expanded');
+
+      await user.click(procedures);
+      expect(procedures).toHaveAttribute('aria-expanded', 'false');
+      expect(within(section).queryByRole('treeitem', { name: /^archive_old_orders/ })).toBeNull();
+      expect(item('orders - PostgreSQL dev')).toBeInTheDocument(); // the others stay open
+      procedures.focus();
+      await user.keyboard('{Enter}');
+      expect(item('archive_old_orders - PostgreSQL dev')).toBeInTheDocument();
+    });
+
+    it('says so when the answer was cut by the limit', async () => {
+      const original = ipc.objectSearch.bind(ipc);
+      vi.spyOn(ipc, 'objectSearch').mockImplementation(async (sessionId, request) => {
+        const [first] = await original(sessionId, request);
+        return Array.from({ length: request.limit }, (_, i) => ({
+          ...first!,
+          name: `orders_${i}`,
+          path: {
+            segments: [
+              ...first!.path.segments.slice(0, -1),
+              { kind: first!.kind, name: `orders_${i}` },
+            ],
+          },
+        }));
+      });
+      const user = setup();
+      await connectDev(user);
+      await user.type(search(), 'orders');
+      const section = await screen.findByTestId('server-results', {}, WAIT);
+      expect(
+        await within(section).findByText(/Only the 200 best matches are shown/, {}, WAIT),
+      ).toBeInTheDocument();
+      expect(within(section).getByText('(200+)')).toBeInTheDocument();
+    }, 20_000); // 200 rows are slow to render in jsdom
+
+    it('shows any extra detail of a result, its location being the branch', async () => {
       const original = ipc.objectSearch.bind(ipc);
       vi.spyOn(ipc, 'objectSearch').mockImplementation(async (sessionId, request) => {
         const nodes = await original(sessionId, request);
@@ -724,8 +791,9 @@ describe('ConnectionsSidebar', () => {
       await connectDev(user);
       await user.type(search(), 'events');
       const row = await screen.findByRole('treeitem', { name: 'events - PostgreSQL dev' }, WAIT);
-      expect(within(row).getAllByText(/app_dev/)).toHaveLength(1);
-      expect(within(row).getByText('app_dev › public')).toBeInTheDocument();
+      // The location is the branch the row sits in, not repeated on the row.
+      expect(within(row).queryByText(/app_dev/)).toBeNull();
+      expect(row).toHaveAttribute('title', 'app_dev.public.events');
       expect(within(row).getByText('partitioned')).toBeInTheDocument();
       // A plain table has the location only, not repeated as detail.
       await user.clear(search());
@@ -735,7 +803,7 @@ describe('ConnectionsSidebar', () => {
         { name: 'products - PostgreSQL dev' },
         WAIT,
       );
-      expect(within(plain).getAllByText(/app_dev/)).toHaveLength(1);
+      expect(plain).toHaveTextContent(/^products$/);
     });
 
     it('opens a result like the tree does', async () => {

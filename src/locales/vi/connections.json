@@ -186,6 +186,7 @@
   "search": {
     "serverResults": "Kết quả từ máy chủ",
     "noServerResults": "Không có kết quả trên máy chủ",
+    "truncated": "Chỉ hiện {{count}} kết quả khớp nhất. Gõ thêm để thu hẹp.",
     "openData": "Mở dữ liệu",
     "viewDdl": "Xem DDL",
     "showInTree": "Hiện trong cây"

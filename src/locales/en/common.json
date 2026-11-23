@@ -109,6 +109,7 @@
     "title": "Command palette",
     "placeholder": "Search tables, functions, commands, tabs, connections…",
     "searching": "Searching the open connections…",
+    "serverKind": "{{kind}} · on the server",
     "empty": "Nothing matches.",
     "newConnection": "New connection…",
     "backup": "Backup and restore",

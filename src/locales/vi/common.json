@@ -109,6 +109,7 @@
     "title": "Bảng lệnh",
     "placeholder": "Tìm bảng, function, lệnh, tab, kết nối…",
     "searching": "Đang tìm trên các kết nối đang mở…",
+    "serverKind": "{{kind}} · trên máy chủ",
     "empty": "Không có kết quả phù hợp.",
     "newConnection": "Kết nối mới…",
     "backup": "Sao lưu và khôi phục",

@@ -6,6 +6,8 @@ import { openBackup } from '@/features/backup/open';
 import { Spinner } from '@/components/ui/Spinner';
 import { useConnectionsSnapshot } from '@/features/connections/queries';
 import {
+  groupResultsByKind,
+  kindGroupLabelKey,
   resultContextParts,
   SERVER_SEARCH_MIN_CHARS,
   useSearchableSessions,
@@ -39,6 +41,9 @@ const MAX_ROWS = 60;
 
 /** Pause after the last key before the open connections are asked for matching objects. */
 const SERVER_SEARCH_DELAY_MS = 250;
+
+/** Objects of one kind listed at most, so that every kind with a match stays in sight. */
+const OBJECTS_PER_KIND = 8;
 
 /**
  * Command palette / Spotlight (APP-08): application actions, open tabs, connections, recent
@@ -199,6 +204,7 @@ function useCommands(): PaletteCommand[] {
  * tree is loaded lazily, so a table or a function that was never expanded is only known there.
  */
 function useServerObjects(query: string): { commands: PaletteCommand[]; fetching: boolean } {
+  const { t } = useTranslation();
   const sessions = useSearchableSessions();
   const { data } = useConnectionsSnapshot();
   const typed = query.trim();
@@ -211,23 +217,34 @@ function useServerObjects(query: string): { commands: PaletteCommand[]; fetching
     typed.length >= SERVER_SEARCH_MIN_CHARS &&
     (text !== typed || results.some((r) => r.fetching));
 
-  const commands = sessions.flatMap((session, i) => {
-    const connection =
-      data?.profiles.find((p) => p.id === session.connectionId)?.name ?? session.serverInfo.product;
-    return (results[i]?.data ?? []).map((node): PaletteCommand => ({
-      id: `server:${session.sessionId}:${pathKey(node.path)}`,
-      group: 'server',
-      label: node.name,
-      detail: [connection, ...resultContextParts(node)].join(' › '),
-      kind: node.kind,
-      objectKey: `${session.connectionId}:${pathKey(node.path)}`,
-      run: () => {
-        if (openObjectTab(node, session)) return;
-        // No tab for this kind: show where it is in the tree instead.
-        useWorkspaceStore.getState().showSidebar();
-        useRevealStore.getState().reveal(session.connectionId, node.path);
-      },
-    }));
+  // Every connection together, split by kind: tables, views, functions, procedures...
+  const found = sessions.flatMap((session, i) =>
+    (results[i]?.data ?? []).map((node) => ({ node, session })),
+  );
+  const sessionOf = new Map(found.map((f) => [f.node, f.session]));
+  const commands = groupResultsByKind(found.map((f) => f.node)).flatMap((group) => {
+    const heading = t('palette.serverKind', { kind: t(kindGroupLabelKey(group.kind)) });
+    return group.nodes.map((node): PaletteCommand => {
+      const session = sessionOf.get(node)!;
+      const connection =
+        data?.profiles.find((p) => p.id === session.connectionId)?.name ??
+        session.serverInfo.product;
+      return {
+        id: `server:${session.sessionId}:${pathKey(node.path)}`,
+        group: 'server',
+        heading,
+        label: node.name,
+        detail: [connection, ...resultContextParts(node)].join(' › '),
+        kind: node.kind,
+        objectKey: `${session.connectionId}:${pathKey(node.path)}`,
+        run: () => {
+          if (openObjectTab(node, session)) return;
+          // No tab for this kind: show where it is in the tree instead.
+          useWorkspaceStore.getState().showSidebar();
+          useRevealStore.getState().reveal(session.connectionId, node.path);
+        },
+      };
+    });
   });
   return { commands, fetching };
 }
@@ -245,7 +262,13 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   const known = new Set(local.map((c) => c.objectKey));
   // The answer may belong to the text of a moment ago: keep only what still matches, and skip
   // objects already listed as favorite or recent.
-  const found = filterCommands(server.commands, query).filter((c) => !known.has(c.objectKey));
+  const perKind = new Map<string, number>();
+  const found = server.commands.filter((c) => {
+    if (known.has(c.objectKey) || filterCommands([c], query).length === 0) return false;
+    const n = (perKind.get(c.kind ?? '') ?? 0) + 1;
+    perKind.set(c.kind ?? '', n);
+    return n <= OBJECTS_PER_KIND;
+  });
   const shown = [...local, ...found].slice(0, MAX_ROWS);
   const active = Math.min(cursor, Math.max(shown.length - 1, 0));
 
@@ -293,6 +316,8 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
             aria-activedescendant={shown[active] ? `palette-${active}` : undefined}
             aria-label={t('palette.title')}
             placeholder={t('palette.placeholder')}
+            // The box is the whole dialog: no focus ring of its own around the text.
+            style={{ outline: 'none' }}
             className="h-10 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
             spellCheck={false}
             value={query}
@@ -315,12 +340,15 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
             </p>
           )}
           {shown.map((command, index) => {
-            const heading = shown[index - 1]?.group !== command.group;
+            const title = command.heading ?? t(`palette.group.${command.group}`);
+            const previous = shown[index - 1];
+            const heading =
+              !previous || (previous.heading ?? t(`palette.group.${previous.group}`)) !== title;
             return (
               <div key={command.id}>
                 {heading && (
                   <div className="px-2 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {t(`palette.group.${command.group}`)}
+                    {title}
                   </div>
                 )}
                 <div

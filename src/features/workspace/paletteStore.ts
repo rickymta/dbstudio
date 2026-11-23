@@ -42,6 +42,8 @@ export interface PaletteCommand {
   detail?: string;
   /** Formatted keyboard shortcut, shown at the right. */
   keys?: string;
+  /** Shown above the first row of a run instead of the name of the group. */
+  heading?: string;
   /** Kind of the database object, for its icon. */
   kind?: ObjectKind;
   /** Connection and path of the object: the same object is listed once. */

@@ -132,7 +132,7 @@ describe('Spotlight: objects of the open connections', () => {
     await user.type(input, 'orders');
     // Never expanded in the tree, never opened before: only the server knows it.
     const row = await screen.findByRole('option', { name: /^orders\s*PostgreSQL dev/ }, WAIT);
-    expect(screen.getByText('Objects on the server')).toBeInTheDocument();
+    expect(screen.getByText('Tables · on the server')).toBeInTheDocument();
     expect(spy.mock.calls.at(-1)![1]).toMatchObject({ query: 'orders' });
     await user.click(row);
     const tab = useTabsStore.getState().tabs.find((t) => t.title === 'orders');
@@ -148,6 +148,22 @@ describe('Spotlight: objects of the open connections', () => {
     expect(useTabsStore.getState().tabs.find((t) => t.title === 'slugify')).toMatchObject({
       kind: 'ddl',
     });
+  });
+
+  it('lists the objects by kind: tables, procedures, sequences', async () => {
+    await useSessionsStore.getState().open(PG_DEV);
+    const { user, input } = await openPalette();
+    await user.type(input, 'order');
+    await screen.findByRole('option', { name: /^archive_old_orders/ }, WAIT);
+    const list = screen.getByRole('listbox');
+    const text = list.textContent ?? '';
+    const at = (heading: string) => text.indexOf(heading);
+    expect(at('Tables · on the server')).toBeGreaterThanOrEqual(0);
+    expect(at('Procedures · on the server')).toBeGreaterThan(at('Tables · on the server'));
+    expect(at('Sequences · on the server')).toBeGreaterThan(at('Procedures · on the server'));
+    // The procedure sits under its own heading, after the tables.
+    expect(at('archive_old_orders')).toBeGreaterThan(at('Procedures · on the server'));
+    expect(text).not.toContain('Views · on the server');
   });
 
   it('does not ask the server without an open connection or for a single character', async () => {
